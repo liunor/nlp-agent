@@ -6,9 +6,30 @@ import asyncio
 import sys
 
 from core.identity import AuthenticatedPrincipal
-from gateway.contracts import GatewayEventType, SubmitTurnRequest
+from gateway.contracts import GatewayEventType, SubmitTurnRequest, GatewayNotStartedError
+from security import init_security
+from gateway.engine import LangGraphAgentEngine, GatewayEngine
 from gateway.core import BackendGateway
+from contextlib import asynccontextmanager
+from gateway.engine import GatewayEngine
+from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect
+from contextlib import asynccontextmanager
+from gateway.core import BackendGateway
+from gateway.contracts import SubmitTurnRequest
+backend_gateway = None
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global backend_gateway
+    # 启动时初始化
+    backend_gateway = BackendGateway()
+    await backend_gateway.start()
+    print("✅ Backend Gateway 已启动，安全护栏已激活")
+    yield
+    # 关闭时清理
+    await backend_gateway.close()
+
+app = FastAPI(lifespan=lifespan)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -31,8 +52,16 @@ def check_config() -> bool:
 async def _input(prompt: str) -> str:
     return await asyncio.to_thread(input, prompt)
 
+async def startup():
+    agent_engine = LangGraphAgentEngine()
+    gateway_engine = GatewayEngine(agent_engine)
+    await agent_engine.start(gateway_engine._event_sink)
 
 async def main() -> None:
+
+    security_config = init_security()
+    print(f"安全配置: {security_config}")
+
     if not check_config():
         raise SystemExit(1)
 
@@ -126,3 +155,27 @@ if __name__ == "__main__":
     else:
         print("Usage: python main.py [chat|serve|monitor]")
         raise SystemExit(2)
+
+@app.post("/api/v1/turns")
+async def submit_turn_endpoint(request: SubmitTurnRequest, principal: AuthenticatedPrincipal = Depends(get_principal)):
+    try:
+        result = await backend_gateway.submit_turn(principal, request)
+        return {"success": True, "turn_id": result.turn_id, "session_id": result.session_id}
+    except ValueError as e:
+        return {"success": False, "error": str(e), "code": "SECURITY_VIOLATION"}, 400
+
+
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    pass
+# 临时模拟用户身份
+class FakePrincipal:
+    def __init__(self, user_id="test_user"):
+        self.user_id = user_id
+        self.is_admin = False
+        self.workspace_ids = ["default", "*"]  # 允许所有workspace
+
+async def get_principal():
+    # 在生产环境中，这里会从请求头/Token解析用户
+    # 现在返回一个固定用户
+    return FakePrincipal()

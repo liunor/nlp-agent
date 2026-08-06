@@ -21,7 +21,7 @@ from gateway.contracts import (
     TurnStatus,
 )
 from core.learning import ExerciseState, LearningContext, LearningProgress
-
+from security.auth import AgentIdentity
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -1065,3 +1065,25 @@ class GatewayRepository:
             created_at=row["created_at"],
             payload=json.loads(row["payload_json"] or "{}"),
         )
+
+class SessionRepository:
+    def __init__(self):
+        self._sessions = {}  # 或 Redis 客户端
+
+    def create_session(self, session_id: str, user_id: str) -> AgentIdentity:
+        from security.auth import get_identity_manager
+        identity = get_identity_manager().create_identity(user_id, session_id)
+        # 存入存储
+        self._sessions[session_id] = identity
+        return identity
+
+    def get_identity(self, session_id: str) -> AgentIdentity:
+        # 调用 auth 模块获取，或直接从缓存获取
+        from security.auth import get_identity_manager
+        return get_identity_manager().get_identity(session_id) or self._sessions.get(session_id)
+
+    def revoke_session(self, session_id: str):
+        from security.auth import get_identity_manager
+        get_identity_manager().revoke_identity(session_id)
+        if session_id in self._sessions:
+            del self._sessions[session_id]

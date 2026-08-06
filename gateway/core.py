@@ -34,7 +34,12 @@ from gateway.engine import AgentEngine, LangGraphAgentEngine
 from gateway.events import GatewayEventBroker, GatewayEventSubscription
 from gateway.repository import GatewayRepository
 from server.agent.session_service import LocalSessionService, local_session_service
-
+from typing import AsyncGenerator
+from security.content_guard import get_content_guard
+from security.audit import get_audit_logger
+from security.content_guard import get_content_guard
+from security.prompt_guard import get_prompt_guard
+from security.audit import get_audit_logger
 
 _EXERCISE_RESULT_RE = re.compile(r"<!--\s*exercise-result:\s*(\{.*?\})\s*-->", re.DOTALL)
 _GUIDED_RESULT_RE = re.compile(r"<!--\s*guided-result:\s*(\{.*?\})\s*-->", re.DOTALL)
@@ -85,6 +90,9 @@ class BackendGateway:
         max_events_per_session: int | None = None,
         retention_cleanup_interval_s: float | None = None,
     ) -> None:
+        self.content_guard = get_content_guard()
+        self.prompt_guard = get_prompt_guard()
+        self.audit = get_audit_logger()
         project = Path(__file__).resolve().parent.parent
         from configs.settings import settings
 
@@ -208,6 +216,30 @@ class BackendGateway:
         self, principal: AuthenticatedPrincipal, request: SubmitTurnRequest
     ) -> TurnAccepted:
         self._require_started()
+
+        user_input = request.content
+        session_id = request.session_id or "unknown"
+        # 1. 内容安全审核
+        is_safe, reason, score = self.content_guard.validate_input(user_input)
+        if not is_safe:
+            self.audit.log_security_event("content_block", {
+                "session": session_id,
+                "user": principal.user_id,
+                "input": user_input[:100],
+                "reason": reason
+            })
+            raise ValueError(f"内容违规: {reason}")
+
+        # 2. 提示词注入检测
+        is_safe, threat, score = self.prompt_guard.scan_user_input(user_input)
+        if not is_safe:
+            self.audit.log_security_event("prompt_injection", {
+                "session": session_id,
+                "user": principal.user_id,
+                "threat": threat
+            })
+            raise ValueError(f"检测到注入攻击: {threat}")
+
         async with self._session_turn_locks[request.session_id]:
             return await self._submit_turn_locked(principal, request)
 
@@ -455,6 +487,17 @@ class BackendGateway:
                 },
             )
             return
+        is_safe, reason, score = self.content_guard.validate_output(final_text)
+        if not is_safe:
+            self.audit.log_security_event("output_filtered", {
+                "session": context.session_id,
+                "turn": turn_id,
+                "reason": reason,
+                "original_preview": final_text[:100]
+            })
+            # 替换为安全兜底回复
+            final_text = "抱歉，生成的回复不符合安全规范，已拦截。"
+
         if guided_session_id is not None:
             final_text, guided_result = _extract_guided_result(final_text)
             await asyncio.to_thread(
@@ -518,6 +561,18 @@ class BackendGateway:
         self, principal: AuthenticatedPrincipal, request: InjectMessageRequest
     ) -> TurnAccepted:
         self._require_started()
+
+        user_input = request.content
+        session_id = request.session_id
+        is_safe, reason, score = self.content_guard.validate_input(user_input)
+        if not is_safe:
+            self.audit.log_security_event("content_block", {...})
+            raise ValueError(f"内容违规: {reason}")
+        is_safe, threat, score = self.prompt_guard.scan_user_input(user_input)
+        if not is_safe:
+            self.audit.log_security_event("prompt_injection", {...})
+            raise ValueError(f"检测到注入攻击: {threat}")
+
         context = await self.sessions.resolve(principal, request.session_id)
         turn_id = await self.engine.inject(context, request.content)
         if turn_id is None:
@@ -823,3 +878,35 @@ class BackendGateway:
             self._turn_tasks.clear()
             self._session_turn_locks.clear()
             self._started = False
+
+
+class GatewayCore:
+    def __init__(self):
+        self.content_guard = get_content_guard()
+        self.audit = get_audit_logger()
+
+    # 非流式响应处理
+    async def process_request(self, prompt: str, session_id: str) -> str:
+        raw_reply = "模型生成的原始回复"
+
+        # 输出审核
+        is_safe, reason, score = self.content_guard.validate_output(raw_reply)
+        if not is_safe:
+            self.audit.log_security_event("output_filtered",
+                                          {"session": session_id, "reason": reason})
+            # 返回兜底回复（绝不能泄露原始违规内容）
+            return "抱歉，生成的回复不符合安全规范，已拦截。"
+
+        return raw_reply
+
+    # 流式响应处理（逐块审核）
+    async def process_stream(self, prompt: str, session_id: str) -> AsyncGenerator[str, None]:
+        # 假设从 server 获取流式生成器
+        async for chunk in self.server.stream_generate(prompt):
+            # 对每个 chunk 进行输出审核
+            is_safe, _, _ = self.content_guard.validate_output(chunk)
+            if not is_safe:
+                # 截断后续流，发送安全提示
+                yield " [内容被拦截] "
+                break
+            yield chunk

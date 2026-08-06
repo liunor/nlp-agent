@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 
 from gateway.contracts import GatewayEvent
-
+from security.prompt_guard import get_prompt_guard
 
 @dataclass(slots=True)
 class _Subscription:
@@ -104,3 +104,17 @@ class GatewayEventBroker:
     @property
     def subscriber_count(self) -> int:
         return len(self._subscriptions)
+
+
+class EventEmitter:
+    async def send_tool_result(self, tool_name: str, result_text: str):
+        # 检测工具返回内容中的间接注入
+        prompt_guard = get_prompt_guard()
+        is_safe, threat, sanitized = prompt_guard.scan_tool_result(tool_name, result_text)
+
+        if not is_safe:
+            # 记录并阻止该事件发送，或发送脱敏后的内容
+            sanitized = f"[工具 {tool_name} 返回内容被安全策略拦截]"
+
+        # 推送 sanitized 内容到前端
+        await self.push_event("tool_result", {"tool": tool_name, "output": sanitized})
