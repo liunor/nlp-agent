@@ -9,7 +9,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.learning import ExerciseState, LearningContext, LearningProgress
-
+from pydantic import BaseModel, validator, Field
+from typing import Optional
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -156,3 +157,25 @@ class TeachingConfigurationError(ValueError):
     """Teacher catalogue cannot safely serve the learner's current selection."""
 
     pass
+
+class ChatRequest(BaseModel):
+    """聊天请求体"""
+    prompt: str = Field(..., description="用户输入")
+    session_id: Optional[str] = None
+    stream: bool = False
+
+    #  1. 输入清洗：去除首尾空白，防止空输入绕过
+    @validator('prompt')
+    def sanitize_input(cls, v):
+        if not v or not v.strip():
+            raise ValueError("输入内容不能为空")
+        # 基础清洗：移除零宽字符、控制字符等
+        cleaned = ''.join(ch for ch in v if ord(ch) >= 32 or ch in '\n\r\t')
+        return cleaned.strip()
+
+class ChatResponse(BaseModel):
+    """聊天响应体"""
+    reply: str
+    session_id: str
+    # 新增安全元数据
+    safety_score: Optional[float] = None
