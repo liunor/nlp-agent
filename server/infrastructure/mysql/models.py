@@ -629,3 +629,63 @@ class ObservabilityRecordModel(TimestampedModel, Base):
     turn_id: Mapped[str | None] = mapped_column(String(128), index=True)
     status: Mapped[str | None] = mapped_column(String(32), index=True)
     payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class AgentSessionModel(TimestampedModel, Base):
+    """Agent conversation session, isolated by workspace.
+
+    A higher-level orchestration entity that groups gateway-managed
+    turns within a single workspace context.
+    """
+
+    __tablename__ = "nlp_agent_sessions"
+    __table_args__ = (
+        Index("ix_agent_sessions_workspace_updated", "workspace_id", "status", "updated_at"),
+        Index("ix_agent_sessions_creator", "created_by_user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        UUID,
+        ForeignKey("nlp_workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id: Mapped[str] = mapped_column(
+        UUID,
+        ForeignKey("nlp_users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active"
+    )
+    active_conversation_id: Mapped[str | None] = mapped_column(UUID, nullable=True)
+    model_profile_id: Mapped[str | None] = mapped_column(UUID, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+
+
+class ExecutionLeaseModel(Base):
+    """Worker execution lease for turn processing.
+
+    Tracks which worker currently holds the execution right for a turn.
+    References the existing nlp_turns table.
+    """
+
+    __tablename__ = "nlp_execution_leases"
+    __table_args__ = (
+        UniqueConstraint("lease_token", name="uk_lease_token"),
+        Index("ix_leases_expiry", "expires_at"),
+    )
+
+    turn_id: Mapped[str] = mapped_column(
+        UUID,
+        ForeignKey("nlp_turns.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    lease_token: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")

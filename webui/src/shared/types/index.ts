@@ -198,3 +198,98 @@ export interface SettingsRuntime {
   default_model_profile: string;
   model_profiles: Record<string, RuntimeModelProfile>;
 }
+
+// ---------------------------------------------------------------------------
+// User management types
+// ---------------------------------------------------------------------------
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  display_name: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserListResponse {
+  users: UserProfile[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface MeResponse {
+  user_id: string;
+  username: string;
+  display_name: string;
+  status: string;
+  roles: string[];
+  workspace_ids: string[];
+  permissions: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace types
+// ---------------------------------------------------------------------------
+
+export interface Workspace {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceListResponse {
+  workspaces: Workspace[];
+  total: number;
+}
+
+export interface WorkspaceMember {
+  workspace_id: string;
+  user_id: string;
+  member_type: string;
+  status: string;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Agent session types
+// ---------------------------------------------------------------------------
+
+export interface AgentSession {
+  id: string;
+  workspace_id: string;
+  created_by_user_id: string;
+  title: string;
+  status: string;
+  active_conversation_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentSessionListResponse {
+  sessions: AgentSession[];
+  total: number;
+}
+
+// ---------------------------------------------------------------------------
+// Auth session management types
+// ---------------------------------------------------------------------------
+
+export interface ActiveSessionItem {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  expires_at: string;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+export interface ActiveSessionListResponse {
+  sessions: ActiveSessionItem[];
+}

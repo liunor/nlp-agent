@@ -6,6 +6,8 @@ vi.mock("@/platform/http/api", () => ({
     workspace_ids: ["default"],
   }),
   api: {
+    getMe: vi.fn().mockResolvedValue({ user_id: "teacher", username: "teacher", display_name: "Teacher", status: "active", roles: ["admin", "teacher"], workspace_ids: ["default"], permissions: [], created_at: "", updated_at: "" }),
+    getAuthSession: vi.fn().mockResolvedValue({ roles: ["admin", "teacher"], workspace_ids: ["default"] }),
     getSettings: vi.fn().mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } }),
     getTeacherOverview: vi.fn().mockResolvedValue({
       workspace_id: "default",

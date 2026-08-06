@@ -1,4 +1,23 @@
-import type { AuthSession, DeveloperSnapshot, SettingsRuntime, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings } from "@/shared/types";
+import type {
+  AuthSession,
+  DeveloperSnapshot,
+  SettingsRuntime,
+  TeacherCatalog,
+  TeacherOverview,
+  TeachingGoals,
+  SessionSummary,
+  TurnRecord,
+  UserSettings,
+  MeResponse,
+  UserListResponse,
+  UserProfile,
+  WorkspaceListResponse,
+  Workspace,
+  WorkspaceMember,
+  AgentSessionListResponse,
+  AgentSession,
+  ActiveSessionListResponse,
+} from "@/shared/types";
 
 const API_ROOT = "/api/v1";
 
@@ -102,4 +121,83 @@ export const api = {
   getLearningCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/learning/catalog/${encodeURIComponent(workspaceId)}`),
   getTeacherResource: (resource: "courses" | "prompts" | "reports", workspaceId = "default") =>
     request<{ items: unknown[]; status: string }>(`/teacher/${resource}?workspace_id=${encodeURIComponent(workspaceId)}`),
+
+  // ---------------------------------------------------------------------------
+  // User management
+  // ---------------------------------------------------------------------------
+  getMe: () => request<MeResponse>("/auth/me"),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+  listUsers: (offset = 0, limit = 100, status?: string) => {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (status) params.set("status", status);
+    return request<UserListResponse>(`/users?${params}`);
+  },
+  getUser: (userId: string) => request<UserProfile>(`/users/${encodeURIComponent(userId)}`),
+  updateUser: (userId: string, data: { display_name?: string; status?: string }) =>
+    request<UserProfile>(`/users/${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  disableUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/disable`, { method: "POST" }),
+  enableUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/enable`, { method: "POST" }),
+
+  // ---------------------------------------------------------------------------
+  // Workspace management
+  // ---------------------------------------------------------------------------
+  listWorkspaces: () => request<WorkspaceListResponse>("/workspaces"),
+  createWorkspace: (data: { name: string; slug?: string; type?: string }) =>
+    request<Workspace>("/workspaces", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  getWorkspace: (workspaceId: string) =>
+    request<Workspace>(`/workspaces/${encodeURIComponent(workspaceId)}`),
+  listWorkspaceMembers: (workspaceId: string) =>
+    request<WorkspaceMember[]>(`/workspaces/${encodeURIComponent(workspaceId)}/members`),
+  addWorkspaceMember: (workspaceId: string, userId: string, memberType = "member") =>
+    request<WorkspaceMember>(`/workspaces/${encodeURIComponent(workspaceId)}/members`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId, member_type: memberType }),
+    }),
+  removeWorkspaceMember: (workspaceId: string, userId: string) =>
+    request<void>(`/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    }),
+
+  // ---------------------------------------------------------------------------
+  // Agent session management
+  // ---------------------------------------------------------------------------
+  listAgentSessions: (statusFilter?: string, limit = 100, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (statusFilter) params.set("status", statusFilter);
+    return request<AgentSessionListResponse>(`/agent-sessions?${params}`);
+  },
+  createAgentSession: (title: string, metadata?: Record<string, unknown>) =>
+    request<AgentSession>("/agent-sessions", {
+      method: "POST",
+      body: JSON.stringify({ title, metadata: metadata ?? {} }),
+    }),
+  updateAgentSession: (sessionId: string, data: { title?: string; status?: string }) =>
+    request<AgentSession>(`/agent-sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteAgentSession: (sessionId: string) =>
+    request<void>(`/agent-sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
+
+  // ---------------------------------------------------------------------------
+  // Auth session management (admin)
+  // ---------------------------------------------------------------------------
+  listActiveSessions: () => request<ActiveSessionListResponse>("/auth/active-sessions"),
+  revokeUserSessions: (userId: string) =>
+    request<{ revoked_count: number }>("/auth/revoke-sessions", {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    }),
 };

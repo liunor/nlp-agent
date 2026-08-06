@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({
+  getMe: vi.fn().mockResolvedValue({ user_id: "student", username: "student", display_name: "Student", status: "active", roles: ["student"], workspace_ids: ["default"], permissions: [], created_at: "", updated_at: "" }),
+  getAuthSession: vi.fn().mockResolvedValue({}),
   listSessions: vi.fn().mockResolvedValue({ items: [] }),
   getSettings: vi.fn().mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } }),
   getLearningCatalog: vi.fn()

@@ -28,3 +28,4 @@ async def test_task_stop_rejects_cross_session(monkeypatch):
 
     future.cancel()
     await asyncio.gather(future, return_exceptions=True)
+#

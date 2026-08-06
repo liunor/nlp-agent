@@ -45,11 +45,32 @@ def _create_foreign_keys() -> None:
 
 
 def _resize_identifiers(*, old_length: int, new_length: int) -> None:
+    bind = op.get_bind()
+    # Inspect current column types to handle ORM drift: if migration 02
+    # already created tables with the current (larger) schema, skip the
+    # alter to avoid "duplicate column type" errors.
+    inspector = sa.inspect(bind)
+    needs_resize = False
+
+    conv_col = next(
+        (c for c in inspector.get_columns("nlp_conversations") if c["name"] == "id"),
+        None,
+    )
+    if conv_col is None:
+        raise RuntimeError("nlp_conversations.id column not found")
+
+    current_length = int(getattr(conv_col["type"], "length", 36))
+    if current_length >= new_length:
+        # Already at target size (ORM drift from migration 02); ensure FKs exist.
+        _ensure_foreign_keys()
+        return
+
+    needs_resize = True
     _drop_foreign_keys()
     op.alter_column(
         "nlp_conversations",
         "id",
-        existing_type=_identifier_type(old_length),
+        existing_type=_identifier_type(current_length),
         type_=_identifier_type(new_length),
         existing_nullable=False,
     )
@@ -57,11 +78,29 @@ def _resize_identifiers(*, old_length: int, new_length: int) -> None:
         op.alter_column(
             table_name,
             "conversation_id",
-            existing_type=_identifier_type(old_length),
+            existing_type=_identifier_type(current_length),
             type_=_identifier_type(new_length),
             existing_nullable=False,
         )
     _create_foreign_keys()
+
+
+def _ensure_foreign_keys() -> None:
+    """Create foreign keys if they are missing (idempotent helper)."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    for table_name, constraint_name in CONVERSATION_FOREIGN_KEYS.items():
+        fks = inspector.get_foreign_keys(table_name)
+        existing_names = {fk.get("name") for fk in fks if fk.get("name")}
+        if constraint_name not in existing_names:
+            op.create_foreign_key(
+                constraint_name,
+                table_name,
+                "nlp_conversations",
+                ["conversation_id"],
+                ["id"],
+                ondelete="CASCADE",
+            )
 
 
 def upgrade() -> None:

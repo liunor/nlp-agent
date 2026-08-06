@@ -10,7 +10,11 @@ vi.mock("@/platform/http/api", () => {
   return {
     ApiError,
     ensureAuth: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
-    api: { login: vi.fn() },
+    api: { 
+      getMe: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
+      getAuthSession: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
+      login: vi.fn() 
+    },
   };
 });
 

@@ -74,6 +74,12 @@ from server.teacher.service import teacher_service
 from server.rbac.service import rbac_service
 from server.web.websocket import WebSocketHub, websocket_endpoint
 
+# New vertical modules (auth supplementary, user, workspace, agent sessions)
+from server.auth.controller import router as auth_router
+from server.user.controller import router as user_router
+from server.workspace.controller import router as workspace_router
+from server.agent_sessions.controller import router as agent_sessions_router
+
 
 GatewayFactory = Callable[[], BackendGateway]
 
@@ -210,6 +216,12 @@ def create_app(
     )
     app.state.auth = auth
     app.state.hub = hub
+
+    # Register supplementary module routers
+    app.include_router(auth_router)
+    app.include_router(user_router)
+    app.include_router(workspace_router)
+    app.include_router(agent_sessions_router)
     cookie_auth = APIKeyCookie(name=auth.cookie_name, auto_error=False)
     # An explicit allowed_hosts override (tests/local deployments) wins over the
     # config-derived whitelist so the app never depends on a gitignored .env

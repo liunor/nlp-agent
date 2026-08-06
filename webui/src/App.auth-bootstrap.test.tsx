@@ -26,6 +26,8 @@ vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() 
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: harness.authenticate,
   api: {
+    getMe: vi.fn().mockResolvedValue({ user_id: "u1", username: "test", display_name: "Test", status: "active", roles: ["student"], workspace_ids: ["default"], permissions: [], created_at: "", updated_at: "" }),
+    getAuthSession: harness.authenticate,
     listSessions: vi.fn().mockResolvedValue({ items: [] }),
     getSettings: vi.fn().mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } }),
     getLearningCatalog: harness.getLearningCatalog,

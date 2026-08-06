@@ -29,6 +29,8 @@ vi.mock("@/platform/realtime/client", () => ({ StudentSocket: stream.StudentSock
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: vi.fn().mockResolvedValue({}),
   api: {
+    getMe: vi.fn().mockResolvedValue({ user_id: "user", username: "user", display_name: "User", status: "active", roles: ["student"], workspace_ids: ["default"], permissions: [], created_at: "", updated_at: "" }),
+    getAuthSession: vi.fn().mockResolvedValue({}),
     listSessions: vi.fn().mockResolvedValue({ items: [] }),
     getSettings: vi.fn().mockResolvedValue({
       preferences: { settings: {} },
