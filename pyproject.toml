@@ -27,6 +27,8 @@ dependencies = [
     "pyyaml>=6.0",
     "structlog>=24.0",
     "uvicorn[standard]>=0.35",
+    "beautifulsoup4>=4.12",
+    "markdownify>=0.13",
 ]
 
 [dependency-groups]
