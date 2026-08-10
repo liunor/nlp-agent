@@ -22,6 +22,7 @@ def test_only_generic_replayable_tools_are_registered():
         "read_local_file",
         "get_current_time",
         "web_search",
+        "web_fetch",
     }
 
 

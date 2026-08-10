@@ -1,59 +1,34 @@
+"""LangChain wrapper exposing web_search through the unified tool runtime."""
+
+from __future__ import annotations
+
 import json
-from typing import Optional
 
-import httpx
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
 
-from configs.settings import settings
-from utils.logger import get_logger
-
-
-logger = get_logger("nlp_agent.tools.web_search")
-TAVILY_BASE_URL = "https://api.tavily.com/search"
-
-
-class WebSearchInput(BaseModel):
-    query: str = Field(..., description="搜索问题或关键词")
-    max_results: int = Field(default=5, ge=1, le=10)
-
-
-class SearchResultItem(BaseModel):
-    title: str
-    url: str
-    content: str
-    score: Optional[float] = None
-
-
-class WebSearchResponse(BaseModel):
-    query: str
-    results: list[SearchResultItem]
-    total_results: int
+from server.tools.web.contracts import WebAccessError, WebSearchInput
+from server.tools.web.search import build_search_service
 
 
 @tool("web_search", args_schema=WebSearchInput)
-async def web_search(query: str, max_results: int = 5) -> str:
-    """搜索需要最新公开信息或外部资料的问题。"""
-
-    if not settings.TAVILY_API_KEY:
-        return '{"error":"TAVILY_API_KEY 未配置"}'
-    payload = {
-        "api_key": settings.TAVILY_API_KEY,
-        "query": query,
-        "max_results": max_results,
-        "search_depth": "basic",
-        "include_answer": False,
-    }
+async def web_search(
+    query: str,
+    max_results: int = 5,
+    provider: str | None = None,
+    domains: list[str] | None = None,
+    freshness: str | None = None,
+) -> str:
+    """搜索需要最新公开信息或外部资料的问题，返回带来源的结构化结果。"""
+    request = WebSearchInput(
+        query=query,
+        max_results=max_results,
+        provider=provider,
+        domains=domains or [],
+        freshness=freshness,
+    )
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(TAVILY_BASE_URL, json=payload)
-            response.raise_for_status()
-        results = [SearchResultItem(**item) for item in response.json().get("results", [])]
-        return WebSearchResponse(
-            query=query,
-            results=results,
-            total_results=len(results),
-        ).model_dump_json()
-    except Exception as error:
-        logger.exception("Web search failed", error=str(error))
-        return json.dumps({"error": str(error)}, ensure_ascii=False)
+        service = build_search_service()
+        response = await service.search(request)
+    except WebAccessError as error:
+        return json.dumps(error.to_error_dict(), ensure_ascii=False)
+    return response.model_dump_json()
