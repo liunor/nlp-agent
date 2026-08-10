@@ -224,7 +224,7 @@ memory:
 prompts:
   versions:
     coordinator: "1.3"
-    worker: "1.2"
+    worker: "1.3"
     learning.policy: "1.2"
 
 # One logical Agent turn is bounded independently from provider-level retries
@@ -284,6 +284,52 @@ tools:
     #     capabilities: [nlp.analyze]
     #     risk: low
   mcp_servers: {}
+  # Web Access 能力包：web_search（可配置搜索提供者）与 web_fetch（受控链接读取）。
+  # 凭据只保存在环境变量中（见 api_key_env/base_url_env 引用的变量名），
+  # 不回显到工具结果、日志或审计文件。
+  web:
+    enabled: true
+    proxy_url: ""                          # 只允许运维配置
+    user_agent: "Nova/1.0 (+web-research)"
+    allow_provider_override: false
+    trusted_service_hosts: []              # 仅 SearXNG 等运维服务的精确主机名可豁免内网限制
+    network:
+      connect_timeout_s: 5
+      read_timeout_s: 20
+      max_redirects: 5
+      max_response_bytes: 5000000
+      blocked_cidrs:
+        - "0.0.0.0/8"
+        - "10.0.0.0/8"
+        - "100.64.0.0/10"
+        - "127.0.0.0/8"
+        - "169.254.0.0/16"
+        - "172.16.0.0/12"
+        - "192.168.0.0/16"
+        - "::1/128"
+        - "fc00::/7"
+        - "fe80::/10"
+    search:
+      default_provider: tavily
+      fallback_providers: [searxng]
+      cache_ttl_s: 60
+      providers:
+        tavily:
+          enabled: true
+          api_key_env: TAVILY_API_KEY
+          timeout_s: 20
+        searxng:
+          enabled: false
+          base_url_env: NLP_AGENT_SEARXNG_BASE_URL
+          api_key_env: NLP_AGENT_SEARXNG_API_KEY
+          timeout_s: 15
+    fetch:
+      max_chars: 20000
+      cache_ttl_s: 300
+      allowed_content_types: [text/html, text/plain, application/json]
+      remote_reader:
+        enabled: false                     # 第三方网页阅读中转默认关闭
+        provider: jina
   # 示例：
   # mcp_servers:
   #   filesystem:
@@ -303,6 +349,12 @@ tools:
 
 # Profile 只组合 Skill、能力与工具授权；Skill 本身负责 SOP 指令。
 worker_profiles:
+  web_researcher:
+    description: "检索公开资料、阅读指定公开链接并附上来源。"
+    capabilities: [web.search, web.fetch]
+    allowed_tools:
+      - web_search
+      - web_fetch
   nlp_calculator:
     description: "执行独立、确定性的 NLP 教学计算（TF-IDF、PR 曲线、Precision@N、N-gram、BLEU）。"
     capabilities: [nlp.analyze]

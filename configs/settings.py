@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     QWEN_API_KEY: str = ""
     TAVILY_API_KEY: str = ""
+    NLP_AGENT_SEARXNG_BASE_URL: str = ""
+    NLP_AGENT_SEARXNG_API_KEY: str = ""
     NLP_AGENT_WORKER_MODEL: str = ""
     NLP_AGENT_WEB_SECRET: str = ""
     NLP_AGENT_AUTH_USERNAME: str = ""

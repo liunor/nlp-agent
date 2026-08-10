@@ -102,10 +102,88 @@ class MCPServerConfig(StrictConfigModel):
         return self
 
 
+DEFAULT_BLOCKED_CIDRS: tuple[str, ...] = (
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "::1/128",
+    "fc00::/7",
+    "fe80::/10",
+)
+
+
+class WebNetworkConfig(StrictConfigModel):
+    connect_timeout_s: float = Field(default=5.0, gt=0, le=60)
+    read_timeout_s: float = Field(default=20.0, gt=0, le=120)
+    max_redirects: int = Field(default=5, ge=0, le=10)
+    max_response_bytes: int = Field(default=5_000_000, ge=10_000, le=50_000_000)
+    blocked_cidrs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_BLOCKED_CIDRS)
+    )
+
+    @field_validator("blocked_cidrs")
+    @classmethod
+    def validate_blocked_cidrs(cls, values: list[str]) -> list[str]:
+        import ipaddress
+
+        for value in values:
+            try:
+                ipaddress.ip_network(value, strict=False)
+            except ValueError as error:
+                raise ValueError(f"invalid blocked CIDR {value!r}: {error}") from error
+        return values
+
+
+class WebSearchProviderConfig(StrictConfigModel):
+    enabled: bool = False
+    api_key_env: str = ""
+    base_url_env: str = ""
+    timeout_s: float = Field(default=20.0, gt=0, le=120)
+
+
+class WebSearchConfig(StrictConfigModel):
+    default_provider: str = "tavily"
+    fallback_providers: list[str] = Field(default_factory=list)
+    cache_ttl_s: int = Field(default=60, ge=0, le=3600)
+    providers: dict[str, WebSearchProviderConfig] = Field(default_factory=dict)
+
+
+class WebRemoteReaderConfig(StrictConfigModel):
+    enabled: bool = False
+    provider: str = "jina"
+
+
+class WebFetchConfig(StrictConfigModel):
+    max_chars: int = Field(default=20_000, ge=500, le=50_000)
+    cache_ttl_s: int = Field(default=300, ge=0, le=3600)
+    allowed_content_types: list[str] = Field(
+        default_factory=lambda: ["text/html", "text/plain", "application/json"]
+    )
+    remote_reader: WebRemoteReaderConfig = Field(
+        default_factory=WebRemoteReaderConfig
+    )
+
+
+class WebToolsConfig(StrictConfigModel):
+    enabled: bool = True
+    proxy_url: str = ""
+    user_agent: str = "Nova/1.0 (+web-research)"
+    allow_provider_override: bool = False
+    trusted_service_hosts: list[str] = Field(default_factory=list)
+    network: WebNetworkConfig = Field(default_factory=WebNetworkConfig)
+    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
+
+
 class ToolRuntimeConfig(StrictConfigModel):
     policies: ToolPoliciesConfig = Field(default_factory=ToolPoliciesConfig)
     custom: CustomToolsConfig = Field(default_factory=CustomToolsConfig)
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    web: WebToolsConfig = Field(default_factory=WebToolsConfig)
 
 
 class WorkerProfileSpec(StrictConfigModel):
