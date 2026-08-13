@@ -19,6 +19,22 @@ from server.auth.schemas import (
     PasswordChangeRequest,
 )
 
+
+def roles_with_admin_alias(roles) -> set[str]:
+    """RBAC treats ``admin`` and ``developer`` as equivalent.  Return a set
+    containing both so consumers (frontend DeveloperWorkspace guard, etc.)
+    that check ``roles.includes("admin")`` work for developer accounts.
+
+    Used by /api/v1/auth/login, /api/v1/auth/session, and /api/v1/auth/me
+    so all three identity responses agree on the alias.
+    """
+    s = set(roles)
+    if "developer" in s or "admin" in s:
+        s.add("admin")
+        s.add("developer")
+    return s
+
+
 __all__ = [
     "Principal",
     "WriteClaims",
@@ -29,4 +45,5 @@ __all__ = [
     "LoginResponse",
     "MeResponse",
     "PasswordChangeRequest",
+    "roles_with_admin_alias",
 ]

@@ -1,13 +1,17 @@
 import { useCallback, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, LayoutGrid, Users, FolderKanban, MessageSquare, RefreshCw } from "lucide-react";
+import { ChevronLeft, LayoutGrid, Users, FolderKanban, MessageSquare, RefreshCw, ShieldCheck, GraduationCap, LayoutList, ScrollText } from "lucide-react";
 import { useAuth } from "@/platform/auth/AuthContext";
 
-export type AdminPage = "overview" | "users" | "workspaces" | "sessions";
+export type AdminPage = "overview" | "users" | "roles" | "classrooms" | "menus" | "audit" | "workspaces" | "sessions";
 
 const NAV: Array<{ page: AdminPage; label: string; icon: typeof LayoutGrid }> = [
   { page: "overview", label: "概览", icon: LayoutGrid },
   { page: "users", label: "用户管理", icon: Users },
+  { page: "roles", label: "角色权限", icon: ShieldCheck },
+  { page: "classrooms", label: "班级管理", icon: GraduationCap },
+  { page: "menus", label: "菜单管理", icon: LayoutList },
+  { page: "audit", label: "审计日志", icon: ScrollText },
   { page: "workspaces", label: "工作区", icon: FolderKanban },
   { page: "sessions", label: "Agent 会话", icon: MessageSquare },
 ];

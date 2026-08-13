@@ -12,7 +12,7 @@ from typing import Optional
 
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.infrastructure.mysql.models import UserModel, WorkspaceModel, WorkspaceMemberModel
@@ -141,6 +141,7 @@ class UserService:
         offset: int = 0,
         limit: int = 100,
         status: Optional[str] = None,
+        keyword: Optional[str] = None,
     ) -> tuple[list[UserModel], int]:
         """List users with pagination."""
         query = select(UserModel)
@@ -149,6 +150,12 @@ class UserService:
         if status:
             query = query.where(UserModel.status == status)
             count_query = count_query.where(UserModel.status == status)
+
+        if keyword:
+            pattern = f"%{keyword}%"
+            like_filter = or_(UserModel.username.ilike(pattern), UserModel.display_name.ilike(pattern))
+            query = query.where(like_filter)
+            count_query = count_query.where(like_filter)
 
         query = query.order_by(UserModel.created_at.desc()).offset(offset).limit(limit)
 

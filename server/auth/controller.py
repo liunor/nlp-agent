@@ -28,6 +28,7 @@ from server.auth.schemas import (
     RevokeSessionsRequest,
     RevokeSessionsResponse,
 )
+from server.auth import roles_with_admin_alias
 from server.user.service import UserService
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -58,7 +59,7 @@ async def get_current_user_profile(
         username=user.username,
         display_name=user.display_name,
         status=user.status,
-        roles=sorted(principal.roles),
+        roles=sorted(roles_with_admin_alias(principal.roles)),
         workspace_ids=sorted(principal.workspace_ids),
         permissions=sorted(principal.permissions),
         created_at=user.created_at,

@@ -16,6 +16,31 @@ import { useStudentWorkspace } from "@/modules/student/workspace/public";
 import { useSessionScrollRestoration } from "@/modules/student/workspace/hooks/useSessionScrollRestoration";
 import type { CourseTopic, TeacherCatalog } from "@/shared/types";
 
+function RoleSwitcher({ roles, onNavigate }: { roles?: string[]; onNavigate: (path: string) => void }) {
+  if (!roles || roles.length === 0) return null;
+  const items = [
+    { role: "teacher", label: "教师", path: "/teacher" },
+    { role: "developer", label: "开发者", path: "/developer" },
+    { role: "admin", label: "管理员", path: "/admin" },
+  ] as const;
+  const visible = items.filter((it) => roles.includes(it.role));
+  if (visible.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1.5">
+      {visible.map((it) => (
+        <button
+          key={it.role}
+          type="button"
+          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100"
+          onClick={() => onNavigate(it.path)}
+        >
+          {it.label}模式
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: string) => void } = {}) {
   const workspace = useStudentWorkspace();
   const learningContext = workspace.preferences.context;
@@ -108,7 +133,10 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
       <header className="thread-header">
         <SidebarToggle onClick={() => { setCollapsed(false); setSidebarOpen(true); }} />
         {hasMessages ? <div className="thread-title"><strong>{activeTitle}</strong><span className={statusOnline ? "online" : ""}>{statusOnline ? <Wifi size={12} /> : <WifiOff size={12} />}{statusText}</span></div> : <div className="thread-title" />}
-        <div className="thread-header-actions"><SchoolLogo /></div>
+        <div className="thread-header-actions">
+          <RoleSwitcher roles={workspace.authSession?.roles} onNavigate={(p) => (onNavigateTo ? onNavigateTo(p) : (location.href = p))} />
+          <SchoolLogo />
+        </div>
       </header>
       {hasMessages ? <><div className="thread-scroll" ref={scrollRef} onScroll={onScroll}><MessageList messages={workspace.messages} loading={workspace.loadingMessages} showReasoning={workspace.settings.show_reasoning} onFollowUp={(text) => void workspace.send(text)} /></div>{composer()}</> : <div className="empty-thread-home"><div><h1>《自然语言处理》智能体 欢迎您！</h1><p>从一个 NLP 概念、模型原理或练习问题开始。</p>{composer(true)}</div></div>}
     </main>
@@ -118,7 +146,7 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
     </div>
     <div className="student-theme-control"><button className="icon-button theme-toggle" type="button" aria-label="切换主题" onClick={() => void workspace.patchSettings({ theme: workspace.settings.theme === "dark" ? "light" : "dark" })}>{workspace.settings.theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button></div>
     {learningOpen && <button className="learning-backdrop" type="button" aria-label="关闭学习记录" onClick={() => setLearningOpen(false)} />}
-    <SettingsDialog open={settingsOpen} settings={workspace.settings} learningContext={workspace.preferences.context} roles={workspace.authSession?.roles} onClose={() => setSettingsOpen(false)} onChange={(patch) => void workspace.patchSettings(patch)} onLearningContextChange={workspace.setLearningContext} onOpenDeveloper={() => { if (onNavigateTo) onNavigateTo("/developer"); else location.href = "/developer"; }} onOpenTeacher={() => { if (onNavigateTo) onNavigateTo("/teacher"); else location.href = "/teacher"; }} />
+    <SettingsDialog open={settingsOpen} settings={workspace.settings} learningContext={workspace.preferences.context} roles={workspace.authSession?.roles} onClose={() => setSettingsOpen(false)} onChange={(patch) => void workspace.patchSettings(patch)} onLearningContextChange={workspace.setLearningContext} onOpenDeveloper={() => { if (onNavigateTo) onNavigateTo("/developer"); else location.href = "/developer"; }} onOpenTeacher={() => { if (onNavigateTo) onNavigateTo("/teacher"); else location.href = "/teacher"; }} onOpenAdmin={() => { if (onNavigateTo) onNavigateTo("/admin"); else location.href = "/admin"; }} />
     <AccountDialog open={accountOpen} session={workspace.authSession} onClose={() => setAccountOpen(false)} onLogout={async () => { await workspace.logout(); setAccountOpen(false); }} />
     <ConfirmDialog open={!!deleteTarget} title={deleteTarget?.kind === "session" ? `删除“${deleteTarget.label}”对话？` : `删除“${deleteTarget?.label ?? ""}”分类？`} description={deleteTarget?.kind === "session" ? "删除后将同时清除后端对话记录，此操作无法撤销。" : "分类中的对话会保留，并移回“未分类”。"} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (!deleteTarget) return; if (deleteTarget.kind === "session") void workspace.deleteSession(deleteTarget.id); else workspace.deleteCategory(deleteTarget.id); setDeleteTarget(null); }} />
     {archived.length > 0 && <span className="sr-only">已归档 {archived.length} 个学习对话</span>}

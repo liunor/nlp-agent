@@ -1,0 +1,12 @@
+﻿=== .env / settings: auth config ===
+  NLP_AGENT_AUTH_USERNAME      = 'nova'
+  NLP_AGENT_AUTH_ROLES         = 'student'
+  NLP_AGENT_AUTH_PASSWORD_HASH = <set len=97>
+
+=== resolve configured username from MySQL ===
+  principal_for_username('nova') -> roles=['developer'] perms=28 ws=['d8a4557f-0eda-4a05-9901-3784e6665629']
+
+=== resolve 'nova' from MySQL ===
+  nova exists: id=f9f209e6-04e8-49da-9905-0e9c69f906f4 status=active
+  resolved roles=['developer'] permissions=['agent:checkpoint:restore', 'agent:event:replay', 'agent:session:create', 'agent:session:delete', 'agent:session:read', 'agent:session:update', 'agent:turn:cancel', 'agent:turn:submit', 'classroom:classroom:create', 'classroom:member:manage', 'identity:profile:read_self', 'identity:profile:update_self', 'learning:content:manage', 'learning:content:read_public', 'learning:content:read_workspace', 'learning:exercise:submit', 'learning:feedback:create', 'learning:progress:read_classroom', 'learning:progress:read_self', 'system:audit:read', 'system:model_profile:manage', 'system:permission:read', 'system:prompt_template:manage', 'system:role:manage', 'system:runtime:inspect', 'system:runtime:monitor', 'system:tool_config:manage', 'system:user:manage']
+  permission count = 28

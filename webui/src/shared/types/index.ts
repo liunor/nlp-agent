@@ -293,3 +293,103 @@ export interface ActiveSessionItem {
 export interface ActiveSessionListResponse {
   sessions: ActiveSessionItem[];
 }
+
+// ---------------------------------------------------------------------------
+// RBAC / system administration
+// ---------------------------------------------------------------------------
+
+export interface RoleCatalogItem {
+  code: string;
+  name: string;
+  description: string;
+  status: string;
+  is_builtin: boolean;
+}
+
+export interface PermissionCatalogItem {
+  code: string;
+  name: string;
+  description: string;
+  status: string;
+}
+
+export interface UserRolesResponse {
+  user_id: string;
+  role_codes: string[];
+}
+
+export interface RolePermissionsResponse {
+  role_code: string;
+  permissions: Record<string, string[]>;
+}
+
+export interface ClassroomItem {
+  id: string;
+  workspace_id: string;
+  name: string;
+  status: string;
+}
+
+export interface UpdateClassroomBody {
+  name: string;
+}
+
+export interface MenuCatalogItem {
+  id: string;
+  parent_id: string | null;
+  type: string;
+  name: string;
+  route_path: string | null;
+  component_key: string | null;
+  permission_id: string | null;
+  client_scope: string | null;
+  sort_order: number;
+  visible: boolean;
+  status: string;
+}
+
+export interface AuthorizationAuditItem {
+  id: string;
+  actor_user_id: string | null;
+  target_user_id: string | null;
+  decision: string;
+  reason_code: string | null;
+  permission_code: string | null;
+  resource_type: string | null;
+  resource_id: string | null;
+  detail: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface RoleListResponse {
+  items: RoleCatalogItem[];
+}
+
+export interface PermissionListResponse {
+  items: PermissionCatalogItem[];
+}
+
+export interface ClassroomListResponse {
+  items: ClassroomItem[];
+}
+
+export interface ClassroomMemberItem {
+  classroom_id: string;
+  user_id: string;
+  username: string;
+  display_name: string;
+  member_role: "student" | "teacher";
+  status: "active" | "disabled";
+}
+
+export interface ClassroomMemberListResponse {
+  items: ClassroomMemberItem[];
+}
+
+export interface MenuListResponse {
+  items: MenuCatalogItem[];
+}
+
+export interface AuthorizationAuditResponse {
+  items: AuthorizationAuditItem[];
+}

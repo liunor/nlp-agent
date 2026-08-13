@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dotenv import load_dotenv
 from logging.config import fileConfig
+
+load_dotenv()
 
 from alembic import context
 from sqlalchemy import pool

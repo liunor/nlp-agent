@@ -36,12 +36,13 @@ async def list_users(
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     status: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
 ):
     """List all users (admin only)."""
     authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
 
     service = UserService(db)
-    users, total = await service.list_users(offset=offset, limit=limit, status=status)
+    users, total = await service.list_users(offset=offset, limit=limit, status=status, keyword=keyword)
 
     return UserListResponse(
         users=[UserResponse.model_validate(u) for u in users],

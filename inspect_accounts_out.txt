@@ -1,0 +1,33 @@
+﻿======================================================================
+1) USER ROW STRUCTURE (nova vs each test account)
+======================================================================
+  developer01    display=Developer Test status=active   auth_ver=2 hash_len=97  prefix=$argon2
+  guest01        display=Guest Test     status=active   auth_ver=2 hash_len=97  prefix=$argon2
+  nova           display=Nova           status=active   auth_ver=2 hash_len=97  prefix=$argon2
+  student01      display=Student Test   status=active   auth_ver=2 hash_len=97  prefix=$argon2
+  teacher01      display=Teacher Test   status=active   auth_ver=2 hash_len=97  prefix=$argon2
+
+======================================================================
+2) PERSONAL WORKSPACE + OWNER MEMBERSHIP
+======================================================================
+  developer01    ws.slug=user-developer01       member_type=owner    ws_status=active   m_status=active
+  guest01        ws.slug=user-guest01           member_type=owner    ws_status=active   m_status=active
+  nova           ws.slug=user-nova              member_type=owner    ws_status=active   m_status=active
+  student01      ws.slug=user-student01         member_type=owner    ws_status=active   m_status=active
+  teacher01      ws.slug=user-teacher01         member_type=owner    ws_status=active   m_status=active
+
+======================================================================
+3) ROLE ASSIGNMENTS
+======================================================================
+  developer01    roles=developer                                                    assigned_by_null=False
+  guest01        roles=guest                                                        assigned_by_null=False
+  nova           roles=developer                                                    assigned_by_null=True
+  student01      roles=student                                                      assigned_by_null=False
+  teacher01      roles=teacher                                                      assigned_by_null=False
+
+======================================================================
+4) ENV CONFIG (the single-credential side of 'nova mode')
+======================================================================
+  NLP_AGENT_AUTH_USERNAME = set
+  NLP_AGENT_AUTH_ROLES = set
+  NLP_AGENT_AUTH_PASSWORD_HASH length=97  set=YES

@@ -17,6 +17,16 @@ import type {
   AgentSessionListResponse,
   AgentSession,
   ActiveSessionListResponse,
+  RoleListResponse,
+  RoleCatalogItem,
+  PermissionListResponse,
+  UserRolesResponse,
+  RolePermissionsResponse,
+  ClassroomListResponse,
+  ClassroomItem,
+  ClassroomMemberListResponse,
+  MenuListResponse,
+  AuthorizationAuditResponse,
 } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
@@ -61,7 +71,7 @@ export async function ensureAuth(): Promise<AuthSession> {
 
 export const api = {
   login: async (username: string, password: string) => {
-    const session = await request<AuthSession>("/auth/login", {
+    const session = await request<AuthSession>("/auth/login/db", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
@@ -131,9 +141,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
     }),
-  listUsers: (offset = 0, limit = 100, status?: string) => {
+  listUsers: (offset = 0, limit = 100, status?: string, keyword?: string) => {
     const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     if (status) params.set("status", status);
+    if (keyword) params.set("keyword", keyword);
     return request<UserListResponse>(`/users?${params}`);
   },
   getUser: (userId: string) => request<UserProfile>(`/users/${encodeURIComponent(userId)}`),
@@ -200,4 +211,75 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ user_id: userId }),
     }),
+
+  // ---------------------------------------------------------------------------
+  // RBAC / system administration
+  // ---------------------------------------------------------------------------
+  listRoles: () => request<RoleListResponse>("/roles"),
+  createRole: (body: { code: string; name: string; description?: string }) =>
+    request<RoleCatalogItem>("/system/roles", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateRoleStatus: (code: string, status: "active" | "disabled") =>
+    request<{ role_code: string; status: string }>(
+      `/system/roles/${encodeURIComponent(code)}/status`,
+      { method: "PATCH", body: JSON.stringify({ status }) },
+    ),
+  listPermissions: () => request<PermissionListResponse>("/permissions"),
+  getUserRoles: (userId: string) =>
+    request<UserRolesResponse>(`/users/${encodeURIComponent(userId)}/roles`),
+  replaceUserRoles: (userId: string, roleCodes: string[]) =>
+    request<UserRolesResponse>(`/users/${encodeURIComponent(userId)}/roles`, {
+      method: "PUT",
+      body: JSON.stringify({ role_codes: roleCodes }),
+    }),
+  getRolePermissions: (code: string) =>
+    request<RolePermissionsResponse>(
+      `/system/roles/${encodeURIComponent(code)}/permissions`,
+    ),
+  replaceRolePermissions: (code: string, permissionCodes: string[], scopes: Record<string, string[]> = {}) =>
+    request<{ role_code: string; permission_codes: string[] }>(
+      `/system/roles/${encodeURIComponent(code)}/permissions`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ permission_codes: permissionCodes, scopes }),
+      },
+    ),
+  listClassrooms: () => request<ClassroomListResponse>("/classrooms"),
+  createClassroom: (body: { workspace_id: string; name: string }) =>
+    request<ClassroomItem>("/classrooms", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  replaceClassroomMember: (
+    classroomId: string,
+    userId: string,
+    body: { member_role: "student" | "teacher"; status?: "active" | "disabled" },
+  ) =>
+    request<Record<string, unknown>>(
+      `/classrooms/${encodeURIComponent(classroomId)}/members/${encodeURIComponent(userId)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  listClassroomMembers: (classroomId: string) =>
+    request<ClassroomMemberListResponse>(
+      `/classrooms/${encodeURIComponent(classroomId)}/members`,
+    ),
+  updateClassroom: (classroomId: string, body: { name: string }) =>
+    request<ClassroomItem>(`/classrooms/${encodeURIComponent(classroomId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteClassroom: (classroomId: string) =>
+    request<void>(`/classrooms/${encodeURIComponent(classroomId)}`, {
+      method: "DELETE",
+    }),
+  listMenus: () => request<MenuListResponse>("/system/menus"),
+  replaceRoleMenus: (code: string, menuIds: string[]) =>
+    request<{ role_code: string; menu_ids: string[] }>(
+      `/system/roles/${encodeURIComponent(code)}/menus`,
+      { method: "PUT", body: JSON.stringify({ menu_ids: menuIds }) },
+    ),
+  listAuthorizationAudit: (limit = 100) =>
+    request<AuthorizationAuditResponse>(`/audit/authorization?limit=${limit}`),
 };

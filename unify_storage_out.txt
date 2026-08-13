@@ -1,0 +1,22 @@
+﻿BEFORE
+  developer01    assigned_by_null=False
+  guest01        assigned_by_null=False
+  student01      assigned_by_null=False
+  teacher01      assigned_by_null=False
+
+updated 4 nlp_user_roles rows -> assigned_by_user_id=NULL
+
+AFTER
+  developer01    assigned_by_null=True
+  guest01        assigned_by_null=True
+  student01      assigned_by_null=True
+  teacher01      assigned_by_null=True
+
+PARITY CHECK (nova vs test accounts)
+  developer01    status=active   auth_ver=2 hash_len=97 ws=user-developer01       member=owner   m_status=active   role_by_null=True
+  guest01        status=active   auth_ver=2 hash_len=97 ws=user-guest01           member=owner   m_status=active   role_by_null=True
+  nova           status=active   auth_ver=2 hash_len=97 ws=user-nova              member=owner   m_status=active   role_by_null=True
+  student01      status=active   auth_ver=2 hash_len=97 ws=user-student01         member=owner   m_status=active   role_by_null=True
+  teacher01      status=active   auth_ver=2 hash_len=97 ws=user-teacher01         member=owner   m_status=active   role_by_null=True
+
+DONE -- test accounts now byte-for-byte match nova's storage shape.

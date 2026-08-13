@@ -27,7 +27,10 @@ class Permission(StrEnum):
     LEARNING_PROGRESS_READ_CLASSROOM = "learning:progress:read_classroom"
     LEARNING_FEEDBACK_CREATE = "learning:feedback:create"
     CLASSROOM_CREATE = "classroom:classroom:create"
+    CLASSROOM_UPDATE = "classroom:classroom:update"
+    CLASSROOM_DELETE = "classroom:classroom:delete"
     CLASSROOM_MEMBER_MANAGE = "classroom:member:manage"
+    CLASSROOM_MEMBER_READ = "classroom:member:read"
     AGENT_SESSION_CREATE = "agent:session:create"
     AGENT_SESSION_READ = "agent:session:read"
     AGENT_SESSION_UPDATE = "agent:session:update"
@@ -109,7 +112,10 @@ _TEACHER: Final[frozenset[Permission]] = _STUDENT | {
     Permission.LEARNING_PROGRESS_READ_CLASSROOM,
     Permission.LEARNING_FEEDBACK_CREATE,
     Permission.CLASSROOM_CREATE,
+    Permission.CLASSROOM_UPDATE,
+    Permission.CLASSROOM_DELETE,
     Permission.CLASSROOM_MEMBER_MANAGE,
+    Permission.CLASSROOM_MEMBER_READ,
 }
 _DEVELOPER: Final[frozenset[Permission]] = _TEACHER | {
     Permission.SYSTEM_MODEL_PROFILE_MANAGE,

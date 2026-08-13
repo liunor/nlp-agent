@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, UniqueConstraint, VARBINARY, func
 from sqlalchemy.dialects.mysql import BIGINT, DATETIME
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -685,7 +685,115 @@ class ExecutionLeaseModel(Base):
         primary_key=True,
     )
     worker_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    lease_token: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    lease_token: Mapped[bytes] = mapped_column(VARBINARY(32), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
     heartbeat_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+
+
+class ClassModel(TimestampedModel, Base):
+    """Independent class (班级) entity with student/teacher rosters and join requests.
+
+    Distinct from nlp_classrooms (which is workspace-scoped). Mirrors the
+    user-management v2 'class join request' feature while following the project's
+    UUID / TimestampedModel conventions.
+    """
+
+    __tablename__ = "nlp_classes"
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, comment="班级名称")
+    grade: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="届别")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active", comment="active / archived"
+    )
+    created_by: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False, comment="创建者"
+    )
+
+    creator: Mapped["UserModel"] = relationship("UserModel", foreign_keys=[created_by])
+    enrollments: Mapped[list["ClassEnrollmentModel"]] = relationship(
+        "ClassEnrollmentModel", back_populates="cls", lazy="selectin", cascade="all, delete-orphan"
+    )
+    teachers: Mapped[list["ClassTeacherModel"]] = relationship(
+        "ClassTeacherModel", back_populates="cls", lazy="selectin", cascade="all, delete-orphan"
+    )
+
+
+class ClassEnrollmentModel(TimestampedModel, Base):
+    __tablename__ = "nlp_class_enrollments"
+    __table_args__ = (
+        Index("ix_nlp_class_enrollments_class_user", "class_id", "user_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    class_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_classes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    student_number: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="学号")
+    major: Mapped[str] = mapped_column(String(64), nullable=True, default="", comment="专业")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active",
+        comment="active / transferred / graduated",
+    )
+
+    cls: Mapped["ClassModel"] = relationship("ClassModel", back_populates="enrollments")
+    student: Mapped["UserModel"] = relationship("UserModel", foreign_keys=[user_id])
+
+
+class ClassTeacherModel(TimestampedModel, Base):
+    __tablename__ = "nlp_class_teachers"
+    __table_args__ = (
+        Index("ix_nlp_class_teachers_unique", "class_id", "teacher_id", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    class_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_classes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    teacher_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    subject: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="科目")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="active", comment="active / inactive"
+    )
+
+    cls: Mapped["ClassModel"] = relationship("ClassModel", back_populates="teachers")
+    teacher: Mapped["UserModel"] = relationship("UserModel", foreign_keys=[teacher_id])
+
+
+class ClassJoinRequestModel(Base):
+    __tablename__ = "nlp_class_join_requests"
+    __table_args__ = (
+        Index("ix_nlp_class_join_requests_class_status", "class_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    class_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_classes.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False, comment="申请人"
+    )
+    student_number: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, comment="学生选填学号"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending",
+        comment="pending / approved / rejected",
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6)
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="SET NULL")
+    )
+
+    cls: Mapped["ClassModel"] = relationship("ClassModel", foreign_keys=[class_id])
+    user_: Mapped["UserModel"] = relationship("UserModel", foreign_keys=[user_id])
+    reviewer: Mapped["UserModel | None"] = relationship("UserModel", foreign_keys=[reviewed_by])

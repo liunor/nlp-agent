@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+date: Thu, 13 Aug 2026 13:48:14 GMT
+server: uvicorn
+content-length: 1010
+content-type: application/json
+set-cookie: nlp_session=0zo_uX3zJMEFMdAFesBuwZW19suWwhvTP37rZFxS5FA; HttpOnly; Max-Age=1800; Path=/; SameSite=strict
+x-request-id: e9be22f4fe12998dc393baa6445f5cef
+x-content-type-options: nosniff
+referrer-policy: same-origin
+cache-control: no-store
+
+{"user_id":"ce1a14a6-0cb4-4b60-9371-addd38f44a96","workspace_ids":["d8c07717-3a51-4441-9c19-5a821a08a701"],"classroom_ids":[],"roles":["admin","developer"],"permissions":["agent:checkpoint:restore","agent:event:replay","agent:session:create","agent:session:delete","agent:session:read","agent:session:update","agent:turn:cancel","agent:turn:submit","classroom:classroom:create","classroom:member:manage","identity:profile:read_self","identity:profile:update_self","learning:content:manage","learning:content:read_public","learning:content:read_workspace","learning:exercise:submit","learning:feedback:create","learning:progress:read_classroom","learning:progress:read_self","system:audit:read","system:model_profile:manage","system:permission:read","system:prompt_template:manage","system:role:manage","system:runtime:inspect","system:runtime:monitor","system:tool_config:manage","system:user:manage"],"csrf_token":"XoAMXPWh2zmCDVXA_h3nmwUaLm1dWNSztPMjZvBq2QI","expires_at":1786630694,"ephemeral_secret":false}

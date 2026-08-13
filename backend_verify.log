@@ -1,0 +1,97 @@
+NLP_AGENT_WEB_ALLOWED_ORIGINS = http://localhost:5173,http://127.0.0.1:5173
+INFO:     Started server process [19688]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+INFO:     127.0.0.1:56892 - "POST /api/v1/auth/login/db HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56900 - "POST /api/v1/classrooms HTTP/1.1" 201 Created
+INFO:     127.0.0.1:56902 - "PUT /api/v1/classrooms/b612daea-edf5-498f-8a76-2472217faba2/members/3ae7b0b3-3324-48aa-9853-565c2e2b96d0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56903 - "PUT /api/v1/classrooms/b612daea-edf5-498f-8a76-2472217faba2/members/784f7bad-8b5d-4d4b-8360-f806facf3358 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56904 - "GET /api/v1/classrooms/b612daea-edf5-498f-8a76-2472217faba2/members HTTP/1.1" 403 Forbidden
+INFO:     127.0.0.1:56906 - "GET /api/v1/users?keyword=teacher HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56124 - "POST /api/v1/auth/login/db HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56124 - "POST /api/v1/classrooms HTTP/1.1" 201 Created
+INFO:     127.0.0.1:56124 - "PUT /api/v1/classrooms/ed3def72-92e8-43fd-8d2c-aa36f3286c6f/members/3ae7b0b3-3324-48aa-9853-565c2e2b96d0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56124 - "PUT /api/v1/classrooms/ed3def72-92e8-43fd-8d2c-aa36f3286c6f/members/784f7bad-8b5d-4d4b-8360-f806facf3358 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56124 - "GET /api/v1/classrooms/ed3def72-92e8-43fd-8d2c-aa36f3286c6f/members HTTP/1.1" 403 Forbidden
+INFO:     127.0.0.1:56124 - "GET /api/v1/permissions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53898 - "POST /api/v1/auth/login/db HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53898 - "POST /api/v1/classrooms HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\uvicorn\protocols\http\httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\middleware\base.py", line 193, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\server\web\app.py", line 249, in request_context
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\middleware\base.py", line 168, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\middleware\base.py", line 144, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\middleware\trustedhost.py", line 51, in __call__
+    await self.app(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\routing.py", line 1267, in handle
+    await super().handle(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\.venv\Lib\site-packages\fastapi\routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\server\web\app.py", line 667, in create_classroom
+    row = await rbac_service.create_classroom(session, workspace_id=body.workspace_id, name=body.name, actor_user_id=principal.user_id)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\智能体开发\nlp-agent-main\nlp-agent-main\server\rbac\service.py", line 179, in create_classroom
+    raise ValueError("workspace already has a classroom")
+ValueError: workspace already has a classroom
+INFO:     127.0.0.1:60967 - "POST /api/v1/auth/login/db HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60967 - "POST /api/v1/classrooms HTTP/1.1" 201 Created
+INFO:     127.0.0.1:60967 - "PUT /api/v1/classrooms/f794b135-363a-41e7-ba66-c179d1ef308a/members/3ae7b0b3-3324-48aa-9853-565c2e2b96d0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60967 - "PUT /api/v1/classrooms/f794b135-363a-41e7-ba66-c179d1ef308a/members/784f7bad-8b5d-4d4b-8360-f806facf3358 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60967 - "GET /api/v1/classrooms/f794b135-363a-41e7-ba66-c179d1ef308a/members HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60967 - "GET /api/v1/permissions HTTP/1.1" 200 OK

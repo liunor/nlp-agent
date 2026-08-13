@@ -188,6 +188,47 @@ class SameOriginSessionAuth:
             )
         )
 
+    def check_login_rate_limit(self, username: str, client_key: str) -> None:
+        """Raise ``AuthenticationError`` if either per-username or per-client
+        login attempt budget is exhausted.  Callers performing *external*
+        credential verification (e.g. DB password check) must invoke this
+        BEFORE the credential check so failed attempts are accounted for
+        identically to ``login()``."""
+        username_key = username.casefold()
+        if not (
+            self._username_rate_limiter.allowed(username_key)
+            and self._client_rate_limiter.allowed(client_key)
+        ):
+            raise AuthenticationError("too many login attempts")
+
+    def record_login_failure(self, username: str, client_key: str) -> None:
+        """Record a failed login attempt against both rate-limit budgets."""
+        self._username_rate_limiter.record_failure(username.casefold())
+        self._client_rate_limiter.record_failure(client_key)
+
+    def clear_login_failures(self, username: str, client_key: str) -> None:
+        """Clear rate-limit bookkeeping after a successful login."""
+        self._username_rate_limiter.clear(username.casefold())
+        self._client_rate_limiter.clear(client_key)
+
+    def login_external(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        client_key: str = "unknown",
+        previous_token: str | None = None,
+    ) -> tuple[str, SessionClaims]:
+        """Issue a session after an external credential check has succeeded.
+
+        The session token, cookie, claims structure, and HMAC signature are
+        identical to what ``login()`` produces — only the credential source
+        differs (caller already verified password, OAuth assertion, etc.).
+        The rate-limit budgets are cleared and any previous token revoked.
+        """
+        self.clear_login_failures(principal.user_id, client_key)
+        self.revoke(previous_token)
+        return self.issue(principal)
+
     def issue_guest(self, *, previous_token: str | None = None) -> tuple[str, SessionClaims]:
         """Create a limited session for public, read-only guest capabilities."""
         self.revoke(previous_token)

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "@/platform/http/api";
-import type { UserProfile, UserListResponse } from "@/shared/types";
+import type { UserProfile, UserListResponse, RoleCatalogItem } from "@/shared/types";
 
 interface CreateUserDialogProps {
   open: boolean;
@@ -156,6 +156,42 @@ export function UserListPage() {
     }
   };
 
+  const [roleDialogUser, setRoleDialogUser] = useState<UserProfile | null>(null);
+  const [allRoles, setAllRoles] = useState<RoleCatalogItem[]>([]);
+  const [selectedRoleCodes, setSelectedRoleCodes] = useState<Set<string>>(new Set());
+  const [roleSaving, setRoleSaving] = useState(false);
+  const [roleError, setRoleError] = useState("");
+
+  useEffect(() => {
+    void api.listRoles().then((r) => setAllRoles(r.items)).catch(() => undefined);
+  }, []);
+
+  const openRoleDialog = async (user: UserProfile) => {
+    setRoleDialogUser(user);
+    setRoleError("");
+    try {
+      const resp = await api.getUserRoles(user.id);
+      setSelectedRoleCodes(new Set(resp.role_codes));
+    } catch (e) {
+      setRoleError(e instanceof Error ? e.message : "加载角色失败");
+    }
+  };
+
+  const saveRoles = async () => {
+    if (!roleDialogUser) return;
+    setRoleSaving(true);
+    setRoleError("");
+    try {
+      await api.replaceUserRoles(roleDialogUser.id, Array.from(selectedRoleCodes));
+      setRoleDialogUser(null);
+      await load();
+    } catch (e) {
+      setRoleError(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setRoleSaving(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -232,6 +268,13 @@ export function UserListPage() {
                       >
                         {user.status === "active" ? "禁用" : "启用"}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void openRoleDialog(user)}
+                        className="rounded px-3 py-1 text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100"
+                      >
+                        分配角色
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -276,6 +319,36 @@ export function UserListPage() {
       )}
 
       <CreateUserDialog open={showCreate} onClose={() => setShowCreate(false)} onCreated={() => void load()} />
+      {roleDialogUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h2 className="mb-1 text-lg font-semibold text-gray-900">分配角色</h2>
+            <p className="mb-4 text-sm text-gray-500">{roleDialogUser.username}</p>
+            {roleError && <div className="mb-3 rounded bg-red-50 p-3 text-sm text-red-700">{roleError}</div>}
+            <div className="max-h-64 space-y-1 overflow-y-auto">
+              {allRoles.map((r) => (
+                <label key={r.code} className="flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-gray-50">
+                  <input
+                    type="checkbox"
+                    checked={selectedRoleCodes.has(r.code)}
+                    onChange={() => setSelectedRoleCodes((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(r.code)) next.delete(r.code);
+                      else next.add(r.code);
+                      return next;
+                    })}
+                  />
+                  <span><strong>{r.name}</strong><small className="block text-xs text-gray-500">{r.code}</small></span>
+                </label>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end gap-3">
+              <button type="button" onClick={() => setRoleDialogUser(null)} className="rounded-md border border-gray-300 px-4 py-2 text-sm">取消</button>
+              <button type="button" disabled={roleSaving} onClick={() => void saveRoles()} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">{roleSaving ? "保存中..." : "保存"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

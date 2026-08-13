@@ -74,7 +74,7 @@ def upgrade() -> None:
             primary_key=True,
         ),
         sa.Column("worker_id", sa.String(length=128), nullable=False),
-        sa.Column("lease_token", sa.LargeBinary(32), nullable=False),
+        sa.Column("lease_token", sa.VARBINARY(32), nullable=False),
         sa.Column("expires_at", mysql.DATETIME(fsp=6), nullable=False),
         sa.Column("heartbeat_at", mysql.DATETIME(fsp=6), nullable=False),
         sa.Column("attempt", sa.Integer, nullable=False, server_default="1"),

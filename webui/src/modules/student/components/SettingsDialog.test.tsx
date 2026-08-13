@@ -26,6 +26,7 @@ describe("SettingsDialog", () => {
       onLearningContextChange={() => {}}
       onOpenDeveloper={() => {}}
       onOpenTeacher={() => {}}
+      onOpenAdmin={() => {}}
     />);
     fireEvent.click(screen.getByRole("button", { name: "意见反馈" }));
     fireEvent.change(screen.getByPlaceholderText(/我希望/), { target: { value: "请增加错题计划" } });
@@ -45,15 +46,21 @@ describe("SettingsDialog", () => {
       onLearningContextChange: () => {},
       onOpenDeveloper: () => {},
       onOpenTeacher: () => {},
+      onOpenAdmin: () => {},
     };
     const { rerender } = render(<SettingsDialog {...props} roles={["student"]} />);
 
     expect(screen.queryByRole("button", { name: /进入教师模式/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /开发者工作台/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /管理员模式/ })).not.toBeInTheDocument();
 
     rerender(<SettingsDialog {...props} roles={["teacher", "developer"]} />);
     expect(screen.getByRole("button", { name: /进入教师模式/ })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "数据与隐私" }));
     expect(screen.getByRole("button", { name: /开发者工作台/ })).toBeVisible();
+
+    rerender(<SettingsDialog {...props} roles={["admin"]} />);
+    fireEvent.click(screen.getByRole("button", { name: "数据与隐私" }));
+    expect(screen.getByRole("button", { name: /管理员模式/ })).toBeVisible();
   });
 });

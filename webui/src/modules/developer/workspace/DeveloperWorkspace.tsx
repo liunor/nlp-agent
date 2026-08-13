@@ -104,7 +104,13 @@ function RuntimeSettings({ snapshot }: { snapshot: DeveloperSnapshot }) {
 }
 
 export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: DeveloperPage; onNavigate?: (page: DeveloperPage) => void }) {
-  const [page, setPage] = useState<DeveloperPage>(routedPage ?? currentPage);
+  // Internal state is only used when the component is mounted WITHOUT a
+  // routedPage prop (e.g. direct URL-based usage).  When used inside the
+  // React-Router-driven routes the parent always supplies `page`, and we
+  // must follow that prop on every render — `useState` initialiser only
+  // runs once and does NOT re-sync when the prop changes.
+  const [fallbackPage, setFallbackPage] = useState<DeveloperPage>(currentPage);
+  const page = routedPage ?? fallbackPage;
   const [snapshot, setSnapshot] = useState<DeveloperSnapshot | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -115,7 +121,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     finally { setLoading(false); }
   }, []);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
-  const navigate = (next: DeveloperPage) => { if (onNavigate) onNavigate(next); else { history.pushState({}, "", next === "overview" ? "/developer" : `/developer/${next}`); setPage(next); } };
+  const navigate = (next: DeveloperPage) => { if (onNavigate) onNavigate(next); else { history.pushState({}, "", next === "overview" ? "/developer" : `/developer/${next}`); setFallbackPage(next); } };
   const content = useMemo(() => {
     if (!snapshot) return null;
     if (page === "agents") return <Agents snapshot={snapshot} refresh={load} />;

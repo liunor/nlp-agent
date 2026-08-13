@@ -135,6 +135,31 @@ class MySQLGatewayRepository:
             rows = c.execute(text("SELECT * FROM nlp_turns WHERE conversation_id=:s ORDER BY created_at DESC LIMIT :limit"), {"s": session_id, "limit": min(max(1, limit), 500)}).mappings().all()
         return [self._record(dict(r)) for r in rows]
 
+    def list_questions(self, *, workspace_id: str, since: str, limit: int = 500) -> list[dict[str, Any]]:
+        """Return raw turn rows for a workspace since ``since`` for teacher analytics.
+
+        Mirrors the question-shape the analytics layer expects (turn_id, session_id,
+        user_id, workspace_id, input_text, status, created_at, error_kind). MySQL stores
+        ``created_at`` as a naive UTC DATETIME, so any timezone offset on ``since`` is
+        normalised away before the comparison.
+        """
+        since_value = since
+        try:
+            since_value = datetime.fromisoformat(since).astimezone(timezone.utc).replace(tzinfo=None).isoformat()
+        except (ValueError, TypeError):
+            pass
+        with self._engine.connect() as c:
+            rows = c.execute(
+                text(
+                    "SELECT id AS turn_id, conversation_id AS session_id, workspace_id, user_id, "
+                    "status, input_text, error_kind, created_at "
+                    "FROM nlp_turns WHERE workspace_id=:w AND created_at >= :since "
+                    "ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"w": workspace_id, "since": since_value, "limit": min(max(1, limit), 5000)},
+            ).mappings().all()
+        return [dict(r) for r in rows]
+
     def latest_learning_state(self, session_id: str):
         turns = [t for t in self.list_turns(session_id) if not (t.status == TurnStatus.FAILED and t.error_kind == "turn_conflict")]
         latest = turns[0] if turns else None

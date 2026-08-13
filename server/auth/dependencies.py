@@ -84,7 +84,7 @@ async def get_current_principal(
         return claims.principal()
 
     async with session_factory() as session:
-        return await rbac_service.principal_for_username(session, claims.user_id)
+        return await rbac_service.principal_for_user_id(session, claims.user_id)
 
 
 # ---------------------------------------------------------------------------

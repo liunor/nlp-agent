@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.identity import AuthenticatedPrincipal
+from gateway.contracts import ResourceNotFoundError
 from server.infrastructure.mysql.models import (
     RoleModel,
     PermissionModel,
@@ -179,6 +180,12 @@ class RbacService:
             raise ValueError("workspace already has a classroom")
         classroom = ClassroomModel(id=str(uuid.uuid4()), workspace_id=workspace_id, name=name, status="active")
         session.add(classroom)
+        # Flush the parent before inserting the member. The member row
+        # references classroom.id by value (not by object), so SQLAlchemy
+        # cannot infer the dependency and would otherwise risk inserting the
+        # child before the parent in the same flush, tripping the
+        # classroom_id foreign key with a 1452 IntegrityError.
+        await session.flush()
         # The creator is the first classroom teacher; this is the explicit
         # classroom-scope root rather than an implicit workspace shortcut.
         session.add(ClassroomMemberModel(classroom_id=classroom.id, user_id=actor_user_id, member_role="teacher", status="active"))
@@ -188,8 +195,39 @@ class RbacService:
     async def classroom(self, session: AsyncSession, classroom_id: str) -> ClassroomModel:
         row = await session.scalar(select(ClassroomModel).where(ClassroomModel.id == classroom_id, ClassroomModel.status == "active"))
         if row is None:
-            raise KeyError(classroom_id)
+            raise ResourceNotFoundError(classroom_id)
         return row
+
+    async def update_classroom(self, session: AsyncSession, *, classroom_id: str, name: str, actor_user_id: str) -> ClassroomModel:
+        classroom = await session.scalar(
+            select(ClassroomModel).where(ClassroomModel.id == classroom_id, ClassroomModel.status == "active").with_for_update()
+        )
+        if classroom is None:
+            raise KeyError(classroom_id)
+        classroom.name = name
+        await self.audit(
+            session, actor_user_id=actor_user_id, target_user_id=None, decision="allow",
+            reason_code="classroom_updated", permission_code="classroom:classroom:update",
+            resource_type="classroom", resource_id=classroom.id, detail={"name": name},
+        )
+        return classroom
+
+    async def delete_classroom(self, session: AsyncSession, *, classroom_id: str, actor_user_id: str) -> None:
+        classroom = await session.scalar(
+            select(ClassroomModel).where(ClassroomModel.id == classroom_id, ClassroomModel.status == "active").with_for_update()
+        )
+        if classroom is None:
+            raise KeyError(classroom_id)
+        # Members are removed by the DB-level ON DELETE CASCADE on
+        # nlp_classroom_members.classroom_id; the principal's classroom_ids is
+        # recomputed from membership on every request, so no version bump is
+        # required. Audit first so the evidence survives the delete.
+        await self.audit(
+            session, actor_user_id=actor_user_id, target_user_id=None, decision="allow",
+            reason_code="classroom_deleted", permission_code="classroom:classroom:delete",
+            resource_type="classroom", resource_id=classroom.id, detail={"name": classroom.name},
+        )
+        await session.delete(classroom)
 
     async def classrooms_for_user(self, session: AsyncSession, user_id: str) -> list[ClassroomModel]:
         return list((await session.scalars(select(ClassroomModel).join(ClassroomMemberModel, ClassroomMemberModel.classroom_id == ClassroomModel.id).where(ClassroomMemberModel.user_id == user_id, ClassroomMemberModel.status == "active", ClassroomModel.status == "active").order_by(ClassroomModel.name))).all())
@@ -211,6 +249,32 @@ class RbacService:
         user.authorization_version += 1
         session.add(OutboxMessageModel(id=str(uuid.uuid4()), topic="authorization.changed", payload_json={"user_id": user_id, "reason": "classroom_membership_changed"}))
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=user_id, decision="allow", reason_code="classroom_member_replaced", permission_code="classroom:member:manage", resource_type="classroom", resource_id=classroom_id, detail={"member_role": member_role, "status": status})
+
+    async def classroom_members(self, session: AsyncSession, classroom_id: str) -> list[dict]:
+        rows = await session.execute(
+            select(
+                ClassroomMemberModel.classroom_id,
+                ClassroomMemberModel.user_id,
+                ClassroomMemberModel.member_role,
+                ClassroomMemberModel.status,
+                UserModel.username,
+                UserModel.display_name,
+            )
+            .join(UserModel, UserModel.id == ClassroomMemberModel.user_id)
+            .where(ClassroomMemberModel.classroom_id == classroom_id)
+            .order_by(ClassroomMemberModel.member_role, UserModel.display_name)
+        )
+        return [
+            {
+                "classroom_id": r.classroom_id,
+                "user_id": r.user_id,
+                "member_role": r.member_role,
+                "status": r.status,
+                "username": r.username,
+                "display_name": r.display_name,
+            }
+            for r in rows.mappings().all()
+        ]
 
     async def replace_role_menus(self, session: AsyncSession, *, role_code: str, menu_ids: set[str], actor_user_id: str) -> None:
         role = await session.scalar(select(RoleModel).where(RoleModel.code == role_code).with_for_update())

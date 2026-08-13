@@ -54,6 +54,10 @@ class CreateClassroomBody(StrictModel):
     name: str = Field(min_length=1, max_length=128)
 
 
+class UpdateClassroomBody(StrictModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
 class ReplaceClassroomMemberBody(StrictModel):
     member_role: Literal["student", "teacher"]
     status: Literal["active", "disabled"] = "active"
