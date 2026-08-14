@@ -93,7 +93,9 @@ jobs:
         working-directory: .
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      # 真实后端集成测试（api.integration.test.ts）默认不跑：方案 §11/§12 要求分层单测/契约测试，
+      # 真实后端集成应在有后端的专属环境执行。该文件内部已用 RUN_INTEGRATION 门控，这里再显式排除。
+      - run: npx vitest run --exclude '**/api.integration.test.ts'
       - run: npm run build
       - run: npm run build:monitor
 

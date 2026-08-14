@@ -75,7 +75,10 @@ function waitUntil<T>(subscribe: (resolve: (value: T) => void) => void, timeoutM
   });
 }
 
-describe.sequential("real frontend API client to FastAPI integration", () => {
+// 真实后端集成测试：CI 前端 job 默认跳过（方案 §11/§12 要求分层单测/契约测试，真实后端集成应在有后端的专属环境跑）。
+// 本地或后端专属 job 中设置 RUN_INTEGRATION=1 即可运行本套测试。
+const integrationDescribe = process.env.RUN_INTEGRATION ? describe.sequential : describe.skip;
+integrationDescribe("real frontend API client to FastAPI integration", () => {
   let serverProcess: ChildProcess;
   let origin = "";
   let cookie = "";

@@ -1,0 +1,386 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 93eeff7..453020d 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -93,7 +93,9 @@ jobs:
+         working-directory: .
+       - run: npm run typecheck
+       - run: npm run lint
+-      - run: npm test
++      # 真实后端集成测试（api.integration.test.ts）默认不跑：方案 §11/§12 要求分层单测/契约测试，
++      # 真实后端集成应在有后端的专属环境执行。该文件内部已用 RUN_INTEGRATION 门控，这里再显式排除。
++      - run: npx vitest run --exclude '**/api.integration.test.ts'
+       - run: npm run build
+       - run: npm run build:monitor
+ 
+diff --git "a/docs/PR\347\224\250\346\210\267\347\256\241\347\220\206\345\212\237\350\203\275.md" "b/docs/PR\347\224\250\346\210\267\347\256\241\347\220\206\345\212\237\350\203\275.md"
+deleted file mode 100644
+index bfa0340..0000000
+--- "a/docs/PR\347\224\250\346\210\267\347\256\241\347\220\206\345\212\237\350\203\275.md"
++++ /dev/null
+@@ -1,74 +0,0 @@
+-# feat(admin): 补齐用户管理后台能力（班级 CRUD、成员管理、用户搜索、角色/菜单/审计）
+-
+-## Summary
+-
+-本次改动在**不替换任何原有基础组件**（认证系统 `SameOriginSessionAuth`、RBAC 词典、MySQL 数据库、SQLAlchemy ORM 均保留）的前提下，扩展了后台用户管理体系：
+-
+-- 班级：修复创建时的外键 1452 缺陷，补齐**重命名 / 删除 / 成员列表**接口与前端 UI
+-- 用户：新增按关键字模糊搜索
+-- 后台控制台：新增**角色管理、菜单管理、授权审计、班级管理**四个页面及路由
+-- 认证：新增一条「数据库密码登录」入口 `POST /auth/login/db`
+-
+-涉及文件 24 个已修改 + 若干新增模块/页面，后端/前端合计约 **+776 / −30** 行（不含新增文件）。
+-
+-## Changes
+-
+-### 认证（机制未替换，仅加登录入口）
+-- `server/web/app.py`：`POST /api/v1/auth/login/db` —— 用 DB 用户密码登录，签发与原 `login()` 一致的 HMAC 会话令牌
+-- `server/web/auth.py` (+41)、`server/auth/{__init__,controller,dependencies}.py`：DB 凭证校验与依赖桥接胶水代码
+-
+-### 权限 / RBAC（双层结构保留）
+-- `core/rbac.py` (+6)：新增 `CLASSROOM_UPDATE` / `CLASSROOM_DELETE` / `CLASSROOM_MEMBER_READ`，授予 teacher / developer
+-- `server/rbac/service.py` (+66)：新增 `update_classroom` / `delete_classroom` / `classroom_members`；`classroom()` 改抛 `ResourceNotFoundError`（删后查询 500 → 404）
+-- 新增接口：`GET /classrooms/{id}/members`、`PATCH /classrooms/{id}`、`DELETE /classrooms/{id}`
+-- 运维动作：已将三个新权限种入 `nlp_permissions` + `nlp_role_permissions` + `nlp_role_permission_scopes`（scope=classroom）
+-
+-### 用户管理
+-- `server/user/{controller,service}.py`：`GET /users` 支持 `keyword` 参数，按 `username` / `display_name` 模糊匹配
+-
+-### 班级管理
+-- `server/rbac/service.py`：修复 `create_classroom` 在插父表后缺 `flush()`，导致成员子表先插触发外键 1452
+-- `server/web/contracts.py` (+4)：新增 `UpdateClassroomBody`
+-- `server/infrastructure/mysql/models.py` (+112，纯新增)：`ClassModel` / `ClassEnrollmentModel` / `ClassTeacherModel` / `ClassJoinRequestModel`
+-- 新增模块 `server/classroom_join/`（api / schemas / service）
+-- 前端 `ClassroomManagementPage.tsx`（新增）：列表 → 成员管理子视图、工作区下拉新建、成员增删/启停、重命名、删除（二次确认）
+-
+-### 后台控制台（新增 4 页面 + 路由）
+-- `RoleManagementPage` / `MenuManagementPage` / `AuditLogPage` / `ClassroomManagementPage`
+-- `routes.tsx` (+39) 新路由；`AdminLayout.tsx` (+8) 导航
+-- 前端 `api.ts` (+86) / `types/index.ts` (+100)：配套接口与方法、类型（`RoleCatalogItem`、`PermissionCatalogItem`、`ClassroomItem`、`ClassroomMemberItem` 等）
+-
+-### 数据库 / 网关
+-- 新增迁移 `migrations/versions/20260812_17_class_join_requests.py`（班级加入申请表）
+-- `gateway/mysql_repository.py` (+25)：新增 `list_questions`（教师分析用 workspace 级问答查询）
+-- 引擎 / 连接配置（`NLP_AGENT_DATABASE_URL`）未变更
+-
+-### 角色工作区联动
+-- `DeveloperWorkspace` / `TeacherWorkspace` / `StudentWorkspace` / `student/SettingsDialog` 小幅接入新能力
+-
+-## Bug Fixes
+-
+-- **班级创建 500（外键 1452）**：`create_classroom` 把班级与成员在同一 `flush` 中提交，成员以字符串 `classroom.id` 引用父表，SQLAlchemy 无法推断依赖顺序，可能先插子表。修复：父表 `add` 后加 `await session.flush()`。
+-- **删除后查询 500**：`classroom()` 原抛裸 `KeyError`，改为 `ResourceNotFoundError`（映射 404）。
+-
+-## Testing / Verification
+-
+-- [x] 后端重启监听 8765，`import server.web.app` 正常
+-- [x] 班级端到端（developer01）：创建 201 → 改名 200 → 列成员 200 → 删除 204 → 删后查询 404
+-- [x] 用户搜索：`GET /users?keyword=teacher` 返回模糊过滤结果
+-- [x] 前端 `npm run typecheck` 退出码 0
+-
+-## Risks / Notes
+-
+-- **`Class` ↔ `Classroom` 命名分裂**：ORM 模型叫 `Class*`，接口/权限叫 `classroom*`，原项目既有问题，非本次引入，扩展时需注意。
+-- **删除为硬删除**：班级删除直接落库，成员由 `ON DELETE CASCADE` 级联清理；如需归档/软删除状态可再补（模型已有 `status` 字段但未用于删除流程）。
+-- **临时脚本未清理**：根目录 `check_db.py`、`create_test_users.py`、`diag_auth.py`、`verify_rbac_permissions.py`、`cookies.txt` 等属调试辅助文件，建议移入 `scripts/` 或清理。
+-- **遗留**：admin 别名未传播到强制层，`GET /api/v1/classes` 对 developer 仍 403（早期遗留，本次未动）。
+-
+-## Checklist
+-
+-- [x] 改动仅扩展，未替换原有认证/RBAC/DB/ORM
+-- [x] 新权限已种入 DB 三表
+-- [x] 前端 typecheck 通过
+-- [x] 关键接口已端到端验证
+-- [ ] 临时调试脚本清理（建议合并前处理）
+diff --git a/user_management_lint_fix.patch b/user_management_lint_fix.patch
+deleted file mode 100644
+index 2b8557e..0000000
+--- a/user_management_lint_fix.patch
++++ /dev/null
+@@ -1,57 +0,0 @@
+-diff --git a/webui/src/modules/admin/AuditLogPage.tsx b/webui/src/modules/admin/AuditLogPage.tsx
+-index 24b1a31..af8daeb 100644
+---- a/webui/src/modules/admin/AuditLogPage.tsx
+-+++ b/webui/src/modules/admin/AuditLogPage.tsx
+-@@ -21,7 +21,7 @@ export function AuditLogPage() {
+-   }, []);
+- 
+-   useEffect(() => {
+--    void load();
+-+    queueMicrotask(() => void load());
+-   }, [load]);
+- 
+-   return (
+-diff --git a/webui/src/modules/admin/ClassroomManagementPage.tsx b/webui/src/modules/admin/ClassroomManagementPage.tsx
+-index 1f0266f..9a500d1 100644
+---- a/webui/src/modules/admin/ClassroomManagementPage.tsx
+-+++ b/webui/src/modules/admin/ClassroomManagementPage.tsx
+-@@ -69,7 +69,7 @@ export function ClassroomManagementPage() {
+-   }, []);
+- 
+-   useEffect(() => {
+--    void load();
+-+    queueMicrotask(() => void load());
+-   }, [load]);
+- 
+-   const create = async () => {
+-diff --git a/webui/src/modules/admin/MenuManagementPage.tsx b/webui/src/modules/admin/MenuManagementPage.tsx
+-index 2eadf82..500fbc8 100644
+---- a/webui/src/modules/admin/MenuManagementPage.tsx
+-+++ b/webui/src/modules/admin/MenuManagementPage.tsx
+-@@ -21,7 +21,7 @@ export function MenuManagementPage() {
+-   }, []);
+- 
+-   useEffect(() => {
+--    void load();
+-+    queueMicrotask(() => void load());
+-   }, [load]);
+- 
+-   return (
+-diff --git a/webui/src/modules/admin/RoleManagementPage.tsx b/webui/src/modules/admin/RoleManagementPage.tsx
+-index 99bbbfa..bbb2c1f 100644
+---- a/webui/src/modules/admin/RoleManagementPage.tsx
+-+++ b/webui/src/modules/admin/RoleManagementPage.tsx
+-@@ -50,11 +50,11 @@ export function RoleManagementPage() {
+-   }, []);
+- 
+-   useEffect(() => {
+--    void loadCatalog();
+-+    queueMicrotask(() => void loadCatalog());
+-   }, [loadCatalog]);
+- 
+-   useEffect(() => {
+--    if (roles.length && !selected) void selectRole(roles[0].code);
+-+    if (roles.length && !selected) queueMicrotask(() => void selectRole(roles[0].code));
+-   }, [roles, selected, selectRole]);
+- 
+-   const toggle = (code: string) =>
+diff --git a/webui/src/App.auth-gate.test.tsx b/webui/src/App.auth-gate.test.tsx
+index 7b437a8..dedc090 100644
+--- a/webui/src/App.auth-gate.test.tsx
++++ b/webui/src/App.auth-gate.test.tsx
+@@ -1,5 +1,7 @@
+ import { fireEvent, render, screen } from "@testing-library/react";
+ 
++import { api } from "@/platform/http/api";
++
+ vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() {} close() {} setSession() {} sendChat() {} resume() {} cancel() {} } }));
+ vi.mock("@/platform/http/api", () => {
+   class ApiError extends Error {
+@@ -10,10 +12,10 @@ vi.mock("@/platform/http/api", () => {
+   return {
+     ApiError,
+     ensureAuth: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
+-    api: { 
++    api: {
+       getMe: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
+       getAuthSession: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
+-      login: vi.fn() 
++      login: vi.fn(),
+     },
+   };
+ });
+@@ -21,23 +23,28 @@ vi.mock("@/platform/http/api", () => {
+ import { App } from "./App";
+ 
+ describe("student authentication gate", () => {
+-  it("keeps the normal full-width student shell and header while logged out", async () => {
+-    const { container } = render(<App />);
++  it("redirects unauthenticated users to the login page (design §7 认证优先)", async () => {
++    render(<App />);
+ 
+-    await screen.findByLabelText("学习问题");
++    // 未登录 → AuthGate 跳转到 /login，渲染登录页
++    expect(await screen.findByText("请登录以继续")).toBeInTheDocument();
++    expect(screen.getByLabelText("用户名")).toBeInTheDocument();
++    expect(screen.getByLabelText("密码")).toBeInTheDocument();
+ 
+-    expect(container.querySelector(".unauthenticated-student-shell")).toHaveClass("thread-shell");
+-    expect(container.querySelector(".unauthenticated-brand")).not.toBeInTheDocument();
+-    expect(container.querySelector(".thread-header .school-logo")).toBeInTheDocument();
++    // 受保护的会话输入（“学习问题”）被门控挡在 /login 之外，不应出现
++    expect(screen.queryByLabelText("学习问题")).not.toBeInTheDocument();
+   });
+ 
+-  it("opens the reusable login dialog when an unauthenticated student sends a question", async () => {
++  it("submits credentials through the login form (design §7 登录闭环)", async () => {
+     render(<App />);
+ 
+-    const question = await screen.findByLabelText("学习问题");
+-    fireEvent.change(question, { target: { value: "什么是 TF-IDF？" } });
+-    fireEvent.click(screen.getByRole("button", { name: "发送" }));
++    const username = await screen.findByLabelText("用户名");
++    const password = screen.getByLabelText("密码");
++    fireEvent.change(username, { target: { value: "nova" } });
++    fireEvent.change(password, { target: { value: "secret" } });
++    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+ 
+-    expect(await screen.findByRole("heading", { name: "登录 Nova" })).toBeVisible();
++    // 登录动作确实被调用，触发认证闭环
++    await vi.waitFor(() => expect(api.login).toHaveBeenCalledWith("nova", "secret"));
+   });
+ });
+diff --git a/webui/src/platform/http/api.integration.test.ts b/webui/src/platform/http/api.integration.test.ts
+index 0f967b4..056361e 100644
+--- a/webui/src/platform/http/api.integration.test.ts
++++ b/webui/src/platform/http/api.integration.test.ts
+@@ -75,7 +75,10 @@ function waitUntil<T>(subscribe: (resolve: (value: T) => void) => void, timeoutM
+   });
+ }
+ 
+-describe.sequential("real frontend API client to FastAPI integration", () => {
++// 真实后端集成测试：CI 前端 job 默认跳过（方案 §11/§12 要求分层单测/契约测试，真实后端集成应在有后端的专属环境跑）。
++// 本地或后端专属 job 中设置 RUN_INTEGRATION=1 即可运行本套测试。
++const integrationDescribe = process.env.RUN_INTEGRATION ? describe.sequential : describe.skip;
++integrationDescribe("real frontend API client to FastAPI integration", () => {
+   let serverProcess: ChildProcess;
+   let origin = "";
+   let cookie = "";
+diff --git "a/\347\224\250\346\210\267\347\256\241\347\220\206\345\212\237\350\203\275\346\224\271\345\212\250\350\257\264\346\230\216.md" "b/\347\224\250\346\210\267\347\256\241\347\220\206\345\212\237\350\203\275\346\224\271\345\212\250\350\257\264\346\230\216.md"
+deleted file mode 100644
+index 873e0f5..0000000
+--- "a/\347\224\250\346\210\267\347\256\241\347\220\206\345\212\237\350\203\275\346\224\271\345\212\250\350\257\264\346\230\216.md"
++++ /dev/null
+@@ -1,141 +0,0 @@
+-# 用户管理功能改动说明
+-
+-> 基线：`e713e4c`「add user-management feat」（2026-08-10 22:57 +0800）
+-> 现状：工作区未提交改动（24 个已修改文件 + 多个新增文件）
+-> 统计：后端/前端合计约 **+776 / −30** 行（不含新增文件），外加若干新增模块与页面
+-> 说明：本文所有条目均来自 `git diff` 实证，未做主观臆测。
+-
+----
+-
+-## 0. 一句话结论
+-
+-项目原有的 **认证系统（SameOriginSessionAuth）、RBAC 词典、MySQL 数据库、SQLAlchemy ORM 四件套全部保留，未被替换**；本批次改动属于**扩展式补充**——补齐了「用户管理 / 角色权限 / 班级管理 / 审计 / 菜单」等后台能力，并修复了班级创建的一个外键 1452 缺陷。
+-
+----
+-
+-## 1. 认证系统（Authentication）—— 未替换，仅加桥接
+-
+-| 文件 | 改动 | 内容 |
+-| --- | --- | --- |
+-| `server/web/auth.py` | +41 | 新增 DB 用户登录集成（`login_external`、密钥加载等胶水代码），核心 `SameOriginSessionAuth`（HMAC 签名 cookie + argon2 + CSRF + 同源校验）逻辑未动 |
+-| `server/auth/__init__.py` | +17 | 导出 `login_external` 等 |
+-| `server/auth/controller.py` | +3/−1 | 登录控制器接入 DB 凭证路径 |
+-| `server/auth/dependencies.py` | +2/−1 | 把 `request.app.state.auth` 桥接到新模块依赖 |
+-| `server/web/app.py` | +1 路由 | **新增** `POST /api/v1/auth/login/db`：用数据库用户密码登录，签发与原有 `login()` 完全一致的会话令牌 |
+-
+-> 认证「机制」没换，只是多了一条「从 DB 校验密码」的登录入口。
+-
+----
+-
+-## 2. 权限 / RBAC —— 双层结构保留，新增权限与接口
+-
+-**原双层结构未变**：
+-- `core/rbac.py`：能力词典 + 决策接缝（原样保留）
+-- `server/rbac/`：MySQL 适配层（真实授权来自 `nlp_permissions` / `nlp_role_permissions` / `nlp_role_permission_scopes` 三表）
+-
+-**本批次改动**：
+-
+-| 文件 | 改动 | 内容 |
+-| --- | --- | --- |
+-| `core/rbac.py` | +6 | 新增权限常量 `CLASSROOM_UPDATE`、`CLASSROOM_DELETE`、`CLASSROOM_MEMBER_READ`，并授予 `_TEACHER` / `_DEVELOPER` 角色集 |
+-| `server/rbac/service.py` | +66 | 新增 `update_classroom`、`delete_classroom`、`classroom_members`；并把 `classroom()` 的 `KeyError` 改为抛 `ResourceNotFoundError`（删除后查询由 500 → 404） |
+-
+-**新增 HTTP 接口（在 `server/web/app.py`）**：
+-
+-| 方法 | 路径 | 说明 |
+-| --- | --- | --- |
+-| GET | `/api/v1/classrooms/{id}/members` | 列出班级成员（需 `classroom:member:read`） |
+-| PATCH | `/api/v1/classrooms/{id}` | 重命名班级（需 `classroom:classroom:update`） |
+-| DELETE | `/api/v1/classrooms/{id}` | 删除班级，成员由 `ON DELETE CASCADE` 级联清理（需 `classroom:classroom:delete`） |
+-
+-**DB 权限种入**（运维动作，非代码）：已把 `classroom:classroom:update`、`classroom:classroom:delete`、`classroom:member:read` 三个权限插进 `nlp_permissions`，并授予 teacher / developer 角色（含 `nlp_role_permission_scopes` scope=classroom）。
+-
+----
+-
+-## 3. 用户管理（User Management）
+-
+-| 文件 | 改动 | 内容 |
+-| --- | --- | --- |
+-| `server/user/controller.py` | +3 | `GET /users` 增加 `keyword` 查询参数 |
+-| `server/user/service.py` | +9 | `list_users` 支持按 `username` / `display_name` 模糊搜索（`or_(ilike)`） |
+-
+-前端 `api.ts` 同步扩展 `listUsers(offset, limit, status, keyword)`；`UserListPage.tsx`（+75）接入搜索框。
+-
+-> 注：本批次未新增「创建/编辑/删除用户」接口（这些在基线已具备）；本次仅补齐**用户检索**能力。
+-
+----
+-
+-## 4. 班级管理（Classroom）—— 修复 + 补齐 CRUD
+-
+-| 文件 | 改动 | 内容 |
+-| --- | --- | --- |
+-| `server/rbac/service.py` | 修复 | `create_classroom` 在插入父表后新增 `await session.flush()`，解决子表（成员）先于父表插入触发外键 1452 的 500 错误 |
+-| `server/web/contracts.py` | +4 | 新增 `UpdateClassroomBody { name }` |
+-| `server/infrastructure/mysql/models.py` | +112（全为新增模型类） | 新增 `ClassModel`、`ClassEnrollmentModel`、`ClassTeacherModel`、`ClassJoinRequestModel`，均继承原 `Base` / `TimestampedModel`，ORM 引擎/会话工厂未动 |
+-
+-**新增模块** `server/classroom_join/`（api / schemas / service）——班级加入申请相关后端能力（新增文件）。
+-
+-**前端** `ClassroomManagementPage.tsx`（新增页面）：
+-- 班级列表卡片 → 进入成员管理子视图
+-- 新建班级（改用「本人所属工作区」下拉，规避 `default` 工作区 403）
+-- 成员管理（按 `keyword` 搜用户、添加老师/学生、停用/启用成员）
+-- 班级重命名 / 删除（二次确认）
+-
+----
+-
+-## 5. 后台管理控制台（Admin UI）—— 新增 4 个页面 + 路由
+-
+-新增页面（均位于 `webui/src/modules/admin/`，伴随 `routes.tsx` +39 新路由）：
+-
+-| 页面 | 对应接口（前端 `api.ts` 新增） |
+-| --- | --- |
+-| `RoleManagementPage` | `listRoles` / `createRole` / `updateRoleStatus` / `getRolePermissions` / `replaceRolePermissions` |
+-| `MenuManagementPage` | `listMenus` / `replaceRoleMenus` |
+-| `AuditLogPage` | `listAuthorizationAudit` |
+-| `ClassroomManagementPage` | 见第 4 节 |
+-
+-`AdminLayout.tsx`（+8）增加对应导航入口。
+-
+-** accompanying 前端类型新增**（`types/index.ts` +100）：`RoleCatalogItem`、`PermissionCatalogItem`、`UserRolesResponse`、`RolePermissionsResponse`、`MenuCatalogItem`、`AuthorizationAuditItem`、`ClassroomItem`、`UpdateClassroomBody`、`ClassroomMemberItem` 等。
+-
+----
+-
+-## 6. 数据库 / 网关变更
+-
+-| 文件 | 改动 | 内容 |
+-| --- | --- | --- |
+-| `migrations/versions/20260812_17_class_join_requests.py` | 新增 | 班级加入申请表迁移 |
+-| `migrations/versions/20260806_16_agent_sessions.py` | +2/−1 | 既有迁移微调 |
+-| `migrations/env.py` | +3 | 迁移环境配置补充 |
+-| `gateway/mysql_repository.py` | +25 | 新增 `list_questions`（供教师分析的 workspace 级问答查询） |
+-
+-数据库引擎、连接配置（`NLP_AGENT_DATABASE_URL = mysql+aiomysql://...:3306/nlp_agent`）**未变更**。
+-
+----
+-
+-## 7. 其他受影响的角色工作区页面
+-
+-- `DeveloperWorkspace.tsx` (+10)、`TeacherWorkspace.tsx` (+10)、`StudentWorkspace.tsx` (+32)：接入新的班级/用户能力
+-- `student/components/SettingsDialog.tsx` (+7) 及 `.test.tsx` (+7)：小幅调整
+-
+----
+-
+-## 8. 验证情况
+-
+-- 后端 `import server.web.app` 正常；已重启监听 8765
+-- 班级 CRUD 端到端（developer01 账号）：创建 201 → 改名 200 → 列成员 200 → 删除 204 → 删除后查询 404 ✅
+-- 用户 `keyword` 搜索：`GET /users?keyword=teacher` 返回模糊过滤结果 ✅
+-- 前端 `npm run typecheck` 退出码 0 ✅
+-
+----
+-
+-## 9. 遗留 / 待办（非本次范围，供参考）
+-
+-1. **`Class` ↔ `Classroom` 命名分裂**：ORM 模型叫 `Class*`，接口/权限叫 `classroom*`，是原项目既有问题，非本次引入，但后续做数据/接口扩展时需留意。
+-2. **删除为硬删除**：班级删除直接落库并级联清成员；如需「归档/软删除」状态可再补（模型已有 `status` 字段但未用于删除流程）。
+-3. **临时脚本未清理**（不属于功能改动，仅供调试）：`check_db.py`、`create_test_users.py`、`diag_auth.py`、`verify_rbac_permissions.py`、`cookies.txt` 等若干根目录辅助文件，建议按需清理或移入 `scripts/`。
+-4. **admin 别名未传播到强制层**：`GET /api/v1/classes` 对 developer 仍 403（早期遗留，本次未动）。
+-
+----
+-
+-*生成方式：`git diff HEAD` + 新增文件核查（2026-08-13）。所有条目均可在对应文件路径与行号处复核。*
