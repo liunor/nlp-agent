@@ -21,7 +21,7 @@ export function AuditLogPage() {
   }, []);
 
   useEffect(() => {
-    void load();
+    queueMicrotask(() => void load());
   }, [load]);
 
   return (

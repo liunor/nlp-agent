@@ -21,7 +21,7 @@ export function MenuManagementPage() {
   }, []);
 
   useEffect(() => {
-    void load();
+    queueMicrotask(() => void load());
   }, [load]);
 
   return (

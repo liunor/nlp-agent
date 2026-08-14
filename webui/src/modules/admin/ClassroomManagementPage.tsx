@@ -69,7 +69,7 @@ export function ClassroomManagementPage() {
   }, []);
 
   useEffect(() => {
-    void load();
+    queueMicrotask(() => void load());
   }, [load]);
 
   const create = async () => {

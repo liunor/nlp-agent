@@ -50,11 +50,11 @@ export function RoleManagementPage() {
   }, []);
 
   useEffect(() => {
-    void loadCatalog();
+    queueMicrotask(() => void loadCatalog());
   }, [loadCatalog]);
 
   useEffect(() => {
-    if (roles.length && !selected) void selectRole(roles[0].code);
+    if (roles.length && !selected) queueMicrotask(() => void selectRole(roles[0].code));
   }, [roles, selected, selectRole]);
 
   const toggle = (code: string) =>
