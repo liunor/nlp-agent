@@ -1,14 +1,14 @@
 import {
   Activity, AppWindow, Bot, Box, ChevronLeft, Clock3, Code2, Database,
-  ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Mail, MailOpen, PlugZap, RefreshCw,
-  Newspaper, Settings2, ShieldCheck, Sparkles, TerminalSquare, Wrench,
+  ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Newspaper, PlugZap,
+  RefreshCw, Settings2, ShieldCheck, Sparkles, TerminalSquare, Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, ensureAuth } from "@/platform/http/api";
-import type { DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
+import type { DeveloperSnapshot, ReleaseNoteEntry } from "@/shared/types";
 
-export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings";
+export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "settings";
 
 const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "overview", label: "工作台", icon: Gauge },
@@ -19,7 +19,6 @@ const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "skills", label: "Skills", icon: Code2 },
   { page: "release-notes", label: "发布说明", icon: Newspaper },
   { page: "automations", label: "Apps 与自动化", icon: Clock3 },
-  { page: "feedback", label: "意见反馈", icon: Mail },
   { page: "settings", label: "运行时设置", icon: Settings2 },
 ];
 
@@ -101,33 +100,6 @@ function Automations({ snapshot }: { snapshot: DeveloperSnapshot }) {
   return <><Section title="Apps"><div className="developer-empty"><Box /><strong>Apps Registry 未启用</strong><p>{snapshot.features.apps.reason}</p></div></Section><Section title="Automations / Cron"><div className="developer-empty"><Clock3 /><strong>Cron Runtime 未启用</strong><p>{snapshot.features.automations.reason}</p></div></Section></>;
 }
 
-function formatFeedbackDate(value: string) {
-  return new Date(value).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-function Feedback({ threads, refresh }: { threads: FeedbackThreadSummary[]; refresh: () => Promise<void> }) {
-  const [selectedId, setSelectedId] = useState<string | null>(threads[0]?.thread_id ?? null);
-  const [thread, setThread] = useState<FeedbackThread | null>(null);
-  const selected = threads.find((item) => item.thread_id === selectedId) ?? null;
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      if (!selectedId && threads[0]) setSelectedId(threads[0].thread_id);
-      if (selectedId && !threads.some((item) => item.thread_id === selectedId)) setSelectedId(threads[0]?.thread_id ?? null);
-    });
-  }, [selectedId, threads]);
-
-  useEffect(() => {
-    if (!selectedId) { queueMicrotask(() => setThread(null)); return; }
-    void api.getFeedback(selectedId).then((value) => { setThread(value); return api.markFeedbackRead(selectedId); }).then(() => refresh());
-  }, [refresh, selectedId]);
-
-  return <div className="feedback-mailbox">
-    <aside className="feedback-inbox"><header><div><strong>意见反馈</strong><small>{threads.length} 个账号会话</small></div><button type="button" className="icon-button" aria-label="刷新反馈" onClick={() => void refresh()}><RefreshCw size={16} /></button></header><div className="feedback-thread-list">{threads.length === 0 ? <div className="feedback-empty">暂时没有学生反馈</div> : threads.map((item) => <button type="button" key={item.thread_id} className={`feedback-thread-item ${item.thread_id === selectedId ? "active" : ""}`} onClick={() => setSelectedId(item.thread_id)}><span className="feedback-avatar">{item.username.slice(0, 1).toUpperCase()}</span><span className="feedback-thread-copy"><strong>{item.username}</strong><small>{item.latest?.body ?? "暂无内容"}</small></span><span className="feedback-thread-meta">{item.unread_count > 0 && <i aria-label={`${item.unread_count} 条未读`} />}{item.latest && <time>{formatFeedbackDate(item.latest.created_at)}</time>}</span></button>)}</div></aside>
-    <section className="feedback-conversation">{selected && thread ? <><header><div><span className="feedback-eyebrow"><MailOpen size={14} />账号反馈会话</span><h2>{selected.username}</h2><p>{selected.user_id}</p></div><StatusPill ok={selected.unread_count === 0}>{selected.unread_count ? `${selected.unread_count} 条未读` : "已读"}</StatusPill></header><div className="feedback-messages">{thread.messages.map((message) => <article key={message.id} className={`feedback-message ${message.sender_type}`}><div className="feedback-message-meta"><strong>{message.sender_type === "student" ? selected.username : "开发者"}</strong><time>{formatFeedbackDate(message.created_at)}</time></div><p>{message.body}</p></article>)}</div></> : <div className="feedback-no-selection"><Mail size={38} /><strong>选择一个账号</strong><p>学生反馈会按账号归档在这里。</p></div>}</section>
-  </div>;
-}
-
 function RuntimeSettings({ snapshot }: { snapshot: DeveloperSnapshot }) {
   return <><Section title="网络与协议"><JsonBlock value={snapshot.web} /></Section><Section title="Workspace 本地数据权限"><div className="developer-list">{snapshot.workspace.roots.map((root) => <article key={root.name}><Database size={18} /><span><strong>{root.name}</strong><small>{root.path}</small></span><StatusPill ok={root.exists}>{root.exists ? "可用" : "未创建"}</StatusPill></article>)}</div></Section><Section title="敏感配置规则" hint="浏览器只能读取脱敏快照。"><div className="developer-callout"><ShieldCheck /><p>Provider 密钥、MCP headers/env、Cookie secret 和 Authorization 字段不会通过开发者 API 返回。配置写入继续由本地 YAML/.env 管理。</p></div></Section></>;
 }
@@ -187,20 +159,13 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const [snapshot, setSnapshot] = useState<DeveloperSnapshot | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [feedbackThreads, setFeedbackThreads] = useState<FeedbackThreadSummary[]>([]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    try { const auth = await ensureAuth(); if (!auth.roles.includes("developer") && !auth.roles.includes("admin")) throw new Error("当前账户没有开发者权限"); const [nextSnapshot, nextFeedback] = await Promise.all([api.getDeveloperSnapshot(), api.listFeedback()]); setSnapshot(nextSnapshot); setFeedbackThreads(nextFeedback.items); }
+    try { const auth = await ensureAuth(); if (!auth.roles.includes("admin")) throw new Error("当前账户没有开发者权限"); setSnapshot(await api.getDeveloperSnapshot()); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void api.listFeedback().then((result) => setFeedbackThreads(result.items)).catch(() => undefined);
-    }, 10_000);
-    return () => window.clearInterval(timer);
-  }, []);
   const navigate = (next: DeveloperPage) => { if (onNavigate) onNavigate(next); else { history.pushState({}, "", next === "overview" ? "/developer" : `/developer/${next}`); setPage(next); } };
   const content = useMemo(() => {
     if (!snapshot) return null;
@@ -211,9 +176,8 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "skills") return <Skills snapshot={snapshot} refresh={load} />;
     if (page === "release-notes") return <ReleaseNotes />;
     if (page === "automations") return <Automations snapshot={snapshot} />;
-    if (page === "feedback") return <Feedback threads={feedbackThreads} refresh={load} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
     return <Overview snapshot={snapshot} />;
-  }, [feedbackThreads, page, snapshot, load]);
-  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} /><span>{label}</span>{itemPage === "feedback" && feedbackThreads.some((item) => item.unread_count > 0) && <i className="developer-nav-unread" aria-label="有未读反馈" />}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>本地管理员</span></div><button type="button" onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && !snapshot ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : content}</div></main></div>;
+  }, [page, snapshot, load]);
+  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>本地管理员</span></div><button type="button" onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && !snapshot ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : content}</div></main></div>;
 }

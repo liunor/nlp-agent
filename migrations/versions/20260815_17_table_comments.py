@@ -19,16 +19,7 @@ branch_labels = None
 depends_on = None
 
 
-# The feedback tables are created by a sibling revision (20260814_16) that
-# Alembic may execute after this one, so their comments are applied by a later
-# migration once the tables exist.
-_TABLES_CREATED_AFTER = {"nlp_feedback_threads", "nlp_feedback_messages"}
-
-ALL_TABLE_COMMENTS = {
-    table_name: table_comment
-    for table_name, table_comment in {**TABLE_COMMENTS, **SYSTEM_TABLE_COMMENTS}.items()
-    if table_name not in _TABLES_CREATED_AFTER
-}
+ALL_TABLE_COMMENTS = {**TABLE_COMMENTS, **SYSTEM_TABLE_COMMENTS}
 
 
 def _mysql_string_literal(value: str) -> str:

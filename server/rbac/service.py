@@ -34,16 +34,6 @@ class UnknownRoleError(ValueError):
 
 
 class RbacService:
-    @staticmethod
-    def _effective_roles(roles: frozenset[str]) -> frozenset[str]:
-        """Expose the lower-level modes implied by an elevated role."""
-        inherited = set(roles)
-        if "admin" in roles or "developer" in roles:
-            inherited.update({"teacher", "student"})
-        elif "teacher" in roles:
-            inherited.add("student")
-        return frozenset(inherited)
-
     async def create_role(self, session: AsyncSession, *, code: str, name: str, description: str, actor_user_id: str) -> RoleModel:
         if await session.scalar(select(RoleModel.id).where(RoleModel.code == code)):
             raise ValueError("role code already exists")
@@ -68,7 +58,7 @@ class RbacService:
         )
         if user is None:
             raise PermissionError("turn submitter is not active in RBAC")
-        roles = self._effective_roles(await self.roles_for(session, user.id))
+        roles = await self.roles_for(session, user.id)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         permissions = frozenset(
             (

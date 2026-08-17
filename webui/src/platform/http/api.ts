@@ -1,4 +1,4 @@
-import type { AuthSession, DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry, SettingsRuntime, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings } from "@/shared/types";
+import type { AuthSession, DeveloperSnapshot, ReleaseNoteEntry, SettingsRuntime, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
 
@@ -72,10 +72,6 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(settings),
     }),
-  submitFeedback: (body: string) => request<{ thread_id: string }>('/feedback', { method: "POST", body: JSON.stringify({ body }) }),
-  listFeedback: () => request<{ items: FeedbackThreadSummary[] }>('/developer/feedback'),
-  getFeedback: (threadId: string) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`),
-  markFeedbackRead: (threadId: string) => request<{ ok: boolean }>(`/developer/feedback/${encodeURIComponent(threadId)}/read`, { method: "POST" }),
   getDeveloperSnapshot: () => request<DeveloperSnapshot>("/developer/snapshot"),
   updateToolPolicies: (policies: Record<string, unknown>) =>
     request<Record<string, unknown>>("/developer/tools/policies", { method: "PUT", body: JSON.stringify({ policies }) }),

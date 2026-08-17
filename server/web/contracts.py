@@ -26,10 +26,6 @@ class LoginBody(StrictModel):
     password: str = Field(min_length=1, max_length=512)
 
 
-class FeedbackBody(StrictModel):
-    body: str = Field(min_length=1, max_length=2_000)
-
-
 class ReplaceUserRolesBody(StrictModel):
     role_codes: set[str] = Field(min_length=1, max_length=16)
 

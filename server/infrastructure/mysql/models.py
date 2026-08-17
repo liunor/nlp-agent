@@ -77,33 +77,6 @@ class UserRoleModel(Base):
     )
 
 
-class FeedbackThreadModel(TimestampedModel, Base):
-    __tablename__ = "nlp_feedback_threads"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_nlp_feedback_threads_user_id"),)
-
-    id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
-    )
-    developer_read_at: Mapped[datetime | None] = mapped_column(
-        DATETIME(fsp=6), nullable=True
-    )
-
-
-class FeedbackMessageModel(TimestampedModel, Base):
-    __tablename__ = "nlp_feedback_messages"
-
-    id: Mapped[str] = mapped_column(UUID, primary_key=True)
-    thread_id: Mapped[str] = mapped_column(
-        UUID, ForeignKey("nlp_feedback_threads.id", ondelete="CASCADE"), nullable=False
-    )
-    sender_user_id: Mapped[str] = mapped_column(
-        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
-    )
-    sender_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-
-
 class RolePermissionModel(Base):
     __tablename__ = "nlp_role_permissions"
 

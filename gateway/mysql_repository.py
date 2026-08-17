@@ -362,7 +362,7 @@ class MySQLGatewayRepository:
             topics = [
                 {
                     "id": row["id"], "name": row["name"], "description": row["description"],
-                    "status": row["status"],
+                    "status": row["status"], "sort_order": row["sort_order"],
                     "knowledge_points": points_by_topic.get(str(row["id"]), []),
                 }
                 for row in topic_rows
@@ -374,7 +374,7 @@ class MySQLGatewayRepository:
         blueprints = {"exercise": [], "review": [], "guided": []}
         for row in blueprint_rows:
             blueprint = self._json(row["payload_json"])
-            blueprint.pop("kind", None)
+            blueprint.setdefault("kind", row["kind"])
             blueprints.get(str(row["kind"]), []).append(blueprint)
         value = {
             "workspace_id": workspace_id,
@@ -384,31 +384,6 @@ class MySQLGatewayRepository:
             "guided_blueprints": blueprints["guided"],
         }
         return {"workspace_id": workspace_id, "revision": int(catalog["revision"]), "updated_at": catalog["updated_at"], "catalog": value}
-
-    def list_questions(
-        self,
-        *,
-        workspace_id: str,
-        since: str,
-        limit: int = 2_000,
-    ) -> list[dict[str, Any]]:
-        """Return the MySQL turn projection consumed by teacher analytics."""
-        with self._engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    "SELECT id AS turn_id, conversation_id AS session_id, "
-                    "workspace_id, user_id, status, input_text, error_kind, created_at "
-                    "FROM nlp_turns "
-                    "WHERE workspace_id=:workspace_id AND created_at>=:since "
-                    "ORDER BY created_at DESC LIMIT :limit"
-                ),
-                {
-                    "workspace_id": workspace_id,
-                    "since": since,
-                    "limit": min(max(1, limit), 10_000),
-                },
-            ).mappings().all()
-        return [dict(row) for row in rows]
 
     def update_teaching_catalog(self, workspace_id: str, catalog: dict[str, Any]):
         groups = {

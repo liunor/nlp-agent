@@ -1,16 +1,12 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 import { SettingsDialog } from "./SettingsDialog";
 import { loadFeedback } from "@/shared/utils/feedback";
 import { APP_VERSION } from "@/shared/version";
 import type { UserSettings } from "@/shared/types";
 
-const { listPublishedReleaseNotesMock, submitFeedbackMock } = vi.hoisted(() => ({
-  listPublishedReleaseNotesMock: vi.fn(),
-  submitFeedbackMock: vi.fn(),
-}));
-vi.mock("@/platform/http/api", () => ({ api: { listPublishedReleaseNotes: listPublishedReleaseNotesMock, submitFeedback: submitFeedbackMock } }));
+const { listPublishedReleaseNotesMock } = vi.hoisted(() => ({ listPublishedReleaseNotesMock: vi.fn() }));
+vi.mock("@/platform/http/api", () => ({ api: { listPublishedReleaseNotes: listPublishedReleaseNotesMock } }));
 
 const settings: UserSettings = {
   theme: "system",
@@ -37,8 +33,6 @@ describe("SettingsDialog", () => {
     localStorage.clear();
     listPublishedReleaseNotesMock.mockReset();
     listPublishedReleaseNotesMock.mockResolvedValue({ items: [] });
-    submitFeedbackMock.mockReset();
-    submitFeedbackMock.mockResolvedValue({ thread_id: "thread-1" });
   });
 
   it("renders the current version from the build-injected constant", () => {
@@ -93,24 +87,14 @@ describe("SettingsDialog", () => {
     expect(listPublishedReleaseNotesMock).toHaveBeenCalledTimes(2);
   });
 
-  it("sends feedback before reporting success", async () => {
-    render(<SettingsDialog
-      open
-      settings={settings}
-      learningContext={{ topic_id: null, topic_name: "", level: "beginner", mode: "explain" }}
-      onClose={() => {}}
-      onChange={() => {}}
-      onLearningContextChange={() => {}}
-      onOpenDeveloper={() => {}}
-      onOpenTeacher={() => {}}
-    />);
+  it("persists submitted feedback before reporting success", () => {
+    render(<SettingsDialog {...baseProps} />);
     fireEvent.click(screen.getByRole("button", { name: "意见反馈" }));
     fireEvent.change(screen.getByPlaceholderText(/我希望/), { target: { value: "请增加错题计划" } });
     fireEvent.click(screen.getByRole("button", { name: "发布意见" }));
 
-    await waitFor(() => expect(loadFeedback().map((item) => item.content)).toEqual(["请增加错题计划"]));
-    expect(submitFeedbackMock).toHaveBeenCalledWith("请增加错题计划");
-    expect(screen.getByText("意见已发送到开发者工作台。")).toBeVisible();
+    expect(loadFeedback().map((item) => item.content)).toEqual(["请增加错题计划"]);
+    expect(screen.getByText("已将本次意见保存在此浏览器。")).toBeVisible();
   });
 
   it("only projects teacher and developer navigation for the matching roles", () => {

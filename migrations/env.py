@@ -8,14 +8,12 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-from dotenv import load_dotenv
 
 from server.infrastructure.mysql.base import Base
 from server.infrastructure.mysql import models  # noqa: F401
 
 
 config = context.config
-load_dotenv()
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
