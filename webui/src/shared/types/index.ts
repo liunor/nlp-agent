@@ -37,6 +37,29 @@ export interface DeveloperSnapshot {
   web: Record<string, unknown>;
 }
 
+export interface FeedbackMessage {
+  id: string;
+  sender_type: "student" | "developer";
+  body: string;
+  created_at: string;
+}
+
+export interface FeedbackThreadSummary {
+  thread_id: string;
+  user_id: string;
+  username: string;
+  unread_count: number;
+  updated_at: string;
+  latest: FeedbackMessage | null;
+}
+
+export interface FeedbackThread {
+  thread_id: string;
+  user_id: string;
+  username: string;
+  messages: FeedbackMessage[];
+}
+
 export interface TeachingGoals {
   workspace_id: string;
   course_title: string;

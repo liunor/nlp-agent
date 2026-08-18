@@ -25,6 +25,8 @@ class Permission(StrEnum):
     LEARNING_PROGRESS_READ_SELF = "learning:progress:read_self"
     LEARNING_CONTENT_MANAGE = "learning:content:manage"
     LEARNING_PROGRESS_READ_CLASSROOM = "learning:progress:read_classroom"
+    LEARNING_FEEDBACK_SUBMIT = "learning:feedback:submit"
+    LEARNING_FEEDBACK_READ = "learning:feedback:read"
     LEARNING_FEEDBACK_CREATE = "learning:feedback:create"
     CLASSROOM_CREATE = "classroom:classroom:create"
     CLASSROOM_MEMBER_MANAGE = "classroom:member:manage"
@@ -104,6 +106,7 @@ _STUDENT: Final[frozenset[Permission]] = _GUEST | {
     Permission.LEARNING_CONTENT_READ_WORKSPACE,
     Permission.LEARNING_EXERCISE_SUBMIT,
     Permission.LEARNING_PROGRESS_READ_SELF,
+    Permission.LEARNING_FEEDBACK_SUBMIT,
 }
 _TEACHER: Final[frozenset[Permission]] = _STUDENT | {
     Permission.LEARNING_CONTENT_MANAGE,
@@ -113,6 +116,7 @@ _TEACHER: Final[frozenset[Permission]] = _STUDENT | {
     Permission.CLASSROOM_MEMBER_MANAGE,
 }
 _DEVELOPER: Final[frozenset[Permission]] = _TEACHER | {
+    Permission.LEARNING_FEEDBACK_READ,
     Permission.SYSTEM_MODEL_PROFILE_MANAGE,
     Permission.SYSTEM_PROMPT_TEMPLATE_MANAGE,
     Permission.SYSTEM_TOOL_CONFIG_MANAGE,

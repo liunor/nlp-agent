@@ -19,7 +19,13 @@ branch_labels = None
 depends_on = None
 
 
-ALL_TABLE_COMMENTS = {**TABLE_COMMENTS, **SYSTEM_TABLE_COMMENTS}
+_TABLES_CREATED_AFTER = {"nlp_feedback_threads", "nlp_feedback_messages"}
+
+ALL_TABLE_COMMENTS = {
+    table_name: table_comment
+    for table_name, table_comment in {**TABLE_COMMENTS, **SYSTEM_TABLE_COMMENTS}.items()
+    if table_name not in _TABLES_CREATED_AFTER
+}
 
 
 def _mysql_string_literal(value: str) -> str:

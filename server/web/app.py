@@ -50,6 +50,8 @@ from server.web.contracts import (
     UpdateCustomToolsBody,
     UpdateToolPoliciesBody,
     UpdateSettingsBody,
+    FeedbackBody,
+    FeedbackReadBody,
     McpServerBody,
     SkillBody,
     WorkerProfileBody,
@@ -79,6 +81,7 @@ from server.release_notes.service import (
     release_note_service,
 )
 from server.web.websocket import WebSocketHub, websocket_endpoint
+from server.web.feedback import get_feedback_thread, list_feedback_threads, mark_feedback_read, submit_feedback
 
 
 GatewayFactory = Callable[[], BackendGateway]
@@ -782,6 +785,43 @@ def create_app(
     async def get_settings(request: Request, principal: Principal):
         preferences = await request.app.state.gateway.get_user_settings(principal)
         return {"preferences": preferences, "runtime": _public_runtime_settings()}
+
+    @app.post("/api/v1/feedback", status_code=status.HTTP_201_CREATED, tags=["feedback"])
+    async def create_feedback(body: FeedbackBody, request: Request, principal: Principal, _claims: WriteClaims):
+        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_SUBMIT)
+        session_factory = request.app.state.gateway.authorization_session_factory
+        async with session_factory() as session:
+            async with session.begin():
+                return await submit_feedback(session, principal, body.body)
+
+    @app.get("/api/v1/developer/feedback", tags=["developer"])
+    async def get_feedback_list(request: Request, principal: Principal):
+        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_READ)
+        session_factory = request.app.state.gateway.authorization_session_factory
+        async with session_factory() as session:
+            return {"items": await list_feedback_threads(session)}
+
+    @app.get("/api/v1/developer/feedback/{thread_id}", tags=["developer"])
+    async def get_feedback_detail(thread_id: str, request: Request, principal: Principal):
+        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_READ)
+        session_factory = request.app.state.gateway.authorization_session_factory
+        async with session_factory() as session:
+            try:
+                return await get_feedback_thread(session, thread_id)
+            except LookupError:
+                return _problem(request, status_code=404, code="feedback_not_found", title="Feedback thread not found")
+
+    @app.post("/api/v1/developer/feedback/{thread_id}/read", tags=["developer"])
+    async def read_feedback(thread_id: str, body: FeedbackReadBody, request: Request, principal: Principal, _claims: WriteClaims):
+        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_READ)
+        session_factory = request.app.state.gateway.authorization_session_factory
+        async with session_factory() as session:
+            async with session.begin():
+                try:
+                    await mark_feedback_read(session, thread_id, body.read_through_message_id)
+                except LookupError:
+                    return _problem(request, status_code=404, code="feedback_not_found", title="Feedback thread not found")
+        return {"ok": True}
 
     @app.get("/api/v1/protocol", tags=["runtime"])
     async def get_protocol(_principal: Principal):

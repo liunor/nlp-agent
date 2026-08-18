@@ -10,6 +10,8 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_roles": "RBAC 角色定义及角色状态。",
     "nlp_permissions": "RBAC 权限目录，描述可执行的领域、资源与操作。",
     "nlp_user_roles": "用户与角色的绑定关系及有效期。",
+    "nlp_feedback_threads": "学生意见反馈会话，按用户聚合反馈线程。",
+    "nlp_feedback_messages": "反馈会话中的逐条消息与发送方类型。",
     "nlp_role_permissions": "角色与权限的授权关系。",
     "nlp_role_permission_scopes": "角色权限对应的资源作用域类型。",
     "nlp_workspace_members": "用户与工作区的成员关系及成员状态。",
