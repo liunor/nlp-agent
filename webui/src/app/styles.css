@@ -213,9 +213,7 @@ button { color: inherit; }
 
 .feedback-form { display: grid; gap: 10px; }.feedback-form textarea { min-height: 138px; width: 100%; resize: vertical; padding: 11px; border: 1px solid var(--border); border-radius: 10px; outline: none; background: var(--bg); color: var(--fg); font: inherit; font-size: 13px; line-height: 1.65; }.feedback-form textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }.feedback-form > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.feedback-form small { color: var(--muted); font-size: 12px; }.feedback-form button:disabled { opacity: .48; cursor: not-allowed; }.feedback-success { margin: 0; color: #15803d; font-size: 13px; }
 
-.sidebar-brand-copy { display: grid; min-width: 0; flex: 1; gap: 4px; }.sidebar-brand-copy strong { font-family: "Aptos Display", "Segoe UI Variable Text", "Segoe UI", sans-serif; font-size: 20px; font-weight: 540; letter-spacing: -.025em; line-height: 1.05; }.sidebar-brand-copy small { overflow: hidden; color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }.sidebar-brand .brand-mark { background: transparent; }.brand-mark img { width: 42px; height: 42px; object-fit: contain; transform: scale(2); }
-
-  .sidebar-brand .brand-mark img { transform: scale(1.2) !important; }
+.sidebar-brand-copy { display: grid; min-width: 0; flex: 1; gap: 4px; }.sidebar-brand-copy strong { font-family: "Aptos Display", "Segoe UI Variable Text", "Segoe UI", sans-serif; font-size: 20px; font-weight: 540; letter-spacing: -.025em; line-height: 1.05; }.sidebar-brand-copy small { overflow: hidden; color: var(--muted); font-size: 11px; font-weight: 500; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }.sidebar-brand .brand-mark { box-sizing: border-box; width: 42px; height: 42px; flex: 0 0 42px; overflow: hidden; place-items: center; padding: 2px; border: 2px solid #111; border-radius: 10px; background: #fff; }.sidebar-brand .brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; transform: none !important; transform-origin: center; }
 
   /* Composer-attached learning settings: dual-panel cascading menu popover UI */
   .composer { position: relative; overflow: visible; }
@@ -585,8 +583,7 @@ button { color: inherit; }
 .thread-header-actions .icon-button { background: color-mix(in srgb,var(--bg) 86%,transparent); backdrop-filter: blur(8px); }
 .thread-tool-toggle,.tool-dock-expand-toggle { color: var(--muted); }
 .thread-tool-toggle[aria-pressed="true"],.tool-dock-expand-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
-.student-school-logo { position: fixed; z-index: 41; top: 0; left: 62px; pointer-events: none; line-height: 0; transition: left .28s ease; }
-.student-app-shell.sidebar-is-expanded .student-school-logo { left: 252px; }
+.student-school-logo { position: fixed; z-index: 0; top: 0; left: 62px; pointer-events: none; line-height: 0; transition: left .28s ease; }
 .student-school-logo .school-logo { width: clamp(160px, 13vw, 186px); height: 48px; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
 .tool-dock { position: relative; z-index: 34; width: 0; flex: 0 0 0; overflow: hidden; border-left: 0 solid var(--border); background: var(--bg); transition: width .26s cubic-bezier(.2,.8,.2,1), flex-basis .26s cubic-bezier(.2,.8,.2,1), border-color .2s ease; }
 .tool-dock.open { width: min(var(--tool-dock-width), 88vw); flex-basis: min(var(--tool-dock-width), 88vw); border-left-width: 1px; }
