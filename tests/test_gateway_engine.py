@@ -44,7 +44,14 @@ class StreamingGraph(RecordingGraph):
 
 
 @pytest.mark.asyncio
-async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config():
+async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config(monkeypatch):
+    async def record_transcript_without_database(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "server.agent.session_storage.record_transcript",
+        record_transcript_without_database,
+    )
     graph = RecordingGraph()
     engine = LangGraphAgentEngine()
     engine._app = graph

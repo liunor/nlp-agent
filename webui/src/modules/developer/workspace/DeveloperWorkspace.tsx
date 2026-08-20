@@ -2,13 +2,19 @@ import {
   Activity, AppWindow, Bot, Box, ChevronLeft, Clock3, Code2, Database,
   ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Mail, Newspaper, PlugZap,
   RefreshCw, Settings2, ShieldCheck, Sparkles, TerminalSquare, Wrench,
+  Users, LayoutList, ScrollText, MessageSquare,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, ensureAuth } from "@/platform/http/api";
 import type { DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
+import { UserManagementPage } from "@/modules/admin/UserManagementPage";
+import { RoleManagementPageV2 } from "@/modules/admin/RoleManagementPageV2";
+import { MenuManagementPageV2 } from "@/modules/admin/MenuManagementPageV2";
+import { AuditLogPageV2 } from "@/modules/admin/AuditLogPageV2";
+import { AgentSessionListPageV2 } from "@/modules/admin/AgentSessionListPageV2";
 
-export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings";
+export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "menus" | "audit" | "sessions";
 
 const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "overview", label: "工作台", icon: Gauge },
@@ -21,11 +27,22 @@ const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "automations", label: "Apps 与自动化", icon: Clock3 },
   { page: "feedback", label: "意见反馈", icon: Mail },
   { page: "settings", label: "运行时设置", icon: Settings2 },
+  { page: "users", label: "用户管理", icon: Users },
+  { page: "roles", label: "角色权限", icon: ShieldCheck },
+  { page: "menus", label: "菜单管理", icon: LayoutList },
+  { page: "audit", label: "审计日志", icon: ScrollText },
+  { page: "sessions", label: "Agent 会话", icon: MessageSquare },
 ];
 
 function currentPage(): DeveloperPage {
   const value = location.pathname.split("/")[2] as DeveloperPage | undefined;
   return NAV.some((item) => item.page === value) ? value! : "overview";
+}
+
+function pageForMenuRoute(routePath: string | null): DeveloperPage | null {
+  const item = NAV.find((candidate) => candidate.page !== "overview" && candidate.page && routePath === `/developer/${candidate.page}`);
+  if (routePath === "/developer") return "overview";
+  return item?.page ?? null;
 }
 
 function JsonBlock({ value }: { value: unknown }) {
@@ -184,8 +201,10 @@ export function ReleaseNotes() {
 }
 
 export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: DeveloperPage; onNavigate?: (page: DeveloperPage) => void }) {
-  const [page, setPage] = useState<DeveloperPage>(routedPage ?? currentPage);
+  const [localPage, setPage] = useState<DeveloperPage>(routedPage ?? currentPage);
+  const page = routedPage ?? localPage;
   const [snapshot, setSnapshot] = useState<DeveloperSnapshot | null>(null);
+  const [visiblePages, setVisiblePages] = useState<Set<DeveloperPage>>(new Set());
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [feedbackThreads, setFeedbackThreads] = useState<FeedbackThreadSummary[]>([]);
@@ -200,7 +219,13 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   }, [updateFeedbackThreads]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    try { const auth = await ensureAuth(); if (!auth.roles.includes("admin") && !auth.roles.includes("developer")) throw new Error("当前账户没有开发者权限"); setSnapshot(await api.getDeveloperSnapshot()); }
+    try {
+      const auth = await ensureAuth();
+      if (!auth.roles.includes("developer") && !auth.permissions?.includes("system:runtime:monitor")) throw new Error("当前账户没有开发者权限");
+      const [nextSnapshot, menuResult] = await Promise.all([api.getDeveloperSnapshot(), api.listVisibleMenus()]);
+      setSnapshot(nextSnapshot);
+      setVisiblePages(new Set(menuResult.items.map((item) => pageForMenuRoute(item.route_path)).filter((item): item is DeveloperPage => item !== null)));
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setLoading(false); }
   }, []);
@@ -223,7 +248,12 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "feedback") return <Feedback threads={feedbackThreads} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} refresh={refreshFeedback} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
+    if (page === "users") return <UserManagementPage />;
+    if (page === "roles") return <RoleManagementPageV2 />;
+    if (page === "menus") return <MenuManagementPageV2 />;
+    if (page === "audit") return <AuditLogPageV2 />;
+    if (page === "sessions") return <AgentSessionListPageV2 />;
     return <Overview snapshot={snapshot} />;
   }, [feedbackSelectedId, feedbackThreads, page, refreshFeedback, snapshot, load]);
-  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>本地管理员</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void load(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && !snapshot ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : content}</div></main></div>;
+  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void load(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && !snapshot ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : content}</div></main></div>;
 }

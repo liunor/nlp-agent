@@ -192,7 +192,7 @@ class LangGraphAgentEngine:
                         GatewayEventType.TOOL_COMPLETED,
                         {"name": "tool"},
                     )
-        await self._apply_pending_snips(context.session_id)
+            await self._apply_pending_snips(context)
 
     async def run_turn(
         self,
@@ -226,12 +226,22 @@ class LangGraphAgentEngine:
             context, message, learning_context, learning_progress, exercise_state,
             teaching_materials,
         )
-        config = {"configurable": {"thread_id": context.session_id}}
+        config = {"configurable": {
+            "thread_id": context.session_id,
+            "user_id": context.user_id,
+            "workspace_id": context.workspace_id,
+            "channel": context.channel,
+        }}
         state = await self._app.aget_state(config)
         state_messages = state.values.get("messages", [])
         from server.agent.session_storage import record_transcript
 
-        await record_transcript(context.session_id, state_messages)
+        await record_transcript(
+            context.session_id,
+            state_messages,
+            user_id=context.user_id,
+            workspace_id=context.workspace_id,
+        )
         for item in reversed(state_messages):
             if isinstance(item, AIMessage) and item.content:
                 return str(item.content)
@@ -255,14 +265,23 @@ class LangGraphAgentEngine:
         if self._app is not None:
             checkpointer = getattr(self._app, "checkpointer", None)
             if checkpointer is not None and hasattr(checkpointer, "adelete_thread"):
-                await checkpointer.adelete_thread(context.session_id)
+                await checkpointer.adelete_thread(
+                    context.session_id,
+                    workspace_id=context.workspace_id,
+                    user_id=context.user_id,
+                )
 
-    async def _apply_pending_snips(self, session_id: str) -> None:
+    async def _apply_pending_snips(self, context: SessionContext) -> None:
         if self._app is None:
             return
         from server.agent.compression.snip_compact import snip_by_id_range
 
-        config = {"configurable": {"thread_id": session_id}}
+        config = {"configurable": {
+            "thread_id": context.session_id,
+            "user_id": context.user_id,
+            "workspace_id": context.workspace_id,
+            "channel": context.channel,
+        }}
         state = await self._app.aget_state(config)
         messages = state.values.get("messages", [])
         for message in reversed(messages):

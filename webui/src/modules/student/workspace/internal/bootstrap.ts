@@ -8,6 +8,8 @@ import { DEFAULT_SETTINGS } from "./constants";
 
 interface BootstrapOptions {
   authRevision: number;
+  authProviderPresent?: boolean;
+  initialSession?: AuthSession;
   loadSessions: () => Promise<unknown>;
   initializeSettings: (settings: UserSettings) => void;
   setModelProfiles: Dispatch<SetStateAction<Record<string, RuntimeModelProfile>>>;
@@ -19,6 +21,8 @@ interface BootstrapOptions {
 
 export function useWorkspaceBootstrap({
   authRevision,
+  authProviderPresent = false,
+  initialSession,
   loadSessions,
   initializeSettings,
   setModelProfiles,
@@ -31,7 +35,12 @@ export function useWorkspaceBootstrap({
     let cancelled = false;
     void (async () => {
       try {
-        const auth = await ensureAuth();
+        if (authProviderPresent && !initialSession) {
+          setAuthSession(null);
+          setBootStatus("unauthenticated");
+          return;
+        }
+        const auth = authProviderPresent ? initialSession! : await ensureAuth();
         const [, settingsResponse] = await Promise.all([loadSessions(), api.getSettings()]);
         if (cancelled) return;
         const loadedSettings = {
@@ -55,5 +64,5 @@ export function useWorkspaceBootstrap({
       }
     })();
     return () => { cancelled = true; };
-  }, [authRevision, initializeSettings, loadSessions, setAuthSession, setBootStatus, setError, setModelProfiles, setWorkspaceId]);
+  }, [authProviderPresent, authRevision, initialSession, initializeSettings, loadSessions, setAuthSession, setBootStatus, setError, setModelProfiles, setWorkspaceId]);
 }

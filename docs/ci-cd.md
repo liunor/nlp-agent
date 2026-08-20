@@ -45,7 +45,9 @@ chmod 600 /opt/nova-prod/.env
 nano /opt/nova-prod/.env
 ```
 
-将模板中的地址占位符、模型密钥和 Web 会话密钥替换为对应环境的真实值。测试与生产必须使用不同的 `NLP_AGENT_WEB_SECRET`。
+将模板中的地址占位符和模型密钥替换为对应环境的真实值。用户密码和
+角色不写入部署文件，首次部署后通过 `python main.py bootstrap-developer`
+交互式创建开发者账号。
 
 服务器 `.env` 必须包含：
 
@@ -54,7 +56,6 @@ NOVA_IMAGE=ghcr.io/liunor/nlp-agent
 NOVA_TAG=develop
 NOVA_PULL_POLICY=always
 DEEPSEEK_API_KEY=...
-NLP_AGENT_WEB_SECRET=...
 NLP_AGENT_WEB_ALLOWED_HOSTS=你的内网IP或域名
 NLP_AGENT_WEB_ALLOWED_ORIGINS=http://你的内网IP或域名:8765
 ```

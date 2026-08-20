@@ -43,7 +43,7 @@ from gateway.outbox_dispatcher import OutboxTurnDispatcher
 from gateway.turn_execution import InProcessTurnExecutor
 from gateway.redis_transport import RedisEventBridge, RedisTransportConfig, RedisTurnDispatcher
 from gateway.redis_transport import TurnTaskCodec
-from server.agent.session_service import LocalSessionService, local_session_service
+from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
 
@@ -66,7 +66,7 @@ class BackendGateway:
         engine: AgentEngine | None = None,
         dispatcher: TurnDispatcher | None = None,
         repository: GatewayRepository | None = None,
-        sessions: LocalSessionService = local_session_service,
+        sessions: LocalSessionService | DatabaseSessionService = local_session_service,
         shutdown_grace_s: float | None = None,
         event_retention_days: int | None = None,
         max_events_per_session: int | None = None,
@@ -530,6 +530,16 @@ class BackendGateway:
         if turn.status not in {TurnStatus.ACCEPTED, TurnStatus.RUNNING}:
             return turn
         context = await self.sessions.resolve(principal, turn.session_id)
+        request_cancellation = getattr(self.repository, "request_turn_cancellation", None)
+        if request_cancellation is not None:
+            updated = await asyncio.to_thread(
+                request_cancellation,
+                turn_id=turn_id,
+                requested_by=principal.user_id,
+                reason="user_requested",
+            )
+            if updated is not None:
+                turn = updated
         await self.dispatcher.cancel(turn_id)
         updated = await asyncio.to_thread(self.repository.get_turn, turn_id)
         return updated or turn

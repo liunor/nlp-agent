@@ -20,7 +20,7 @@ from gateway.contracts import (
     TurnRecord,
     TurnStatus,
 )
-from core.learning import ExerciseState, LearningContext, LearningProgress
+from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
 
 
 def _now() -> str:
@@ -573,24 +573,126 @@ class GatewayRepository:
             )
         return cursor.rowcount
 
-    def list_questions(
+    def list_question_turns(
         self,
         *,
         workspace_id: str,
         since: str,
-        limit: int = 2_000,
     ) -> list[dict[str, Any]]:
-        """Teacher-facing read model; account/course joins can replace this later."""
+        """Teacher read model: structured question rows (no question text).
+
+        The time window is the only bound; aggregation must reflect every turn.
+        """
         with self._lock:
             rows = self._conn.execute(
-                """SELECT turn_id,session_id,workspace_id,user_id,status,input_text,
-                          final_text,error_kind,created_at,completed_at,learning_context_json,learning_progress_json,exercise_state_json
-                   FROM gateway_turns
-                   WHERE workspace_id=? AND created_at>=?
+                """SELECT session_id,user_id,error_kind,created_at,learning_context_json
+                   FROM gateway_turns WHERE workspace_id=? AND created_at>=?
+                   ORDER BY created_at""",
+                (workspace_id, since),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            context = json.loads(row["learning_context_json"]) if row["learning_context_json"] else {}
+            result.append(
+                {
+                    "session_id": row["session_id"],
+                    "user_id": row["user_id"],
+                    "has_error": bool(row["error_kind"]),
+                    "topic_id": context.get("topic_id"),
+                    "level": context.get("level"),
+                    "mode": context.get("mode"),
+                    "day": str(row["created_at"])[:10],
+                }
+            )
+        return result
+
+    def exercise_evidence_stats(
+        self,
+        *,
+        workspace_id: str,
+        since: str,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT e.normalized_score,e.passed,e.knowledge_point_ids_json,e.blueprint_snapshot_json,s.topic_id,s.mode
+                   FROM gateway_learning_evidence e
+                   JOIN gateway_exercise_sessions s ON s.id=e.exercise_session_id
+                   WHERE s.workspace_id=? AND s.completed_at>=?
+                   ORDER BY s.completed_at DESC LIMIT ?""",
+                (workspace_id, since, min(max(1, limit), 10_000)),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            kp_ids = json.loads(row["knowledge_point_ids_json"] or "[]") if row["knowledge_point_ids_json"] else []
+            if not kp_ids:
+                blueprint = json.loads(row["blueprint_snapshot_json"] or "{}") if row["blueprint_snapshot_json"] else {}
+                kp_ids = knowledge_point_ids(blueprint)
+            result.append(
+                {
+                    "topic_id": row["topic_id"],
+                    "mode": row["mode"],
+                    "knowledge_point_ids": [str(item) for item in kp_ids if item],
+                    "score": int(row["normalized_score"]),
+                    "passed": bool(row["passed"]),
+                }
+            )
+        return result
+
+    def exercise_criterion_stats(
+        self,
+        *,
+        workspace_id: str,
+        since: str,
+        limit: int = 20_000,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT a.rubric_matches_json,s.topic_id,s.blueprint_snapshot_json
+                   FROM gateway_exercise_attempts a
+                   JOIN gateway_exercise_questions q ON q.id=a.exercise_question_id
+                   JOIN gateway_exercise_sessions s ON s.id=q.exercise_session_id
+                   WHERE s.workspace_id=? AND s.completed_at>=?
+                   ORDER BY s.completed_at DESC LIMIT ?""",
+                (workspace_id, since, min(max(1, limit), 50_000)),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            blueprint = json.loads(row["blueprint_snapshot_json"] or "{}") if row["blueprint_snapshot_json"] else {}
+            matches = json.loads(row["rubric_matches_json"] or "[]") if row["rubric_matches_json"] else []
+            result.append(
+                {
+                    "topic_id": row["topic_id"],
+                    "knowledge_point_ids": knowledge_point_ids(blueprint),
+                    "matches": [m for m in matches if isinstance(m, dict)],
+                }
+            )
+        return result
+
+    def guided_session_stats(
+        self,
+        *,
+        workspace_id: str,
+        since: str,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT topic_id,misconceptions_json FROM gateway_guided_sessions
+                   WHERE workspace_id=? AND (completed_at>=? OR completed_at IS NULL)
                    ORDER BY created_at DESC LIMIT ?""",
                 (workspace_id, since, min(max(1, limit), 10_000)),
             ).fetchall()
-        return [dict(row) for row in rows]
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            misconceptions = json.loads(row["misconceptions_json"] or "[]") if row["misconceptions_json"] else []
+            result.append(
+                {
+                    "topic_id": row["topic_id"],
+                    "misconception_count": len(misconceptions) if isinstance(misconceptions, list) else 0,
+                }
+            )
+        return result
 
     def latest_event_sequence(self, turn_id: str) -> int:
         with self._lock:

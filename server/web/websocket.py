@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -23,6 +24,7 @@ from server.web.auth import (
     SameOriginSessionAuth,
     SessionClaims,
 )
+from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 from server.web.contracts import (
     ChatCancelPayload,
     ChatInjectPayload,
@@ -162,8 +164,8 @@ class WebSocketConnection:
         send_queue_size: int,
         send_timeout_s: float,
         session_fingerprint: bytes | None = None,
-        session_check: Callable[[], SessionClaims] | None = None,
-        session_touch: Callable[[], SessionClaims] | None = None,
+        session_check: Callable[[], Any] | None = None,
+        session_touch: Callable[[], Any] | None = None,
         authorization_refresh: Callable[[], Awaitable[AuthenticatedPrincipal]] | None = None,
         session_check_interval_s: float = 20,
     ) -> None:
@@ -201,10 +203,12 @@ class WebSocketConnection:
                 name=f"websocket-session-guard:{self.principal.user_id}",
             )
 
-    def require_active_session(self, *, touch: bool) -> None:
+    async def require_active_session(self, *, touch: bool) -> None:
         validator = self._session_touch if touch else self._session_check
         if validator is not None:
-            validator()
+            result = validator()
+            if inspect.isawaitable(result):
+                await result
 
     async def refresh_authorization(self) -> None:
         if self._authorization_refresh is not None:
@@ -217,7 +221,7 @@ class WebSocketConnection:
         try:
             while True:
                 await asyncio.sleep(self._session_check_interval_s)
-                self.require_active_session(touch=False)
+                await self.require_active_session(touch=False)
                 await self.refresh_authorization()
         except AuthenticationError:
             await self._terminate(code=4401, reason="authentication expired")
@@ -590,11 +594,25 @@ async def websocket_endpoint(
     max_queue: int,
     send_queue_size: int,
     send_timeout_s: float,
-    principal_resolver: Callable[[SessionClaims], Awaitable[AuthenticatedPrincipal]] | None = None,
+    principal_resolver: Callable[[SessionClaims | DatabaseSessionClaims], Awaitable[AuthenticatedPrincipal]] | None = None,
+    database_auth: DatabaseSessionAuth | None = None,
+    authorization_session_factory: Any | None = None,
 ) -> None:
     try:
-        auth.require_same_origin(websocket.headers.get("origin"), websocket.headers.get("host"))
-        claims = auth.authenticate(websocket.cookies.get(auth.cookie_name))
+        if database_auth is not None:
+            if authorization_session_factory is None:
+                raise AuthenticationError("database authentication is unavailable")
+            origin = websocket.headers.get("origin")
+            database_auth.require_same_origin(origin, websocket.headers.get("host"))
+            claims = await database_auth.consume_ws_ticket(
+                authorization_session_factory,
+                websocket.query_params.get("ticket"),
+                origin=origin,
+                host=websocket.headers.get("host"),
+            )
+        else:
+            auth.require_same_origin(websocket.headers.get("origin"), websocket.headers.get("host"))
+            claims = auth.authenticate(websocket.cookies.get(auth.cookie_name))
     except AuthenticationError:
         await websocket.close(code=4401, reason="authentication required")
         return
@@ -613,6 +631,25 @@ async def websocket_endpoint(
         return
 
     session_token = websocket.cookies.get(auth.cookie_name)
+    session_fingerprint = (
+        database_auth.session_fingerprint_from_hash(claims.token_hash)
+        if isinstance(claims, DatabaseSessionClaims)
+        else auth.token_fingerprint(session_token)
+    )
+    if isinstance(claims, DatabaseSessionClaims):
+        assert database_auth is not None
+        assert authorization_session_factory is not None
+        session_check: Callable[[], Any] = lambda: database_auth.authenticate_session_id(
+            authorization_session_factory, claims.session_id, touch=False
+        )
+        session_touch: Callable[[], Any] = lambda: database_auth.authenticate_session_id(
+            authorization_session_factory, claims.session_id, touch=True
+        )
+        interval = min(20.0, float(database_auth.idle_timeout_s))
+    else:
+        session_check = lambda: auth.authenticate(session_token, touch=False)
+        session_touch = lambda: auth.authenticate(session_token)
+        interval = min(20.0, float(getattr(auth, "idle_timeout_s", 900)))
     connection = WebSocketConnection(
         websocket,
         gateway,
@@ -620,18 +657,15 @@ async def websocket_endpoint(
         max_queue=max_queue,
         send_queue_size=send_queue_size,
         send_timeout_s=send_timeout_s,
-        session_fingerprint=auth.token_fingerprint(session_token),
-        session_check=lambda: auth.authenticate(session_token, touch=False),
-        session_touch=lambda: auth.authenticate(session_token),
+        session_fingerprint=session_fingerprint,
+        session_check=session_check,
+        session_touch=session_touch,
         authorization_refresh=(
             (lambda: principal_resolver(claims))
             if principal_resolver is not None
             else None
         ),
-        session_check_interval_s=min(
-            20.0,
-            float(getattr(auth, "idle_timeout_s", 900)),
-        ),
+        session_check_interval_s=interval,
     )
     if not hub.try_add(connection):
         await websocket.close(code=4429, reason="connection limit reached")
@@ -675,7 +709,7 @@ async def _receive_commands(
             try:
                 command = CommandEnvelope.model_validate(json.loads(raw))
                 request_id = command.request_id
-                connection.require_active_session(touch=command.type != "ping")
+                await connection.require_active_session(touch=command.type != "ping")
                 await connection.refresh_authorization()
                 await _dispatch_command(connection, command)
             except AuthenticationError:

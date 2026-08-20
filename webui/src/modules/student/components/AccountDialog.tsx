@@ -14,7 +14,8 @@ export function AccountDialog({
   onClose: () => void;
   onLogout: () => Promise<void>;
 }) {
-  const username = session?.user_id ?? "Nova 学习者";
+  const username = session?.username || session?.display_name || session?.user_id || "Nova 学习者";
+  const displayName = session?.display_name || session?.username || "Nova 学习者";
   const roles = session?.roles?.join("、") || "student";
   return <Dialog.Root open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }}>
     <Dialog.Portal>
@@ -26,6 +27,7 @@ export function AccountDialog({
         <Dialog.Description id="account-dialog-description">当前会话由 Nova 的同源认证服务保护。</Dialog.Description>
         <dl>
           <div><dt>账号</dt><dd>{username}</dd></div>
+          <div><dt>名称</dt><dd>{displayName}</dd></div>
           <div><dt>角色</dt><dd><ShieldCheck size={15} />{roles}</dd></div>
         </dl>
         <button className="account-dialog-logout" type="button" onClick={() => void onLogout()}><LogOut size={16} />退出登录</button>

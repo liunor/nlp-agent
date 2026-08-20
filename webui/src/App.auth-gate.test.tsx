@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 
 vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() {} close() {} setSession() {} sendChat() {} resume() {} cancel() {} } }));
 vi.mock("@/platform/http/api", () => {
@@ -17,23 +17,18 @@ vi.mock("@/platform/http/api", () => {
 import { App } from "./App";
 
 describe("student authentication gate", () => {
-  it("keeps the normal full-width student shell and header while logged out", async () => {
-    const { container } = render(<App />);
-
-    await screen.findByLabelText("学习问题");
-
-    expect(container.querySelector(".unauthenticated-student-shell")).toHaveClass("thread-shell");
-    expect(container.querySelector(".unauthenticated-brand")).not.toBeInTheDocument();
-    expect(container.querySelector(".thread-header .school-logo")).toBeInTheDocument();
-  });
-
-  it("opens the reusable login dialog when an unauthenticated student sends a question", async () => {
+  it("redirects a logged-out browser to the full-page account login", async () => {
     render(<App />);
 
-    const question = await screen.findByLabelText("学习问题");
-    fireEvent.change(question, { target: { value: "什么是 TF-IDF？" } });
-    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(await screen.findByRole("heading", { name: "NLP 学习平台" })).toBeVisible();
+    expect(screen.getByLabelText("用户名")).toBeVisible();
+    expect(screen.queryByLabelText("学习问题")).not.toBeInTheDocument();
+  });
 
-    expect(await screen.findByRole("heading", { name: "登录 Nova" })).toBeVisible();
+  it("does not expose the old student-only login dialog before authentication", async () => {
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "NLP 学习平台" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "登录 Nova" })).not.toBeInTheDocument();
   });
 });

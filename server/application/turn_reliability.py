@@ -9,7 +9,15 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.infrastructure.mysql.models import DeadLetterModel, OutboxMessageModel, ToolCallModel, TurnCancellationModel, TurnEventModel, TurnModel
+from server.infrastructure.mysql.models import (
+    ConversationModel,
+    DeadLetterModel,
+    OutboxMessageModel,
+    ToolCallModel,
+    TurnCancellationModel,
+    TurnEventModel,
+    TurnModel,
+)
 
 
 def utc_now() -> datetime:
@@ -27,10 +35,53 @@ class TurnReliabilityService:
         await session.flush()
         return message
 
-    async def claim_turn(self, session: AsyncSession, *, turn_id: str, worker_id: str, lease_s: int) -> int | None:
-        turn = await session.scalar(select(TurnModel).where(TurnModel.id == turn_id).with_for_update())
+    async def claim_turn(
+        self,
+        session: AsyncSession,
+        *,
+        turn_id: str,
+        worker_id: str,
+        lease_s: int,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> int | None:
+        statement = (
+            select(TurnModel)
+            .join(ConversationModel, ConversationModel.id == TurnModel.conversation_id)
+            .where(TurnModel.id == turn_id)
+        )
+        if user_id is not None:
+            statement = statement.where(
+                TurnModel.user_id == user_id,
+                ConversationModel.owner_user_id == user_id,
+            )
+        if workspace_id is not None:
+            statement = statement.where(
+                TurnModel.workspace_id == workspace_id,
+                ConversationModel.workspace_id == workspace_id,
+            )
+        turn = await session.scalar(statement.with_for_update())
         now = utc_now()
-        if turn is None or (turn.status != "accepted" and not (turn.status == "running" and turn.lease_expires_at and turn.lease_expires_at < now)):
+        if turn is None:
+            return None
+        cancellation = await session.scalar(
+            select(TurnCancellationModel).where(
+                TurnCancellationModel.turn_id == turn.id
+            )
+        )
+        if isinstance(cancellation, TurnCancellationModel):
+            if turn.status in {"accepted", "running"}:
+                turn.status = "cancelled"
+                turn.completed_at = now
+                turn.claimed_by = None
+                turn.lease_expires_at = None
+                await session.flush()
+            return None
+        if turn.status != "accepted" and not (
+            turn.status == "running"
+            and turn.lease_expires_at
+            and turn.lease_expires_at < now
+        ):
             return None
         turn.status = "running"
         turn.claim_generation += 1
@@ -40,14 +91,27 @@ class TurnReliabilityService:
         await session.flush()
         return turn.claim_generation
 
-    async def heartbeat(self, session: AsyncSession, *, turn_id: str, generation: int, worker_id: str, lease_s: int) -> None:
+    async def heartbeat(self, session: AsyncSession, *, turn_id: str, generation: int, worker_id: str, lease_s: int) -> bool:
         turn = await session.scalar(select(TurnModel).where(TurnModel.id == turn_id).with_for_update())
         if turn is None or turn.claim_generation != generation or turn.claimed_by != worker_id:
             raise LostTurnClaimError(turn_id)
+        cancellation = await session.scalar(
+            select(TurnCancellationModel).where(
+                TurnCancellationModel.turn_id == turn_id
+            )
+        )
+        if isinstance(cancellation, TurnCancellationModel):
+            turn.status = "cancelled"
+            turn.completed_at = utc_now()
+            turn.claimed_by = None
+            turn.lease_expires_at = None
+            await session.flush()
+            return False
         now = utc_now()
         turn.heartbeat_at = now
         turn.lease_expires_at = now + timedelta(seconds=lease_s)
         await session.flush()
+        return True
 
     async def recover_stuck_turns(self, session: AsyncSession, *, max_retries: int = 3) -> list[str]:
         now = utc_now()

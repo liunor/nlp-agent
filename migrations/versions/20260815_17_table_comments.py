@@ -34,17 +34,31 @@ def _mysql_string_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _set_table_comments(*, clear: bool) -> None:
+def upgrade() -> None:
+    connection = op.get_bind()
     for table_name, table_comment in ALL_TABLE_COMMENTS.items():
+        # Skip tables that haven't been created yet at this point in the
+        # migration chain. Such tables are expected to set their own COMMENT
+        # either via ``op.create_table(comment=...)`` in their own migration
+        # (see ``20260817_17_class_join_requests``) or via a dedicated
+        # ``*_table_comments`` migration after the merge heads (see
+        # ``20260817_18_feedback_table_comments``). Without this guard the
+        # bulk ALTER fails on MySQL with "Table doesn't exist" whenever a new
+        # table is added to ``TABLE_COMMENTS`` after this revision.
+        if not connection.dialect.has_table(connection, table_name):
+            continue
         op.execute(
             f"ALTER TABLE `{table_name}` COMMENT = "
-            f"{_mysql_string_literal('' if clear else table_comment)}"
+            f"{_mysql_string_literal(table_comment)}"
         )
 
 
-def upgrade() -> None:
-    _set_table_comments(clear=False)
-
-
 def downgrade() -> None:
-    _set_table_comments(clear=True)
+    connection = op.get_bind()
+    for table_name in ALL_TABLE_COMMENTS:
+        if not connection.dialect.has_table(connection, table_name):
+            continue
+        op.execute(
+            f"ALTER TABLE `{table_name}` COMMENT = "
+            f"{_mysql_string_literal('')}"
+        )

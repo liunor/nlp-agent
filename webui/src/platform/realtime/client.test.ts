@@ -22,13 +22,14 @@ describe("StudentSocket", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses the versioned backend command envelope and session subscription", () => {
+  it("uses the versioned backend command envelope and session subscription", async () => {
     const instances: FakeWebSocket[] = [];
     vi.stubGlobal("WebSocket", class extends FakeWebSocket {
       constructor(url: string) { super(url); instances.push(this); }
     });
-    const client = new StudentSocket(vi.fn(), vi.fn());
+    const client = new StudentSocket(vi.fn(), vi.fn(), async () => "test-ticket");
     client.setSession("session_1");
+    await Promise.resolve();
     const instance = instances[0];
     instance.open();
     expect(instance.sent).toEqual([]);
@@ -43,7 +44,7 @@ describe("StudentSocket", () => {
     client.close();
   });
 
-  it("subscribes to a newly created session when randomUUID is unavailable over HTTP", () => {
+  it("subscribes to a newly created session when randomUUID is unavailable over HTTP", async () => {
     const instances: FakeWebSocket[] = [];
     vi.stubGlobal("crypto", {
       getRandomValues: (bytes: Uint8Array) => {
@@ -55,8 +56,9 @@ describe("StudentSocket", () => {
       constructor(url: string) { super(url); instances.push(this); }
     });
 
-    const client = new StudentSocket(vi.fn(), vi.fn());
+    const client = new StudentSocket(vi.fn(), vi.fn(), async () => "test-ticket");
     client.setSession("session_http");
+    await Promise.resolve();
     instances[0].open();
 
     expect(() => instances[0].onmessage?.({
@@ -69,20 +71,22 @@ describe("StudentSocket", () => {
     client.close();
   });
 
-  it("resends an idempotent chat command when the connection drops before its acknowledgement", () => {
+  it("resends an idempotent chat command when the connection drops before its acknowledgement", async () => {
     vi.useFakeTimers();
     const instances: FakeWebSocket[] = [];
     vi.stubGlobal("WebSocket", class extends FakeWebSocket {
       constructor(url: string) { super(url); instances.push(this); }
     });
-    const client = new StudentSocket(vi.fn(), vi.fn());
+    const client = new StudentSocket(vi.fn(), vi.fn(), async () => "test-ticket");
     client.setSession("session_1");
+    await Promise.resolve();
     instances[0].open();
     instances[0].onmessage?.({ data: JSON.stringify({ v: "1", type: "connection.ready", timestamp: new Date().toISOString(), payload: {} }) });
     client.sendChat("session_1", "hello", "request_1");
 
     instances[0].disconnect();
     vi.advanceTimersByTime(500);
+    await Promise.resolve();
     instances[1].open();
     instances[1].onmessage?.({ data: JSON.stringify({ v: "1", type: "connection.ready", timestamp: new Date().toISOString(), payload: {} }) });
 
@@ -91,14 +95,15 @@ describe("StudentSocket", () => {
     client.close();
   });
 
-  it("does not resend a chat command that the server already acknowledged", () => {
+  it("does not resend a chat command that the server already acknowledged", async () => {
     vi.useFakeTimers();
     const instances: FakeWebSocket[] = [];
     vi.stubGlobal("WebSocket", class extends FakeWebSocket {
       constructor(url: string) { super(url); instances.push(this); }
     });
-    const client = new StudentSocket(vi.fn(), vi.fn());
+    const client = new StudentSocket(vi.fn(), vi.fn(), async () => "test-ticket");
     client.setSession("session_1");
+    await Promise.resolve();
     instances[0].open();
     instances[0].onmessage?.({ data: JSON.stringify({ v: "1", type: "connection.ready", timestamp: new Date().toISOString(), payload: {} }) });
     client.sendChat("session_1", "hello", "request_1");
@@ -106,6 +111,7 @@ describe("StudentSocket", () => {
 
     instances[0].disconnect();
     vi.advanceTimersByTime(500);
+    await Promise.resolve();
     instances[1].open();
     instances[1].onmessage?.({ data: JSON.stringify({ v: "1", type: "connection.ready", timestamp: new Date().toISOString(), payload: {} }) });
 

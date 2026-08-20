@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { useStudentWorkspace } from "./useStudentWorkspace";
 import { api } from "@/platform/http/api";
+import { AuthProvider } from "@/platform/auth/AuthContext";
 
 const runtime = {
   default_model_profile: "deepseek",
@@ -26,6 +27,8 @@ vi.mock("@/platform/http/api", () => ({
     getSettings: getSettingsMock,
     createSession: createSessionMock,
     deleteSession: deleteSessionMock,
+    login: vi.fn(),
+    logout: vi.fn(async () => undefined),
     updateSettings: vi.fn(),
   },
 }));
@@ -220,5 +223,24 @@ describe("useStudentWorkspace settings", () => {
     expect(result.current.activeSessionId).toBe("session-fresh");
     expect(sendChatMock).toHaveBeenCalledTimes(1);
     expect(sendChatMock.mock.calls[0][0]).toBe("session-fresh");
+  });
+
+  it("uses the global auth session and logout boundary when mounted in the application", async () => {
+    ensureAuthMock.mockResolvedValue({
+      user_id: "user-1",
+      csrf_token: "csrf-1",
+      workspace_ids: ["default"],
+      roles: ["guest"],
+      expires_at: 1_900_000_000,
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => <AuthProvider>{children}</AuthProvider>;
+    const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+    await act(async () => { await result.current.logout(); });
+
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(result.current.bootStatus).toBe("unauthenticated");
+    expect(result.current.authSession).toBeNull();
   });
 });

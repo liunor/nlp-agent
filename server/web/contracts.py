@@ -24,6 +24,7 @@ class CreateSessionBody(StrictModel):
 class LoginBody(StrictModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=512)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class FeedbackBody(StrictModel):

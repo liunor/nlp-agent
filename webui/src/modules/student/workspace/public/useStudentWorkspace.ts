@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "@/platform/http/api";
+import { useOptionalAuth } from "@/platform/auth/AuthContext";
 import { StudentSocket } from "@/platform/realtime/client";
 import type { AuthSession, ChatMessage, RuntimeModelProfile } from "@/shared/types";
 
@@ -13,6 +14,7 @@ import { useTurnSender } from "../internal/send-turn";
 import { useTurnHistory } from "../internal/turn-history";
 
 export function useStudentWorkspace() {
+  const globalAuth = useOptionalAuth();
   const {
     preferences,
     preferencesRef,
@@ -82,6 +84,8 @@ export function useStudentWorkspace() {
 
   useWorkspaceBootstrap({
     authRevision,
+    authProviderPresent: globalAuth !== null,
+    initialSession: globalAuth?.user ?? undefined,
     loadSessions,
     initializeSettings,
     setModelProfiles,
@@ -136,7 +140,8 @@ export function useStudentWorkspace() {
     setAuthRevision((current) => current + 1);
   }, []);
   const logout = useCallback(async () => {
-    await api.logout();
+    if (globalAuth) await globalAuth.logout();
+    else await api.logout();
     socketRef.current?.close();
     setAuthSession(null);
     setSessions([]);
@@ -144,7 +149,7 @@ export function useStudentWorkspace() {
     setMessages([]);
     setModelProfiles({});
     setBootStatus("unauthenticated");
-  }, [setActiveSessionId, setSessions]);
+  }, [globalAuth, setActiveSessionId, setSessions]);
 
   return {
     sessions,

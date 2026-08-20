@@ -1,4 +1,4 @@
-"""Same-origin authentication with fixed credentials and revocable web sessions."""
+"""Legacy same-origin authentication adapter used only by injected tests."""
 
 from __future__ import annotations
 
@@ -125,15 +125,17 @@ class SameOriginSessionAuth:
         }
 
     @classmethod
-    def from_config(cls, config: dict) -> "SameOriginSessionAuth":
+    def from_config(
+        cls, config: dict, *, include_credentials: bool = True
+    ) -> "SameOriginSessionAuth":
         return cls(
             secret=str(config.get("auth_secret", "")),
             cookie_name=str(config.get("cookie_name", "nlp_session")),
             ttl_s=int(config.get("cookie_ttl_s", 86_400)),
             secure=bool(config.get("cookie_secure", False)),
             allowed_origins=list(config.get("allowed_origins", [])),
-            username=str(config.get("auth_username", "")),
-            password_hash=str(config.get("auth_password_hash", "")),
+            username=str(config.get("auth_username", "")) if include_credentials else "",
+            password_hash=str(config.get("auth_password_hash", "")) if include_credentials else "",
             roles=frozenset(
                 item.strip()
                 for item in str(

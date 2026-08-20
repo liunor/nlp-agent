@@ -34,7 +34,7 @@ class AuthenticatedPrincipal(BaseModel):
 
     @property
     def is_admin(self) -> bool:
-        return "admin" in self.roles
+        return bool({"admin", "developer"} & self.roles)
 
     def can_access(self, context: SessionContext) -> bool:
         return self.user_id == context.user_id and (

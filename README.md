@@ -56,10 +56,17 @@ notepad .env
 
 ```dotenv
 DEEPSEEK_API_KEY=你的模型服务密钥
-NLP_AGENT_WEB_SECRET=你自己生成的一段随机长字符串
+NLP_AGENT_DATABASE_URL=mysql+aiomysql://用户:密码@主机:3306/nlp_agent?charset=utf8mb4
 ```
 
 保存后关闭记事本。`.env` 只用于本机配置，不要提交到 Git。
+
+数据库迁移完成后，首次部署使用交互式命令创建唯一的开发者账号；账号
+密码不会写入仓库或环境文件：
+
+```powershell
+uv run python main.py bootstrap-developer
+```
 
 ### 4. 启动 Nova Web
 
@@ -103,8 +110,8 @@ Copy-Item .env-example .env
 notepad .env
 ```
 
-至少替换 `DEEPSEEK_API_KEY`、`NLP_AGENT_WEB_SECRET`、
-`NLP_AGENT_MYSQL_PASSWORD`、`NLP_AGENT_MYSQL_ROOT_PASSWORD`，并将
+至少替换 `DEEPSEEK_API_KEY`、`NLP_AGENT_MYSQL_PASSWORD`、
+`NLP_AGENT_MYSQL_ROOT_PASSWORD`，并将
 `SERVER_IP_OR_DOMAIN` 替换为服务器实际内网 IP 或域名。部署服务器的
 `NLP_AGENT_DATABASE_URL` 必须指向该服务器的 MySQL：同一 Compose 部署使用
 `mysql:3306`；托管数据库则改为其私网地址。不要填开发机的数据库地址。

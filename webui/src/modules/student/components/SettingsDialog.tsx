@@ -50,8 +50,8 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], on
       .catch(() => setReleaseNotesError(true));
   }, [open, section, releaseNotes, releaseNotesAttempt]);
   if (!open) return null;
-  const canTeach = roles.includes("teacher") || roles.includes("developer") || roles.includes("admin");
-  const canDevelop = roles.includes("developer") || roles.includes("admin");
+  const canTeach = roles.includes("teacher") || roles.includes("developer");
+  const canDevelop = roles.includes("developer");
   const updateLearning = (patch: Partial<LearningContext>) => onLearningContextChange({ ...learningContext, ...patch });
 
   return (

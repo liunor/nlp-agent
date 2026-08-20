@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 
-from core.learning import ExerciseState, LearningContext, LearningProgress
+from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
 from gateway.contracts import GatewayEvent, GatewayEventType, TeachingConfigurationError, TurnRecord, TurnStatus
 
 
@@ -46,6 +46,18 @@ class MySQLGatewayRepository:
         user_id: str,
         title: str,
     ) -> None:
+        existing = connection.execute(
+            text(
+                "SELECT workspace_id,owner_user_id FROM nlp_conversations "
+                "WHERE id=:id FOR UPDATE"
+            ),
+            {"id": session_id},
+        ).mappings().first()
+        if existing is not None and (
+            existing["workspace_id"] != workspace_id
+            or existing["owner_user_id"] != user_id
+        ):
+            raise PermissionError("conversation belongs to another principal")
         connection.execute(
             text(
                 "INSERT INTO nlp_conversations(id,workspace_id,owner_user_id,title,status) "
@@ -103,6 +115,39 @@ class MySQLGatewayRepository:
         row = self._row(turn_id)
         return self._record(row) if row else None
 
+    def request_turn_cancellation(
+        self, *, turn_id: str, requested_by: str, reason: str = "user_requested"
+    ) -> TurnRecord | None:
+        """Record cancellation in MySQL before any transport-level signal."""
+        with self._engine.begin() as c:
+            row = c.execute(
+                text("SELECT status FROM nlp_turns WHERE id=:id FOR UPDATE"),
+                {"id": turn_id},
+            ).mappings().first()
+            if row is None:
+                return None
+            c.execute(
+                text(
+                    "INSERT INTO nlp_turn_cancellations(turn_id,requested_by,reason) "
+                    "VALUES(:turn_id,:requested_by,:reason) "
+                    "ON DUPLICATE KEY UPDATE turn_id=VALUES(turn_id)"
+                ),
+                {
+                    "turn_id": turn_id,
+                    "requested_by": requested_by,
+                    "reason": reason[:500],
+                },
+            )
+            if row["status"] in {"accepted", "running"}:
+                c.execute(
+                    text(
+                        "UPDATE nlp_turns SET status='cancelled', "
+                        "completed_at=UTC_TIMESTAMP(6) WHERE id=:id"
+                    ),
+                    {"id": turn_id},
+                )
+        return self.get_turn(turn_id)
+
     def active_turn_for_session(self, session_id: str, *, exclude_turn_id: str | None = None) -> TurnRecord | None:
         with self._engine.connect() as c:
             row = c.execute(text("SELECT * FROM nlp_turns WHERE conversation_id=:s AND status IN ('accepted','running') AND (:exclude IS NULL OR id<>:exclude) ORDER BY created_at DESC LIMIT 1"), {"s": session_id, "exclude": exclude_turn_id}).mappings().first()
@@ -124,7 +169,7 @@ class MySQLGatewayRepository:
     def events_after(self, turn_id: str, *, after_sequence: int = 0, limit: int = 500) -> list[GatewayEvent]:
         with self._engine.connect() as c:
             rows = c.execute(text("SELECT e.*, t.conversation_id FROM nlp_turn_events e JOIN nlp_turns t ON t.id=e.turn_id WHERE e.turn_id=:id AND e.sequence>:after ORDER BY e.sequence LIMIT :limit"), {"id": turn_id, "after": max(0, after_sequence), "limit": min(max(1, limit), 2000)}).mappings().all()
-        return [GatewayEvent(event_id=r["id"], turn_id=turn_id, session_id=r["conversation_id"], sequence=r["sequence"], type=GatewayEventType(r["event_type"]), created_at=r["created_at"], payload=r["payload_json"] or {}) for r in rows]
+        return [GatewayEvent(event_id=r["id"], turn_id=turn_id, session_id=r["conversation_id"], sequence=r["sequence"], type=GatewayEventType(r["event_type"]), created_at=r["created_at"], payload=self._json(r["payload_json"])) for r in rows]
 
     def ensure_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None) -> GatewayEvent:
         existing = next((e for e in self.events_after(turn_id, limit=2000) if e.type == event_type), None)
@@ -134,6 +179,117 @@ class MySQLGatewayRepository:
         with self._engine.connect() as c:
             rows = c.execute(text("SELECT * FROM nlp_turns WHERE conversation_id=:s ORDER BY created_at DESC LIMIT :limit"), {"s": session_id, "limit": min(max(1, limit), 500)}).mappings().all()
         return [self._record(dict(r)) for r in rows]
+
+    def list_question_turns(self, *, workspace_id: str, since: str) -> list[dict[str, Any]]:
+        """Teacher read model: structured question rows for analytics.
+
+        Deliberately omits ``input_text`` so teacher analytics can only report
+        aggregates, never the raw student question text.  The time window is the
+        only bound: aggregation must reflect every turn, not a sampled prefix.
+        """
+        with self._engine.connect() as c:
+            rows = c.execute(
+                text(
+                    "SELECT conversation_id,user_id,error_kind,created_at,learning_state_json "
+                    "FROM nlp_turns WHERE workspace_id=:w AND created_at>=:since "
+                    "ORDER BY created_at"
+                ),
+                {"w": workspace_id, "since": since},
+            ).mappings().all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            context = (self._json(row["learning_state_json"] or {}) or {}).get("context") or {}
+            created = row["created_at"]
+            day = created.strftime("%Y-%m-%d") if hasattr(created, "strftime") else str(created)[:10]
+            result.append(
+                {
+                    "session_id": row["conversation_id"],
+                    "user_id": row["user_id"],
+                    "has_error": bool(row["error_kind"]),
+                    "topic_id": context.get("topic_id"),
+                    "level": context.get("level"),
+                    "mode": context.get("mode"),
+                    "day": day,
+                }
+            )
+        return result
+
+    def exercise_evidence_stats(self, *, workspace_id: str, since: str, limit: int = 10_000) -> list[dict[str, Any]]:
+        """Teacher read model: one row per graded exercise item with topic/knowledge-point refs."""
+        with self._engine.connect() as c:
+            rows = c.execute(
+                text(
+                    "SELECT e.normalized_score,e.passed,e.blueprint_snapshot_json,s.topic_id,s.mode "
+                    "FROM nlp_learning_evidence e "
+                    "JOIN nlp_exercise_sessions s ON s.id=e.exercise_session_id "
+                    "WHERE s.workspace_id=:w AND s.completed_at>=:since "
+                    "ORDER BY s.completed_at DESC LIMIT :limit"
+                ),
+                {"w": workspace_id, "since": since, "limit": min(max(1, limit), 10_000)},
+            ).mappings().all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            blueprint = self._json(row["blueprint_snapshot_json"] or {})
+            result.append(
+                {
+                    "topic_id": row["topic_id"],
+                    "mode": row["mode"],
+                    "knowledge_point_ids": knowledge_point_ids(blueprint),
+                    "score": int(row["normalized_score"]),
+                    "passed": bool(row["passed"]),
+                }
+            )
+        return result
+
+    def exercise_criterion_stats(self, *, workspace_id: str, since: str, limit: int = 20_000) -> list[dict[str, Any]]:
+        """Teacher read model: per-attempt rubric matches for criterion hit-rate aggregation."""
+        with self._engine.connect() as c:
+            rows = c.execute(
+                text(
+                    "SELECT a.rubric_matches_json,s.topic_id,s.blueprint_snapshot_json "
+                    "FROM nlp_exercise_attempts a "
+                    "JOIN nlp_exercise_questions q ON q.id=a.exercise_question_id "
+                    "JOIN nlp_exercise_sessions s ON s.id=q.exercise_session_id "
+                    "WHERE s.workspace_id=:w AND s.completed_at>=:since "
+                    "ORDER BY s.completed_at DESC LIMIT :limit"
+                ),
+                {"w": workspace_id, "since": since, "limit": min(max(1, limit), 50_000)},
+            ).mappings().all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            blueprint = self._json(row["blueprint_snapshot_json"] or {})
+            matches = self._json(row["rubric_matches_json"] or {})
+            result.append(
+                {
+                    "topic_id": row["topic_id"],
+                    "knowledge_point_ids": knowledge_point_ids(blueprint),
+                    "matches": [m for m in matches if isinstance(m, dict)],
+                }
+            )
+        return result
+
+    def guided_session_stats(self, *, workspace_id: str, since: str, limit: int = 10_000) -> list[dict[str, Any]]:
+        """Teacher read model: misconception counts per guided session (active + recent completed)."""
+        with self._engine.connect() as c:
+            rows = c.execute(
+                text(
+                    "SELECT topic_id,state_json FROM nlp_guided_sessions "
+                    "WHERE workspace_id=:w AND (completed_at>=:since OR completed_at IS NULL) "
+                    "ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"w": workspace_id, "since": since, "limit": min(max(1, limit), 10_000)},
+            ).mappings().all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            state = self._json(row["state_json"] or {}) or {}
+            misconceptions = state.get("misconceptions") or []
+            result.append(
+                {
+                    "topic_id": row["topic_id"],
+                    "misconception_count": len(misconceptions) if isinstance(misconceptions, list) else 0,
+                }
+            )
+        return result
 
     def latest_learning_state(self, session_id: str):
         turns = [t for t in self.list_turns(session_id) if not (t.status == TurnStatus.FAILED and t.error_kind == "turn_conflict")]
@@ -362,7 +518,11 @@ class MySQLGatewayRepository:
             topics = [
                 {
                     "id": row["id"], "name": row["name"], "description": row["description"],
-                    "status": row["status"], "sort_order": row["sort_order"],
+                    # ``sort_order`` is persisted for deterministic storage
+                    # ordering, but it is not part of the public CourseTopic
+                    # contract.  Keep the transport shape aligned with the
+                    # SQLite repository and the strict teacher schemas.
+                    "status": row["status"],
                     "knowledge_points": points_by_topic.get(str(row["id"]), []),
                 }
                 for row in topic_rows
@@ -374,7 +534,11 @@ class MySQLGatewayRepository:
         blueprints = {"exercise": [], "review": [], "guided": []}
         for row in blueprint_rows:
             blueprint = self._json(row["payload_json"])
-            blueprint.setdefault("kind", row["kind"])
+            # ``kind`` is the normalized table discriminator, not a public
+            # blueprint field.  Older payloads may not contain it, while newer
+            # writes store it for persistence queries; strip both forms at the
+            # repository boundary before Pydantic validation.
+            blueprint.pop("kind", None)
             blueprints.get(str(row["kind"]), []).append(blueprint)
         value = {
             "workspace_id": workspace_id,

@@ -22,6 +22,7 @@ from core.observability.service import ObservabilityService
 from server.infrastructure.mysql import MySQLRuntime
 from server.rbac.service import rbac_service
 from server.web.auth import AuthenticationError, CsrfRejectedError, OriginRejectedError, SameOriginSessionAuth, SessionClaims
+from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 from server.monitor.reset import LocalRuntimeResetter
 
 
@@ -43,11 +44,20 @@ def create_monitor_app(
     # An explicitly injected auth adapter is a self-contained/test deployment
     # seam. Production construction uses the configured adapter and resolves
     # roles from MySQL on every request.
-    use_persisted_rbac = auth is None
+    auth_injected = auth is not None
     config = settings.monitor_runtime
     runtime = runtime or TelemetryRuntime()
     service = ObservabilityService(runtime)
-    auth = auth or SameOriginSessionAuth.from_config(config)
+    auth = auth or SameOriginSessionAuth.from_config(config, include_credentials=False)
+    # The monitor is a separate process, not a separate identity system. It
+    # accepts the control-plane browser session and only applies its own
+    # origin allow-list to ticket issuance. Keeping the cookie name and TTL in
+    # the web runtime prevents a user from logging in on 8765 and silently
+    # becoming unauthenticated on 8766.
+    database_config = dict(settings.web_runtime)
+    database_config["allowed_origins"] = list(config.get("allowed_origins", []))
+    database_auth = DatabaseSessionAuth.from_config(database_config)
+    cookie_secure = database_auth.secure if not auth_injected else auth.secure
     resetter = resetter or LocalRuntimeResetter(runtime)
     rbac_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
 
@@ -71,7 +81,10 @@ def create_monitor_app(
         redoc_url=None,
         lifespan=lifespan,
     )
-    cookie_auth = APIKeyCookie(name=auth.cookie_name, auto_error=False)
+    cookie_auth = APIKeyCookie(
+        name=auth.cookie_name if auth_injected else database_auth.cookie_name,
+        auto_error=False,
+    )
     # An explicit allowed_hosts override (tests/local deployments) wins over the
     # config-derived whitelist so the app never depends on a gitignored .env
     # override of NLP_AGENT_MONITOR_ALLOWED_HOSTS; otherwise fall back to the
@@ -96,32 +109,53 @@ def create_monitor_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    def claims(token: Annotated[str | None, Security(cookie_auth)]) -> SessionClaims:
-        return auth.authenticate(token)
+    async def claims(
+        token: Annotated[str | None, Security(cookie_auth)],
+    ) -> SessionClaims | DatabaseSessionClaims:
+        if auth_injected:
+            return auth.authenticate(token)
+        return await database_auth.authenticate(rbac_runtime.session_factory, token)
 
-    async def principal(session: Annotated[SessionClaims, Depends(claims)]) -> AuthenticatedPrincipal:
-        if session.roles == frozenset({"guest"}) or not use_persisted_rbac:
-            identity = session.principal()
-        else:
+    async def principal(
+        session: Annotated[SessionClaims | DatabaseSessionClaims, Depends(claims)]
+    ) -> AuthenticatedPrincipal:
+        if isinstance(session, DatabaseSessionClaims):
             async with rbac_runtime.session_factory() as db_session:
-                identity = await rbac_service.principal_for_username(db_session, session.user_id)
+                identity = await rbac_service.principal_for_user_id(
+                    db_session, session.user_id
+                )
+        else:
+            # An injected SameOriginSessionAuth is the self-contained adapter
+            # used by local/test monitor deployments.  Its signed claims are
+            # already the authoritative identity for that deployment; trying
+            # to reload a synthetic user such as ``local`` from MySQL makes
+            # the compatibility seam unusable.  Production always arrives as
+            # DatabaseSessionClaims and takes the branch above.
+            identity = session.principal()
         authorization_service.require(identity, Permission.SYSTEM_RUNTIME_MONITOR)
         return identity
 
-    def write_access(
+    async def write_access(
         request: Request,
-        session: Annotated[SessionClaims, Depends(claims)],
+        session: Annotated[SessionClaims | DatabaseSessionClaims, Depends(claims)],
+        identity: Annotated[AuthenticatedPrincipal, Depends(principal)],
         csrf: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
-    ) -> SessionClaims:
-        auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
-        auth.require_csrf(session, csrf)
-        authorization_service.require(
-            session.principal(), Permission.SYSTEM_RUNTIME_MONITOR
-        )
+    ) -> SessionClaims | DatabaseSessionClaims:
+        if isinstance(session, DatabaseSessionClaims):
+            database_auth.require_same_origin(
+                request.headers.get("origin"), request.headers.get("host")
+            )
+            database_auth.require_csrf(session, csrf)
+        else:
+            auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            auth.require_csrf(session, csrf)
+        authorization_service.require(identity, Permission.SYSTEM_RUNTIME_MONITOR)
         return session
 
     Principal = Annotated[AuthenticatedPrincipal, Depends(principal)]
-    WriteClaims = Annotated[SessionClaims, Depends(write_access)]
+    WriteClaims = Annotated[
+        SessionClaims | DatabaseSessionClaims, Depends(write_access)
+    ]
 
     @app.exception_handler(AuthenticationError)
     async def auth_error(_request: Request, _error: AuthenticationError):
@@ -129,7 +163,7 @@ def create_monitor_app(
 
     @app.exception_handler(AccessDeniedError)
     async def access_error(_request: Request, _error: AccessDeniedError):
-        return _problem(403, "forbidden", "Administrator role required")
+        return _problem(403, "forbidden", "Developer monitor permission required")
 
     @app.exception_handler(OriginRejectedError)
     async def origin_error(_request: Request, _error: OriginRejectedError):
@@ -149,14 +183,54 @@ def create_monitor_app(
 
     @app.post("/api/v1/auth/session", status_code=201, tags=["auth"])
     async def create_session(request: Request, response: Response):
+        if not auth_injected:
+            raise AuthenticationError(
+                "monitor sessions are created through the control-plane login"
+            )
         auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
         token, session = auth.issue()
-        response.set_cookie(auth.cookie_name, token, max_age=auth.ttl_s, httponly=True, secure=auth.secure, samesite="strict", path="/")
+        response.set_cookie(auth.cookie_name, token, max_age=auth.ttl_s, httponly=True, secure=cookie_secure, samesite="lax", path="/")
         return {"user_id": session.user_id, "roles": sorted(session.roles), "csrf_token": session.csrf_token, "expires_at": session.expires_at}
 
     @app.get("/api/v1/auth/session", tags=["auth"])
-    async def get_session(session: Annotated[SessionClaims, Depends(claims)]):
-        return {"user_id": session.user_id, "roles": sorted(session.roles), "csrf_token": session.csrf_token, "expires_at": session.expires_at}
+    async def get_session(
+        session: Annotated[SessionClaims | DatabaseSessionClaims, Depends(claims)],
+        identity: Principal,
+    ):
+        if isinstance(session, DatabaseSessionClaims):
+            csrf_token = await database_auth.rotate_csrf(
+                rbac_runtime.session_factory, session
+            )
+            session = DatabaseSessionClaims(
+                **{**session.__dict__, "csrf_token": csrf_token}
+            )
+        return {
+            "user_id": identity.user_id,
+            "roles": sorted(identity.roles),
+            "permissions": sorted(identity.permissions),
+            "csrf_token": session.csrf_token,
+            "expires_at": session.expires_at_epoch
+            if isinstance(session, DatabaseSessionClaims)
+            else session.expires_at,
+        }
+
+    @app.post("/api/v1/auth/ws-ticket", tags=["auth"])
+    async def create_ws_ticket(
+        request: Request,
+        session: WriteClaims,
+    ):
+        if not isinstance(session, DatabaseSessionClaims):
+            return {"ticket": "legacy-injected-session", "expires_in": 0}
+        origin = request.headers.get("origin")
+        if not origin:
+            raise OriginRejectedError("Origin header is required")
+        ticket = await database_auth.issue_ws_ticket(
+            rbac_runtime.session_factory,
+            session,
+            origin=origin,
+            host=request.headers.get("host"),
+        )
+        return {"ticket": ticket, "expires_in": 60}
 
     @app.get("/api/v1/observability/overview", tags=["observability"])
     async def overview(identity: Principal, days: int = Query(30, ge=1, le=365)):
@@ -205,14 +279,22 @@ def create_monitor_app(
     @app.websocket("/ws/observability")
     async def live_events(websocket: WebSocket):
         try:
-            auth.require_same_origin(websocket.headers.get("origin"), websocket.headers.get("host"))
-            session = auth.authenticate(websocket.cookies.get(auth.cookie_name))
-            if use_persisted_rbac:
+            if not auth_injected:
+                origin = websocket.headers.get("origin")
+                database_auth.require_same_origin(origin, websocket.headers.get("host"))
+                session = await database_auth.consume_ws_ticket(
+                    rbac_runtime.session_factory,
+                    websocket.query_params.get("ticket"),
+                    origin=origin,
+                    host=websocket.headers.get("host"),
+                )
                 async with rbac_runtime.session_factory() as db_session:
-                    identity = await rbac_service.principal_for_username(
+                    identity = await rbac_service.principal_for_user_id(
                         db_session, session.user_id
                     )
             else:
+                auth.require_same_origin(websocket.headers.get("origin"), websocket.headers.get("host"))
+                session = auth.authenticate(websocket.cookies.get(auth.cookie_name))
                 identity = session.principal()
             authorization_service.require(identity, Permission.SYSTEM_RUNTIME_MONITOR)
         except AuthenticationError:

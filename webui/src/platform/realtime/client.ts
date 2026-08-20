@@ -1,5 +1,6 @@
 import type { ServerEvent } from "@/shared/types";
 import { createUuid } from "@/shared/utils/uuid";
+import { api } from "@/platform/http/api";
 
 type EventHandler = (event: ServerEvent) => void;
 type StatusHandler = (status: "connecting" | "connected" | "reconnecting" | "offline") => void;
@@ -21,18 +22,40 @@ export class StudentSocket {
   private readonly lastSequences = new Map<string, number>();
   private readonly pending: Command[] = [];
   private readonly unacknowledgedChats = new Map<string, Command>();
+  private connecting = false;
 
   constructor(
     private readonly onEvent: EventHandler,
     private readonly onStatus: StatusHandler,
+    private readonly ticketProvider: () => Promise<string> = async () => (await api.createWsTicket()).ticket,
   ) {}
 
   connect(): void {
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) return;
+    if (this.connecting) return;
     this.stopped = false;
     this.onStatus(this.reconnectAttempt ? "reconnecting" : "connecting");
+    void this.openWithTicket();
+  }
+
+  private async openWithTicket(): Promise<void> {
+    this.connecting = true;
+    let ticket: string;
+    try {
+      ticket = await this.ticketProvider();
+    } catch {
+      this.connecting = false;
+      this.onStatus("offline");
+      if (!this.stopped) {
+        const delay = Math.min(10_000, 500 * 2 ** this.reconnectAttempt++);
+        this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
+      }
+      return;
+    }
+    this.connecting = false;
+    if (this.stopped) return;
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    this.socket = new WebSocket(`${protocol}//${location.host}/ws/v1`);
+    this.socket = new WebSocket(`${protocol}//${location.host}/ws/v1?ticket=${encodeURIComponent(ticket)}`);
     this.socket.onopen = () => {
       this.reconnectAttempt = 0;
       // TCP/WebSocket upgrade succeeded, but the server still has to accept

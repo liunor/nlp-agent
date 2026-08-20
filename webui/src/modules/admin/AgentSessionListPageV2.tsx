@@ -1,0 +1,15 @@
+import { useCallback, useEffect, useState } from "react";
+import { api } from "@/platform/http/api";
+import type { SessionSummary } from "@/shared/types";
+
+export function AgentSessionListPageV2() {
+  const [items, setItems] = useState<SessionSummary[]>([]);
+  const [selected, setSelected] = useState<SessionSummary | null>(null);
+  const [turns, setTurns] = useState<Awaited<ReturnType<typeof api.listTurns>>["items"]>([]);
+  const [message, setMessage] = useState("");
+  const load = useCallback(async () => { try { setItems((await api.listSessions()).items); setMessage(""); } catch (error) { setMessage(error instanceof Error ? error.message : "加载失败"); } }, []);
+  useEffect(() => { queueMicrotask(() => void load()); }, [load]);
+  const select = async (item: SessionSummary) => { setSelected(item); try { setTurns((await api.listTurns(item.session_id)).items); } catch (error) { setMessage(error instanceof Error ? error.message : "加载会话记录失败"); } };
+  const remove = async (item: SessionSummary) => { if (!confirm(`删除 Agent 会话 ${item.session_id}？`)) return; try { await api.deleteSession(item.session_id); setSelected(null); await load(); } catch (error) { setMessage(error instanceof Error ? error.message : "删除失败"); } };
+  return <div className="space-y-6"><div><h1 className="text-2xl font-bold text-gray-900">Agent 会话</h1><p className="text-sm text-gray-500">会话、Turn 和 Checkpoint 由服务端按用户与工作区校验；页面默认只展示脱敏元数据。</p></div>{message && <div className="rounded bg-red-50 p-3 text-sm text-red-700">{message}</div>}<div className="grid gap-6 lg:grid-cols-[1fr_1.5fr]"><div className="space-y-2">{items.map((item) => <div key={item.session_id} className={`flex items-center justify-between rounded border bg-white p-3 ${selected?.session_id === item.session_id ? "border-blue-400" : "border-gray-200"}`}><button type="button" className="min-w-0 flex-1 text-left" onClick={() => void select(item)}><strong className="block truncate text-sm">{item.session_id}</strong><span className="text-xs text-gray-500">工作区 {item.workspace_id} · {item.channel}</span></button><button type="button" className="ml-3 text-xs text-red-700" onClick={() => void remove(item)}>删除</button></div>)}{!items.length && <div className="rounded border bg-white p-8 text-center text-sm text-gray-500">暂无 Agent 会话</div>}</div><section className="rounded border border-gray-200 bg-white p-4">{!selected ? <p className="py-10 text-center text-sm text-gray-500">选择会话查看 Turn 元数据</p> : <><h2 className="font-semibold">{selected.session_id}</h2><p className="text-xs text-gray-500">所有权：{selected.user_id} · 工作区：{selected.workspace_id}</p><div className="mt-4 space-y-2">{turns.map((turn) => <div key={turn.turn_id} className="rounded bg-gray-50 p-3 text-sm"><div className="flex justify-between"><strong>{turn.turn_id}</strong><span>{turn.status}</span></div><p className="mt-1 text-xs text-gray-500">创建：{turn.created_at} · {turn.completed_at ? `完成：${turn.completed_at}` : "仍在处理或未完成"}</p></div>)}{!turns.length && <p className="py-8 text-center text-sm text-gray-500">暂无 Turn</p>}</div></>}</section></div></div>;
+}

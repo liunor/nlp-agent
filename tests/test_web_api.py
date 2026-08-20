@@ -191,6 +191,24 @@ def test_guest_session_has_only_guest_capabilities(web_app):
         assert client.get("/api/v1/developer/release-notes").status_code == 403
 
 
+def test_auth_session_exposes_human_readable_account_identity(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "nova", "password": "test-password"},
+            headers={"Origin": "http://testserver"},
+        )
+        assert login.status_code == 200
+        assert login.json()["username"] == "nova"
+        assert login.json()["display_name"] == "nova"
+
+        session = client.get("/api/v1/auth/session")
+        assert session.status_code == 200
+        assert session.json()["username"] == "nova"
+        assert session.json()["display_name"] == "nova"
+
+
 def test_student_cannot_call_teacher_or_developer_control_planes(student_web_app):
     app, _engine = student_web_app
     with TestClient(app) as client:
@@ -336,9 +354,9 @@ def test_http_lifecycle_sessions_chat_settings_and_csrf(web_app, monkeypatch):
                 break
             asyncio.run(asyncio.sleep(0.001))
         assert turn["final_text"] == "answer:hello"
-        classified = client.get("/api/v1/teacher/questions?workspace_id=default").json()["items"]
-        assert classified[0]["question"] == "hello"
-        assert classified[0]["topic"] == "NLP 综合"
+        stats = client.get("/api/v1/teacher/analytics?workspace_id=default").json()
+        assert stats["summary"]["questions"] >= 1
+        assert stats["period_days"] == 30
         events = client.get(f"/api/v1/chat/turns/{turn_id}/events").json()["items"]
         assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
 

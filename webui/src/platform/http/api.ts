@@ -1,4 +1,5 @@
-import type { AuthSession, DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry, SettingsRuntime, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings } from "@/shared/types";
+import type { AuthSession, AuthorizationAuditRecord, DeveloperSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { FeedbackThread, FeedbackThreadSummary } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
 
@@ -54,6 +55,7 @@ export const api = {
     csrfToken = "";
   },
   getAuthSession: ensureAuth,
+  createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
   listSessions: () => request<{ items: SessionSummary[] }>("/sessions"),
   createSession: (workspaceId = "default") =>
     request<SessionSummary>("/sessions", {
@@ -113,4 +115,60 @@ export const api = {
   getLearningCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/learning/catalog/${encodeURIComponent(workspaceId)}`),
   getTeacherResource: (resource: "courses" | "prompts" | "reports", workspaceId = "default") =>
     request<{ items: unknown[]; status: string }>(`/teacher/${resource}?workspace_id=${encodeURIComponent(workspaceId)}`),
+
+  // ---- Admin module (用户 / 工作区 / 班级加入申请) ----
+  listUsers: (offset = 0, limit = 20, status?: string, keyword?: string, includeDeleted = false) =>
+    request<UserListResponse>(
+      `/users?offset=${offset}&limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ""}${includeDeleted ? "&include_deleted=true" : ""}`,
+    ),
+  createUser: (input: { username: string; display_name: string; password: string }) =>
+    request<UserListResponse["users"][number]>("/users", { method: "POST", body: JSON.stringify(input) }),
+  updateUser: (userId: string, input: { display_name?: string; status?: "active" | "disabled" | "locked" }) =>
+    request<UserListResponse["users"][number]>(`/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  disableUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/disable`, { method: "POST" }),
+  enableUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/enable`, { method: "POST" }),
+  restoreUser: (userId: string) =>
+    request<UserListResponse["users"][number]>(`/users/${encodeURIComponent(userId)}/restore`, { method: "POST", body: "{}" }),
+  deleteUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  revokeUserSessions: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/sessions/revoke`, { method: "POST", body: "{}" }),
+  resetUserPassword: (userId: string, new_password: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/password`, { method: "POST", body: JSON.stringify({ new_password }) }),
+  getUserRoles: (userId: string) => request<{ user_id: string; role_codes: string[] }>(`/users/${encodeURIComponent(userId)}/roles`),
+  replaceUserRoles: (userId: string, role_codes: string[]) =>
+    request<{ user_id: string; role_codes: string[] }>(`/users/${encodeURIComponent(userId)}/roles`, { method: "PUT", body: JSON.stringify({ role_codes }) }),
+  listRoles: () => request<{ items: RbacRole[] }>("/roles"),
+  createRole: (input: { code: string; name: string; description?: string }) =>
+    request<RbacRole>("/system/roles", { method: "POST", body: JSON.stringify(input) }),
+  updateRoleStatus: (roleCode: string, status: "active" | "disabled") =>
+    request<void>(`/system/roles/${encodeURIComponent(roleCode)}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  listPermissions: () => request<{ items: RbacPermission[] }>("/permissions"),
+  listRolePermissions: (roleCode: string) => request<{ role_code: string; permissions: Record<string, string[]> }>(`/system/roles/${encodeURIComponent(roleCode)}/permissions`),
+  replaceRolePermissions: (roleCode: string, permission_codes: string[], scopes: Record<string, string[]>) =>
+    request<void>(`/system/roles/${encodeURIComponent(roleCode)}/permissions`, { method: "PUT", body: JSON.stringify({ permission_codes, scopes }) }),
+  listMenus: () => request<{ items: SystemMenu[] }>("/system/menus"),
+  listVisibleMenus: () => request<{ items: SystemMenu[] }>("/system/menus/visible"),
+  replaceRoleMenus: (roleCode: string, menu_ids: string[]) =>
+    request<void>(`/system/roles/${encodeURIComponent(roleCode)}/menus`, { method: "PUT", body: JSON.stringify({ menu_ids }) }),
+  listRoleMenus: (roleCode: string) => request<{ role_code: string; menu_ids: string[] }>(`/system/roles/${encodeURIComponent(roleCode)}/menus`),
+  listAuthorizationAudit: (limit = 100, actorUserId?: string) => request<{ items: AuthorizationAuditRecord[] }>(`/audit/authorization?limit=${limit}${actorUserId ? `&actor_user_id=${encodeURIComponent(actorUserId)}` : ""}`),
+  listWorkspaces: () => request<{ workspaces: Workspace[]; total: number }>("/workspaces"),
+  listWorkspaceMembers: (workspaceId: string) =>
+    request<WorkspaceMember[]>(`/workspaces/${encodeURIComponent(workspaceId)}/members`),
+  listClassrooms: () => request<{ items: ClassroomSummary[] }>("/classrooms"),
+  listJoinRequests: (classroomId: string) =>
+    request<JoinRequestListResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-requests`),
+  approveJoinRequest: (classroomId: string, requestId: string) =>
+    request<JoinRequest>(
+      `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/approve`,
+      { method: "POST", body: "{}" },
+    ),
+  rejectJoinRequest: (classroomId: string, requestId: string) =>
+    request<JoinRequest>(
+      `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/reject`,
+      { method: "POST" },
+    ),
 };

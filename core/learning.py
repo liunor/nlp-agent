@@ -7,6 +7,17 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+def knowledge_point_ids(blueprint: dict[str, Any]) -> list[str]:
+    """Resolve knowledge-point refs from both legacy and current blueprint shapes."""
+    single = blueprint.get("knowledge_point_id")
+    if single:
+        return [str(single)]
+    many = blueprint.get("knowledge_point_ids")
+    if isinstance(many, list):
+        return [str(item) for item in many if item]
+    return []
+
+
 class LearningContext(BaseModel):
     """The learner-selected policy for one turn; never encoded into user text."""
 

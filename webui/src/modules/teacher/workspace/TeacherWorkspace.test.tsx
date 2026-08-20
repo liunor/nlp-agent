@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { GuidedBlueprintCatalogEditor } from "./TeacherCatalogManager";
 import { TeacherWorkspace } from "./TeacherWorkspace";
+import { TeacherRoutes } from "../routes";
 
 const { ensureAuthMock, getSettingsMock, getTeacherCatalog, updateTeacherCatalog } = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
@@ -11,7 +13,7 @@ const { ensureAuthMock, getSettingsMock, getTeacherCatalog, updateTeacherCatalog
 }));
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: ensureAuthMock,
-  api: { getSettings: getSettingsMock, getTeacherOverview: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 2, error_questions: 0 }, questions: [{ turn_id: "turn-1", session_id: "session-1", user_id: "student-a", workspace_id: "default", question: "BLEU 的长度惩罚怎么计算？", topic: "N-gram 与 BLEU", question_type: "练习求解", difficulty: "intermediate", keywords: ["bleu", "长度惩罚"], status: "completed", created_at: "2026-07-19T08:00:00Z", has_error: false }, { turn_id: "turn-2", session_id: "session-2", user_id: "student-b", workspace_id: "default", question: "TF-IDF 是什么？", topic: "TF-IDF 与 FAQ 检索", question_type: "原理解释", difficulty: "beginner", keywords: ["tf-idf"], status: "completed", created_at: "2026-07-19T09:00:00Z", has_error: false }], weak_topics: [{ topic: "N-gram 与 BLEU", score: 7, questions: 2, repeat_questions: 1, errors: 0, sessions: 2, risk: "medium" }], frequent_questions: [{ question: "BLEU 的长度惩罚怎么计算？", count: 2, topic: "N-gram 与 BLEU", question_type: "练习求解" }], topic_distribution: [{ name: "N-gram 与 BLEU", count: 1, percentage: 50 }, { name: "TF-IDF 与 FAQ 检索", count: 1, percentage: 50 }], difficulty_distribution: [{ name: "入门", count: 1, percentage: 50 }, { name: "进阶", count: 1, percentage: 50 }], type_distribution: [{ name: "练习求解", count: 1, percentage: 50 }, { name: "原理解释", count: 1, percentage: 50 }] }), getTeacherCatalog, updateTeacherCatalog },
+  api: { getSettings: getSettingsMock, getTeacherOverview: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 2, error_questions: 0, exercises: 3, exercise_pass_rate: 66.67, guided_sessions: 1 }, weak_topics: [{ topic_id: "transformer", topic: "Transformer", questions: 2, errors: 0, exercises: 3, average_score: 70, pass_rate: 66.67, misconceptions: 1, risk: "medium" }], topic_distribution: [{ name: "Transformer", count: 2, percentage: 100 }], difficulty_distribution: [{ name: "入门", count: 2, percentage: 100 }], mode_distribution: [{ name: "讲解", count: 2, percentage: 100 }], daily_questions: [{ date: "2026-07-19", count: 2 }], knowledge_point_stats: [{ knowledge_point_id: "attention", name: "注意力", topic: "Transformer", exercises: 3, average_score: 70, pass_rate: 66.67, weak_criteria: [{ criterion: "概念准确", hit_rate: 100 }, { criterion: "步骤完整", hit_rate: 33.33 }] }] }), getTeacherCatalog, updateTeacherCatalog },
 }));
 
 describe("TeacherWorkspace catalog CRUD", () => {
@@ -153,20 +155,35 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(screen.getByText("主题、知识点和蓝图均由教师手动创建并保存；不会导入预置课程数据。")).toBeVisible();
   });
 
-  it("renders a searchable student-question inbox", async () => {
+  it("renders question statistics without raw question text", async () => {
     history.replaceState({}, "", "/teacher/questions"); render(<TeacherWorkspace />);
-    expect(await screen.findByText("把真实提问变成教学线索")).toBeVisible();
-    expect(screen.getByText("BLEU 的长度惩罚怎么计算？")).toBeVisible();
-    fireEvent.change(screen.getByLabelText("搜索学生问题"), { target: { value: "TF-IDF" } });
-    expect(screen.getByText("TF-IDF 是什么？")).toBeVisible();
+    expect(await screen.findByText("从提问统计发现教学线索")).toBeVisible();
+    expect(screen.getByText("主题分布")).toBeVisible();
+    expect(screen.getByText("模式分布")).toBeVisible();
     expect(screen.queryByText("BLEU 的长度惩罚怎么计算？")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("搜索学生问题")).not.toBeInTheDocument();
   });
 
-  it("renders evidence-based risk and distribution cards", async () => {
+  it("renders evidence-based risk and knowledge-point stats", async () => {
     history.replaceState({}, "", "/teacher/reports"); render(<TeacherWorkspace />);
-    expect(await screen.findByText("从提问证据发现薄弱项")).toBeVisible();
-    expect(screen.getByText("需关注")).toBeVisible();
-    expect(screen.getByText("主题风险雷达")).toBeVisible();
-    expect(screen.getByText("高频问题")).toBeVisible();
+    expect(await screen.findByText("从练习证据发现薄弱项")).toBeVisible();
+    expect(screen.getByText("主题健康度")).toBeVisible();
+    expect(screen.getByText("知识点掌握情况")).toBeVisible();
+    expect(screen.getByText("注意力")).toBeVisible();
+  });
+
+  it("updates the visible page when a nested teacher route changes without a full reload", async () => {
+    render(
+      <MemoryRouter initialEntries={["/teacher/topics"]}>
+        <Routes>
+          <Route path="/teacher/*" element={<TeacherRoutes />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: "主题与知识点" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "学生问题" }));
+
+    expect(await screen.findByText("从提问统计发现教学线索")).toBeVisible();
   });
 });

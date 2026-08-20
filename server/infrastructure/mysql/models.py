@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Computed,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.mysql import BIGINT, DATETIME
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,14 +29,31 @@ SESSION_IDENTIFIER = String(128, collation="ascii_bin")
 
 class UserModel(TimestampedModel, Base):
     __tablename__ = "nlp_users"
+    __table_args__ = (
+        # §4.3 / 阶段4：用户名大小写归一化唯一约束。``username_lower`` 是 STORED
+        # 生成列（见下方定义），保证 "Alice" 与 "alice" 在数据库层视为重复，
+        # 杜绝同户名大小写不同的重复账号。
+        Index("uq_nlp_users_username_lower", "username_lower", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # 大小写归一化的持久化副本，由数据库自动计算（GENERATED ALWAYS AS (LOWER(username)) STORED）
+    username_lower: Mapped[str] = mapped_column(
+        String(64), Computed("LOWER(username)", persisted=True), nullable=False
+    )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     authorization_version: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="1"
+    )
+    # P1-2 / 阶段5：软删生命周期。标记删除时间而非硬删除，保留学习历史与外键级联。
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=6), nullable=True, index=True
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=6), nullable=True, index=True
     )
 
     sessions: Mapped[list["SessionModel"]] = relationship(back_populates="user")
@@ -179,6 +207,10 @@ class ClassroomModel(TimestampedModel, Base):
 
 class ClassroomMemberModel(TimestampedModel, Base):
     __tablename__ = "nlp_classroom_members"
+    __table_args__ = (
+        # §4.3 / 阶段4：按 (班级, 状态, 角色) 列活跃成员 / 计数
+        Index("ix_nlp_classroom_members_class_status_role", "classroom_id", "status", "member_role"),
+    )
 
     classroom_id: Mapped[str] = mapped_column(
         UUID, ForeignKey("nlp_classrooms.id", ondelete="CASCADE"), primary_key=True
@@ -223,17 +255,51 @@ class WorkspaceModel(TimestampedModel, Base):
 
 class SessionModel(TimestampedModel, Base):
     __tablename__ = "nlp_sessions"
-    __table_args__ = (UniqueConstraint("token_hash", name="uq_nlp_sessions_token_hash"),)
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_nlp_sessions_token_hash"),
+        # §4.3 / 阶段4：撤销 / 清理查询（按用户列出有效 / 已撤销会话、按过期时间清扫）
+        Index("ix_nlp_sessions_user_revoked_expires", "user_id", "revoked_at", "expires_at"),
+    )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     csrf_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    authorization_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
     expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
 
     user: Mapped[UserModel] = relationship(back_populates="sessions")
+
+
+class WsTicketModel(Base):
+    __tablename__ = "nlp_ws_tickets"
+    __table_args__ = (
+        UniqueConstraint("ticket_hash", name="uq_nlp_ws_tickets_ticket_hash"),
+        Index("ix_nlp_ws_tickets_session_expires", "auth_session_id", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    auth_session_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False
+    )
+    ticket_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    origin: Mapped[str] = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
 
 
 class TeachingGoalModel(TimestampedModel, Base):
@@ -320,6 +386,7 @@ class ConversationModel(TimestampedModel, Base):
     workspace_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
     owner_user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, server_default="web")
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     last_message_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
 
@@ -519,6 +586,12 @@ class AgentCheckpointModel(TimestampedModel, Base):
     __tablename__ = "nlp_agent_checkpoints"
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     checkpoint_ns: Mapped[str] = mapped_column(String(128), nullable=False)
     checkpoint_id: Mapped[str] = mapped_column(String(128), nullable=False)
     checkpoint_json: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -532,6 +605,12 @@ class LangGraphCheckpointModel(Base):
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     thread_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     checkpoint_ns: Mapped[str] = mapped_column(String(128), nullable=False, server_default="")
     checkpoint_id: Mapped[str] = mapped_column(String(128), nullable=False)
     parent_checkpoint_id: Mapped[str | None] = mapped_column(String(128))
@@ -548,6 +627,12 @@ class LangGraphCheckpointBlobModel(Base):
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     checkpoint_ns: Mapped[str] = mapped_column(String(128), nullable=False, server_default="")
     channel: Mapped[str] = mapped_column(String(128), nullable=False)
     version: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -561,6 +646,8 @@ class LangGraphCheckpointWriteModel(Base):
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_id: Mapped[str | None] = mapped_column(UUID, nullable=True, index=True)
+    owner_user_id: Mapped[str | None] = mapped_column(UUID, nullable=True, index=True)
     checkpoint_ns: Mapped[str] = mapped_column(String(128), nullable=False, server_default="")
     checkpoint_id: Mapped[str] = mapped_column(String(128), nullable=False)
     task_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -665,6 +752,42 @@ class ObservabilityRecordModel(TimestampedModel, Base):
     turn_id: Mapped[str | None] = mapped_column(String(128), index=True)
     status: Mapped[str | None] = mapped_column(String(32), index=True)
     payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class ClassJoinRequestModel(TimestampedModel, Base):
+    """Class join requests / approval flow (user management).
+
+    Reuses the existing ``nlp_classrooms`` table as the class entity; only the
+    approval request itself is modelled here.
+    """
+
+    __tablename__ = "nlp_class_join_requests"
+    __table_args__ = (
+        Index("ix_nlp_class_join_requests_class_status", "class_id", "status"),
+        # 防重复申请：同一 (班级, 用户, 状态) 只能有一条 pending
+        UniqueConstraint("class_id", "user_id", "status", name="uq_nlp_class_join_requests_cls_usr_sts"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    class_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_classrooms.id", ondelete="CASCADE"), nullable=False, comment="关联 nlp_classrooms.id"
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False, comment="申请人"
+    )
+    student_number: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="学生选填学号")
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending", comment="pending / approved / rejected"
+    )
+    requested_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="SET NULL")
+    )
+
+    cls: Mapped["ClassroomModel"] = relationship("ClassroomModel", foreign_keys=[class_id])
+    user_: Mapped["UserModel"] = relationship("UserModel", foreign_keys=[user_id])
+    reviewer: Mapped["UserModel | None"] = relationship("UserModel", foreign_keys=[reviewed_by])
 
 
 for _table_name, _table_comment in TABLE_COMMENTS.items():

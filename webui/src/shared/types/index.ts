@@ -8,10 +8,13 @@ export type TurnStatus =
 
 export interface AuthSession {
   user_id: string;
+  username?: string;
+  display_name?: string;
   workspace_ids: string[];
   roles: string[];
   csrf_token: string;
   expires_at: number;
+  permissions?: string[];
 }
 
 export interface DeveloperSnapshot {
@@ -79,35 +82,51 @@ export interface ReviewBlueprint { id: string; name: string; topic_id: string; k
 export interface GuidedBlueprint { id: string; name: string; topic_id: string; knowledge_point_id: string; guidance: string; status: BlueprintStatus }
 export interface TeacherCatalog { workspace_id: string; topics: CourseTopic[]; exercise_blueprints: ExerciseBlueprint[]; review_blueprints: ReviewBlueprint[]; guided_blueprints: GuidedBlueprint[] }
 
-export interface ClassifiedQuestion {
-  turn_id: string;
-  session_id: string;
-  user_id: string;
-  workspace_id: string;
-  question: string;
+export interface TeacherDistribution { name: string; count: number; percentage: number }
+
+export interface WeakTopic {
+  topic_id: string;
   topic: string;
-  question_type: string;
-  difficulty: "beginner" | "intermediate" | "advanced";
-  keywords: string[];
-  status: string;
-  created_at: string;
-  has_error: boolean;
+  questions: number;
+  errors: number;
+  exercises: number;
+  average_score: number | null;
+  pass_rate: number | null;
+  misconceptions: number;
+  risk: "low" | "medium" | "high";
 }
 
-export interface TeacherDistribution { name: string; count: number; percentage: number }
+export interface KnowledgePointStat {
+  knowledge_point_id: string;
+  name: string;
+  topic: string;
+  exercises: number;
+  average_score: number | null;
+  pass_rate: number | null;
+  weak_criteria: Array<{ criterion: string; hit_rate: number }>;
+}
+
 export interface TeacherOverview {
   workspace_id: string;
   period_days: number;
   goals: TeachingGoals;
   revision: number;
   updated_at: string | null;
-  summary: { questions: number; sessions: number; students: number; error_questions: number };
-  questions: ClassifiedQuestion[];
-  frequent_questions: Array<{ question: string; count: number; topic: string; question_type: string }>;
-  weak_topics: Array<{ topic: string; score: number; questions: number; repeat_questions: number; errors: number; sessions: number; risk: "low" | "medium" | "high" }>;
+  summary: {
+    questions: number;
+    sessions: number;
+    students: number;
+    error_questions: number;
+    exercises: number;
+    exercise_pass_rate: number;
+    guided_sessions: number;
+  };
   topic_distribution: TeacherDistribution[];
   difficulty_distribution: TeacherDistribution[];
-  type_distribution: TeacherDistribution[];
+  mode_distribution: TeacherDistribution[];
+  daily_questions: Array<{ date: string; count: number }>;
+  weak_topics: WeakTopic[];
+  knowledge_point_stats: KnowledgePointStat[];
 }
 
 export interface SessionSummary {
@@ -228,4 +247,74 @@ export interface ReleaseNoteEntry {
   released_at: string;
   notes: string[];
   status: "draft" | "published";
+}
+
+// ---- Admin module (用户 / 工作区 / 班级管理) ----
+// 注意：UserProfile 不暴露任何密码字段（满足 review 7.2）。
+export type UserStatus = "active" | "disabled" | "locked";
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  display_name: string;
+  status: UserStatus;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+  last_login_at?: string | null;
+}
+
+export interface RbacRole { code: string; name: string; description: string; status: string; is_builtin: boolean }
+export interface RbacPermission { code: string; name: string; description: string; status: string }
+export interface SystemMenu { id: string; parent_id: string | null; type: string; name: string; route_path: string | null; component_key: string | null; permission_id: string | null; client_scope: string | null; sort_order: number; visible: boolean; status: string }
+export interface AuthorizationAuditRecord { id: string; actor_user_id: string | null; target_user_id: string | null; decision: string; reason_code: string; permission_code: string | null; resource_type: string | null; resource_id: string | null; detail: Record<string, unknown>; created_at: string }
+
+export interface UserListResponse {
+  users: UserProfile[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface Workspace {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceMember {
+  workspace_id: string;
+  user_id: string;
+  member_type: string;
+  status: string;
+  created_at: string;
+}
+
+export interface ClassroomSummary {
+  id: string;
+  workspace_id: string;
+  name: string;
+  status: string;
+}
+
+export interface JoinRequest {
+  id: string;
+  class_id: string;
+  class_name: string;
+  user_id: string;
+  user_name: string;
+  display_name: string;
+  student_number: string | null;
+  status: string;
+  requested_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+}
+
+export interface JoinRequestListResponse {
+  items: JoinRequest[];
+  total: number;
 }

@@ -35,7 +35,7 @@ async def test_fenced_executor_claims_turn_before_invoking_agent(monkeypatch) ->
         AsyncMock(return_value=principal),
     )
     task = TurnTask(
-        context=SessionContext(session_id="session-1"),
+        context=SessionContext(session_id="session-1", user_id="user-1"),
         turn_id="turn-1",
         content="hello",
         learning_context=None,
@@ -51,7 +51,12 @@ async def test_fenced_executor_claims_turn_before_invoking_agent(monkeypatch) ->
 
     assert claimed is True
     reliability.claim_turn.assert_awaited_once_with(
-        session, turn_id="turn-1", worker_id="worker-a", lease_s=30
+        session,
+        turn_id="turn-1",
+        worker_id="worker-a",
+        lease_s=30,
+        user_id="user-1",
+        workspace_id="default",
     )
     unit_of_work.commit.assert_awaited_once()
     execute.assert_awaited_once()
@@ -118,7 +123,7 @@ async def test_fenced_executor_cancels_execution_when_heartbeat_loses_claim(
             execution_cancelled.set()
 
     task = TurnTask(
-        context=SessionContext(session_id="session-1"),
+        context=SessionContext(session_id="session-1", user_id="user-1"),
         turn_id="turn-1",
         content="hello",
         learning_context=None,

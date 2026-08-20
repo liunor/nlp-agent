@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyCookie
+from sqlalchemy import select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from configs.settings import settings
@@ -34,6 +35,8 @@ from server.web.auth import (
     SameOriginSessionAuth,
     SessionClaims,
 )
+from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
+from server.agent.session_service import DatabaseSessionService, local_session_service
 from server.web.contracts import (
     CreateSessionBody,
     LoginBody,
@@ -75,6 +78,7 @@ from server.web.developer_runtime import (
 from server.teacher.models import ExerciseBlueprint, GuidedBlueprint, ReviewBlueprint, UpdateTeacherCatalog, UpdateTeachingGoals
 from server.teacher.service import teacher_service
 from server.rbac.service import rbac_service
+from server.infrastructure.mysql.models import UserModel
 from server.release_notes.service import (
     ReleaseNoteConflictError,
     ReleaseNoteNotFoundError,
@@ -154,7 +158,12 @@ def create_app(
     allowed_hosts: list[str] | None = None,
 ) -> FastAPI:
     web_config = settings.web_runtime
-    auth = auth or SameOriginSessionAuth.from_config(web_config)
+    auth_injected = auth is not None
+    # The production web plane never reads the legacy fixed-account fields;
+    # browser authentication is always backed by ``nlp_sessions`` below.
+    auth = auth or SameOriginSessionAuth.from_config(web_config, include_credentials=False)
+    database_auth = DatabaseSessionAuth.from_config(web_config)
+    cookie_secure = database_auth.secure if not auth_injected else auth.secure
     hub = WebSocketHub(
         max_connections=int(web_config.get("ws_max_connections", 200)),
         max_connections_per_user=int(
@@ -169,6 +178,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         gateway = gateway_factory()
+        if (
+            not auth_injected
+            and gateway.authorization_session_factory is not None
+            and gateway.sessions is local_session_service
+        ):
+            gateway.sessions = DatabaseSessionService(
+                gateway.authorization_session_factory
+            )
         app.state.gateway = gateway
         await gateway.start()
         redis_client = getattr(getattr(gateway, "dispatcher", None), "client", None)
@@ -218,6 +235,8 @@ def create_app(
         redoc_url=None,
     )
     app.state.auth = auth
+    app.state.database_auth = database_auth
+    app.state.auth_injected = auth_injected
     app.state.hub = hub
     cookie_auth = APIKeyCookie(name=auth.cookie_name, auto_error=False)
     # An explicit allowed_hosts override (tests/local deployments) wins over the
@@ -257,15 +276,31 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    def current_claims(
+    async def current_claims(
+        request: Request,
         token: Annotated[str | None, Security(cookie_auth)],
-    ) -> SessionClaims:
-        return auth.authenticate(token)
+    ) -> SessionClaims | DatabaseSessionClaims:
+        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        if not request.app.state.auth_injected:
+            if factory is None:
+                raise AuthenticationError("database authentication is unavailable")
+            claims = await database_auth.authenticate(factory, token)
+            request.state.auth_claims = claims
+            return claims
+        claims = auth.authenticate(token)
+        request.state.auth_claims = claims
+        return claims
 
     async def resolve_principal(
-        request: Request, claims: SessionClaims
+        request: Request, claims: SessionClaims | DatabaseSessionClaims
     ) -> AuthenticatedPrincipal:
         """Resolve roles and workspace membership from MySQL in production."""
+        if isinstance(claims, DatabaseSessionClaims):
+            factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+            if factory is None:
+                raise AuthenticationError("database authentication is unavailable")
+            async with factory() as session:
+                return await rbac_service.principal_for_user_id(session, claims.user_id)
         # Guests are deliberately anonymous and never require an nlp_users row.
         if claims.roles == frozenset({"guest"}):
             return claims.principal()
@@ -279,21 +314,52 @@ def create_app(
 
     async def current_principal(
         request: Request,
-        claims: Annotated[SessionClaims, Depends(current_claims)],
+        claims: Annotated[SessionClaims | DatabaseSessionClaims, Depends(current_claims)],
     ) -> AuthenticatedPrincipal:
         return await resolve_principal(request, claims)
 
-    def write_access(
+    async def account_identity(
         request: Request,
-        claims: Annotated[SessionClaims, Depends(current_claims)],
+        claims: SessionClaims | DatabaseSessionClaims,
+        principal: AuthenticatedPrincipal,
+    ) -> tuple[str, str]:
+        """Return stable human-readable account fields for the browser session."""
+        if not isinstance(claims, DatabaseSessionClaims):
+            # Injected/local authentication has no separate user-profile table.
+            return principal.user_id, principal.user_id
+        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        if factory is None:
+            raise AuthenticationError("database authentication is unavailable")
+        async with factory() as session:
+            row = (
+                await session.execute(
+                    select(UserModel.username, UserModel.display_name).where(
+                        UserModel.id == principal.user_id,
+                        UserModel.deleted_at.is_(None),
+                    )
+                )
+            ).one_or_none()
+        if row is None:
+            raise AuthenticationError("authenticated user profile is unavailable")
+        return row.username, row.display_name
+
+    async def write_access(
+        request: Request,
+        claims: Annotated[SessionClaims | DatabaseSessionClaims, Depends(current_claims)],
         csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
-    ) -> SessionClaims:
-        auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
-        auth.require_csrf(claims, csrf_token)
+    ) -> SessionClaims | DatabaseSessionClaims:
+        if isinstance(claims, DatabaseSessionClaims):
+            database_auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            database_auth.require_csrf(claims, csrf_token)
+        else:
+            auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            auth.require_csrf(claims, csrf_token)
         return claims
 
     Principal = Annotated[AuthenticatedPrincipal, Depends(current_principal)]
-    WriteClaims = Annotated[SessionClaims, Depends(write_access)]
+    WriteClaims = Annotated[
+        SessionClaims | DatabaseSessionClaims, Depends(write_access)
+    ]
 
     @app.exception_handler(AuthenticationError)
     async def authentication_error(request: Request, _error: AuthenticationError):
@@ -408,58 +474,122 @@ def create_app(
 
     @app.post("/api/v1/auth/login", status_code=status.HTTP_200_OK, tags=["auth"])
     async def login(body: LoginBody, request: Request, response: Response):
-        auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
-        token, claims = auth.login(
-            body.username,
-            body.password,
-            client_key=request.client.host if request.client else "unknown",
-            previous_token=request.cookies.get(auth.cookie_name),
-        )
+        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        if not request.app.state.auth_injected:
+            if factory is None:
+                raise AuthenticationError("database authentication is unavailable")
+            database_auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            token, claims = await database_auth.login(
+                factory,
+                body.username,
+                body.password,
+                client_key=request.client.host if request.client else "unknown",
+                previous_token=request.cookies.get(database_auth.cookie_name),
+                workspace_id=body.workspace_id,
+            )
+        else:
+            auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+            token, claims = auth.login(
+                body.username,
+                body.password,
+                client_key=request.client.host if request.client else "unknown",
+                previous_token=request.cookies.get(auth.cookie_name),
+            )
         response.set_cookie(
             auth.cookie_name,
             token,
             max_age=auth.ttl_s,
             httponly=True,
-            secure=auth.secure,
-            samesite="strict",
+            secure=cookie_secure,
+            samesite="lax",
             path="/",
+        )
+        resolved_principal = await resolve_principal(request, claims) if isinstance(claims, DatabaseSessionClaims) else None
+        identity_principal = resolved_principal
+        if identity_principal is None:
+            assert isinstance(claims, SessionClaims)
+            identity_principal = claims.principal()
+        username, display_name = await account_identity(
+            request,
+            claims,
+            identity_principal,
         )
         return {
             "user_id": claims.user_id,
-            "workspace_ids": sorted(claims.workspace_ids),
-            "roles": sorted(claims.roles),
+            "username": username,
+            "display_name": display_name,
+            "workspace_ids": sorted(resolved_principal.workspace_ids) if resolved_principal is not None else sorted(claims.workspace_ids),
+            "roles": sorted(resolved_principal.roles) if resolved_principal is not None else sorted(claims.roles),
+            "permissions": sorted(resolved_principal.permissions) if resolved_principal is not None else [],
             "csrf_token": claims.csrf_token,
-            "expires_at": claims.expires_at,
-            "ephemeral_secret": auth.ephemeral_secret,
+            "expires_at": claims.expires_at_epoch if isinstance(claims, DatabaseSessionClaims) else claims.expires_at,
+            "ephemeral_secret": False if isinstance(claims, DatabaseSessionClaims) else auth.ephemeral_secret,
         }
 
     @app.get("/api/v1/auth/session", tags=["auth"])
     async def get_auth_session(
-        request: Request, claims: Annotated[SessionClaims, Depends(current_claims)]
+        request: Request, claims: Annotated[SessionClaims | DatabaseSessionClaims, Depends(current_claims)]
     ):
+        if isinstance(claims, DatabaseSessionClaims):
+            factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+            if factory is None:
+                raise AuthenticationError("database authentication is unavailable")
+            csrf_token = await database_auth.rotate_csrf(factory, claims)
+            claims = DatabaseSessionClaims(**{**claims.__dict__, "csrf_token": csrf_token})
         principal = await resolve_principal(request, claims)
+        username, display_name = await account_identity(request, claims, principal)
         return {
             "user_id": principal.user_id,
+            "username": username,
+            "display_name": display_name,
             "workspace_ids": sorted(principal.workspace_ids),
             "roles": sorted(principal.roles),
+            "permissions": sorted(principal.permissions),
             "csrf_token": claims.csrf_token,
-            "expires_at": claims.expires_at,
+            "expires_at": claims.expires_at_epoch if isinstance(claims, DatabaseSessionClaims) else claims.expires_at,
         }
 
     @app.post("/api/v1/auth/guest", status_code=status.HTTP_200_OK, tags=["auth"])
     async def guest_login(request: Request, response: Response):
+        if not request.app.state.auth_injected:
+            raise AuthenticationError("anonymous guest sessions are disabled; create a guest user")
         auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
         token, claims = auth.issue_guest(
             previous_token=request.cookies.get(auth.cookie_name)
         )
         response.set_cookie(
             auth.cookie_name, token, max_age=auth.ttl_s, httponly=True,
-            secure=auth.secure, samesite="strict", path="/",
+            secure=cookie_secure, samesite="lax", path="/",
         )
         return {
             "user_id": claims.user_id, "workspace_ids": [], "roles": ["guest"],
             "csrf_token": claims.csrf_token, "expires_at": claims.expires_at,
         }
+
+    @app.post("/api/v1/auth/ws-ticket", status_code=status.HTTP_200_OK, tags=["auth"])
+    async def create_ws_ticket(
+        request: Request,
+        claims: WriteClaims,
+    ):
+        if not isinstance(claims, DatabaseSessionClaims):
+            # Legacy test/monitor adapters still authenticate the WebSocket by
+            # the explicitly injected in-process session.  The production app
+            # never takes this branch; returning a marker keeps old adapters
+            # source-compatible while the real deployment requires DB tickets.
+            return {"ticket": "legacy-injected-session", "expires_in": 0}
+        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        if factory is None:
+            raise AuthenticationError("database authentication is unavailable")
+        origin = request.headers.get("origin")
+        if not origin:
+            raise OriginRejectedError("Origin header is required")
+        ticket = await database_auth.issue_ws_ticket(
+            factory,
+            claims,
+            origin=origin,
+            host=request.headers.get("host"),
+        )
+        return {"ticket": ticket, "expires_in": 60}
 
     def authorization_session_factory(request: Request):
         factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
@@ -588,6 +718,19 @@ def create_app(
             for item in menus
         ]}
 
+    @app.get("/api/v1/system/menus/visible", tags=["rbac"])
+    async def get_visible_menus(request: Request, principal: Principal):
+        async with authorization_session_factory(request)() as session:
+            menus = await rbac_service.visible_menus(session, principal)
+        return {"items": [
+            {"id": item.id, "parent_id": item.parent_id, "type": item.menu_type,
+             "name": item.name, "route_path": item.route_path,
+             "component_key": item.component_key, "permission_id": item.permission_id,
+             "client_scope": item.client_scope, "sort_order": item.sort_order,
+             "visible": item.visible, "status": item.status}
+            for item in menus
+        ]}
+
     @app.put("/api/v1/system/roles/{role_code}/menus", tags=["rbac"])
     async def put_role_menus(role_code: str, body: ReplaceRoleMenusBody, request: Request, principal: Principal, _claims: WriteClaims):
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
@@ -595,6 +738,13 @@ def create_app(
             async with session.begin():
                 await rbac_service.replace_role_menus(session, role_code=role_code, menu_ids=body.menu_ids, actor_user_id=principal.user_id)
         return {"role_code": role_code, "menu_ids": sorted(body.menu_ids)}
+
+    @app.get("/api/v1/system/roles/{role_code}/menus", tags=["rbac"])
+    async def get_role_menus(role_code: str, request: Request, principal: Principal):
+        authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
+        async with authorization_session_factory(request)() as session:
+            menu_ids = await rbac_service.role_menu_ids(session, role_code)
+        return {"role_code": role_code, "menu_ids": sorted(menu_ids)}
 
     @app.get("/api/v1/audit/authorization", tags=["rbac"])
     async def list_authorization_audit(
@@ -628,6 +778,7 @@ def create_app(
                 checkpoint = await rbac_service.read_sensitive_checkpoint(
                     session, session_id=session_id, checkpoint_id=checkpoint_id,
                     actor_user_id=principal.user_id,
+                    workspace_ids=principal.workspace_ids,
                 )
                 return {"session_id": checkpoint.session_id, "checkpoint_ns": checkpoint.checkpoint_ns,
                         "checkpoint_id": checkpoint.checkpoint_id, "checkpoint": checkpoint.checkpoint_json,
@@ -637,13 +788,59 @@ def create_app(
     async def delete_auth_session(
         request: Request,
         response: Response,
-        _claims: WriteClaims,
+        claims: WriteClaims,
     ):
         token = request.cookies.get(auth.cookie_name)
-        session_fingerprint = auth.token_fingerprint(token)
-        auth.revoke(token)
+        if isinstance(claims, DatabaseSessionClaims):
+            factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+            if factory is None:
+                raise AuthenticationError("database authentication is unavailable")
+            session_fingerprint = database_auth.session_fingerprint_from_hash(
+                claims.token_hash
+            )
+            await database_auth.revoke_token(factory, claims.token_hash)
+        else:
+            session_fingerprint = auth.token_fingerprint(token)
+            auth.revoke(token)
         await hub.close_session(session_fingerprint)
-        response.delete_cookie(auth.cookie_name, path="/", samesite="strict")
+        response.delete_cookie(auth.cookie_name, path="/", secure=cookie_secure, samesite="lax")
+
+    @app.get("/api/v1/auth/sessions", tags=["auth"])
+    async def list_auth_sessions(
+        request: Request,
+        claims: Annotated[SessionClaims | DatabaseSessionClaims, Depends(current_claims)],
+    ):
+        if not isinstance(claims, DatabaseSessionClaims):
+            return {"items": []}
+        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        if factory is None:
+            raise AuthenticationError("database authentication is unavailable")
+        return {
+            "items": await database_auth.list_user_sessions(
+                factory, claims.user_id, current_session_id=claims.session_id
+            )
+        }
+
+    @app.delete("/api/v1/auth/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["auth"])
+    async def revoke_auth_session(
+        session_id: str,
+        request: Request,
+        response: Response,
+        claims: WriteClaims,
+    ):
+        if not isinstance(claims, DatabaseSessionClaims):
+            raise AuthenticationError("database authentication is unavailable")
+        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        if factory is None:
+            raise AuthenticationError("database authentication is unavailable")
+        token_hash = await database_auth.revoke_session_id(
+            factory, user_id=claims.user_id, session_id=session_id
+        )
+        if token_hash is None:
+            raise AuthenticationError("authentication session is not owned by this user")
+        await hub.close_session(database_auth.session_fingerprint_from_hash(token_hash))
+        if session_id == claims.session_id:
+            response.delete_cookie(auth.cookie_name, path="/", secure=cookie_secure, samesite="lax")
 
     @app.get("/api/v1/sessions", tags=["sessions"])
     async def list_sessions(request: Request, principal: Principal):
@@ -1099,19 +1296,6 @@ def create_app(
         await teacher_service.delete_blueprint(principal, request.app.state.gateway, workspace_id, blueprint_id, kind=kind)
         return Response(status_code=204)
 
-    @app.get("/api/v1/teacher/questions", tags=["teacher"])
-    async def teacher_questions(
-        request: Request,
-        principal: Principal,
-        workspace_id: str = Query(default="default", min_length=1, max_length=128),
-        days: int = Query(default=30, ge=1, le=365),
-        limit: int = Query(default=500, ge=1, le=2_000),
-    ):
-        result = await teacher_service.analytics(
-            principal, request.app.state.gateway, workspace_id, days, limit
-        )
-        return {"items": result["questions"], "period_days": days}
-
     @app.get("/api/v1/teacher/analytics", tags=["teacher"])
     async def teacher_analytics(
         request: Request,
@@ -1119,11 +1303,9 @@ def create_app(
         workspace_id: str = Query(default="default", min_length=1, max_length=128),
         days: int = Query(default=30, ge=1, le=365),
     ):
-        result = await teacher_service.analytics(
+        return await teacher_service.analytics(
             principal, request.app.state.gateway, workspace_id, days
         )
-        result.pop("questions", None)
-        return result
 
     @app.get("/api/v1/teacher/{resource}", tags=["teacher"])
     async def teacher_placeholder(
@@ -1182,7 +1364,21 @@ def create_app(
             send_queue_size=ws_send_queue_size,
             send_timeout_s=ws_send_timeout_s,
             principal_resolver=lambda claims: resolve_principal(websocket, claims),
+            database_auth=database_auth if not app.state.auth_injected else None,
+            authorization_session_factory=getattr(
+                websocket.app.state.gateway, "authorization_session_factory", None
+            ),
         )
+
+    # User-management vertical modules (chained fix: backend-user-modules).
+    # Registered before the SPA static mount so /api routes always win.
+    from server.user.controller import router as user_router
+    from server.workspace.controller import router as workspace_router
+    from server.classroom_join import router as classroom_join_router
+
+    app.include_router(user_router)
+    app.include_router(workspace_router)
+    app.include_router(classroom_join_router)
 
     static_dir_value = str(web_config.get("static_dir", "")).strip()
     static_dir = Path(static_dir_value).expanduser() if static_dir_value else None

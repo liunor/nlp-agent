@@ -10,13 +10,12 @@ vi.mock("@/platform/http/api", () => ({
     getTeacherOverview: vi.fn().mockResolvedValue({
       workspace_id: "default",
       period_days: 30,
-      summary: { questions: 0, sessions: 0, students: 0, error_questions: 0 },
-      questions: [],
+      summary: { questions: 0, sessions: 0, students: 0, error_questions: 0, exercises: 0, exercise_pass_rate: 0, guided_sessions: 0 },
       weak_topics: [],
-      frequent_questions: [],
       topic_distribution: [],
       difficulty_distribution: [],
-      type_distribution: [],
+      mode_distribution: [],
+      knowledge_point_stats: [],
     }),
     getTeacherCatalog: vi.fn().mockResolvedValue({
       catalog: {

@@ -1,10 +1,10 @@
 # FastAPI Web Adapter
 
 FastAPI is the same-origin network boundary for the WebUI. It owns HTTP,
-WebSocket, signed-cookie authentication, CSRF validation, request validation,
-and public event names. It never constructs LangGraph, Coordinator, or Worker
-objects; the application lifespan starts and closes exactly one
-`BackendGateway`.
+WebSocket, database-backed opaque-cookie authentication, CSRF validation,
+request validation, and public event names. It never constructs LangGraph,
+Coordinator, or Worker objects; the application lifespan starts and closes
+exactly one `BackendGateway`.
 
 ```mermaid
 flowchart LR
@@ -36,18 +36,19 @@ Health probes:
 
 ## Same-origin authentication
 
-1. The WebUI sends `POST /api/v1/auth/session` from the same origin.
-2. The server returns an HttpOnly, SameSite=Strict, HMAC-signed cookie and a
-   CSRF token in the JSON response.
+1. The WebUI sends `POST /api/v1/auth/login` from the same origin.
+2. The server stores only a token digest in `nlp_sessions`, then returns an
+   HttpOnly, SameSite=Lax opaque cookie and a CSRF token in the JSON response.
 3. Every mutating HTTP request sends `X-CSRF-Token` and an `Origin` header.
-4. The WebSocket handshake sends the cookie automatically and is accepted only
-   when its `Origin` is same-origin or explicitly configured.
+4. The browser first calls `POST /api/v1/auth/ws-ticket`; the WebSocket
+   handshake uses the one-time, short-lived, origin-bound ticket rather than
+   accepting the login cookie directly.
 
-No long-lived credential is placed in a WebSocket query string. Configure
-`NLP_AGENT_WEB_SECRET` so cookies remain valid across restarts. Set
-`cookie_secure: true` when serving through HTTPS. The built-in issuer is a
-single-user local mode; a later account system can replace the auth resolver
-without changing Gateway APIs.
+No password or long-lived credential is placed in a WebSocket query string.
+Configure MySQL and the four seeded RBAC roles before starting the service. Set
+`cookie_secure: true` when serving through HTTPS. Password changes, disabled or
+deleted accounts, role changes and explicit session revocation invalidate the
+database session immediately.
 
 ## HTTP control plane
 

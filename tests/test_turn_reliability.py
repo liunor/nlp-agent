@@ -14,7 +14,7 @@ async def test_claim_increments_generation_and_heartbeat_requires_the_same_owner
     turn = TurnModel(id="turn-1", conversation_id="conversation-1", workspace_id="workspace-1", user_id="user-1", input_text="hi", status="accepted", claim_generation=0)
     session = AsyncMock()
     session.add = MagicMock()
-    session.scalar.side_effect = [turn, turn, turn]
+    session.scalar.side_effect = [turn, None, turn, None, turn]
     service = TurnReliabilityService()
 
     generation = await service.claim_turn(session, turn_id="turn-1", worker_id="worker-a", lease_s=30)

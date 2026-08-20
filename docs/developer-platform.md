@@ -19,7 +19,7 @@ chat traffic.
 ## Stage 5: same-origin developer workspace
 
 Open `http://127.0.0.1:8765/developer` after building the primary WebUI. The
-local signed session must contain the `admin` role. The workspace provides:
+database-backed session must resolve to the `developer` role. The workspace provides:
 
 - Gateway and runtime status;
 - Agent/Worker limits and profiles;
@@ -47,8 +47,8 @@ The editable state is stored atomically in
 configuration in `configs/agent_config.yaml`. This means WebUI changes never
 rewrite or discard comments in the base configuration. Secret, password,
 API-key, authorization and access-token fields are removed or reduced to a
-configured boolean before snapshots are returned. Writes require the local
-`admin` role, same-origin validation, and CSRF validation.
+configured boolean before snapshots are returned. Writes require the database
+`developer` capability, same-origin validation, and CSRF validation.
 
 ## Stage 6: isolated monitor
 
@@ -71,8 +71,9 @@ Then open `http://127.0.0.1:8766`. The platform includes:
 - live telemetry events over `/ws/observability`;
 - telemetry queue/database health and explicit retention cleanup.
 
-The monitor has a separate signed cookie (`nlp_monitor_session`) and still
-requires same-origin checks and CSRF protection for cleanup mutations.
+The monitor reuses the control-plane database session (`nlp_session`) and
+requires its own same-origin WebSocket ticket. Cleanup mutations still require
+CSRF protection and the `system:runtime:monitor` permission.
 
 ## Frontend development
 

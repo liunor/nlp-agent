@@ -360,12 +360,18 @@ class SessionStorageManager:
 
 global_session_storage = SessionStorageManager()
 
-async def record_transcript(session_id: str, messages: List[BaseMessage]):
+async def record_transcript(
+    session_id: str,
+    messages: List[BaseMessage],
+    *,
+    user_id: str | None = None,
+    workspace_id: str | None = None,
+):
     """
     暴露给上层的封装调用：对比当前 Graph 内的 messages 链，提取并附加新消息。
     """
     """Persist the current transcript snapshot in MySQL; JSONL is legacy-read only."""
-    from sqlalchemy import create_engine, delete
+    from sqlalchemy import create_engine, delete, text
     from sqlalchemy.dialects.mysql import insert
     from configs.settings import settings
     from server.infrastructure.mysql.models import ConversationTranscriptModel
@@ -377,6 +383,22 @@ async def record_transcript(session_id: str, messages: List[BaseMessage]):
         engine = create_engine(url.replace("mysql+aiomysql://", "mysql+pymysql://"), pool_pre_ping=True)
         try:
             with engine.begin() as connection:
+                if not user_id or not workspace_id:
+                    raise PermissionError("transcript identity is required")
+                owner = connection.execute(
+                    text(
+                        "SELECT 1 FROM nlp_conversations "
+                        "WHERE id=:session_id AND owner_user_id=:user_id "
+                        "AND workspace_id=:workspace_id AND status='active'"
+                    ),
+                    {
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "workspace_id": workspace_id,
+                    },
+                ).first()
+                if owner is None:
+                    raise PermissionError("transcript does not belong to the principal")
                 connection.execute(delete(ConversationTranscriptModel).where(ConversationTranscriptModel.session_id == session_id))
                 parent_id = None
                 for index, message in enumerate(messages):

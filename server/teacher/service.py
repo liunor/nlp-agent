@@ -6,7 +6,7 @@ from typing import Any
 
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
-from server.teacher.analytics import analyze
+from server.teacher.analytics import build_analytics
 from server.teacher.models import (
     ExerciseBlueprint,
     GuidedBlueprint,
@@ -132,13 +132,18 @@ class TeacherService:
         )
         return await self.update_catalog(principal, gateway, workspace_id, body)
 
-    async def analytics(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, days: int = 30, limit: int = 2_000) -> dict[str, Any]:
+    async def analytics(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, days: int = 30) -> dict[str, Any]:
         self.require_teacher(
             principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM
         )
         since = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
-        rows = await asyncio.to_thread(gateway.repository.list_questions, workspace_id=workspace_id, since=since, limit=limit)
-        return {"workspace_id": workspace_id, "period_days": days, **analyze(rows)}
+        catalog = (await asyncio.to_thread(gateway.repository.get_teaching_catalog, workspace_id))["catalog"]
+        question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=since)
+        evidence_rows = await asyncio.to_thread(gateway.repository.exercise_evidence_stats, workspace_id=workspace_id, since=since)
+        criterion_rows = await asyncio.to_thread(gateway.repository.exercise_criterion_stats, workspace_id=workspace_id, since=since)
+        guided_rows = await asyncio.to_thread(gateway.repository.guided_session_stats, workspace_id=workspace_id, since=since)
+        result = build_analytics(question_rows, evidence_rows, criterion_rows, guided_rows, catalog)
+        return {"workspace_id": workspace_id, "period_days": days, **result}
 
 
 teacher_service = TeacherService()

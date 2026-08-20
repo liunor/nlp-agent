@@ -7,7 +7,7 @@ import inspect
 
 import uuid
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.identity import AuthenticatedPrincipal
@@ -54,7 +54,11 @@ class RbacService:
         self, session: AsyncSession, user_id: str
     ) -> AuthenticatedPrincipal:
         user = await session.scalar(
-            select(UserModel).where(UserModel.id == user_id, UserModel.status == "active")
+            select(UserModel).where(
+                UserModel.id == user_id,
+                UserModel.status == "active",
+                UserModel.deleted_at.is_(None),
+            )
         )
         if user is None:
             raise PermissionError("turn submitter is not active in RBAC")
@@ -120,7 +124,9 @@ class RbacService:
         membership are deliberately reloaded here so a changed assignment takes
         effect on the next HTTP request (and on WebSocket guard ticks).
         """
-        user = await session.scalar(select(UserModel).where(UserModel.username == username))
+        user = await session.scalar(
+            select(UserModel).where(UserModel.username_lower == username.casefold())
+        )
         if user is None:
             raise PermissionError("authenticated user is not active in RBAC")
         return await self.principal_for_user_id(session, user.id)
@@ -165,6 +171,40 @@ class RbacService:
 
     async def menus(self, session: AsyncSession) -> list[MenuModel]:
         return list((await session.scalars(select(MenuModel).where(MenuModel.status == "active").order_by(MenuModel.sort_order))).all())
+
+    async def visible_menus(
+        self, session: AsyncSession, principal: AuthenticatedPrincipal
+    ) -> list[MenuModel]:
+        """Return visible menus granted by the principal's active roles.
+
+        Menu bindings are presentation metadata, never an authorization
+        bypass.  The permission check below keeps a stale role-menu binding
+        from exposing a control-plane entry after its permission is removed.
+        """
+        if not principal.roles:
+            return []
+        rows = list(
+            (
+                await session.scalars(
+                    select(MenuModel)
+                    .join(RoleMenuModel, RoleMenuModel.menu_id == MenuModel.id)
+                    .join(RoleModel, RoleModel.id == RoleMenuModel.role_id)
+                    .outerjoin(PermissionModel, PermissionModel.id == MenuModel.permission_id)
+                    .where(
+                        RoleModel.code.in_(principal.roles),
+                        RoleModel.status == "active",
+                        MenuModel.status == "active",
+                        MenuModel.visible.is_(True),
+                        or_(
+                            MenuModel.permission_id.is_(None),
+                            PermissionModel.code.in_(principal.permissions),
+                        ),
+                    )
+                    .order_by(MenuModel.sort_order, MenuModel.id)
+                )
+            ).unique()
+        )
+        return rows
 
     async def invalidate_role_users(self, session: AsyncSession, role_id: str, *, reason: str) -> set[str]:
         """Bump all affected principals and durably publish a revocation event."""
@@ -214,7 +254,7 @@ class RbacService:
 
     async def replace_role_menus(self, session: AsyncSession, *, role_code: str, menu_ids: set[str], actor_user_id: str) -> None:
         role = await session.scalar(select(RoleModel).where(RoleModel.code == role_code).with_for_update())
-        if role is None:
+        if role is None or role.is_builtin:
             raise KeyError(role_code)
         menus = list((await session.scalars(select(MenuModel).where(MenuModel.id.in_(menu_ids), MenuModel.status == "active"))).all()) if menu_ids else []
         if {item.id for item in menus} != menu_ids:
@@ -222,6 +262,12 @@ class RbacService:
         await session.execute(delete(RoleMenuModel).where(RoleMenuModel.role_id == role.id))
         session.add_all([RoleMenuModel(role_id=role.id, menu_id=item.id) for item in menus])
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=None, decision="allow", reason_code="role_menus_replaced", permission_code="system:role:manage", resource_type="role", resource_id=role_code)
+
+    async def role_menu_ids(self, session: AsyncSession, role_code: str) -> set[str]:
+        role = await session.scalar(select(RoleModel.id).where(RoleModel.code == role_code))
+        if role is None:
+            raise KeyError(role_code)
+        return set((await session.scalars(select(RoleMenuModel.menu_id).where(RoleMenuModel.role_id == role))).all())
 
     async def audit(
         self,
@@ -259,12 +305,20 @@ class RbacService:
         return list((await session.scalars(statement)).all())
 
     async def read_sensitive_checkpoint(
-        self, session: AsyncSession, *, session_id: str, checkpoint_id: str, actor_user_id: str
+        self,
+        session: AsyncSession,
+        *,
+        session_id: str,
+        checkpoint_id: str,
+        actor_user_id: str,
+        workspace_ids: frozenset[str] = frozenset(),
     ) -> AgentCheckpointModel:
-        """Raw checkpoint payloads are intentionally available only through this seam."""
+        """Read only an ownership-bound raw checkpoint payload."""
         checkpoint = await session.scalar(select(AgentCheckpointModel).where(
             AgentCheckpointModel.session_id == session_id,
             AgentCheckpointModel.checkpoint_id == checkpoint_id,
+            AgentCheckpointModel.owner_user_id == actor_user_id,
+            AgentCheckpointModel.workspace_id.in_(workspace_ids),
         ))
         if checkpoint is None:
             raise KeyError(checkpoint_id)

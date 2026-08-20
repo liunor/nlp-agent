@@ -59,11 +59,17 @@ class FencedTurnExecutor:
                 turn_id=task.turn_id,
                 worker_id=self._worker_id,
                 lease_s=self._lease_s,
+                user_id=task.context.user_id,
+                workspace_id=task.context.workspace_id,
             )
             if generation is None:
                 return False
             if task.authorization is None:
                 raise PermissionError("worker task lacks authorization context")
+            if task.authorization.submitter_user_id != task.context.user_id:
+                raise PermissionError("worker authorization user mismatch")
+            if task.authorization.workspace_id != task.context.workspace_id:
+                raise PermissionError("worker task workspace mismatch")
             principal = await rbac_service.principal_for_user_id(
                 unit_of_work.session, task.authorization.submitter_user_id
             )
@@ -120,7 +126,7 @@ class FencedTurnExecutor:
         while True:
             await asyncio.sleep(self._lease_s / 3)
             async with self._unit_of_work_factory.begin() as unit_of_work:
-                await self._reliability.heartbeat(
+                active = await self._reliability.heartbeat(
                     unit_of_work.session,
                     turn_id=turn_id,
                     generation=generation,
@@ -128,3 +134,5 @@ class FencedTurnExecutor:
                     lease_s=self._lease_s,
                 )
                 await unit_of_work.commit()
+                if not active:
+                    raise PermissionError("turn cancellation requested")

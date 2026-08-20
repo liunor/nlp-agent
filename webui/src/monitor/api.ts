@@ -14,8 +14,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok) { const body = await response.json().catch(() => ({})) as { title?: string }; throw new Error(body.title ?? `HTTP ${response.status}`); }
   return response.json() as Promise<T>;
 }
-export async function authenticate() { try { const result = await request<{ csrf_token: string }>("/auth/session"); csrf = result.csrf_token; } catch { const result = await request<{ csrf_token: string }>("/auth/session", { method: "POST" }); csrf = result.csrf_token; } }
+export async function authenticate() { const result = await request<{ csrf_token: string }>("/auth/session"); csrf = result.csrf_token; }
 export const monitorApi = {
+  createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
   overview: (days: number) => request<Overview>(`/observability/overview?days=${days}`),
   traces: (limit = 200) => request<{ items: Trace[] }>(`/observability/traces?limit=${limit}`),
   trace: (id: string) => request<TraceDetail>(`/observability/traces/${encodeURIComponent(id)}`),
