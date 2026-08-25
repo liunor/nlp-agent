@@ -583,3 +583,87 @@ button { color: inherit; }
 
 /* Student category creation is a first-class dialog, not a browser prompt. */
 .category-dialog-backdrop { z-index:90; display:grid; place-items:center; padding:20px; }.category-dialog { width:min(100%,440px); overflow:hidden; border:1px solid color-mix(in srgb,var(--accent) 22%,var(--border)); border-radius:18px; background:var(--bg); color:var(--fg); box-shadow:0 26px 76px rgb(0 0 0 / 28%); }.category-dialog header { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; gap:12px; padding:21px 21px 17px; border-bottom:1px solid var(--border); }.category-dialog-icon { display:grid; width:40px; height:40px; place-items:center; border-radius:12px; background:var(--accent-soft); color:var(--accent); }.category-dialog h2 { margin:1px 0 5px; font-size:17px; letter-spacing:-.02em; }.category-dialog header p { margin:0; color:var(--muted); font-size:12px; line-height:1.6; }.category-dialog-close { display:grid; width:30px; height:30px; place-items:center; border:0; border-radius:8px; background:transparent; color:var(--muted); cursor:pointer; }.category-dialog-close:hover { background:var(--muted-bg); color:var(--fg); }.category-dialog form { display:grid; gap:7px; padding:18px 21px 20px; }.category-dialog label { color:var(--fg); font-size:12px; font-weight:650; }.category-dialog input { width:100%; box-sizing:border-box; padding:11px 12px; border:1px solid var(--border); border-radius:10px; outline:0; background:var(--soft-bg); color:var(--fg); font:inherit; font-size:14px; }.category-dialog input:focus { border-color:var(--accent); background:var(--bg); box-shadow:0 0 0 3px var(--accent-soft); }.category-dialog form small { min-height:16px; color:var(--muted); font-size:10px; text-align:right; }.category-dialog footer { display:flex; justify-content:flex-end; gap:9px; margin-top:7px; }.category-dialog footer button { display:inline-flex; min-height:37px; align-items:center; justify-content:center; gap:6px; padding:0 13px; border-radius:9px; font:inherit; font-size:12px; font-weight:600; cursor:pointer; }.category-dialog-cancel { border:1px solid var(--border); background:transparent; color:var(--fg); }.category-dialog-confirm { border:1px solid var(--accent); background:var(--accent); color:#fff; }.category-dialog-confirm:hover:not(:disabled) { filter:brightness(.94); }.category-dialog-confirm:disabled { opacity:.48; cursor:not-allowed; }.category-dialog button:focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 42%,transparent); outline-offset:2px; }
+/* Teacher catalogue tree tables: keep the existing accordion editors, but present their rows as a compact hierarchy. */
+.teacher-catalog-list { display:grid; gap:0; padding:0; overflow-x:auto; background:#fff; }
+.teacher-catalog-list::before { display:grid; min-width:620px; grid-template-columns:minmax(0,1fr) 120px 170px; align-items:center; min-height:38px; padding:0 16px; border-bottom:1px solid #dedff0; background:#f7f7fc; color:#74768a; content:"主题 / 知识点\A" "名称                                      状态          操作"; white-space:pre; font-size:11px; font-weight:700; letter-spacing:.04em; }
+.teacher-topic-card { min-width:620px; border:0; border-bottom:1px solid #ececf4; border-left:3px solid #8377d0; border-radius:0; box-shadow:none; }
+.teacher-topic-card:hover { border-color:#c6c1e9; border-left-color:#8377d0; box-shadow:none; background:#fcfcff; }
+.teacher-topic-card.is-expanded { border-color:#9388d7; border-left-color:#8377d0; box-shadow:none; }
+.teacher-topic-card > .teacher-card-heading { display:grid; min-height:54px; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; padding:0 16px 0 13px; border-bottom:1px solid #ececf4; }
+.teacher-topic-card > .teacher-card-heading .teacher-card-toggle { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:9px; }
+.teacher-topic-card > .teacher-card-heading .teacher-card-actions { display:flex; flex-wrap:nowrap; }
+.teacher-topic-card > .teacher-card-heading strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.teacher-topic-card > .teacher-editor-grid { margin-left:28px; border-left:1px dashed #c8c4e6; background:#fbfbff; }
+.teacher-topic-card > .teacher-editor-grid::before { display:block; height:1px; margin:-18px 0 2px -29px; background:#c8c4e6; content:""; }
+.teacher-nested-list { display:grid; gap:0; margin-top:2px; }
+.teacher-nested-card { position:relative; margin-left:20px; border:0; border-bottom:1px solid #eeeef5; border-left:0; border-radius:0; background:#fff; box-shadow:none; }
+.teacher-nested-card::before { position:absolute; width:18px; height:20px; margin-left:-20px; border-bottom:1px dashed #c8c4e6; border-left:1px dashed #c8c4e6; content:""; }
+.teacher-nested-card > .teacher-card-heading { display:grid; min-height:46px; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; padding:0 12px; }
+.teacher-nested-card > .teacher-card-heading .teacher-card-toggle { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; }
+.teacher-nested-card > .teacher-card-heading .teacher-card-actions { display:flex; flex-wrap:nowrap; }
+.teacher-nested-card.is-expanded > .teacher-card-heading { background:#f7f6ff; }
+.teacher-nested-card > .teacher-editor-grid { margin-left:30px; padding:14px 12px 14px 18px; border-left:1px dashed #c8c4e6; background:#fcfcff; }
+
+.teacher-blueprint-topic { position:relative; display:grid; gap:0; margin:0; padding:0; overflow-x:auto; border:0; border-bottom:1px solid #e5e5ef; border-radius:0; background:#fff; box-shadow:none; }
+.teacher-blueprint-topic::before { display:grid; min-width:760px; grid-template-columns:150px minmax(140px,1fr) minmax(180px,1fr) 90px 170px; align-items:center; min-height:38px; padding:0 18px; border-bottom:1px solid #dedff0; background:#f7f7fc; color:#74768a; content:"主题              知识点                         蓝图名称                         状态        操作"; white-space:pre; font-size:11px; font-weight:700; letter-spacing:.03em; }
+.teacher-blueprint-topic > header { min-width:760px; min-height:48px; grid-template-columns:auto minmax(0,1fr) auto; padding:0 18px; border-bottom:1px solid #ececf4; background:#fbfaff; }
+.teacher-blueprint-topic > header h3 { font-size:14px; }
+.teacher-blueprint-point { min-width:760px; display:grid; gap:0; margin:0; border:0; border-bottom:1px solid #f0f0f5; border-radius:0; background:#fff; }
+.teacher-blueprint-point > header { min-height:42px; padding:0 18px 0 42px; border-bottom:1px solid #f2f2f7; background:#fff; }
+.teacher-blueprint-point > header::before { position:absolute; width:18px; height:20px; margin-left:-25px; border-bottom:1px dashed #c8c4e6; border-left:1px dashed #c8c4e6; content:""; }
+.teacher-blueprint-list { display:grid; gap:0; }
+.teacher-blueprint-card { position:relative; margin-left:24px; border:0; border-bottom:1px solid #f0f0f5; border-left:0; border-radius:0; box-shadow:none; }
+.teacher-blueprint-card::before { position:absolute; width:18px; height:20px; top:0; left:-24px; border-bottom:1px dashed #c8c4e6; border-left:1px dashed #c8c4e6; content:""; }
+.teacher-blueprint-card > .teacher-card-heading { display:grid; min-height:48px; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; padding:0 18px 0 12px; }
+.teacher-blueprint-card > .teacher-card-heading .teacher-card-toggle { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; }
+.teacher-blueprint-card > .teacher-card-heading .teacher-card-actions { display:flex; flex-wrap:nowrap; }
+.teacher-blueprint-card.is-expanded { border-color:#9388d7; box-shadow:none; }
+.teacher-blueprint-card > .teacher-editor-grid { margin:0 18px 12px 12px; border-left:1px dashed #c8c4e6; background:#fcfcff; }
+
+@media (max-width:780px) {
+  .teacher-catalog-list::before { min-width:540px; grid-template-columns:minmax(0,1fr) 100px 150px; padding-inline:10px; font-size:10px; }
+  .teacher-topic-card,.teacher-blueprint-topic::before,.teacher-blueprint-topic > header,.teacher-blueprint-point,.teacher-blueprint-card { min-width:540px; }
+  .teacher-blueprint-topic::before { grid-template-columns:110px minmax(100px,1fr) minmax(130px,1fr) 72px 140px; padding-inline:10px; font-size:9px; }
+}
+/* Teacher directory navigation: one-line top-level tabs, tree navigation below, selected item details on the right. */
+.teacher-tree-panel > header { padding-bottom:14px; }
+.teacher-tree-topbar { position:sticky; z-index:20; top:0; overflow:visible; border-top:1px solid #ececf4; border-bottom:1px solid #dfe0ed; background:#f8f8fc; }
+.teacher-tree-topbar-scroll { display:flex; min-height:58px; align-items:stretch; gap:4px; padding:0 14px; overflow-x:auto; overflow-y:hidden; overscroll-behavior-x:contain; scrollbar-width:thin; }
+.teacher-tree-top-item { position:relative; display:flex; align-items:stretch; flex:0 0 auto; }
+.teacher-tree-top-button { display:inline-flex; min-width:150px; align-items:center; justify-content:center; gap:7px; padding:0 14px; border:0; border-bottom:3px solid transparent; background:transparent; color:#66697a; font-size:12px; font-weight:650; cursor:pointer; }
+.teacher-tree-top-button:hover,.teacher-tree-top-item.active .teacher-tree-top-button { border-bottom-color:var(--teacher-accent); background:#fff; color:#4f43a4; }
+.teacher-tree-top-button span { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.teacher-tree-top-button .teacher-status-badge { display:none; }
+.teacher-tree-hover-menu { position:fixed; z-index:100; display:grid; gap:3px; max-height:160px; box-sizing:border-box; padding:7px; overflow-y:auto; overscroll-behavior:contain; border:1px solid #dedcf1; border-radius:0 0 10px 10px; background:#fff; box-shadow:0 13px 25px rgb(38 34 80 / 13%); scrollbar-width:thin; }
+.teacher-tree-hover-menu button { display:flex; min-height:34px; align-items:center; justify-content:space-between; gap:8px; padding:0 9px; border:0; border-radius:6px; background:transparent; color:#4b4e5d; font-size:11px; text-align:left; cursor:pointer; }
+.teacher-tree-hover-menu button:hover { background:#f2f0ff; color:#4f43a4; }
+.teacher-tree-hover-menu button span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.teacher-tree-hover-menu small { padding:5px 9px; color:#999baa; font-size:11px; }
+.teacher-tree-content { padding:18px; background:linear-gradient(180deg,#fff,#fafaff); }
+.teacher-tree-content > .teacher-topic-card { min-width:0; border:1px solid #dfe1eb; border-left:4px solid #8377d0; border-radius:12px; }
+.teacher-tree-content > .teacher-topic-card > .teacher-card-heading { padding-inline:16px; }
+.teacher-blueprint-workspace { display:grid; grid-template-columns:minmax(220px,32%) minmax(0,1fr); gap:18px; align-items:start; }
+.teacher-tree-sidebar { min-width:0; overflow:hidden; border:1px solid #dedff0; border-radius:12px; background:#fff; }
+.teacher-tree-topic-node { padding:8px; }
+.teacher-tree-node-title { display:flex; width:100%; min-height:38px; align-items:center; gap:7px; padding:0 9px; border:0; border-radius:7px; background:#f6f5ff; color:#40376f; font-size:12px; font-weight:700; text-align:left; cursor:pointer; }
+.teacher-tree-node-title:hover { background:#ece9ff; }
+.teacher-tree-node-title small { margin-left:auto; color:#9695a7; font-size:10px; font-weight:500; white-space:nowrap; }
+.teacher-tree-point-node { position:relative; margin:6px 0 0 15px; padding:4px 0 4px 14px; border-left:1px dashed #c9c5e5; }
+.teacher-tree-node-title.point { min-height:30px; padding-inline:7px; background:transparent; color:#626578; font-size:11px; font-weight:650; }
+.teacher-tree-leaf { display:flex; width:100%; min-height:34px; align-items:center; gap:7px; margin-top:3px; padding:0 8px; border:0; border-radius:6px; background:transparent; color:#575b6d; font-size:11px; text-align:left; cursor:pointer; }
+.teacher-tree-leaf::before { width:10px; height:1px; margin-left:-22px; background:#c9c5e5; content:""; }
+.teacher-tree-leaf:hover,.teacher-tree-leaf.active { background:#eeeaff; color:#4e42a2; }
+.teacher-tree-leaf span { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.teacher-tree-leaf .teacher-status-badge { flex:0 0 auto; }
+.teacher-tree-detail { min-width:0; }
+.teacher-tree-detail > .teacher-empty-state { display:grid; min-height:180px; place-items:center; margin:0; border:1px dashed #d8d7e7; border-radius:12px; background:#fff; }
+.teacher-tree-detail > .teacher-blueprint-card { min-width:0; margin:0; border:1px solid #dfe1eb; border-left:4px solid #8377d0; border-radius:12px; box-shadow:0 5px 18px rgb(46 42 98 / 6%); }
+.teacher-tree-detail > .teacher-blueprint-card::before { display:none; }
+.teacher-tree-detail > .teacher-blueprint-card > .teacher-card-heading { padding-inline:16px; }
+@media (max-width:780px) {
+  .teacher-tree-topbar-scroll { padding-inline:8px; }
+  .teacher-tree-top-button { min-width:130px; padding-inline:10px; }
+  .teacher-tree-hover-menu { position:fixed; }
+  .teacher-tree-content { padding:12px; }
+  .teacher-blueprint-workspace { grid-template-columns:1fr; }
+}
