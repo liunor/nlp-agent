@@ -14,10 +14,21 @@ jobs:
           python-version: '3.11'
       - run: pip install -e . pytest
       - run: pytest tests/test_sandbox_docker_runtime.py tests/test_sandbox_runtime_protocol.py tests/test_sandbox_events.py -q
+      - name: Install gVisor runsc
+        run: |
+          ARCH=$(uname -m)
+          URL=https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}
+          curl -fsSLO ${URL}/runsc
+          curl -fsSLO ${URL}/runsc.sha512
+          sha512sum -c runsc.sha512
+          chmod +x runsc
+          sudo mv runsc /usr/local/bin/runsc
+          sudo runsc install
+          docker info --format '{{json .Runtimes}}' | grep -q '"runsc"'
       - run: docker build --tag nova-sandbox-runtime:ci sandbox-runtime
       - name: Smoke-test hardened Kernel on Linux
         run: |
-          docker run --detach --rm --name nova-ci --read-only --network none --cap-drop ALL --security-opt no-new-privileges=true --memory 768m --cpus 1 --pids-limit 128 --tmpfs /workspace:rw,nosuid,nodev,size=256m --tmpfs /tmp:rw,nosuid,nodev,size=256m --tmpfs /run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m --user 10001:10001 nova-sandbox-runtime:ci
+          docker run --detach --rm --name nova-ci --runtime runsc --read-only --network none --cap-drop ALL --security-opt no-new-privileges=true --memory 768m --cpus 1 --pids-limit 128 --tmpfs /workspace:rw,nosuid,nodev,size=256m --tmpfs /tmp:rw,nosuid,nodev,size=256m --tmpfs /run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m --user 10001:10001 nova-sandbox-runtime:ci
           until docker exec nova-ci python /opt/nova-runtime/nova_runtime.py health; do sleep 1; done
           echo '{"source":"print(42)"}' | docker exec --interactive nova-ci python /opt/nova-runtime/nova_runtime.py execute --timeout-seconds 10 --output-limit-bytes 1024
           docker rm --force nova-ci

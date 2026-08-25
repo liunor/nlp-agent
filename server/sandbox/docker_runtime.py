@@ -42,10 +42,13 @@ class DockerRuntimeConfig:
     workspace_size: str = "256m"
     tmp_size: str = "256m"
     shm_size: str = "64m"
+    runtime: str = "runsc"
 
     def __post_init__(self) -> None:
         if "@sha256:" not in self.image:
             raise ValueError("sandbox runtime image must be pinned by immutable digest")
+        if self.runtime != "runsc":
+            raise ValueError("Phase 3 sandbox runtime must use gVisor runsc")
 
 
 class DockerRuntimeAdapter:
@@ -57,6 +60,7 @@ class DockerRuntimeAdapter:
     def create_command(self, *, name: str, claim_nonce: str) -> tuple[str, ...]:
         return (
             "docker", "run", "--detach", "--name", name,
+            "--runtime", self.config.runtime,
             "--label", "nova.sandbox.managed=true",
             "--label", "nova.sandbox.state=ready_unbound",
             "--read-only", "--network", "none", "--cap-drop", "ALL",

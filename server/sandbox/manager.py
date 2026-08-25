@@ -84,6 +84,22 @@ class WarmPoolManager:
             finally:
                 await lock_session.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
 
+    async def capacity_snapshot(self) -> dict[str, int | str]:
+        """Management-plane capacity data for dashboards and alert thresholds."""
+        async with self._session_factory() as session:
+            counts = await self._counts(session)
+        return {
+            "resource_profile": self._resource_profile_id,
+            "ready": counts.ready_count,
+            "creating": counts.creating_count,
+            "target": self._ready_target,
+            "deficit": refill_deficit(
+                target=self._ready_target,
+                ready_count=counts.ready_count,
+                creating_count=counts.creating_count,
+            ),
+        }
+
     async def claim(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
         claim = await self._claim_once(scope, lease_id=lease_id)
         if claim is None:

@@ -44,6 +44,14 @@ def test_l1_container_command_is_created_not_started() -> None:
     assert "--detach" not in command
 
 
+def test_production_runtime_uses_gvisor_runsc() -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+
+    command = DockerRuntimeAdapter(DockerRuntimeConfig(image="registry.example/nova@sha256:" + "e" * 64)).create_command(name="runsc", claim_nonce="")
+
+    assert command[command.index("--runtime") + 1] == "runsc"
+
+
 def test_kernel_readiness_requires_a_running_container_and_kernel_connection_file() -> None:
     from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
 
