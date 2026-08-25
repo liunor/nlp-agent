@@ -270,6 +270,13 @@ class DatabaseSessionAuth:
                 failure = "authentication cookie has expired"
             elif touch:
                 row.last_seen_at = now
+            if failure is not None:
+                await sandbox_lifecycle_service.release_auth_session_in_transaction(
+                    session,
+                    user_id=row.user_id,
+                    auth_session_id=row.id,
+                    reason="auth.session.expired",
+                )
             if failure is None:
                 claims = self._claims(row)
         if failure is not None:

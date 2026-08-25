@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -13,6 +13,8 @@ from server.infrastructure.mysql.models import (
     OutboxMessageModel,
     SandboxEnvironmentModel,
     SandboxLeaseModel,
+    SessionModel,
+    UserModel,
 )
 
 from .contracts import SandboxScope
@@ -194,11 +196,23 @@ class SandboxLifecycleService:
         best-effort browser disconnect notification.
         """
         current_time = now or _utc_now()
+        invalid_auth_session = select(SessionModel.id).join(
+            UserModel, UserModel.id == SessionModel.user_id
+        ).where(
+            SessionModel.id == SandboxLeaseModel.auth_session_id,
+            or_(
+                SessionModel.revoked_at.is_not(None),
+                SessionModel.expires_at <= current_time,
+                SessionModel.authorization_version != UserModel.authorization_version,
+                UserModel.status != "active",
+                UserModel.deleted_at.is_not(None),
+            ),
+        ).exists()
         await session.execute(
             update(SandboxLeaseModel)
             .where(
                 SandboxLeaseModel.state == "active",
-                SandboxLeaseModel.expires_at <= current_time,
+                or_(SandboxLeaseModel.expires_at <= current_time, invalid_auth_session),
             )
             .values(state="expired", released_at=current_time, reason="auth.session.expired")
         )

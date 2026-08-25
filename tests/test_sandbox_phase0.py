@@ -10,7 +10,12 @@ from sqlalchemy import select
 
 from core.identity import AuthenticatedPrincipal
 from server.infrastructure.mysql import DatabaseConfig, create_engine, create_session_factory
-from server.infrastructure.mysql.models import SandboxEnvironmentModel, SandboxLeaseModel, WorkspaceMemberModel
+from server.infrastructure.mysql.models import (
+    SandboxEnvironmentModel,
+    SandboxLeaseModel,
+    SessionModel,
+    WorkspaceMemberModel,
+)
 from server.rbac.service import rbac_service
 from server.sandbox.contracts import SandboxScope
 from server.sandbox.service import sandbox_lifecycle_service
@@ -175,6 +180,48 @@ async def test_auth_revocation_releases_the_same_session_lease_atomically(mysql_
     assert lease is not None
     assert lease.state == "released"
     assert lease.reason == "auth.session.logged_out"
+
+
+@pytest.mark.asyncio
+async def test_idle_session_expiry_releases_its_sandbox_lease(mysql_session_factory) -> None:
+    from server.web.auth import AuthenticationError
+    from server.web.database_auth import DatabaseSessionAuth
+
+    async with mysql_session_factory() as session:
+        user = await UserService(session).create_user(
+            data=UserCreate(
+                username=f"idle{uuid4().hex[:10]}",
+                display_name="Idle user",
+                password="InitialPw0rd1",
+            )
+        )
+        await session.commit()
+
+    auth = DatabaseSessionAuth(allowed_origins=["http://testserver"], idle_timeout_s=60)
+    token, claims = await auth.login(
+        mysql_session_factory, user.username, "InitialPw0rd1", client_key="sandbox-idle"
+    )
+    async with mysql_session_factory.begin() as session:
+        principal = await rbac_service.principal_for_user_id(session, user.id)
+        await sandbox_lifecycle_service.ensure_current_lease(
+            session, SandboxScope.from_authenticated_request(principal, claims)
+        )
+        auth_session = await session.scalar(
+            select(SessionModel).where(SessionModel.id == claims.session_id).with_for_update()
+        )
+        assert auth_session is not None
+        auth_session.last_seen_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=2)
+
+    with pytest.raises(AuthenticationError, match="expired"):
+        await auth.authenticate(mysql_session_factory, token)
+
+    async with mysql_session_factory() as session:
+        lease = await session.scalar(
+            select(SandboxLeaseModel).where(SandboxLeaseModel.auth_session_id == claims.session_id)
+        )
+    assert lease is not None
+    assert lease.state == "released"
+    assert lease.reason == "auth.session.expired"
 
 
 @pytest.mark.asyncio
