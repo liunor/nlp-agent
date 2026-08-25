@@ -105,6 +105,46 @@ def interrupt() -> None:
     client.interrupt_kernel()
 
 
+def health() -> None:
+    """Round-trip kernel_info; a connection file alone is not a readiness signal."""
+    from jupyter_client import BlockingKernelClient
+
+    client = BlockingKernelClient(connection_file=KERNEL_CONNECTION_FILE)
+    client.load_connection_file()
+    client.start_channels()
+    try:
+        message_id = client.kernel_info()
+        deadline = time.monotonic() + 5
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("kernel health probe timed out")
+            message = client.get_shell_msg(timeout=remaining)
+            if message.get("parent_header", {}).get("msg_id") == message_id:
+                return
+    finally:
+        client.stop_channels()
+
+
+def scratch(request: ExecuteRequest) -> dict[str, object]:
+    """Execute in a fresh process: intentionally no access to Interactive Kernel state."""
+    output = OutputCollector(limit_bytes=request.output_limit_bytes)
+    namespace = {"__builtins__": __builtins__}
+    try:
+        import contextlib
+        import io
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exec(compile(request.source, "<model-scratch>", "exec"), namespace, namespace)
+        output.append("stdout", stdout.getvalue())
+        output.append("stderr", stderr.getvalue())
+    except Exception as error:
+        output.append("stderr", f"{type(error).__name__}: {error}\n")
+    return output.to_payload()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -112,10 +152,17 @@ def main() -> int:
     execute_parser.add_argument("--timeout-seconds", type=int, required=True)
     execute_parser.add_argument("--output-limit-bytes", type=int, required=True)
     subcommands.add_parser("interrupt")
+    subcommands.add_parser("health")
+    scratch_parser = subcommands.add_parser("scratch")
+    scratch_parser.add_argument("--timeout-seconds", type=int, required=True)
+    scratch_parser.add_argument("--output-limit-bytes", type=int, required=True)
     arguments = parser.parse_args()
     try:
         if arguments.command == "interrupt":
             interrupt()
+            return 0
+        if arguments.command == "health":
+            health()
             return 0
         wire_payload = json.load(sys.stdin)
         request = parse_execute_request({
@@ -123,7 +170,8 @@ def main() -> int:
             "timeout_seconds": arguments.timeout_seconds,
             "output_limit_bytes": arguments.output_limit_bytes,
         })
-        print(json.dumps(execute(request), ensure_ascii=False))
+        result = scratch(request) if arguments.command == "scratch" else execute(request)
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     except (TimeoutError, ValueError, OSError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)

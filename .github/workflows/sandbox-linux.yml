@@ -1,0 +1,29 @@
+name: Sandbox Linux Validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  sandbox-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e . pytest
+      - run: pytest tests/test_sandbox_docker_runtime.py tests/test_sandbox_runtime_protocol.py tests/test_sandbox_events.py -q
+      - run: docker build --tag nova-sandbox-runtime:ci sandbox-runtime
+      - name: Smoke-test hardened Kernel on Linux
+        run: |
+          docker run --detach --rm --name nova-ci --read-only --network none --cap-drop ALL --security-opt no-new-privileges=true --memory 768m --cpus 1 --pids-limit 128 --tmpfs /workspace:rw,nosuid,nodev,size=256m --tmpfs /tmp:rw,nosuid,nodev,size=256m --tmpfs /run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m --user 10001:10001 nova-sandbox-runtime:ci
+          until docker exec nova-ci python /opt/nova-runtime/nova_runtime.py health; do sleep 1; done
+          echo '{"source":"print(42)"}' | docker exec --interactive nova-ci python /opt/nova-runtime/nova_runtime.py execute --timeout-seconds 10 --output-limit-bytes 1024
+          docker rm --force nova-ci
+      - name: Record Linux image metadata
+        run: docker image inspect nova-sandbox-runtime:ci --format '{{.Id}}' | tee sandbox-linux-image.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-linux-metadata
+          path: sandbox-linux-image.txt

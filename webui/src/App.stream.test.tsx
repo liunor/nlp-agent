@@ -122,8 +122,8 @@ describe("student stream rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开代码沙箱工具" }));
 
     expect(screen.getByRole("tab", { name: "代码沙箱" })).toBeVisible();
-    expect(screen.getByText("代码沙箱正在准备中")).toBeVisible();
-    expect(screen.getByText(/Phase 0 已完成身份与租约隔离契约/)).toBeVisible();
+    expect(screen.getByText("Code Runner")).toBeVisible();
+    expect(screen.getByText(/当前会话使用隔离运行环境/)).toBeVisible();
     await waitFor(() => expect(stream.ensureSandboxLease).toHaveBeenCalledTimes(1));
   });
 
@@ -134,7 +134,7 @@ describe("student stream rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开代码沙箱工具" }));
     fireEvent.change(screen.getByRole("textbox", { name: "沙箱代码" }), { target: { value: "x = 1\nx + 1" } });
     fireEvent.click(screen.getByRole("button", { name: "运行代码" }));
-    await waitFor(() => expect(stream.executeSandbox).toHaveBeenCalledWith("x = 1\nx + 1"));
+    await waitFor(() => expect(stream.executeSandbox).toHaveBeenCalledWith("x = 1\nx + 1", null));
     expect(await screen.findByText("2")).toBeVisible();
   });
 

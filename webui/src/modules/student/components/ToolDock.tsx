@@ -35,34 +35,37 @@ function SandboxPhaseZeroPanel() {
   const [source, setSource] = useState("# 在这里运行 Python 代码\n");
   const [result, setResult] = useState("");
   const [running, setRunning] = useState(false);
+  const [runtimeTicket, setRuntimeTicket] = useState<string | null>(null);
+  const [timeline, setTimeline] = useState<Array<{ id: number; label: string; detail: string }>>([]);
 
   useEffect(() => {
     let active = true;
     void api.ensureSandboxLease()
-      .then(() => { if (active) setLeaseStatus("ready"); })
-      .catch(() => { if (active) setLeaseStatus("error"); });
+      .then((value) => { if (active) { setRuntimeTicket(value.runtime?.ticket ?? null); setLeaseStatus(value.runtime_available ? "ready" : "creating"); setTimeline([{ id: Date.now(), label: value.runtime_available ? "运行环境已就绪" : "正在预热运行环境", detail: value.runtime_available ? "已绑定当前会话。" : "预热池正在补充干净实例。" }]); } })
+      .catch(() => { if (active) { setLeaseStatus("error"); setTimeline([{ id: Date.now(), label: "无法建立运行环境", detail: "请稍后重试。" }]); } });
     return () => { active = false; };
   }, []);
 
   return <section className="tool-dock-empty-panel sandbox-phase-zero-panel">
     <span><Code2 size={20} /></span>
-    <strong>代码沙箱正在准备中</strong>
-    <p>Phase 0 已完成身份与租约隔离契约；本地开发模式使用 InMemory Kernel，Docker 隔离运行时正在接入。</p>
-    <small>{leaseStatus === "creating" ? "正在建立当前登录会话的沙箱租约…" : leaseStatus === "ready" ? "当前会话的沙箱租约已建立。" : "暂时无法建立沙箱租约，请稍后重试。"}</small>
-    <textarea aria-label="沙箱代码" value={source} onChange={(event) => setSource(event.target.value)} />
+    <strong>Code Runner</strong>
+    <p>当前会话使用隔离运行环境；变量和 import 会在 Runtime 存活期间保留。</p>
+    <div className={`sandbox-runtime-status ${leaseStatus}`}><i />{leaseStatus === "creating" ? "正在预热运行环境…" : leaseStatus === "ready" ? "运行环境已就绪" : "运行环境不可用"}</div>
+    <textarea aria-label="沙箱代码" value={source} onChange={(event) => setSource(event.target.value)} spellCheck={false} />
     <div className="sandbox-phase-zero-actions">
       <button type="button" disabled={running} onClick={() => {
-        setRunning(true);
-        void api.executeSandbox(source)
-          .then((value) => setResult(value.stdout || value.stderr || "运行完成。"))
-          .catch(() => setResult("当前运行环境不可用。"))
+        setRunning(true); setTimeline((current) => [...current, { id: Date.now(), label: "开始执行", detail: "正在向隔离 Kernel 发送代码。" }]);
+        void api.executeSandbox(source, runtimeTicket)
+          .then(async (value) => { if (value.ticket) setRuntimeTicket(value.ticket); setResult(value.stdout || value.stderr || "运行完成。"); if (value.execution_id) { const replay = await api.replaySandboxEvents(value.execution_id); setTimeline(replay.events.map((event) => ({ id: event.seq, label: event.type === "execution.output" ? "运行输出" : event.type === "execution.completed" ? "执行完成" : "开始执行", detail: event.payload.text ?? "运行状态已恢复。" }))); } else setTimeline((current) => [...current, { id: Date.now(), label: "执行完成", detail: value.stderr ? "运行返回错误输出。" : "已收到 Kernel 输出。" }]); })
+          .catch(() => { setResult("当前运行环境不可用。"); setTimeline((current) => [...current, { id: Date.now(), label: "执行失败", detail: "请重新打开或重置运行环境。" }]); })
           .finally(() => setRunning(false));
       }}>{running ? "运行中…" : "运行代码"}</button>
       <button type="button" className="secondary" disabled={running} onClick={() => {
-        void api.restartSandbox().then(() => setResult("运行环境已重置。")).catch(() => setResult("当前运行环境不可用。"));
+        void api.restartSandbox(runtimeTicket).then(() => { setRuntimeTicket(null); setResult("运行环境已重置，请重新打开沙箱。"); setTimeline((current) => [...current, { id: Date.now(), label: "运行环境已重置", detail: "Kernel 内存状态已清空。" }]); }).catch(() => setResult("当前运行环境不可用。"));
       }}>重置运行环境</button>
     </div>
     {result && <pre>{result}</pre>}
+    <section className="sandbox-execution-timeline" aria-label="执行时间线"><strong>执行记录</strong>{timeline.slice(-5).reverse().map((event) => <div key={event.id}><i /><span><b>{event.label}</b><small>{event.detail}</small></span></div>)}</section>
   </section>;
 }
 

@@ -35,6 +35,15 @@ def test_docker_runtime_rejects_mutable_image_references() -> None:
         raise AssertionError("mutable Docker image reference must be rejected")
 
 
+def test_l1_container_command_is_created_not_started() -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+
+    command = DockerRuntimeAdapter(DockerRuntimeConfig(image="registry.example/nova@sha256:" + "d" * 64)).create_l1_command(name="l1")
+
+    assert command[:2] == ("docker", "create")
+    assert "--detach" not in command
+
+
 def test_kernel_readiness_requires_a_running_container_and_kernel_connection_file() -> None:
     from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
 

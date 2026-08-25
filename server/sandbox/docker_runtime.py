@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 import json
+from uuid import uuid4
 
 
 DOCKER_COMMAND_TIMEOUT_SECONDS = 15
@@ -68,6 +69,30 @@ class DockerRuntimeAdapter:
             "--user", "10001:10001", self.config.image,
         )
 
+    def create_l1_command(self, *, name: str) -> tuple[str, ...]:
+        command = list(self.create_command(name=name, claim_nonce=""))
+        command[1] = "create"
+        command.remove("--detach")
+        return tuple(command)
+
+    async def image_cached(self) -> bool:
+        process = await asyncio.create_subprocess_exec("docker", "image", "inspect", self.config.image)
+        await _wait(process)
+        return process.returncode == 0
+
+    async def create_l1(self, *, name: str) -> str:
+        process = await asyncio.create_subprocess_exec(*self.create_l1_command(name=name), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await _communicate(process)
+        if process.returncode != 0:
+            raise RuntimeError(stderr.decode("utf-8", "replace").strip())
+        return stdout.decode("utf-8", "replace").strip()
+
+    async def start_l1(self, external_runtime_id: str) -> None:
+        process = await asyncio.create_subprocess_exec("docker", "start", external_runtime_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await _communicate(process)
+        if process.returncode != 0:
+            raise RuntimeError(stderr.decode("utf-8", "replace").strip())
+
     async def create_ready(self, *, name: str, claim_nonce: str) -> str:
         del claim_nonce  # persisted only as a DB hash; never put it in Docker metadata.
         process = await asyncio.create_subprocess_exec(
@@ -97,11 +122,12 @@ class DockerRuntimeAdapter:
         return process.returncode == 0 and stdout.decode().strip().lower() == "true"
 
     async def kernel_ready(self, external_runtime_id: str) -> bool:
-        """Check the runtime's actual kernel endpoint without exposing its port."""
+        """Probe the actual Kernel protocol without exposing a container port."""
         if not await self.healthy(external_runtime_id):
             return False
         process = await asyncio.create_subprocess_exec(
-            "docker", "exec", external_runtime_id, "test", "-s", "/run/nova/kernel.json",
+            "docker", "exec", external_runtime_id,
+            "python", "/opt/nova-runtime/nova_runtime.py", "health",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -166,6 +192,32 @@ class DockerRuntimeAdapter:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await _wait(process)
+
+    async def run_scratch(
+        self, *, source: str, timeout_seconds: int = 15, output_limit_bytes: int = 1_000_000
+    ) -> dict[str, object]:
+        """Run a model experiment in a fresh hardened process, never a user kernel."""
+        if not 1 <= timeout_seconds <= 60:
+            raise ValueError("timeout_seconds must be between 1 and 60")
+        command = list(self.create_command(name=f"nova-scratch-{uuid4().hex}", claim_nonce=""))
+        command[2:3] = ["--rm"]
+        command.extend(("python", "/opt/nova-runtime/nova_runtime.py", "scratch", "--timeout-seconds", str(timeout_seconds), "--output-limit-bytes", str(output_limit_bytes)))
+        process = await asyncio.create_subprocess_exec(
+            *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        assert process.stdin is not None
+        process.stdin.write(json.dumps({"source": source}).encode("utf-8"))
+        await process.stdin.drain()
+        process.stdin.close()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds + 3)
+        except TimeoutError as error:
+            process.kill()
+            await process.communicate()
+            raise TimeoutError("sandbox scratch execution timed out") from error
+        if process.returncode != 0:
+            raise RuntimeError(stderr.decode("utf-8", "replace").strip())
+        return json.loads(stdout.decode("utf-8"))
 
     async def managed_runtime_ids(self) -> set[str]:
         """List only Manager-owned containers; never enumerate arbitrary Docker work."""

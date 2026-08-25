@@ -83,12 +83,15 @@ export const api = {
   getAuthSession: ensureAuth,
   ensureSandboxLease: () => request<{
     phase: number;
-    runtime_available: boolean;
-    environment: { id: string; status: string; generation: number; profile: string } | null;
-    lease: { id: string; state: string; generation: number; expires_at: string } | null;
-  }>("/sandbox/lease", { method: "POST" }),
-  executeSandbox: (source: string) => request<{ status: string; stdout: string; stderr: string }>("/sandbox/execute", { method: "POST", body: JSON.stringify({ source }) }),
-  restartSandbox: () => request<{ status: string }>("/sandbox/restart", { method: "POST" }),
+      runtime_available: boolean;
+      environment: { id: string; status: string; generation: number; profile: string } | null;
+      lease: { id: string; state: string; generation: number; expires_at: string } | null;
+      runtime: { id: string; generation: number; ticket: string | null } | { kind: "inmemory"; ticket: null } | null;
+      pool_status?: string;
+    }>("/sandbox/lease", { method: "POST" }),
+  executeSandbox: (source: string, ticket: string | null) => request<{ status?: string; stdout: string; stderr: string; ticket?: string; execution_id?: string }>("/sandbox/execute", { method: "POST", body: JSON.stringify({ source, ticket }) }),
+  restartSandbox: (ticket: string | null) => request<{ status: string; ticket?: string | null }>("/sandbox/restart", { method: "POST", body: JSON.stringify({ ticket }) }),
+  replaySandboxEvents: (executionId: string, afterEventId?: string) => request<{ execution_id: string; events: Array<{ event_id: string; seq: number; type: string; payload: { text?: string } }> }>(`/sandbox/executions/${encodeURIComponent(executionId)}/events${afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : ""}`),
   createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
   listSessions: () => request<{ items: SessionSummary[] }>("/sessions"),
   createSession: (workspaceId = "default") =>

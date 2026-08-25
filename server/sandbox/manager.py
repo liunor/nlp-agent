@@ -13,7 +13,7 @@ from uuid import uuid4
 from sqlalchemy import exists, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from server.infrastructure.mysql.models import SandboxLeaseModel, SandboxRuntimeInstanceModel
+from server.infrastructure.mysql.models import SandboxEnvironmentModel, SandboxLeaseModel, SandboxRuntimeInstanceModel
 
 from .contracts import SandboxScope
 from .docker_runtime import DockerRuntimeAdapter
@@ -85,6 +85,19 @@ class WarmPoolManager:
                 await lock_session.execute(text("SELECT RELEASE_LOCK(:name)"), {"name": lock_name})
 
     async def claim(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
+        claim = await self._claim_once(scope, lease_id=lease_id)
+        if claim is None:
+            await self.refill()
+            claim = await self._claim_once(scope, lease_id=lease_id)
+        if claim is None:
+            return None
+        external_id = claim.runtime.external_runtime_id
+        if external_id and await self._docker.kernel_ready(external_id):
+            return claim
+        await self.destroy_runtime(claim.runtime.id, reason="kernel.not.ready")
+        return None
+
+    async def _claim_once(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
         async with self._session_factory.begin() as session:
             lease = await session.get(SandboxLeaseModel, lease_id, with_for_update=True)
             if (
@@ -99,14 +112,7 @@ class WarmPoolManager:
             claim = await warm_pool_service.claim(session, scope)
             if claim is not None:
                 lease.runtime_instance_id = claim.runtime.id
-        if claim is None:
-            await self.refill()
-            return None
-        external_id = claim.runtime.external_runtime_id
-        if external_id and await self._docker.kernel_ready(external_id):
             return claim
-        await self.destroy_runtime(claim.runtime.id, reason="kernel.not.ready")
-        return None
 
     async def destroy_runtime(self, runtime_id: str, *, reason: str) -> None:
         async with self._session_factory.begin() as session:
@@ -133,6 +139,17 @@ class WarmPoolManager:
                 runtime.failure_reason = reason
             await warm_pool_service.mark_destroyed(session, runtime_id)
         await self.refill()
+
+    async def reset_runtime(self, runtime_id: str) -> None:
+        """Fence every existing ticket before destroying the user's runtime."""
+        async with self._session_factory.begin() as session:
+            runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
+            if runtime is None or runtime.environment_id is None:
+                raise LookupError("sandbox runtime does not exist")
+            environment = await session.get(SandboxEnvironmentModel, runtime.environment_id, with_for_update=True)
+            if environment is not None:
+                environment.generation += 1
+        await self.destroy_runtime(runtime_id, reason="user.restart")
 
     async def reconcile(self) -> ReconcileActions:
         """Fail DB rows for vanished containers and remove unmanaged-in-DB orphans."""
@@ -203,7 +220,7 @@ class WarmPoolManager:
         lease_id: str,
         runtime_id: str,
         generation: int,
-        nonce: str,
+        nonce: str | None,
         source: str,
     ) -> dict[str, object]:
         """Fence a one-time browser command before it ever reaches Docker."""
@@ -216,15 +233,22 @@ class WarmPoolManager:
                 or lease.generation != generation or runtime.generation != generation
                 or runtime.state != RuntimeState.ASSIGNED
                 or runtime.environment_id != lease.environment_id
-                or runtime.claim_nonce_hash is None
-                or not warm_pool_service.validate_nonce(runtime.claim_nonce_hash, nonce)
             ):
                 raise PermissionError("sandbox command lease, generation, or nonce is invalid")
-            runtime.claim_nonce_hash = None
+            if runtime.claim_nonce_hash is not None:
+                if nonce is None or not warm_pool_service.validate_nonce(runtime.claim_nonce_hash, nonce):
+                    raise PermissionError("sandbox command lease, generation, or nonce is invalid")
+                runtime.claim_nonce_hash = None
             external_id = runtime.external_runtime_id
         if not external_id:
             raise RuntimeError("claimed runtime has no container id")
-        return await self._docker.execute(external_id, source=source)
+        try:
+            return await self._docker.execute(external_id, source=source)
+        except TimeoutError:
+            # An interrupted kernel can retain a corrupt execution state; replace
+            # it rather than letting a later command inherit an unknown process.
+            await self.destroy_runtime(runtime_id, reason="execution.timeout")
+            raise
 
     async def _retry_draining_runtimes(self) -> None:
         async with self._session_factory() as session:
@@ -280,9 +304,19 @@ class WarmPoolManager:
                 )
             )
         try:
-            external_id = await self._docker.create_ready(
-                name=runtime_container_name(runtime_id), claim_nonce="",
-            )
+            name = runtime_container_name(runtime_id)
+            if await self._docker.image_cached():
+                external_id = await self._docker.create_l1(name=name)
+                async with self._session_factory.begin() as session:
+                    runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
+                    if runtime is not None:
+                        runtime.external_runtime_id = external_id
+                        runtime.state = "created"
+                await self._docker.start_l1(external_id)
+            else:
+                # L0 fallback: Docker resolves the pinned digest, then this
+                # slot proceeds through the same L3 readiness gate.
+                external_id = await self._docker.create_ready(name=name, claim_nonce="")
             if not await self._docker.kernel_ready(external_id):
                 await self._docker.destroy(external_id)
                 raise RuntimeError("new sandbox kernel did not become ready")
