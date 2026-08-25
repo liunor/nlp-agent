@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import or_, select, update
@@ -21,7 +21,7 @@ from .contracts import SandboxScope
 
 
 def _utc_now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class SandboxLifecycleService:
@@ -50,11 +50,19 @@ class SandboxLifecycleService:
 
     async def ensure_current_lease(self, session: AsyncSession, scope: SandboxScope) -> dict:
         await self.revoke_expired_leases(session)
+        # Do not lock an absent row: MySQL gap locks make two first-open
+        # requests deadlock before either can reach the unique-key retry.
         environment = await session.scalar(
-            select(SandboxEnvironmentModel)
-            .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id)
-            .with_for_update()
+            select(SandboxEnvironmentModel).where(
+                SandboxEnvironmentModel.owner_user_id == scope.owner_user_id
+            )
         )
+        if environment is not None:
+            environment = await session.scalar(
+                select(SandboxEnvironmentModel)
+                .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id)
+                .with_for_update()
+            )
         now = _utc_now()
         if environment is None:
             try:
@@ -62,6 +70,9 @@ class SandboxLifecycleService:
                     environment = SandboxEnvironmentModel(
                         id=str(uuid4()),
                         owner_user_id=scope.owner_user_id,
+                        resource_profile_id="python-base",
+                        profile_revision=1,
+                        status="ready",
                         generation=scope.generation,
                         last_active_at=now,
                         lease_deadline_at=scope.lease_expires_at,
@@ -97,6 +108,8 @@ class SandboxLifecycleService:
                 auth_session_id=scope.auth_session_id,
                 workspace_id=scope.workspace_id,
                 generation=scope.generation,
+                actor_type="browser",
+                state="active",
                 expires_at=scope.lease_expires_at,
             )
             session.add(lease)
