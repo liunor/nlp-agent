@@ -123,13 +123,14 @@ export class StudentSocket {
     }
   }
 
-  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string): void {
+  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>): void {
     this.command("chat.send", {
       session_id: sessionId,
       content,
       idempotency_key: requestId,
       ...(learningContext ? { learning_context: learningContext } : {}),
       ...(modelProfile ? { model_profile: modelProfile } : {}),
+      ...(attachments?.length ? { attachments } : {}),
     }, requestId);
   }
 

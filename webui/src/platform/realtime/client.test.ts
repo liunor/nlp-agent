@@ -82,7 +82,14 @@ describe("StudentSocket", () => {
     await Promise.resolve();
     instances[0].open();
     instances[0].onmessage?.({ data: JSON.stringify({ v: "1", type: "connection.ready", timestamp: new Date().toISOString(), payload: {} }) });
-    client.sendChat("session_1", "hello", "request_1");
+    client.sendChat(
+      "session_1",
+      "hello",
+      "request_1",
+      undefined,
+      undefined,
+      [{ file_name: "safe-image.png" }],
+    );
 
     instances[0].disconnect();
     vi.advanceTimersByTime(500);
@@ -90,8 +97,12 @@ describe("StudentSocket", () => {
     instances[1].open();
     instances[1].onmessage?.({ data: JSON.stringify({ v: "1", type: "connection.ready", timestamp: new Date().toISOString(), payload: {} }) });
 
-    const resent = instances[1].sent.map((value) => JSON.parse(value) as { type: string; request_id: string });
-    expect(resent).toContainEqual(expect.objectContaining({ type: "chat.send", request_id: "request_1" }));
+    const resent = instances[1].sent.map((value) => JSON.parse(value) as { type: string; request_id: string; payload: Record<string, unknown> });
+    expect(resent).toContainEqual(expect.objectContaining({
+      type: "chat.send",
+      request_id: "request_1",
+      payload: expect.objectContaining({ attachments: [{ file_name: "safe-image.png" }] }),
+    }));
     client.close();
   });
 
@@ -117,6 +128,30 @@ describe("StudentSocket", () => {
 
     const resent = instances[1].sent.map((value) => JSON.parse(value) as { type: string; request_id: string });
     expect(resent).not.toContainEqual(expect.objectContaining({ type: "chat.send", request_id: "request_1" }));
+    client.close();
+  });
+
+  it("includes attachments in chat.send payload when provided", async () => {
+    const instances: FakeWebSocket[] = [];
+    vi.stubGlobal("WebSocket", class extends FakeWebSocket {
+      constructor(url: string) { super(url); instances.push(this); }
+    });
+    const client = new StudentSocket(vi.fn(), vi.fn(), async () => "test-ticket");
+    client.setSession("session_att");
+    await Promise.resolve();
+    instances[0].open();
+    instances[0].onmessage?.({ data: JSON.stringify({ v: "1", type: "connection.ready", timestamp: new Date().toISOString(), payload: {} }) });
+    client.sendChat("session_att", "check picture", "req_att", undefined, undefined, [{ file_name: "test.png" }]);
+
+    const frames = instances[0].sent.map((value) => JSON.parse(value) as { type: string; payload: Record<string, unknown> });
+    expect(frames[1]).toMatchObject({
+      type: "chat.send",
+      payload: {
+        session_id: "session_att",
+        content: "check picture",
+        attachments: [{ file_name: "test.png" }],
+      },
+    });
     client.close();
   });
 });

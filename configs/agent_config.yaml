@@ -86,7 +86,9 @@ providers:
 
   qwen:
     adapter: qwen
-    base_url: https://ws-okvvhep7qcxtt1xa.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    # Use the public mainland endpoint so deployments can use their own
+    # compatible DashScope API key instead of a collaborator's workspace key.
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_key_env: QWEN_API_KEY
     default_headers: {}
 
@@ -118,6 +120,13 @@ models:
     context_window_tokens: 128000
     max_output_tokens: 8192
     capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: false, json_mode: true}
+
+  qwen3-vl-plus:
+    provider: qwen
+    model_id: qwen3-vl-plus
+    context_window_tokens: 262144
+    max_output_tokens: 32768
+    capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true, vision: true, structured_output: true}
 
 model_presets:
   coordinator-pro:
@@ -193,6 +202,16 @@ model_presets:
     retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
     circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
 
+  vision-qwen-plus:
+    model: qwen3-vl-plus
+    thinking: {enabled: false, effort: none}
+    generation: {max_output_tokens: 8192, temperature: 0.1}
+    timeouts: {connect_s: 10, first_token_s: 60, stream_idle_s: 45, total_s: 80}
+    # image_analyze owns the outer 90s deadline. Keep one paid model attempt so
+    # retries cannot multiply the complete image pipeline.
+    retry: {max_attempts: 1, base_delay_s: 0, max_delay_s: 0, jitter: none}
+    circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
+
 model_routes:
   coordinator:
     primary: coordinator-pro
@@ -203,7 +222,9 @@ model_routes:
   utility:
     primary: utility-flash
     fallbacks: []
-
+  vision-worker:
+    primary: vision-qwen-plus
+    fallbacks: []
 model_profiles:
   deepseek:
     label: DeepSeek
@@ -318,6 +339,28 @@ tools:
       max_chars: 20000
       cache_ttl_s: 300
       allowed_content_types: [text/html, text/plain, application/json]
+  vision:
+    enabled: true
+    max_file_bytes: 10000000
+    max_pixels: 40000000
+    max_pages: 10
+    allowed_media_types: [image/jpeg, image/png, image/webp]
+    allow_remote_url: false
+    preprocessing:
+      auto_rotate: true
+      max_dimension: 4096
+      retry_low_confidence_once: true
+    ocr:
+      provider: rapidocr
+      language_default: auto
+      confidence_threshold: 0.75
+    vlm:
+      model_route: vision-worker
+      max_image_bytes: 6000000
+      send_ocr_context: true
+    result:
+      max_chars: 20000
+      retain_raw_ocr: true
   # 示例：
   # mcp_servers:
   #   filesystem:
@@ -351,6 +394,12 @@ worker_profiles:
     capabilities: [web.fetch]
     allowed_tools:
       - web_fetch
+  visual_researcher:
+    description: "提取图片文字、表格、图表和视觉语义，并给出不确定性。"
+    inherit_tool_policy: false
+    capabilities: [image.analyze]
+    allowed_tools:
+      - image_analyze
   nlp_calculator:
     description: "执行独立、确定性的 NLP 教学计算（TF-IDF、PR 曲线、Precision@N、N-gram、BLEU）。"
     capabilities: [nlp.analyze]

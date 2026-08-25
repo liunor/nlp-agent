@@ -121,6 +121,41 @@ def test_typed_config_rejects_incapable_fallback():
         )
 
 
+@pytest.mark.parametrize(
+    ("capability", "error_label"),
+    (("vision", "vision"), ("structured_output", "structured-output")),
+)
+def test_typed_config_rejects_fallback_missing_vision_contract(
+    capability: str,
+    error_label: str,
+):
+    with pytest.raises(ValueError, match=rf"lacks {error_label} capability"):
+        ModelRuntimeConfig(
+            providers={"test": ProviderConfig(adapter="x", base_url="http://test", api_key_env="KEY")},
+            models={
+                "primary": ModelDefinition(
+                    provider="test",
+                    model_id="primary",
+                    context_window_tokens=100,
+                    max_output_tokens=10,
+                    capabilities=ModelCapabilities(**{capability: True}),
+                ),
+                "fallback": ModelDefinition(
+                    provider="test",
+                    model_id="fallback",
+                    context_window_tokens=100,
+                    max_output_tokens=10,
+                    capabilities=ModelCapabilities(),
+                ),
+            },
+            model_presets={
+                "p": ModelPresetConfig(model="primary", generation=GenerationConfig(max_output_tokens=10)),
+                "f": ModelPresetConfig(model="fallback", generation=GenerationConfig(max_output_tokens=10)),
+            },
+            model_routes={"vision-worker": ModelRouteConfig(primary="p", fallbacks=("f",))},
+        )
+
+
 def test_model_profile_rejects_a_preset_from_another_provider():
     with pytest.raises(ValueError, match="expected 'qwen'"):
         ModelRuntimeConfig(
@@ -209,6 +244,9 @@ def test_project_qwen_web_preset_is_valid_and_other_qwen_presets_stay_offline():
         }
     )
 
+    assert config.providers["qwen"].base_url == (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
     web_preset = config.preset("worker-qwen-web")
     assert web_preset.native_search == NativeSearchConfig(
         enabled=True, forced=True, strategy="turbo"
@@ -217,6 +255,19 @@ def test_project_qwen_web_preset_is_valid_and_other_qwen_presets_stay_offline():
     assert config.preset("worker-qwen-plus").native_search.enabled is False
     assert config.preset("coordinator-qwen-max").native_search.enabled is False
     assert config.preset("utility-qwen-plus").native_search.enabled is False
+    # Text models must not be silently promoted to vision-capable models.
+    assert all(
+        model.capabilities.vision is False
+        for name, model in config.models.items()
+        if name != "qwen3-vl-plus"
+    )
+    assert config.models["qwen3-vl-plus"].capabilities.vision is True
+    assert config.models["qwen3-vl-plus"].capabilities.structured_output is True
+    assert all(
+        model.capabilities.structured_output is False
+        for name, model in config.models.items()
+        if name != "qwen3-vl-plus"
+    )
 
 
 def test_qwen_adapter_translates_thinking_and_preserves_provider_metadata():

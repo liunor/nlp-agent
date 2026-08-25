@@ -10,14 +10,14 @@ Coordinator / Worker / Model / Tool / Memory / Compression
                  TelemetryRuntime
             bounded queue + batch writer
                          │
-              SQLite WAL repository
+              MySQL telemetry repository
                          │
               ObservabilityService
                   ├── 查询方法
                   └── 实时订阅队列
 ```
 
-数据库默认位于 `.data/observability/telemetry.sqlite3`。Prompt、模型完整输出和工具参数值不会写入观测库；工具仅记录参数键名。
+观测记录写入当前部署的 MySQL，由 `NLP_AGENT_DATABASE_URL` 决定目标；测试和生产必须使用不同数据库。Prompt、模型完整输出和工具参数值不会写入观测库；工具仅记录参数键名。
 
 ## 关联标识
 

@@ -47,6 +47,46 @@ function AssistantMessage({ message, showReasoning, onFollowUp }: {
   );
 }
 
+function UserMessage({ message }: { message: ChatMessage }) {
+  let content = message.content;
+  const attachments = [...(message.attachments || [])];
+  
+  const markerIdx = content.indexOf("---附件---");
+  if (markerIdx !== -1) {
+    const attachmentBlock = content.slice(markerIdx);
+    content = content.slice(0, markerIdx).trim();
+    if (attachments.length === 0) {
+      const regex = /!?\[([^\]]+)\]\(([^)]+)\)/g;
+      let match;
+      while ((match = regex.exec(attachmentBlock)) !== null) {
+        attachments.push({
+          fileName: match[1],
+          url: match[2],
+          mediaType: "image/jpeg",
+          width: 0,
+          height: 0,
+          status: "ready"
+        });
+      }
+    }
+  }
+
+  return (
+    <div className="user-message">
+      {attachments.length > 0 && (
+        <div className="message-attachments" style={{ display: "flex", gap: "8px", marginBottom: content ? "8px" : 0 }}>
+          {attachments.map((att, i) => (
+            <a key={i} href={att.url || "#"} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block" }}>
+              {att.url ? <img src={att.url} alt={att.displayName ?? att.fileName} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: "4px" }} /> : <span>{att.displayName ?? att.fileName}</span>}
+            </a>
+          ))}
+        </div>
+      )}
+      {content}
+    </div>
+  );
+}
+
 export function MessageList({ messages, loading, showReasoning, onFollowUp }: {
   messages: ChatMessage[];
   loading: boolean;
@@ -66,7 +106,7 @@ export function MessageList({ messages, loading, showReasoning, onFollowUp }: {
   return (
     <div className="message-list">
       {messages.map((message) => message.role === "user" ? (
-        <div className="user-message" key={message.id}>{message.content}</div>
+        <UserMessage key={message.id} message={message} />
       ) : (
         <AssistantMessage key={message.id} message={message} showReasoning={showReasoning} onFollowUp={onFollowUp} />
       ))}

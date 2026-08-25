@@ -113,6 +113,7 @@ class ToolDescriptor(BaseModel):
     timeout_s: float = Field(default=30.0, gt=0, le=1800)
     max_concurrency: int = Field(default=0, ge=0, le=100)
     retry: ToolRetryPolicy = Field(default_factory=ToolRetryPolicy)
+    persist_result: bool = True
     enabled: bool = True
     factory: Callable[[], BaseTool] = Field(exclude=True, repr=False)
 
@@ -202,6 +203,8 @@ class ToolGrantSnapshot(BaseModel):
 
 
 class ToolExecutionError(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     kind: Literal[
         "not_found",
         "permission_denied",
@@ -213,7 +216,43 @@ class ToolExecutionError(BaseModel):
         "tool_error",
     ]
     message: str
+    code: str = Field(default="", max_length=128, pattern=r"^[A-Za-z0-9_.:-]*$")
+    details: dict[str, Any] = Field(default_factory=dict)
     retryable: bool = False
+
+    @field_validator("details", mode="before")
+    @classmethod
+    def validate_safe_details(cls, value: Any) -> dict[str, Any]:
+        """Keep only bounded JSON metadata explicitly marked safe by the tool."""
+        if not isinstance(value, Mapping):
+            return {}
+
+        def sanitize(item: Any, *, depth: int) -> Any:
+            if item is None or isinstance(item, (bool, int, float)):
+                return item
+            if isinstance(item, str):
+                return item[:1_000]
+            if depth >= 3:
+                return None
+            if isinstance(item, Mapping):
+                output: dict[str, Any] = {}
+                for key, nested in list(item.items())[:32]:
+                    if not isinstance(key, str) or not key or len(key) > 64:
+                        continue
+                    sanitized = sanitize(nested, depth=depth + 1)
+                    if sanitized is not None:
+                        output[key] = sanitized
+                return output
+            if isinstance(item, (list, tuple)):
+                return [
+                    sanitized
+                    for nested in list(item)[:32]
+                    if (sanitized := sanitize(nested, depth=depth + 1)) is not None
+                ]
+            return None
+
+        sanitized = sanitize(value, depth=0)
+        return sanitized if isinstance(sanitized, dict) else {}
 
 
 class ToolExecutionResult(BaseModel):
@@ -466,7 +505,9 @@ class ToolExecutor:
                             descriptor.name,
                             started,
                             "tool_error",
-                            tool_error,
+                            tool_error.message,
+                            code=tool_error.code,
+                            details=tool_error.details,
                             attempts=attempt,
                         )
                 except asyncio.CancelledError:
@@ -531,22 +572,56 @@ class ToolExecutor:
         return arguments
 
     @staticmethod
-    def _detect_tool_error(output: Any) -> str | None:
-        if isinstance(output, Mapping) and output.get("error"):
-            return str(output["error"])
+    def _detect_tool_error(output: Any) -> ToolExecutionError | None:
+        if isinstance(output, Mapping):
+            return ToolExecutor._structured_tool_error(output)
         if not isinstance(output, str):
             return None
         stripped = output.strip()
         if stripped.startswith("Error:") or stripped.startswith("错误："):
-            return stripped
+            return ToolExecutionError(kind="tool_error", message=stripped)
         if stripped.startswith("{"):
             try:
                 payload = json.loads(stripped)
             except Exception:
                 return None
-            if isinstance(payload, dict) and payload.get("error"):
-                return str(payload["error"])
+            if isinstance(payload, dict):
+                return ToolExecutor._structured_tool_error(payload)
         return None
+
+    @staticmethod
+    def _structured_tool_error(payload: Mapping[str, Any]) -> ToolExecutionError | None:
+        raw_error = payload.get("error")
+        if not raw_error:
+            return None
+
+        raw_code = payload.get("code", "")
+        raw_details = payload.get("details", {})
+        if isinstance(raw_error, Mapping):
+            message_value = (
+                raw_error.get("message")
+                or raw_error.get("error")
+                or raw_error.get("detail")
+            )
+            message = (
+                str(message_value)
+                if message_value is not None
+                else json.dumps(raw_error, ensure_ascii=False, default=str)
+            )
+            raw_code = raw_error.get("code") or raw_code
+            raw_details = raw_error.get("details", raw_details)
+        else:
+            message = str(raw_error)
+
+        code = str(raw_code) if raw_code is not None else ""
+        if len(code) > 128 or re.fullmatch(r"[A-Za-z0-9_.:-]*", code) is None:
+            code = ""
+        return ToolExecutionError(
+            kind="tool_error",
+            message=message,
+            code=code,
+            details=raw_details if isinstance(raw_details, Mapping) else {},
+        )
 
     def _semaphore_for(self, descriptor: ToolDescriptor) -> asyncio.Semaphore | None:
         if descriptor.max_concurrency <= 0:
@@ -639,13 +714,21 @@ class ToolExecutor:
         kind: str,
         message: str,
         *,
+        code: str = "",
+        details: Mapping[str, Any] | None = None,
         retryable: bool = False,
         attempts: int = 1,
     ) -> ToolExecutionResult:
         return ToolExecutionResult(
             tool_name=tool_name,
             ok=False,
-            error=ToolExecutionError(kind=kind, message=message, retryable=retryable),
+            error=ToolExecutionError(
+                kind=kind,
+                message=message,
+                code=code,
+                details=dict(details or {}),
+                retryable=retryable,
+            ),
             duration_ms=int((time.monotonic() - started) * 1000),
             attempts=attempts,
         )
@@ -661,10 +744,14 @@ class ToolSet:
         executor: ToolExecutor,
     ) -> None:
         self.snapshot = snapshot
-        self.descriptors = tuple(descriptors)
-        self._descriptor_by_name = {item.name: item for item in self.descriptors}
-        self._tools = {item.name: item.instantiate() for item in self.descriptors}
+        self._descriptors = tuple(descriptors)
+        self._descriptor_by_name = {item.name: item for item in self._descriptors}
+        self._tools = {item.name: item.instantiate() for item in self._descriptors}
         self.executor = executor
+
+    @property
+    def descriptors(self) -> tuple[ToolDescriptor, ...]:
+        return self._descriptors
 
     @property
     def tools(self) -> list[BaseTool]:
@@ -676,6 +763,10 @@ class ToolSet:
 
     def has(self, name: str) -> bool:
         return name in self._tools
+
+    def descriptor(self, name: str) -> ToolDescriptor | None:
+        """Return immutable metadata for one granted tool, if present."""
+        return self._descriptor_by_name.get(name)
 
     async def execute(
         self,

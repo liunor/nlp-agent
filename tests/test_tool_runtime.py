@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from types import ModuleType
 
@@ -31,10 +32,18 @@ async def add(left: int, right: int) -> int:
     return left + right
 
 
-def descriptor(*, name="add", scopes=None, capabilities=None, timeout_s=1.0):
+def descriptor(
+    *,
+    name="add",
+    scopes=None,
+    capabilities=None,
+    timeout_s=1.0,
+    coroutine=add,
+    persist_result=True,
+):
     def factory():
         return StructuredTool.from_function(
-            coroutine=add,
+            coroutine=coroutine,
             name=name,
             description="Add non-negative integers",
             args_schema=AddInput,
@@ -50,6 +59,7 @@ def descriptor(*, name="add", scopes=None, capabilities=None, timeout_s=1.0):
         read_only=True,
         concurrency_safe=True,
         timeout_s=timeout_s,
+        persist_result=persist_result,
         factory=factory,
     )
 
@@ -91,6 +101,59 @@ async def test_executor_uses_pydantic_v2_and_structured_errors():
     assert success.ok and success.output == 3
     assert invalid.error and invalid.error.kind == "validation"
     assert denied.error and denied.error.kind == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_executor_preserves_structured_error_code_and_safe_details():
+    async def fail_with_json(left: int, right: int) -> str:
+        return json.dumps(
+            {
+                "error": f"cannot add {left} and {right}",
+                "code": "image.invalid_input",
+                "details": {"media_type": "image/gif", "attempt": 1},
+                "internal_debug": "must not be copied",
+            }
+        )
+
+    async def fail_with_legacy_string(left: int, right: int) -> str:
+        return f"Error: legacy failure for {left + right}"
+
+    runtime = ToolRuntime()
+    runtime.catalog.register(
+        descriptor(
+            name="structured_failure",
+            coroutine=fail_with_json,
+            persist_result=False,
+        )
+    )
+    runtime.catalog.register(
+        descriptor(name="legacy_failure", coroutine=fail_with_legacy_string)
+    )
+    tools = runtime.build_toolset(
+        ToolGrantRequest(
+            role=ToolScope.WORKER,
+            allowed_tools={"structured_failure", "legacy_failure"},
+        )
+    )
+
+    structured = await tools.execute(
+        "structured_failure", {"left": 1, "right": 2}
+    )
+    legacy = await tools.execute("legacy_failure", {"left": 1, "right": 2})
+
+    assert structured.error is not None
+    assert structured.error.kind == "tool_error"
+    assert structured.error.message == "cannot add 1 and 2"
+    assert structured.error.code == "image.invalid_input"
+    assert structured.error.details == {"media_type": "image/gif", "attempt": 1}
+    assert "internal_debug" not in structured.error.details
+    assert legacy.error is not None
+    assert legacy.error.message == "Error: legacy failure for 3"
+    assert legacy.error.code == ""
+    assert tools.descriptor("structured_failure") is not None
+    assert tools.descriptor("structured_failure").persist_result is False
+    assert tools.descriptor("legacy_failure").persist_result is True
+    assert tools.descriptor("missing") is None
 
 
 @pytest.mark.asyncio

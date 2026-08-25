@@ -323,11 +323,14 @@ class LocalSessionService:
             await asyncio.to_thread(_save_sessions_index, index)
 
         def remove_local_data() -> None:
+            from server.tools.vision.input_resolver import delete_session_uploads
+
             transcript = Path(get_session_transcript_path(session_id))
             transcript.unlink(missing_ok=True)
             shutil.rmtree(Path(CHAT_HISTORY_DIR) / session_id, ignore_errors=True)
             shutil.rmtree(Path(DATA_DIR) / session_id, ignore_errors=True)
             local_context_repository.delete_session(context)
+            delete_session_uploads(context)
 
         await asyncio.to_thread(remove_local_data)
         from server.memory.runtime import global_memory_runtime

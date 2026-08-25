@@ -362,13 +362,15 @@ def test_http_lifecycle_sessions_chat_settings_and_csrf(web_app, monkeypatch):
 
         updated = client.patch(
             "/api/v1/settings",
-            json={"theme": "dark", "show_reasoning": True, "model_profile": "qwen"},
+            json={"theme": "dark", "content_font_size": "large", "reduce_motion": True, "show_reasoning": True, "model_profile": "qwen"},
             headers=write_headers(csrf),
         )
         # Teaching catalog revisions are isolated from per-user UI settings.
         assert updated.json()["revision"] == 1
         settings_payload = client.get("/api/v1/settings").json()
         assert settings_payload["preferences"]["settings"]["theme"] == "dark"
+        assert settings_payload["preferences"]["settings"]["content_font_size"] == "large"
+        assert settings_payload["preferences"]["settings"]["reduce_motion"] is True
         assert settings_payload["preferences"]["settings"]["model_profile"] == "qwen"
         assert settings_payload["runtime"]["default_model_profile"] == "deepseek"
         assert settings_payload["runtime"]["model_profiles"]["qwen"]["label"] == "Qwen"

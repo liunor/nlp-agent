@@ -9,6 +9,7 @@ import re
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from core.identity import AccessDeniedError, AuthenticatedPrincipal
@@ -47,6 +48,39 @@ from server.agent.session_service import DatabaseSessionService, LocalSessionSer
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
+
+
+def _session_uploads_root(context: SessionContext) -> Path:
+    """Return the upload namespace for a session (mirrors input_resolver logic)."""
+    return _DEFAULT_UPLOADS_ROOT / context.workspace_id / context.user_id / context.session_id
+
+
+def _enrich_content_with_attachments(
+    context: SessionContext,
+    content: str,
+    attachments: list[dict[str, str]],
+) -> str:
+    """Build the canonical, session-scoped text persisted for one turn."""
+
+    if not attachments:
+        return content
+    uploads_root = _session_uploads_root(context)
+    attachment_lines: list[str] = []
+    for attachment in attachments:
+        file_name = attachment.get("file_name", "")
+        if not file_name or "/" in file_name or "\\" in file_name or ".." in file_name:
+            raise ValueError("attachment file_name is invalid")
+        if not (uploads_root / file_name).is_file():
+            raise FileNotFoundError(f"attachment not found: {file_name}")
+        # ImageInputResolver resolves a bare filename inside the authenticated
+        # session upload namespace.  Do not expose a misleading project path.
+        attachment_lines.append(f"[图片] {file_name}\n路径: {file_name}")
+
+    block = "\n".join(attachment_lines)
+    prefix = f"{content}\n\n" if content else ""
+    return f"{prefix}---附件---\n{block}\n---附件结束---"
 
 _EXPLICIT_EXERCISE_START_RE = re.compile(
     r"(?:开始|继续|新(?:的)?|再来|下一).{0,8}(?:练习|复习|题)|(?:练习|复习).{0,8}(?:开始|继续|下一题)",
@@ -262,6 +296,9 @@ class BackendGateway:
                 update={"observability_attributes": request.evaluation.trace_attributes()}
             )
         await self.sessions.touch(principal, request.session_id)
+        enriched_content = _enrich_content_with_attachments(
+            context, request.content, request.attachments
+        )
         if request.idempotency_key:
             existing = await asyncio.to_thread(
                 self.repository.turn_for_idempotency,
@@ -271,7 +308,7 @@ class BackendGateway:
             )
             if (
                 existing is not None
-                and existing.input_text != request.content
+                and existing.input_text != enriched_content
             ):
                 raise TurnConflictError(
                     "idempotency key was already used for a different request"
@@ -395,7 +432,7 @@ class BackendGateway:
         task = TurnTask(
             context=context,
             turn_id=turn_id,
-            content=request.content,
+            content=enriched_content,
             learning_context=learning_context,
             learning_progress=progress,
             exercise_state=exercise,
@@ -415,7 +452,7 @@ class BackendGateway:
             session_id=context.session_id,
             workspace_id=context.workspace_id,
             user_id=context.user_id,
-            input_text=request.content,
+            input_text=enriched_content,
             idempotency_key=request.idempotency_key,
             learning_context=learning_context,
             learning_progress=progress,

@@ -183,6 +183,18 @@ export interface ActivityItem {
   completedAt?: string;
 }
 
+export interface ChatAttachment {
+  fileName: string;
+  displayName?: string;
+  url: string;
+  mediaType: string;
+  width: number;
+  height: number;
+  status: "uploading" | "ready" | "error";
+  progress?: number;
+  errorMessage?: string;
+}
+
 export interface ChatMessage {
   id: string;
   turnId: string;
@@ -191,6 +203,7 @@ export interface ChatMessage {
   reasoning?: string;
   status?: TurnStatus;
   activities?: ActivityItem[];
+  attachments?: ChatAttachment[];
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -200,8 +213,8 @@ export interface SessionLearningMeta {
   title?: string;
   topic?: string;
   categoryId?: string;
-  favorite?: boolean;
   archived?: boolean;
+  pinnedAt?: number;
   summary?: string;
   concepts?: string[];
   reviewConcepts?: string[];
@@ -224,6 +237,8 @@ export interface LearningPreferences {
 export interface UserSettings {
   locale: string;
   theme: "system" | "light" | "dark";
+    content_font_size: "small" | "medium" | "large";
+  reduce_motion: boolean;
   show_reasoning: boolean;
   stream_render_interval_ms: number;
   model_profile: string;

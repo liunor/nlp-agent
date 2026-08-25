@@ -2,14 +2,14 @@ name: Publish Test Image
 
 on:
   push:
-    branches: [develop]
+    branches: [develop, main]
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: ghcr-develop
+  group: ghcr-${{ github.ref_name }}
   cancel-in-progress: true
 
 env:
@@ -17,6 +17,8 @@ env:
 
 jobs:
   publish:
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +33,11 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=develop
-            type=sha,prefix=develop-
+            type=raw,value=develop,enable=${{ github.ref_name == 'develop' }}
+            type=sha,prefix=develop-,enable=${{ github.ref_name == 'develop' }}
+            type=raw,value=release-candidate-${{ github.sha }},enable=${{ github.ref_name == 'main' }}
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           push: true
@@ -43,7 +47,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    name: Deploy Test Environment
+    name: Deploy Test Environment (${{ github.ref_name }})
     needs: publish
     runs-on: [self-hosted, linux, test]
     environment: test
@@ -58,25 +62,25 @@ jobs:
         env:
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
           COMPOSE_PROJECT_NAME: nova-test
-          NOVA_IMAGE: ghcr.io/${{ github.repository_owner }}/nlp-agent
-          NOVA_TAG: develop
+          NOVA_IMAGE_REF: ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}
           NOVA_PULL_POLICY: always
         run: |
           test -n "$DEPLOY_DIR"
           test -f "$DEPLOY_DIR/.env"
           export NOVA_ENV_FILE="$DEPLOY_DIR/.env"
-          test "$NOVA_IMAGE" = "ghcr.io/${{ github.repository_owner }}/nlp-agent"
+          test "$NOVA_IMAGE_REF" = "ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}"
           resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml config --images)"
           printf '%s\n' "$resolved_images"
-          printf '%s\n' "$resolved_images" | grep -Fxq "$NOVA_IMAGE:$NOVA_TAG" || {
-            echo "Compose did not resolve the expected published image: $NOVA_IMAGE:$NOVA_TAG"
+          printf '%s\n' "$resolved_images" | grep -Fxq "$NOVA_IMAGE_REF" || {
+            echo "Compose did not resolve the expected published image: $NOVA_IMAGE_REF"
             exit 1
           }
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml pull nova-migrate nova-web nova-monitor nginx
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-monitor nginx
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nginx
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nginx
           for attempt in {1..12}; do
             if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
               exit 0
             fi

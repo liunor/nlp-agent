@@ -5,7 +5,7 @@ const stream = vi.hoisted(() => {
   let lastRequestId = "";
   let lastModelProfile = "";
   const updateSettings = vi.fn(async (patch: Record<string, unknown>) => ({ settings: {
-    locale: "zh-CN", theme: "system", show_reasoning: false,
+    locale: "zh-CN", theme: "system",content_font_size: "medium", reduce_motion: false, show_reasoning: false,
     stream_render_interval_ms: 30, model_profile: "deepseek", ...patch,
   } }));
   return {
@@ -52,17 +52,22 @@ import { App } from "./App";
 const event = (type: string, payload: Record<string, unknown> = {}, timestamp = "2026-07-19T00:00:00Z") => ({ v: "1", type, timestamp, session_id: "session_1", turn_id: "turn_1", payload });
 
 describe("student stream rendering", () => {
-  it("keeps the wide school logo in the header flow and the theme control clear of learning records", async () => {
+  it("uses a Codex-style tools dock while keeping theme mode in the fixed header actions and the school logo at the upper left", async () => {
     render(<App />);
 
     const logo = await screen.findByAltText("学校校徽");
-    expect(logo.closest(".thread-header-actions")).toBeVisible();
-    expect(logo.closest(".thread-header")).toBeVisible();
-    expect(screen.getByRole("button", { name: "切换主题" }).closest(".student-theme-control")).toBeVisible();
+    expect(logo.closest(".student-school-logo")).toBeVisible();
+    expect(document.querySelector(".student-app-shell")).toHaveClass("sidebar-is-collapsed");
+    expect(logo.closest(".thread-header")).toBeNull();
+    expect(screen.getByRole("button", { name: "切换主题" }).closest(".thread-header-actions")).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "学习记录" }));
-    expect(document.querySelector(".learning-panel.open")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换主题" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "打开工具侧栏" }));
+    expect(screen.getByRole("button", { name: "打开学习记录工具" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "显示工具列表" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "打开学习记录工具" }));
+    expect(screen.getByRole("tab", { name: "学习记录" })).toBeVisible();
+    expect(document.querySelector(".tool-dock .learning-panel")).toBeInTheDocument();
   });
 
   it("selects and saves Qwen for subsequent chat sends", async () => {
@@ -79,6 +84,61 @@ describe("student stream rendering", () => {
     await waitFor(() => expect(stream.lastModelProfile()).toBe("qwen"));
   });
 
+  it("keeps every available tool as a closable tab in the right workbench dock", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开文件工具" }));
+    expect(screen.getByRole("tab", { name: "文件" })).toBeVisible();
+
+    for (const tool of ["打开学习记录工具", "打开浏览器工具", "打开终端工具"]) {
+      fireEvent.click(screen.getByRole("button", { name: "显示工具列表" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: tool }));
+    }
+
+    expect(screen.getByRole("tab", { name: "文件" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "学习记录" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "浏览器" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "终端" })).toBeVisible();
+  });
+
+  it("opens the tool picker from the plus trigger and closes it with the dock", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开文件工具" }));
+    fireEvent.click(screen.getByRole("button", { name: "显示工具列表" }));
+
+    const menu = screen.getByRole("menu", { name: "工具列表" });
+    expect(menu).toBeVisible();
+    expect(document.querySelector(".tool-dock-tab-strip")).toBeInTheDocument();
+    expect(menu.closest(".tool-dock-tab-strip")).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "打开浏览器工具" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "文件" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "显示工具列表" }).parentElement).toContainElement(menu);
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭工具侧栏" }));
+    expect(screen.queryByRole("menu", { name: "工具列表" })).not.toBeInTheDocument();
+  });
+
+  it("exposes a wide draggable dock separator and a full workbench mode", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开文件工具" }));
+
+    const separator = screen.getByRole("separator", { name: "调整工具侧栏宽度" });
+    expect(separator).toHaveAttribute("aria-valuenow", "420");
+    fireEvent.pointerDown(separator, { clientX: 480 });
+    fireEvent.pointerMove(window, { clientX: 360 });
+    fireEvent.pointerUp(window);
+    expect(Number(separator.getAttribute("aria-valuenow"))).toBeGreaterThan(420);
+
+    fireEvent.click(screen.getByRole("button", { name: "展开工具面板" }));
+    expect(document.querySelector(".app-shell")).toHaveClass("tool-dock-expanded");
+    expect(screen.getByRole("button", { name: "还原工具面板" })).toBeVisible();
+  });
+
   it("shows a teaching configuration error returned by the Gateway", async () => {
     render(<App />);
     const input = await screen.findByRole("textbox", { name: "学习问题" });
@@ -92,6 +152,7 @@ describe("student stream rendering", () => {
 
   it("keeps the chat page mounted through real tool, worker and text stream events", async () => {
     render(<App />);
+    expect(await screen.findByRole("combobox", { name: "选择模型" })).toBeVisible();
     const input = await screen.findByRole("textbox", { name: "学习问题" });
     fireEvent.change(input, { target: { value: "解释 Attention" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));

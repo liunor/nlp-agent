@@ -498,6 +498,7 @@ async def _dispatch_command(
             SubmitTurnRequest(
                 session_id=payload.session_id,
                 content=payload.content,
+                attachments=[a.model_dump() for a in payload.attachments],
                 idempotency_key=payload.idempotency_key,
                 learning_context=payload.learning_context,
                 model_profile=payload.model_profile,

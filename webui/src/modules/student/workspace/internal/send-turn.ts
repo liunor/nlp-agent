@@ -2,7 +2,7 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 
 import { deriveTitle } from "@/platform/storage/learning-preferences";
 import { StudentSocket } from "@/platform/realtime/client";
-import type { ChatMessage, LearningPreferences, SessionLearningMeta, UserSettings } from "@/shared/types";
+import type { ChatAttachment, ChatMessage, LearningPreferences, SessionLearningMeta, UserSettings } from "@/shared/types";
 import { createUuid } from "@/shared/utils/uuid";
 
 interface TurnSenderOptions {
@@ -32,7 +32,7 @@ export function useTurnSender({
   setMessages,
   setRequestError,
 }: TurnSenderOptions) {
-  const send = useCallback(async (content: string) => {
+  const send = useCallback(async (content: string, attachments?: ChatAttachment[]) => {
     setRequestError("");
     const requestId = createUuid();
     inFlightTurnIds.current.add(requestId);
@@ -53,14 +53,33 @@ export function useTurnSender({
       turnId: requestId,
       role: "user",
       content: content.trim(),
+      ...(attachments?.length ? { attachments: attachments.map((attachment) => ({
+        fileName: attachment.fileName,
+        displayName: attachment.displayName,
+        url: attachment.url,
+        mediaType: attachment.mediaType,
+        width: attachment.width,
+        height: attachment.height,
+        status: "ready" as const,
+      })) } : {}),
       createdAt: new Date().toISOString(),
     }]);
     const currentMeta = preferences.sessions[sessionId];
     if (!currentMeta?.title || currentMeta.title === "新的学习对话") {
-      updateSessionMeta(sessionId, { title: deriveTitle(content), topic: preferences.context.topic_name });
+      updateSessionMeta(sessionId, {
+        title: deriveTitle(content || attachments?.[0]?.displayName || "图片分析"),
+        topic: preferences.context.topic_name,
+      });
     }
     socketRef.current?.setSession(sessionId);
-    socketRef.current?.sendChat(sessionId, content.trim(), requestId, preferences.context, settings.model_profile);
+    socketRef.current?.sendChat(
+      sessionId,
+      content.trim(),
+      requestId,
+      preferences.context,
+      settings.model_profile,
+      attachments?.map((attachment) => ({ file_name: attachment.fileName })),
+    );
   }, [activeSessionRef, createBackendSession, inFlightTurnIds, pendingRequests, preferences.context, preferences.sessions, setMessages, setRequestError, settings.model_profile, socketRef, updateSessionMeta]);
 
   const cancel = useCallback(() => {

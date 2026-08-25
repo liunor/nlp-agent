@@ -81,7 +81,7 @@ export function stripInternalChatMetadata(content: string): string {
 export function MarkdownContent({ children, streaming = false }: { children: string; streaming?: boolean }) {
   const dark = document.documentElement.classList.contains("dark");
   return (
-    <div className="prose prose-zinc max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-pre:p-0">
+    <div className="markdown-content prose prose-zinc max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-pre:p-0">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
         rehypePlugins={[rehypeKatex]}

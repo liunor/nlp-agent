@@ -12,9 +12,10 @@ The developer experience is intentionally split into two deployment planes.
 | `5174` | `npm run dev:monitor` | Monitor Vite server during frontend development |
 
 The monitor process never creates a `BackendGateway`, LangGraph runtime, Worker,
-or tool runtime. It opens the local telemetry SQLite database through its own
-repository connection. A slow or failed monitor therefore cannot block student
-chat traffic.
+or tool runtime. It reads only the MySQL database configured by that deployment's
+`NLP_AGENT_DATABASE_URL`; test and production must use different database
+instances and credentials. A slow or failed monitor therefore cannot block
+student chat traffic or cross an environment boundary.
 
 ## Stage 5: same-origin developer workspace
 
@@ -61,7 +62,7 @@ cd ..
 uv run python main.py monitor
 ```
 
-Then open `http://127.0.0.1:8766`. The platform includes:
+Then open `http://127.0.0.1:8766` from the internal network or VPN. The platform includes:
 
 - request count, error rate, response-time and TTFT percentiles;
 - input/output/reasoning/cache-hit/cache-miss Token usage;
@@ -71,9 +72,10 @@ Then open `http://127.0.0.1:8766`. The platform includes:
 - live telemetry events over `/ws/observability`;
 - telemetry queue/database health and explicit retention cleanup.
 
-The monitor reuses the control-plane database session (`nlp_session`) and
-requires its own same-origin WebSocket ticket. Cleanup mutations still require
-CSRF protection and the `system:runtime:monitor` permission.
+The monitor uses the same environment's control-plane MySQL schema and requires
+its own same-origin WebSocket ticket. Cleanup mutations still require CSRF
+protection and the `system:runtime:monitor` permission; no production monitor
+credential or database endpoint is shared with test.
 
 ## Frontend development
 

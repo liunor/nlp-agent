@@ -13,6 +13,7 @@ import { RoleManagementPageV2 } from "@/modules/admin/RoleManagementPageV2";
 import { MenuManagementPageV2 } from "@/modules/admin/MenuManagementPageV2";
 import { AuditLogPageV2 } from "@/modules/admin/AuditLogPageV2";
 import { AgentSessionListPageV2 } from "@/modules/admin/AgentSessionListPageV2";
+import { monitorUrl } from "@/monitor/monitor-helpers";
 
 export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "menus" | "audit" | "sessions";
 
@@ -74,6 +75,7 @@ function JsonEditorState({ serialized, onSave, label }: { serialized: string; on
 
 function Overview({ snapshot }: { snapshot: DeveloperSnapshot }) {
   const runtime = snapshot.runtime;
+  const monitorOrigin = monitorUrl(location);
   return <div className="developer-page-grid">
     <section className="developer-hero"><div><span>DEVELOPER CONTROL PLANE</span><h1>后端基础工作台</h1><p>查看 Agent、工具、模型和本地数据边界。学生界面不会显示这些内部信息。</p></div><ShieldCheck size={54} /></section>
     <div className="developer-kpis">
@@ -83,7 +85,7 @@ function Overview({ snapshot }: { snapshot: DeveloperSnapshot }) {
       <article><PlugZap /><span>工具目录版本</span><strong>{snapshot.tools.catalog_revision}</strong></article>
     </div>
     <Section title="能力状态" hint="未配置的通用工作台能力会明确显示，不伪造可用状态。"><div className="developer-card-grid">{Object.entries(snapshot.features).map(([name, feature]) => <article className="developer-card" key={name}><div><AppWindow size={18} /><strong>{name}</strong></div><StatusPill ok={feature.available}>{feature.available ? "已启用" : "未启用"}</StatusPill><p>{feature.reason}</p></article>)}</div></Section>
-    <Section title="独立观测平台" hint="Trace、Token、错误和实时事件在隔离端口展示。"><a className="developer-monitor-link" href={`${location.protocol}//${location.hostname}:8766`} target="_blank" rel="noreferrer"><Gauge size={20} /><span><strong>打开 Observability Monitor</strong><small>127.0.0.1:8766</small></span><ExternalLink size={16} /></a></Section>
+    <Section title="独立观测平台" hint="Trace、Token、错误和实时事件在当前环境的隔离端口展示。"><a className="developer-monitor-link" href={monitorOrigin} target="_blank" rel="noreferrer"><Gauge size={20} /><span><strong>打开 Observability Monitor</strong><small>{new URL(monitorOrigin).host}</small></span><ExternalLink size={16} /></a></Section>
   </div>;
 }
 

@@ -154,11 +154,82 @@ class WebToolsConfig(StrictConfigModel):
     fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
 
 
+class VisionPreprocessingConfig(StrictConfigModel):
+    auto_rotate: bool = True
+    max_dimension: int = Field(default=4096, ge=48, le=16_384)
+    retry_low_confidence_once: bool = True
+
+
+class VisionOCRConfig(StrictConfigModel):
+    provider: str = "rapidocr"
+    language_default: Literal["auto", "zh", "en"] = "auto"
+    confidence_threshold: float = Field(default=0.75, ge=0, le=1)
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        provider = value.strip()
+        if provider not in {"rapidocr", "none"}:
+            raise ValueError(
+                "vision OCR provider must be 'rapidocr' or 'none'"
+            )
+        return provider
+
+
+class VisionVLMConfig(StrictConfigModel):
+    model_route: str = "vision-worker"
+    max_image_bytes: int = Field(default=6_000_000, ge=1_024, le=100_000_000)
+    send_ocr_context: bool = True
+
+    @field_validator("model_route")
+    @classmethod
+    def validate_model_route(cls, value: str) -> str:
+        route = value.strip()
+        if not route:
+            raise ValueError("vision VLM model route cannot be blank")
+        return route
+
+
+class VisionResultConfig(StrictConfigModel):
+    max_chars: int = Field(default=20_000, ge=500, le=50_000)
+    retain_raw_ocr: bool = True
+
+
+class VisionToolsConfig(StrictConfigModel):
+    enabled: bool = True
+    max_file_bytes: int = Field(default=10_000_000, ge=1_024, le=100_000_000)
+    max_pixels: int = Field(default=40_000_000, ge=2_304, le=200_000_000)
+    max_pages: int = Field(default=10, ge=1, le=100)
+    allowed_media_types: list[Literal["image/jpeg", "image/png", "image/webp"]] = Field(
+        default_factory=lambda: ["image/jpeg", "image/png", "image/webp"],
+        min_length=1,
+    )
+    allow_remote_url: bool = False
+    preprocessing: VisionPreprocessingConfig = Field(default_factory=VisionPreprocessingConfig)
+    ocr: VisionOCRConfig = Field(default_factory=VisionOCRConfig)
+    vlm: VisionVLMConfig = Field(default_factory=VisionVLMConfig)
+    result: VisionResultConfig = Field(default_factory=VisionResultConfig)
+
+    @field_validator("allowed_media_types")
+    @classmethod
+    def validate_allowed_media_types(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("vision allowed_media_types cannot contain duplicates")
+        return values
+
+    @model_validator(mode="after")
+    def validate_vlm_image_limit(self) -> "VisionToolsConfig":
+        if self.vlm.max_image_bytes > self.max_file_bytes:
+            raise ValueError("vision vlm.max_image_bytes must be <= max_file_bytes")
+        return self
+
+
 class ToolRuntimeConfig(StrictConfigModel):
     policies: ToolPoliciesConfig = Field(default_factory=ToolPoliciesConfig)
     custom: CustomToolsConfig = Field(default_factory=CustomToolsConfig)
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
+    vision: VisionToolsConfig = Field(default_factory=VisionToolsConfig)
 
 
 class WorkerProfileSpec(StrictConfigModel):

@@ -24,4 +24,36 @@ describe("MessageList session updates", () => {
     expect(screen.queryByText("页面未能正常显示")).not.toBeInTheDocument();
     consoleError.mockRestore();
   });
+
+  it("renders attachment thumbnails and strips internal attachment markers from content", () => {
+    const testMsg: ChatMessage = {
+      id: "turn-3",
+      turnId: "turn-3",
+      role: "user",
+      content: "分析这张图\n\n---附件---\n[图片] sample.png\n---附件结束---",
+      createdAt: "2026-07-19T00:00:00Z",
+      attachments: [
+        {
+          fileName: "sample.png",
+          url: "/api/v1/uploads/sess/sample.png",
+          mediaType: "image/png",
+          width: 100,
+          height: 100,
+          status: "ready",
+        },
+      ],
+    };
+
+    render(
+      <AppErrorBoundary>
+        <MessageList messages={[testMsg]} loading={false} showReasoning={false} onFollowUp={vi.fn()} />
+      </AppErrorBoundary>
+    );
+
+    expect(screen.getByText("分析这张图")).toBeVisible();
+    expect(screen.queryByText(/---附件---/)).not.toBeInTheDocument();
+    const img = screen.getByRole("img", { name: "sample.png" });
+    expect(img).toBeVisible();
+    expect(img).toHaveAttribute("src", "/api/v1/uploads/sess/sample.png");
+  });
 });

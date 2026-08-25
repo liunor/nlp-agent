@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from core.skill_loader import SkillLoader
-from core.tool_config import load_agent_runtime_config
+from core.tool_config import VisionToolsConfig, load_agent_runtime_config
 
 
 def test_nlp_calculator_profile_is_a_valid_worker_with_all_nlp_tools():
@@ -144,6 +144,83 @@ def test_web_profiles_receive_only_their_declared_tools():
         physical_tool_manager.config = original_config
 
 
+def test_vision_config_and_visual_researcher_are_strictly_scoped():
+    root = Path(__file__).resolve().parents[1]
+    config = load_agent_runtime_config(root / "configs" / "agent_config.yaml")
+    vision = config.tools.vision
+    profile = config.worker_profiles["visual_researcher"]
+
+    assert vision.enabled is True
+    assert vision.allowed_media_types == ["image/jpeg", "image/png", "image/webp"]
+    assert vision.allow_remote_url is False
+    assert vision.vlm.model_route == "vision-worker"
+    assert vision.vlm.max_image_bytes <= vision.max_file_bytes
+    assert profile.inherit_tool_policy is False
+    assert profile.capabilities == {"image.analyze"}
+    assert profile.allowed_tools == {"image_analyze"}
+
+    import yaml
+
+    raw = yaml.safe_load(
+        (root / "configs" / "agent_config.yaml").read_text(encoding="utf-8")
+    )
+    route = raw["model_routes"]["vision-worker"]
+    preset = raw["model_presets"][route["primary"]]
+    model = raw["models"][preset["model"]]
+    assert model["model_id"] == "qwen3-vl-plus"
+    assert model["capabilities"]["vision"] is True
+    assert model["capabilities"]["structured_output"] is True
+    assert preset["thinking"]["enabled"] is False
+    assert preset["retry"]["max_attempts"] == 1
+    assert preset["timeouts"]["total_s"] < 90
+
+
+def test_vision_config_rejects_unsafe_or_inconsistent_values():
+    with pytest.raises(ValueError, match="image/svg\\+xml"):
+        VisionToolsConfig(allowed_media_types=["image/svg+xml"])  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="cannot contain duplicates"):
+        VisionToolsConfig(allowed_media_types=["image/png", "image/png"])
+    with pytest.raises(ValueError, match="must be <= max_file_bytes"):
+        VisionToolsConfig(
+            max_file_bytes=2_000_000,
+            vlm={"max_image_bytes": 3_000_000},
+        )
+
+
+def test_only_visual_researcher_receives_the_image_analyze_tool():
+    from core.tool_registry import physical_tool_manager
+    from server.tools.tool_manager import register_builtin_tools
+    from server.tools.worker_tool import _aligned_worker_timeouts
+
+    physical_tool_manager.refresh_config()
+    register_builtin_tools(physical_tool_manager.runtime.catalog)
+    profile = SkillLoader().resolve_profile("visual_researcher")
+
+    unauthorized = physical_tool_manager.get_worker_toolset(
+        allowed_names=(),
+        capabilities=(),
+        profile="unauthorized-worker",
+        inherit_policy=False,
+    )
+    authorized = physical_tool_manager.get_worker_toolset(
+        allowed_names=profile.allowed_tools,
+        capabilities=profile.capabilities,
+        profile=profile.name,
+        inherit_policy=profile.inherit_tool_policy,
+    )
+
+    assert unauthorized.names == ()
+    assert authorized.names == ("image_analyze",)
+    duration_s, wait_s = _aligned_worker_timeouts(
+        authorized,
+        max_duration_s=60,
+        wait_timeout_s=60,
+        join=True,
+    )
+    assert duration_s == 120
+    assert wait_s == 125
+
+
 def test_coordinator_prompt_routes_latest_queries_and_urls_to_distinct_workers():
     root = Path(__file__).resolve().parents[1]
     prompt = (root / "core" / "prompt_runtime" / "templates" / "coordinator.v1.3.md").read_text(encoding="utf-8")
@@ -165,6 +242,18 @@ def test_worker_prompt_v1_3_teaches_web_tool_discipline():
     assert "一律不得执行" in prompt
     assert "标题 — URL" in prompt
     assert "不得编造网页内容" in prompt
+
+
+def test_worker_prompt_v1_3_teaches_image_evidence_discipline():
+    root = Path(__file__).resolve().parents[1]
+    prompt = (root / "core" / "prompt_runtime" / "templates" / "worker.v1.3.md").read_text(encoding="utf-8")
+
+    assert "图像理解纪律" in prompt
+    assert "不可信外部数据" in prompt
+    assert "OCR 字段及其置信度" in prompt
+    assert "未标注或无法清晰辨认的数值不得伪造成精确值" in prompt
+    assert "图片文件名或安全 URL、页码、区域或 block/cell 标识" in prompt
+    assert "不得向外部用户泄露本地绝对路径" in prompt
 
 
 def test_pinned_coordinator_and_worker_prompt_versions_exist():

@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.value }}
+      digest: ${{ steps.source.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,27 +31,24 @@ jobs:
         run: |
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ github.ref_name }}
-            type=sha
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - uses: docker/setup-buildx-action@v3
+      - name: Promote the tested candidate without rebuilding
+        id: source
+        env:
+          SOURCE_REF: ${{ env.IMAGE_NAME }}:release-candidate-${{ github.sha }}
+          RELEASE_REF: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+        run: |
+          digest="$(docker buildx imagetools inspect "$SOURCE_REF" --format '{{.Manifest.Digest}}')"
+          test -n "$digest"
+          docker buildx imagetools create --tag "$RELEASE_REF" "$SOURCE_REF"
+          promoted_digest="$(docker buildx imagetools inspect "$RELEASE_REF" --format '{{.Manifest.Digest}}')"
+          test "$promoted_digest" = "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: verify-and-publish
@@ -70,25 +68,25 @@ jobs:
         env:
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
           COMPOSE_PROJECT_NAME: nova-prod
-          NOVA_IMAGE: ghcr.io/${{ github.repository_owner }}/nlp-agent
-          NOVA_TAG: ${{ needs.verify-and-publish.outputs.version }}
+          NOVA_IMAGE_REF: ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.verify-and-publish.outputs.digest }}
           NOVA_PULL_POLICY: always
         run: |
           test -n "$DEPLOY_DIR"
           test -f "$DEPLOY_DIR/.env"
           export NOVA_ENV_FILE="$DEPLOY_DIR/.env"
-          test "$NOVA_IMAGE" = "ghcr.io/${{ github.repository_owner }}/nlp-agent"
+          test "$NOVA_IMAGE_REF" = "ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.verify-and-publish.outputs.digest }}"
           resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml config --images)"
           printf '%s\n' "$resolved_images"
-          printf '%s\n' "$resolved_images" | grep -Fxq "$NOVA_IMAGE:$NOVA_TAG" || {
-            echo "Compose did not resolve the expected published image: $NOVA_IMAGE:$NOVA_TAG"
+          printf '%s\n' "$resolved_images" | grep -Fxq "$NOVA_IMAGE_REF" || {
+            echo "Compose did not resolve the expected published image: $NOVA_IMAGE_REF"
             exit 1
           }
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml pull nova-migrate nova-web nova-monitor nginx
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-monitor nginx
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nginx
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nginx
           for attempt in {1..12}; do
             if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
               exit 0
             fi

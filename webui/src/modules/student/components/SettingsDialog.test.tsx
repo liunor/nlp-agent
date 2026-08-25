@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { SettingsDialog } from "./SettingsDialog";
 import { loadFeedback } from "@/shared/utils/feedback";
@@ -10,6 +10,8 @@ vi.mock("@/platform/http/api", () => ({ api: { listPublishedReleaseNotes: listPu
 
 const settings: UserSettings = {
   theme: "system",
+  content_font_size: "medium",
+  reduce_motion: false,
   locale: "zh-CN",
   show_reasoning: true,
   stream_render_interval_ms: 30,
@@ -23,6 +25,7 @@ const baseProps = {
   learningContext: { topic_id: null as string | null, topic_name: "", level: "beginner" as const, mode: "explain" as const },
   onClose: () => {},
   onChange: () => {},
+  onReset: () => {},
   onLearningContextChange: () => {},
   onOpenDeveloper: () => {},
   onOpenTeacher: () => {},
@@ -110,5 +113,46 @@ describe("SettingsDialog", () => {
     expect(screen.getByRole("button", { name: /进入教师模式/ })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "数据与隐私" }));
     expect(screen.getByRole("button", { name: /开发者工作台/ })).toBeVisible();
+  });
+  it("updates the answer content font size", () => {
+    const onChange = vi.fn();
+    render(<SettingsDialog {...baseProps} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /外观/ }));
+    fireEvent.change(
+      screen.getByRole("combobox", { name: /回答内容字号/ }),
+      { target: { value: "large" } },
+    );
+
+    expect(onChange).toHaveBeenCalledWith({ content_font_size: "large" });
+  });
+    it("updates the reduce motion preference", () => {
+    const onChange = vi.fn();
+    render(<SettingsDialog {...baseProps} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /外观/ }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /减少动态效果/ }),
+    );
+
+    expect(onChange).toHaveBeenCalledWith({ reduce_motion: true });
+  });
+    it("resets preferences after confirmation", () => {
+    const onReset = vi.fn();
+    render(<SettingsDialog {...baseProps} onReset={onReset} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "恢复默认" }),
+    );
+
+    const dialog = screen.getByRole("alertdialog", {
+      name: "恢复默认偏好？",
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "恢复默认" }),
+    );
+
+    expect(onReset).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 });

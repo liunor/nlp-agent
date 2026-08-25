@@ -38,6 +38,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: true,
       hmr: { host: "127.0.0.1", path: "/__nlp_vite_hmr" },
+      fs: { allow: [path.resolve(__dirname)] },
       proxy: {
         "/api": { target, changeOrigin: true },
         "/health": { target, changeOrigin: true },

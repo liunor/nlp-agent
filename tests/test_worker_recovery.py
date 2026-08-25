@@ -3,10 +3,21 @@ import json
 import time
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
 
 from core.task_manager import global_task_manager
 from core.session_context import SessionContext
+from core.tool_runtime import (
+    ToolDescriptor,
+    ToolExecutionResult,
+    ToolGrantRequest,
+    ToolRisk,
+    ToolRuntime,
+    ToolScope,
+    ToolSource,
+)
 from core.worker_lifecycle import WorkerResourceBudget, WorkerRetryPolicy
 from schemas.models import (
     WorkerErrorSpec,
@@ -182,6 +193,151 @@ async def test_worker_context_preserves_parent_user_and_workspace(monkeypatch):
             agent_id="worker-1",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_safe_identity_and_redacts_non_persistent_results(
+    monkeypatch,
+):
+    class SensitiveInput(BaseModel):
+        query: str
+
+    async def sensitive_tool(query: str) -> str:
+        return query
+
+    def factory():
+        return StructuredTool.from_function(
+            coroutine=sensitive_tool,
+            name="sensitive_tool",
+            description="Return a sensitive result",
+            args_schema=SensitiveInput,
+        )
+
+    runtime = ToolRuntime()
+    runtime.catalog.register(
+        ToolDescriptor(
+            name="sensitive_tool",
+            description="Return a sensitive result",
+            source=ToolSource.BUILTIN,
+            scopes=frozenset({ToolScope.WORKER}),
+            capabilities=frozenset({"sensitive.read"}),
+            risk=ToolRisk.LOW,
+            read_only=True,
+            persist_result=False,
+            factory=factory,
+        )
+    )
+    toolset = runtime.build_toolset(
+        ToolGrantRequest(
+            role=ToolScope.WORKER,
+            allowed_tools={"sensitive_tool"},
+        )
+    )
+    sensitive_output = "private OCR result: " + ("x" * 800)
+    captured_configs = []
+
+    async def fake_execute_many(_calls, config=None):
+        captured_configs.append(config)
+        return [
+            ToolExecutionResult(
+                tool_name="sensitive_tool", ok=True, output=sensitive_output
+            )
+        ]
+
+    toolset.execute_many = fake_execute_many
+
+    class FakeContextManager:
+        async def prepare(self, _context, prepared_messages, _budget):
+            return type(
+                "Transform",
+                (),
+                {
+                    "messages": prepared_messages,
+                    "tokens_before": 0,
+                    "tokens_after": 0,
+                    "actions": [],
+                },
+            )()
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "sensitive_tool",
+                            "args": {"query": "inspect"},
+                            "id": "call-sensitive",
+                        }
+                    ],
+                )
+            return AIMessage(content="done")
+
+    persisted_messages = []
+    monkeypatch.setattr(worker_tool, "global_context_manager", FakeContextManager())
+    monkeypatch.setattr(worker_tool, "get_tool_llm", lambda: FakeLLM())
+    monkeypatch.setattr(
+        worker_tool.global_telemetry, "event", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        worker_tool,
+        "record_sidechain_transcript",
+        lambda _session, _worker, batch: persisted_messages.extend(batch),
+    )
+    messages = []
+    parent = SessionContext(
+        session_id="s1",
+        user_id="alice",
+        workspace_id="nlp",
+        channel="web",
+        observability_attributes={"unsafe_label": "must-not-propagate"},
+    )
+
+    result = await _execute_sandbox_loop(
+        "worker-1",
+        "s1",
+        messages,
+        toolset,
+        context=parent,
+        budget=WorkerResourceBudget(max_tool_result_chars=512),
+    )
+
+    assert result.status == "completed"
+    assert captured_configs == [
+        {
+            "configurable": {
+                "thread_id": "s1",
+                "worker_id": "worker-1",
+                "user_id": "alice",
+                "workspace_id": "nlp",
+                "channel": "worker",
+            }
+        }
+    ]
+    in_memory = [item for item in messages if isinstance(item, ToolMessage)]
+    persisted = [
+        item for item in persisted_messages if isinstance(item, ToolMessage)
+    ]
+    assert len(in_memory) == 1
+    assert in_memory[0].content != sensitive_output
+    assert len(str(in_memory[0].content)) <= 512
+    assert "[tool result compacted:" in str(in_memory[0].content)
+    assert in_memory[0].artifact is None
+    assert len(persisted) == 1
+    assert (
+        persisted[0].content
+        == worker_tool.NON_PERSISTED_TOOL_RESULT_PLACEHOLDER
+    )
+    assert persisted[0].artifact is None
+    assert sensitive_output not in str(persisted[0])
 
 
 @pytest.mark.asyncio

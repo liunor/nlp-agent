@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from core.learning import LearningContext
 from gateway.contracts import EvaluationContext
 
@@ -73,15 +73,27 @@ class ReplaceClassroomMemberBody(StrictModel):
     status: Literal["active", "disabled"] = "active"
 
 
+
+class ChatAttachment(StrictModel):
+    file_name: str = Field(min_length=1, max_length=256)
+
+
 class SubmitChatBody(StrictModel):
     session_id: str
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str = Field(default="", max_length=200_000)
+    attachments: list[ChatAttachment] = Field(default_factory=list, max_length=5)
     idempotency_key: str | None = Field(default=None, max_length=128)
     learning_context: LearningContext | None = None
     evaluation: EvaluationContext | None = None
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+
+    @model_validator(mode="after")
+    def require_content_or_attachment(self) -> "SubmitChatBody":
+        if not self.content.strip() and not self.attachments:
+            raise ValueError("content 或 attachments 至少提供一项")
+        return self
 
 
 class InjectChatBody(StrictModel):
@@ -99,6 +111,8 @@ class ToolApprovalBody(StrictModel):
 class UpdateSettingsBody(StrictModel):
     locale: str | None = Field(default=None, min_length=2, max_length=20)
     theme: Literal["system", "light", "dark"] | None = None
+    content_font_size: Literal["small", "medium", "large"] | None = None
+    reduce_motion: bool | None = None
     show_reasoning: bool | None = None
     stream_render_interval_ms: int | None = Field(default=None, ge=0, le=1_000)
     default_workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -145,12 +159,19 @@ class CommandEnvelope(StrictModel):
 
 class ChatSendPayload(StrictModel):
     session_id: str
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str = Field(default="", max_length=200_000)
+    attachments: list[ChatAttachment] = Field(default_factory=list, max_length=5)
     idempotency_key: str | None = Field(default=None, max_length=128)
     learning_context: LearningContext | None = None
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+
+    @model_validator(mode="after")
+    def require_content_or_attachment(self) -> "ChatSendPayload":
+        if not self.content.strip() and not self.attachments:
+            raise ValueError("content 或 attachments 至少提供一项")
+        return self
 
 
 class ChatInjectPayload(StrictModel):

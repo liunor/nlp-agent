@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { api } from "@/platform/http/api";
 import type { LearningContext, ReleaseNoteEntry, UserSettings } from "@/shared/types";
+import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { supportedLocales } from "@/shared/i18n/config";
 import { saveFeedback } from "@/shared/utils/feedback";
 import { APP_NAME, APP_VERSION } from "@/shared/version";
@@ -24,18 +25,20 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof Setting
 const levelLabel: Record<LearningContext["level"], string> = { beginner: "入门", intermediate: "进阶", advanced: "高阶" };
 const modeLabel: Record<LearningContext["mode"], string> = { explain: "讲解", socratic: "苏格拉底追问", practice: "练习", review: "复习" };
 
-export function SettingsDialog({ open, settings, learningContext, roles = [], onClose, onChange, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
+export function SettingsDialog({ open, settings, learningContext, roles = [], onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
   open: boolean;
   settings: UserSettings;
   learningContext: LearningContext;
   roles?: string[];
   onClose: () => void;
   onChange: (patch: Partial<UserSettings>) => void;
+  onReset: () => void;
   onLearningContextChange: (context: LearningContext) => void;
   onOpenDeveloper: () => void;
   onOpenTeacher: () => void;
 }) {
   const [section, setSection] = useState<SettingsSection>("general");
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
@@ -54,7 +57,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], on
   const canDevelop = roles.includes("developer");
   const updateLearning = (patch: Partial<LearningContext>) => onLearningContextChange({ ...learningContext, ...patch });
 
-  return (
+  return <>
     <div className="dialog-backdrop settings-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="settings-dialog" role="dialog" aria-modal="true" aria-label="偏好设置" onMouseDown={(event) => event.stopPropagation()}>
         <aside className="settings-nav">
@@ -68,9 +71,54 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], on
             {section === "general" && <>
               <SettingGroup title="界面语言" description="语言偏好会同步保存到本地后端，并立即切换学生模式的界面语言。"><label className="settings-field"><span><Globe2 size={15} />阅读语言</span><select value={settings.locale} onChange={(event) => onChange({ locale: event.target.value })}>{supportedLocales.map((locale) => <option key={locale.code} value={locale.code}>{locale.nativeLabel} · {locale.label}</option>)}</select></label></SettingGroup>
               <SettingGroup title="学习空间" description="当前为单一同域学习空间；课程、班级和学生账号将在后续接入。"><div className="settings-note">默认工作空间：<b>{settings.default_workspace_id ?? "default"}</b></div>{canTeach && <button className="settings-link-button" type="button" onClick={onOpenTeacher}>进入教师模式 <ChevronRight size={15} /></button>}</SettingGroup>
+            <SettingGroup
+  title="偏好管理"
+  description="将界面和学习偏好恢复为初始状态，不会删除对话或学习记录。"
+>
+  <div className="settings-reset-row">
+    <span>
+      <strong>恢复默认偏好</strong>
+      <small>恢复语言、主题、阅读字号、动态效果及其他偏好。</small>
+    </span>
+    <button
+      type="button"
+      className="settings-reset-button"
+      onClick={() => setResetConfirmOpen(true)}
+    >
+      恢复默认
+    </button>
+  </div>
+</SettingGroup>
             </>}
-            {section === "appearance" && <SettingGroup title="主题" description="跟随系统，或固定为浅色、深色主题。"><div className="theme-grid"><ThemeButton active={settings.theme === "light"} icon={<Sun size={18} />} label="浅色" onClick={() => onChange({ theme: "light" })} /><ThemeButton active={settings.theme === "dark"} icon={<Moon size={18} />} label="深色" onClick={() => onChange({ theme: "dark" })} /><ThemeButton active={settings.theme === "system"} icon={<MonitorCog size={18} />} label="跟随系统" onClick={() => onChange({ theme: "system" })} /></div></SettingGroup>}
-            {section === "chat" && <><SettingGroup title="回答呈现" description="控制实时回答在页面上的呈现方式。"><ToggleRow title="显示思考过程" detail="显示模型返回的推理流；教学回答本身不受影响。" checked={settings.show_reasoning} onChange={(checked) => onChange({ show_reasoning: checked })} /><label className="settings-field"><span>流式渲染节奏<small>较快更实时，较慢更稳定</small></span><select value={settings.stream_render_interval_ms} onChange={(event) => onChange({ stream_render_interval_ms: Number(event.target.value) })}><option value={0}>即时</option><option value={30}>平衡（30 ms）</option><option value={80}>平滑（80 ms）</option></select></label></SettingGroup><SettingGroup title="快捷操作" description="发送消息后，可以在学习记录中生成练习、标记待复习概念，或导出 Markdown 学习报告。"><div className="settings-note">对话发送：Enter；换行：Shift + Enter</div></SettingGroup></>}
+
+{section === "appearance" && <>
+  <SettingGroup title="主题" description="跟随系统，或固定为浅色、深色主题。">
+    <div className="theme-grid">
+      <ThemeButton active={settings.theme === "light"} icon={<Sun size={18} />} label="浅色" onClick={() => onChange({ theme: "light" })} />
+      <ThemeButton active={settings.theme === "dark"} icon={<Moon size={18} />} label="深色" onClick={() => onChange({ theme: "dark" })} />
+      <ThemeButton active={settings.theme === "system"} icon={<MonitorCog size={18} />} label="跟随系统" onClick={() => onChange({ theme: "system" })} />
+    </div>
+  </SettingGroup>
+  <SettingGroup title="阅读体验" description="调整学习内容字号，并减少非必要的界面动态效果。">
+    <label className="settings-field">
+      <span>回答内容字号<small>仅调整聊天回答、题目和学习内容。</small></span>
+      <select
+        value={settings.content_font_size}
+        onChange={(event) => onChange({ content_font_size: event.target.value as UserSettings["content_font_size"] })}
+      >
+        <option value="small">较小</option>
+        <option value="medium">标准</option>
+        <option value="large">较大</option>
+      </select>
+    </label>
+    <ToggleRow
+      title="减少动态效果"
+      detail="减少侧栏、弹窗与内容出现时的动画。"
+      checked={settings.reduce_motion}
+      onChange={(checked) => onChange({ reduce_motion: checked })}
+    />
+  </SettingGroup>
+</>}            {section === "chat" && <><SettingGroup title="回答呈现" description="控制实时回答在页面上的呈现方式。"><ToggleRow title="显示思考过程" detail="显示模型返回的推理流；教学回答本身不受影响。" checked={settings.show_reasoning} onChange={(checked) => onChange({ show_reasoning: checked })} /><label className="settings-field"><span>流式渲染节奏<small>较快更实时，较慢更稳定</small></span><select value={settings.stream_render_interval_ms} onChange={(event) => onChange({ stream_render_interval_ms: Number(event.target.value) })}><option value={0}>即时</option><option value={30}>平衡（30 ms）</option><option value={80}>平滑（80 ms）</option></select></label></SettingGroup><SettingGroup title="快捷操作" description="发送消息后，可以在学习记录中生成练习、标记待复习概念，或导出 Markdown 学习报告。"><div className="settings-note">对话发送：Enter；换行：Shift + Enter</div></SettingGroup></>}
             {section === "learning" && <><SettingGroup title="默认学习上下文" description="主题请在聊天顶部从教师启用的目录中选择；难度和教学方式可在此设置。"><div className="settings-note">当前主题：{learningContext.topic_name || "未选择"}</div><div className="settings-two-fields"><label className="settings-field"><span>难度</span><select value={learningContext.level} onChange={(event) => updateLearning({ level: event.target.value as LearningContext["level"] })}>{Object.entries(levelLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="settings-field"><span>教学方式</span><select value={learningContext.mode} onChange={(event) => updateLearning({ mode: event.target.value as LearningContext["mode"] })}>{Object.entries(modeLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div></SettingGroup><SettingGroup title="学习记录" description="会话标题、概念、待复习标记和摘要仅存储在此浏览器；聊天内容由后端会话持久化。"><div className="settings-note">打开右侧“学习记录”可查看进度并导出报告。</div></SettingGroup></>}
             {section === "data" && <><SettingGroup title="数据存储" description="Pro_NLP 当前采用同域、本地部署。不会从学生设置页暴露 Provider 密钥、工具权限或系统 Trace。"><div className="settings-note">实时事件用于断线恢复；已完成对话可通过学习记录导出。</div></SettingGroup><SettingGroup title="隐私说明" description="学生界面只显示教学语义。运行 Trace、Token、Worker 与工具参数仅在独立的开发者监控平台可见。">{canDevelop && <button className="settings-link-button" type="button" onClick={onOpenDeveloper}>打开开发者工作台 <ChevronRight size={15} /></button>}</SettingGroup></>}
             {section === "advanced" && <><SettingGroup title="开发者配置" description="模型、Provider、MCP、Skills、工具策略、运行状态和调试数据由本产品的开发者工作台统一管理。">{canDevelop && <button className="settings-primary-button" type="button" onClick={onOpenDeveloper}>前往开发者工作台 <ChevronRight size={16} /></button>}</SettingGroup><SettingGroup title="为什么不在这里显示？" description="学生模式避免暴露 API Key、原始 Tool JSON、工作区权限和 Agent 运维细节，以保持教学体验清晰、安全。" /></>}
@@ -80,7 +128,18 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], on
         </div>
       </section>
     </div>
-  );
+<ConfirmDialog
+  open={resetConfirmOpen}
+  title="恢复默认偏好？"
+  description="将恢复语言、主题、阅读字号、动态效果及其他偏好，不会删除对话或学习记录。"
+  confirmLabel="恢复默认"
+  onConfirm={() => {
+    onReset();
+    setResetConfirmOpen(false);
+  }}
+  onClose={() => setResetConfirmOpen(false)}
+/>
+</>;
 }
 
 function SettingGroup({ title, description, children }: { title: string; description: string; children?: ReactNode }) { return <section className="settings-group"><div><h2>{title}</h2><p>{description}</p></div>{children}</section>; }

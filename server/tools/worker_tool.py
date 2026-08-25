@@ -115,6 +115,59 @@ from schemas.models import (
 
 logger = get_logger("shiliu.tools.worker")
 
+NON_PERSISTED_TOOL_RESULT_PLACEHOLDER = (
+    "[tool result omitted from persistent transcript by tool policy]"
+)
+_TOOL_RUNTIME_OVERHEAD_S = 30.0
+_JOIN_COMPLETION_GRACE_S = 5.0
+
+
+def _aligned_worker_timeouts(
+    toolset: ToolSet,
+    *,
+    max_duration_s: float,
+    wait_timeout_s: float,
+    join: bool,
+) -> tuple[float, float]:
+    """Keep a Worker alive long enough for its slowest granted tool.
+
+    Tool timeouts apply per attempt.  The Worker also needs time for the model
+    turn before and after the tool call, while a joining Coordinator needs a
+    small completion-delivery grace period.
+    """
+
+    worst_tool_runtime_s = 0.0
+    for descriptor in toolset.descriptors:
+        retry = descriptor.retry
+        retry_delays_s = sum(
+            min(
+                retry.max_delay_s,
+                retry.base_delay_s
+                * (2 ** max(0, failed_attempt - 1))
+                * (1 + retry.jitter_ratio),
+            )
+            for failed_attempt in range(1, retry.max_attempts)
+        )
+        worst_tool_runtime_s = max(
+            worst_tool_runtime_s,
+            descriptor.timeout_s * retry.max_attempts + retry_delays_s,
+        )
+
+    required_duration_s = worst_tool_runtime_s + _TOOL_RUNTIME_OVERHEAD_S
+    if required_duration_s <= max_duration_s:
+        return max_duration_s, wait_timeout_s
+    if required_duration_s > 1_800:
+        raise ValueError("granted tool timeouts exceed the Worker duration limit")
+
+    aligned_wait_s = wait_timeout_s
+    if join:
+        aligned_wait_s = max(
+            wait_timeout_s, required_duration_s + _JOIN_COMPLETION_GRACE_S
+        )
+        if aligned_wait_s > 600:
+            raise ValueError("granted tool timeouts exceed the Worker join-wait limit")
+    return required_duration_s, aligned_wait_s
+
 
 def _resolve_profile_worker_model(
     profile: ResolvedWorkerProfile,
@@ -271,6 +324,15 @@ async def _execute_sandbox_loop(
     session_context = parent_context.model_copy(
         update={"channel": "worker", "agent_id": worker_id}
     )
+    tool_config: RunnableConfig = {
+        "configurable": {
+            "thread_id": session_context.session_id,
+            "worker_id": worker_id,
+            "user_id": session_context.user_id,
+            "workspace_id": session_context.workspace_id,
+            "channel": session_context.channel,
+        }
+    }
 
     def result(
         *,
@@ -479,19 +541,41 @@ async def _execute_sandbox_loop(
             calls = [(call["name"], call["args"]) for call in response.tool_calls]
             for name, _arguments in calls:
                 worker_logger.info("发起工具调用", tool_name=name)
-            tool_results = await toolset.execute_many(calls)
+            tool_results = await toolset.execute_many(calls, tool_config)
             for tool_call, execution in zip(response.tool_calls, tool_results, strict=True):
-                tool_msg = ToolMessage(
-                    content=execution.to_model_content(
-                        max_chars=budget.max_tool_result_chars
-                    ),
-                    tool_call_id=tool_call["id"],
-                    name=tool_call["name"],
-                    status="success" if execution.ok else "error",
-                    artifact=execution.model_dump(mode="json"),
-                )
+                descriptor = toolset.descriptor(tool_call["name"])
+                persist_result = descriptor.persist_result if descriptor else True
+                status = "success" if execution.ok else "error"
+                if persist_result:
+                    tool_msg = ToolMessage(
+                        content=execution.to_model_content(
+                            max_chars=budget.max_tool_result_chars
+                        ),
+                        tool_call_id=tool_call["id"],
+                        name=tool_call["name"],
+                        status=status,
+                        artifact=execution.model_dump(mode="json"),
+                    )
+                    persisted_tool_msg = tool_msg
+                else:
+                    tool_msg = ToolMessage(
+                        content=execution.to_model_content(
+                            max_chars=budget.max_tool_result_chars
+                        ),
+                        tool_call_id=tool_call["id"],
+                        name=tool_call["name"],
+                        status=status,
+                    )
+                    persisted_tool_msg = ToolMessage(
+                        content=NON_PERSISTED_TOOL_RESULT_PLACEHOLDER,
+                        tool_call_id=tool_call["id"],
+                        name=tool_call["name"],
+                        status=status,
+                    )
                 messages.append(tool_msg)
-                record_sidechain_transcript(session_id, worker_id, [tool_msg])
+                record_sidechain_transcript(
+                    session_id, worker_id, [persisted_tool_msg]
+                )
 
         final_output = await finalize(AgentStopReason.MAX_ITERATIONS)
         return result(
@@ -793,6 +877,12 @@ async def spawn_worker(
             raise ValueError(
                 f"one-shot Worker Profile {profile.name!r} cannot receive tools"
             )
+        max_duration_s, wait_timeout_s = _aligned_worker_timeouts(
+            toolset,
+            max_duration_s=max_duration_s,
+            wait_timeout_s=wait_timeout_s,
+            join=join,
+        )
         worker_budget, worker_retry = _build_profile_execution_policies(
             profile,
             runtime_settings=runtime_settings,

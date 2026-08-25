@@ -19,6 +19,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=2",
     "mcp>=1.0",
     "openai>=1.0",
+    "pillow>=11.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "redis>=5.0",
@@ -29,6 +30,10 @@ dependencies = [
     "uvicorn[standard]>=0.35",
     "beautifulsoup4>=4.12",
     "markdownify>=0.13",
+    "rapidocr-onnxruntime>=1.4",
+    "opencv-python-headless>=4.8",
+    "numpy>=1.26",
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]

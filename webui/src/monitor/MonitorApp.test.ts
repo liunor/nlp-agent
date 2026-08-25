@@ -1,4 +1,4 @@
-import { controlPlaneUrl, groupEventsByTrace, groupTracesIntoChains, resetMonitorData, telemetryFrame } from "./MonitorApp";
+import { controlPlaneUrl, groupEventsByTrace, groupTracesIntoChains, monitorUrl, resetMonitorData, telemetryFrame } from "./monitor-helpers";
 import type { TelemetryEvent, Trace } from "./api";
 
 const trace = (traceId: string): Trace => ({
@@ -12,9 +12,14 @@ const event = (eventId: string, timestamp: string, traceId?: string): TelemetryE
 });
 
 describe("MonitorApp helpers", () => {
-  it("returns to the control plane on the same remote host and protocol", () => {
-    expect(controlPlaneUrl({ protocol: "https:", hostname: "nlp.example.test" } as Location))
-      .toBe("https://nlp.example.test:8765/developer");
+  it("returns to the control plane on the same remote host and the paired environment port", () => {
+    expect(controlPlaneUrl({ protocol: "https:", hostname: "nlp.example.test", port: "18766" } as Location))
+      .toBe("https://nlp.example.test:18765/developer");
+  });
+
+  it("opens the monitor on the paired environment port from the control plane", () => {
+    expect(monitorUrl({ protocol: "https:", hostname: "nlp.example.test", port: "18765" } as Location))
+      .toBe("https://nlp.example.test:18766");
   });
 
   it("ignores malformed telemetry frames", () => {

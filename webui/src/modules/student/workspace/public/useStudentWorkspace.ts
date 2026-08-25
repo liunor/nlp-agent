@@ -25,7 +25,7 @@ export function useStudentWorkspace() {
     renameCategory,
     deleteCategory,
   } = usePreferencesController();
-  const { settings, settingsError, initializeSettings, patchSettings } = useSettingsController();
+  const { settings, settingsError, initializeSettings, patchSettings, resetSettings } = useSettingsController();
   const {
     sessions,
     setSessions,
@@ -179,6 +179,7 @@ export function useStudentWorkspace() {
     renameCategory,
     deleteCategory,
     patchSettings,
+    resetSettings,
     refresh: loadSessions,
     retryAuthentication,
     authSession,

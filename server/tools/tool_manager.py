@@ -1,4 +1,5 @@
 from server.tools.api.file_read_tool import read_local_file
+from server.tools.api.image_analyze_tool import image_analyze
 from server.tools.api.time_tool import get_current_time
 from server.tools.api.web_fetch_tool import web_fetch
 from core.tool_runtime import (
@@ -62,6 +63,25 @@ def register_builtin_tools(catalog: ToolCatalog | None = None) -> list[str]:
             max_concurrency=2,
             retry=ToolRetryPolicy(max_attempts=2),
             factory=lambda: web_fetch.model_copy(deep=True),
+        ),
+        ToolDescriptor(
+            name=image_analyze.name,
+            description=image_analyze.description,
+            source=ToolSource.BUILTIN,
+            provider="vision-router",
+            scopes=frozenset({ToolScope.WORKER}),
+            capabilities=frozenset({"image.analyze"}),
+            risk=ToolRisk.MEDIUM,
+            read_only=True,
+            concurrency_safe=True,
+            timeout_s=90,
+            max_concurrency=2,
+            # The Model Runtime already owns retry and fallback for VLM calls.
+            # Retrying the whole vision pipeline here can duplicate OCR work and
+            # paid model requests.
+            retry=ToolRetryPolicy(max_attempts=1),
+            persist_result=False,
+            factory=lambda: image_analyze.model_copy(deep=True),
         ),
     ]
     registered: list[str] = []

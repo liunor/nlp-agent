@@ -18,7 +18,11 @@ let csrfToken = "";
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  if (init.body && !headers.has("Content-Type")) {
+    if (!(init.body instanceof FormData)) {
+      headers.set("Content-Type", "application/json");
+    }
+  }
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
     headers.set("X-CSRF-Token", csrfToken);
   }
@@ -39,6 +43,29 @@ export async function ensureAuth(): Promise<AuthSession> {
   const session = await request<AuthSession>("/auth/session");
   csrfToken = session.csrf_token;
   return session;
+}
+
+export interface UploadResponse {
+  file_name: string;
+  url: string;
+  media_type: string;
+  size_bytes: number;
+  width: number;
+  height: number;
+  sha256: string;
+}
+
+export async function uploadAttachment(
+  sessionId: string,
+  file: File,
+): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append("session_id", sessionId);
+  form.append("file", file);
+  return request<UploadResponse>("/uploads", {
+    method: "POST",
+    body: form,
+  });
 }
 
 export const api = {
@@ -70,7 +97,7 @@ export const api = {
     request<TurnRecord>(`/chat/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" }),
   getSettings: () => request<{ preferences: { settings?: Partial<UserSettings> }; runtime: SettingsRuntime }>("/settings"),
   updateSettings: (settings: Partial<UserSettings>) =>
-    request<{ settings: UserSettings }>("/settings", {
+    request<{ settings: Partial<UserSettings> }>("/settings", {
       method: "PATCH",
       body: JSON.stringify(settings),
     }),

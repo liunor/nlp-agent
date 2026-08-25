@@ -96,11 +96,41 @@ describe("useStudentWorkspace settings", () => {
     expect(result.current.settingsError).toContain("second failed");
   });
 
+  it("preserves confirmed defaults when the backend returns only the changed settings", async () => {
+    getSettingsMock.mockResolvedValue({
+      preferences: {
+        settings: {
+          theme: "system",
+          content_font_size: "large",
+          reduce_motion: true,
+          show_reasoning: false,
+          stream_render_interval_ms: 80,
+          model_profile: "qwen",
+        },
+      },
+      runtime,
+    });
+    vi.mocked(api.updateSettings).mockResolvedValueOnce({ settings: { theme: "dark" } });
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.patchSettings({ theme: "dark" }); });
+
+    expect(result.current.settings).toMatchObject({
+      theme: "dark",
+      content_font_size: "large",
+      reduce_motion: true,
+      show_reasoning: false,
+      stream_render_interval_ms: 80,
+      model_profile: "qwen",
+    });
+  });
+
   it("clears an earlier failure after a later queued setting is saved", async () => {
     vi.mocked(api.updateSettings)
       .mockRejectedValueOnce(new Error("first failed"))
       .mockResolvedValueOnce({ settings: {
-        theme: "light", locale: "zh-CN", show_reasoning: true,
+        theme: "light", locale: "zh-CN", content_font_size: "medium", reduce_motion: false, show_reasoning: true,
         stream_render_interval_ms: 30, model_profile: "deepseek", default_workspace_id: "default",
       } });
     const { result } = renderHook(() => useStudentWorkspace());

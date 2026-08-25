@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import gateway.core as gateway_core
 from core.identity import AccessDeniedError, AuthenticatedPrincipal
 from core.learning import LearningContext
 from core.session_context import SessionContext
@@ -406,6 +407,49 @@ async def test_gateway_rejects_changed_content_when_retrying_an_idempotency_key(
     original = repository.list_turns(session.session_id)[0]
     assert original.input_text == "original request"
     assert dispatcher.attempts == 1
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_attachment_path_is_session_relative_and_retry_is_idempotent(
+    tmp_path, principal, monkeypatch
+):
+    sessions = FakeSessions()
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    dispatcher = RecordingTurnDispatcher()
+    uploads_root = tmp_path / ".data" / "uploads"
+    monkeypatch.setattr(gateway_core, "_DEFAULT_UPLOADS_ROOT", uploads_root)
+    gateway = BackendGateway(
+        engine=FakeEngine(),
+        repository=repository,
+        sessions=sessions,
+        dispatcher=dispatcher,
+    )
+    await gateway.start()
+    session = await gateway.create_session(principal, workspace_id="w1")
+    upload_dir = uploads_root / "w1" / "alice" / session.session_id
+    upload_dir.mkdir(parents=True)
+    (upload_dir / "safe-image.png").write_bytes(b"uploaded")
+    request = SubmitTurnRequest(
+        session_id=session.session_id,
+        content="",
+        attachments=[{"file_name": "safe-image.png"}],
+        idempotency_key="attachment-request",
+    )
+
+    accepted = await gateway.submit_turn(principal, request)
+    duplicate = await gateway.submit_turn(principal, request)
+
+    expected = (
+        "---附件---\n"
+        "[图片] safe-image.png\n"
+        "路径: safe-image.png\n"
+        "---附件结束---"
+    )
+    assert duplicate.duplicate is True
+    assert duplicate.turn_id == accepted.turn_id
+    assert dispatcher.submissions[0].content == expected
+    assert repository.get_turn(accepted.turn_id).input_text == expected
     await gateway.close()
 
 

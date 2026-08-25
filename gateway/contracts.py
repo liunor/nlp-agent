@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.learning import ExerciseState, LearningContext, LearningProgress
 
@@ -61,13 +61,20 @@ class SubmitTurnRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str = Field(default="", max_length=200_000)
+    attachments: list[dict[str, str]] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, max_length=128)
     learning_context: LearningContext | None = None
     evaluation: EvaluationContext | None = None
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+
+    @model_validator(mode="after")
+    def require_content_or_attachment(self) -> "SubmitTurnRequest":
+        if not self.content.strip() and not self.attachments:
+            raise ValueError("content 或 attachments 至少提供一项")
+        return self
 
 
 class InjectMessageRequest(BaseModel):

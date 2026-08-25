@@ -11,8 +11,8 @@
 | 工作流 | 触发条件 | 作用 |
 | --- | --- | --- |
 | `CI` | feature、develop、main 的 push / PR | Python 与前端检查、完整测试、Docker 构建验证 |
-| `Publish Test Image` | push 到 `develop` | 推送 `ghcr.io/liunor/nlp-agent:develop` 与不可变 SHA 标签；成功后在测试服务器拉取镜像并进行健康检查 |
-| `Release Production` | push `vX.Y.Z` Tag | 校验 Tag 属于 main，构建正式镜像，部署生产环境 |
+| `Publish Test Image` | push 到 `develop` 或 `main` | `develop` 发布测试镜像；`main` 发布带 commit SHA 的 release candidate，并在测试环境进行健康检查 |
+| `Release Production` | push `vX.Y.Z` Tag | 校验 Tag 属于 main，把已在测试环境验证的 candidate digest 晋级为正式 tag；生产不重新构建镜像 |
 | `Sync Gitee Mirror` | 生产发布完成或手动执行 | 同步 GitHub main 与所有 Tag 到 Gitee |
 
 ## GitHub 配置清单
@@ -29,7 +29,7 @@
 
 测试环境使用 `/opt/nova-test`，生产环境使用 `/opt/nova-prod`。两个目录中只维护服务器本地 `.env`。部署工作流从仓库 checkout 的 `compose.yaml` 启动服务，并通过 `NOVA_ENV_FILE` 显式读取该服务器 `.env`，因此不会覆盖密钥文件。
 
-当前测试与生产共用一台服务器，因此测试环境映射 `18765/18766`，生产环境映射 `8765/8766`。工作流分别使用 Compose 项目名 `nova-test`、`nova-prod`，数据卷彼此隔离，不能将两套端口或项目名改为相同值。
+严格部署时测试和生产必须使用不同主机或 VM，最好位于不同 VPC/网络安全域；两边分别使用独立 MySQL、Redis、Docker 凭据、模型密钥、会话密钥和备份策略。若只是本地临时联调，可以用不同 Compose 项目名和端口模拟隔离，但这不满足生产隔离要求。工作流分别使用 Compose 项目名 `nova-test`、`nova-prod`，数据卷彼此隔离；测试 Web/Monitor 默认使用 `18765/18766`，生产使用 `8765/8766`。
 
 首次准备服务器配置：
 
@@ -52,17 +52,18 @@ nano /opt/nova-prod/.env
 服务器 `.env` 必须包含：
 
 ```dotenv
-NOVA_IMAGE=ghcr.io/liunor/nlp-agent
-NOVA_TAG=develop
+NOVA_IMAGE_REF=ghcr.io/liunor/nlp-agent@sha256:...
 NOVA_PULL_POLICY=always
 DEEPSEEK_API_KEY=...
 NLP_AGENT_WEB_ALLOWED_HOSTS=你的内网IP或域名
-NLP_AGENT_WEB_ALLOWED_ORIGINS=http://你的内网IP或域名:8765
+NLP_AGENT_WEB_ALLOWED_ORIGINS=http://你的内网IP或域名:18765
+NLP_AGENT_DATABASE_URL=mysql+aiomysql://测试专用用户:密码@mysql:3306/测试专用数据库
 ```
 
 ## 正式发布
 
-1. 将已通过人工测试的 `develop` 以 Pull Request 合并至 `main`。
-2. 从 `main` 创建并推送带注释的版本 Tag，例如 `v1.0.1`。
-3. `Release Production` 会构建 `ghcr.io/liunor/nlp-agent:v1.0.1`，等待 production 审批后部署。
-4. 部署成功后自动同步 Gitee。
+1. `develop` 的变更通过 CI 后自动部署测试环境。
+2. 将已通过人工测试的 `develop` 以 Pull Request 合并至 `main`；`main` push 会生成 release candidate 并部署到测试环境复核。
+3. 确认 candidate 的测试结果后，从 `main` 创建并推送带注释的版本 Tag，例如 `v1.0.1`。
+4. `Release Production` 只把 candidate 的 digest 晋级为 `ghcr.io/liunor/nlp-agent:v1.0.1`，等待 production 审批后部署。
+5. 部署成功后自动同步 Gitee。

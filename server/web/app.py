@@ -1384,6 +1384,10 @@ def create_app(
     static_dir = Path(static_dir_value).expanduser() if static_dir_value else None
     if static_dir is not None and not static_dir.is_absolute():
         static_dir = Path(__file__).resolve().parents[2] / static_dir
+    # Image upload endpoints (registered before the SPA mount so /api routes win).
+    from server.uploads import router as uploads_router
+    app.include_router(uploads_router)
+
     if static_dir is not None and static_dir.is_dir():
         @app.get("/developer", include_in_schema=False)
         @app.get("/developer/{developer_path:path}", include_in_schema=False)

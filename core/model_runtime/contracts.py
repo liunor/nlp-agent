@@ -33,6 +33,8 @@ class ModelCapabilities(FrozenModel):
     thinking: bool = False
     cache_usage: bool = False
     json_mode: bool = True
+    vision: bool = False
+    structured_output: bool = False
 
 
 class ModelDefinition(FrozenModel):
@@ -165,14 +167,20 @@ class ModelRuntimeConfig(FrozenModel):
             primary = self.models[self.model_presets[route.primary].model]
             for fallback_name in route.fallbacks:
                 fallback = self.models[self.model_presets[fallback_name].model]
-                if primary.capabilities.tool_calls and not fallback.capabilities.tool_calls:
-                    raise ValueError(
-                        f"fallback {fallback_name!r} lacks tool-call capability required by {route.primary!r}"
-                    )
-                if primary.capabilities.streaming and not fallback.capabilities.streaming:
-                    raise ValueError(
-                        f"fallback {fallback_name!r} lacks streaming capability required by {route.primary!r}"
-                    )
+                required_capabilities = (
+                    ("tool_calls", "tool-call"),
+                    ("streaming", "streaming"),
+                    ("vision", "vision"),
+                    ("structured_output", "structured-output"),
+                )
+                for field, label in required_capabilities:
+                    if getattr(primary.capabilities, field) and not getattr(
+                        fallback.capabilities, field
+                    ):
+                        raise ValueError(
+                            f"fallback {fallback_name!r} lacks {label} capability "
+                            f"required by {route.primary!r}"
+                        )
         for profile_name, profile in self.model_profiles.items():
             if profile.provider not in self.providers:
                 raise ValueError(
