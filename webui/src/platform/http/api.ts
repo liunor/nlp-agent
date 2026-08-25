@@ -87,6 +87,7 @@ export const api = {
     environment: { id: string; status: string; generation: number; profile: string } | null;
     lease: { id: string; state: string; generation: number; expires_at: string } | null;
   }>("/sandbox/lease", { method: "POST" }),
+  executeSandbox: (source: string) => request<{ status: string; stdout: string; stderr: string }>("/sandbox/execute", { method: "POST", body: JSON.stringify({ source }) }),
   createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
   listSessions: () => request<{ items: SessionSummary[] }>("/sessions"),
   createSession: (workspaceId = "default") =>

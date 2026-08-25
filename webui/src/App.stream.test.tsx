@@ -14,11 +14,13 @@ const stream = vi.hoisted(() => {
     environment: { id: "sandbox-user", status: "ready", generation: 1, profile: "python-base" },
     lease: { id: "lease-session", state: "active", generation: 1, expires_at: "2026-08-25T10:00:00" },
   }));
+  const executeSandbox = vi.fn(async () => ({ status: "completed", stdout: "2\n", stderr: "" }));
   return {
     lastRequestId: () => lastRequestId,
     lastModelProfile: () => lastModelProfile,
     updateSettings,
     ensureSandboxLease,
+    executeSandbox,
     emit(event: Record<string, unknown>) { onEvent?.(event); },
     StudentSocket: class {
       constructor(event: (value: Record<string, unknown>) => void, private readonly onStatus: (status: "connected") => void) { onEvent = event; }
@@ -52,6 +54,7 @@ vi.mock("@/platform/http/api", () => ({
     listTurns: vi.fn().mockResolvedValue({ items: [] }),
     deleteSession: vi.fn(), updateSettings: stream.updateSettings,
     ensureSandboxLease: stream.ensureSandboxLease,
+    executeSandbox: stream.executeSandbox,
   },
 }));
 
@@ -122,6 +125,17 @@ describe("student stream rendering", () => {
     expect(screen.getByText("代码沙箱正在准备中")).toBeVisible();
     expect(screen.getByText(/Phase 0 已完成身份与租约隔离契约/)).toBeVisible();
     await waitFor(() => expect(stream.ensureSandboxLease).toHaveBeenCalledTimes(1));
+  });
+
+  it("runs code from the sandbox workbench and renders stdout", async () => {
+    stream.executeSandbox.mockClear();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开代码沙箱工具" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "沙箱代码" }), { target: { value: "x = 1\nx + 1" } });
+    fireEvent.click(screen.getByRole("button", { name: "运行代码" }));
+    await waitFor(() => expect(stream.executeSandbox).toHaveBeenCalledWith("x = 1\nx + 1"));
+    expect(await screen.findByText("2")).toBeVisible();
   });
 
   it("opens the tool picker from the plus trigger and closes it with the dock", async () => {

@@ -32,6 +32,8 @@ function EmptyToolPanel({ tool }: { tool: Exclude<ToolDockTool, "learning"> }) {
 
 function SandboxPhaseZeroPanel() {
   const [leaseStatus, setLeaseStatus] = useState<"creating" | "ready" | "error">("creating");
+  const [source, setSource] = useState("# 在这里运行 Python 代码\n");
+  const [result, setResult] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -44,8 +46,11 @@ function SandboxPhaseZeroPanel() {
   return <section className="tool-dock-empty-panel sandbox-phase-zero-panel">
     <span><Code2 size={20} /></span>
     <strong>代码沙箱正在准备中</strong>
-    <p>Phase 0 已完成身份与租约隔离契约。代码执行、内核状态和预热运行环境将在下一阶段接入。</p>
+    <p>Phase 0 已完成身份与租约隔离契约；本地开发模式使用 InMemory Kernel，Docker 隔离运行时正在接入。</p>
     <small>{leaseStatus === "creating" ? "正在建立当前登录会话的沙箱租约…" : leaseStatus === "ready" ? "当前会话的沙箱租约已建立。" : "暂时无法建立沙箱租约，请稍后重试。"}</small>
+    <textarea aria-label="沙箱代码" value={source} onChange={(event) => setSource(event.target.value)} />
+    <button type="button" onClick={() => void api.executeSandbox(source).then((value) => setResult(value.stdout || value.stderr))}>运行代码</button>
+    {result && <pre>{result}</pre>}
   </section>;
 }
 
