@@ -1,9 +1,10 @@
 """Production MySQL saver for LangGraph's asynchronous checkpoint contract."""
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, Sequence
-from typing import Any
+import asyncio
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from typing import Any, TypeVar
 
 from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
@@ -14,13 +15,50 @@ from langgraph.checkpoint.base import (
 )
 from sqlalchemy import and_, delete, desc, select
 from sqlalchemy.dialects.mysql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .models import (
+    ConversationModel,
     LangGraphCheckpointBlobModel,
     LangGraphCheckpointModel,
     LangGraphCheckpointWriteModel,
 )
+
+
+_T = TypeVar("_T")
+_RETRYABLE_MYSQL_TRANSACTION_ERRORS = frozenset({1205, 1213})
+_MYSQL_TRANSACTION_ATTEMPTS = 3
+_MYSQL_TRANSACTION_RETRY_BASE_S = 0.02
+
+
+def _mysql_error_code(error: DBAPIError) -> int | None:
+    args = getattr(getattr(error, "orig", None), "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
+
+
+async def _retry_mysql_transaction(
+    operation: Callable[[], Awaitable[_T]],
+) -> _T:
+    """Retry only complete transactions rejected by MySQL lock arbitration."""
+
+    for attempt in range(_MYSQL_TRANSACTION_ATTEMPTS):
+        try:
+            return await operation()
+        except DBAPIError as error:
+            retryable = (
+                not error.connection_invalidated
+                and _mysql_error_code(error) in _RETRYABLE_MYSQL_TRANSACTION_ERRORS
+            )
+            if not retryable or attempt + 1 >= _MYSQL_TRANSACTION_ATTEMPTS:
+                raise
+            await asyncio.sleep(_MYSQL_TRANSACTION_RETRY_BASE_S * (2**attempt))
+    raise RuntimeError("unreachable MySQL checkpoint retry state")
 
 
 class MySQLCheckpointSaver(BaseCheckpointSaver):
@@ -35,6 +73,35 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
         self._engine = engine
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
 
+    @staticmethod
+    def _require_owner(
+        row: Any,
+        *,
+        workspace_id: str,
+        owner_user_id: str,
+        record_name: str,
+    ) -> None:
+        if row.workspace_id != workspace_id or row.owner_user_id != owner_user_id:
+            raise PermissionError(f"{record_name} belongs to another principal")
+
+    async def _require_thread_owner(
+        self,
+        session: AsyncSession,
+        *,
+        thread_id: str,
+        workspace_id: str,
+        owner_user_id: str,
+    ) -> None:
+        conversation = await session.get(ConversationModel, thread_id)
+        if conversation is None:
+            raise PermissionError("checkpoint conversation does not exist")
+        self._require_owner(
+            conversation,
+            workspace_id=workspace_id,
+            owner_user_id=owner_user_id,
+            record_name="checkpoint conversation",
+        )
+
     async def aclose(self) -> None:
         await self._engine.dispose()
 
@@ -46,30 +113,34 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
         user_id: str,
     ) -> None:
         """Delete only the caller-owned durable state for a session."""
-        async with self._sessions.begin() as session:
-            ownership = (
-                LangGraphCheckpointModel.workspace_id == workspace_id,
-                LangGraphCheckpointModel.owner_user_id == user_id,
-            )
-            await session.execute(
-                delete(LangGraphCheckpointWriteModel).where(
-                    LangGraphCheckpointWriteModel.thread_id == thread_id,
-                    LangGraphCheckpointWriteModel.workspace_id == workspace_id,
-                    LangGraphCheckpointWriteModel.owner_user_id == user_id,
+
+        async def delete_once() -> None:
+            async with self._sessions.begin() as session:
+                ownership = (
+                    LangGraphCheckpointModel.workspace_id == workspace_id,
+                    LangGraphCheckpointModel.owner_user_id == user_id,
                 )
-            )
-            await session.execute(
-                delete(LangGraphCheckpointBlobModel).where(
-                    LangGraphCheckpointBlobModel.thread_id == thread_id,
-                    LangGraphCheckpointBlobModel.workspace_id == workspace_id,
-                    LangGraphCheckpointBlobModel.owner_user_id == user_id,
+                await session.execute(
+                    delete(LangGraphCheckpointWriteModel).where(
+                        LangGraphCheckpointWriteModel.thread_id == thread_id,
+                        LangGraphCheckpointWriteModel.workspace_id == workspace_id,
+                        LangGraphCheckpointWriteModel.owner_user_id == user_id,
+                    )
                 )
-            )
-            await session.execute(
-                delete(LangGraphCheckpointModel).where(
-                    LangGraphCheckpointModel.thread_id == thread_id, *ownership
+                await session.execute(
+                    delete(LangGraphCheckpointBlobModel).where(
+                        LangGraphCheckpointBlobModel.thread_id == thread_id,
+                        LangGraphCheckpointBlobModel.workspace_id == workspace_id,
+                        LangGraphCheckpointBlobModel.owner_user_id == user_id,
+                    )
                 )
-            )
+                await session.execute(
+                    delete(LangGraphCheckpointModel).where(
+                        LangGraphCheckpointModel.thread_id == thread_id, *ownership
+                    )
+                )
+
+        await _retry_mysql_transaction(delete_once)
 
     async def adelete_for_runs(self, run_ids: Sequence[str]) -> None:
         # LangGraph run ids are not persisted as a separate identity; callers should use
@@ -176,107 +247,215 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
             if not filter or all(item.metadata.get(key) == value for key, value in filter.items()):
                 yield item
 
-    async def aput(self, config: dict[str, Any], checkpoint: dict[str, Any], metadata: dict[str, Any], new_versions: dict[str, Any]) -> dict[str, Any]:
+    async def aput(
+        self,
+        config: dict[str, Any],
+        checkpoint: dict[str, Any],
+        metadata: dict[str, Any],
+        new_versions: dict[str, Any],
+    ) -> dict[str, Any]:
         configured = config["configurable"]
-        thread_id, namespace = configured["thread_id"], configured.get("checkpoint_ns", "")
-        workspace_id, owner_user_id = configured.get("workspace_id"), configured.get("user_id")
+        thread_id, namespace = (
+            configured["thread_id"],
+            configured.get("checkpoint_ns", ""),
+        )
+        workspace_id, owner_user_id = (
+            configured.get("workspace_id"),
+            configured.get("user_id"),
+        )
         if not workspace_id or not owner_user_id:
             raise PermissionError("checkpoint identity is required")
         stored = checkpoint.copy()
         values = stored.pop("channel_values")
         checkpoint_type, checkpoint_blob = self.serde.dumps_typed(stored)
-        metadata_type, metadata_blob = self.serde.dumps_typed(get_checkpoint_metadata(config, metadata))
-        async with self._sessions.begin() as session:
-            existing = await session.scalar(
-                select(LangGraphCheckpointModel)
-                .where(
-                    LangGraphCheckpointModel.thread_id == thread_id,
-                    LangGraphCheckpointModel.checkpoint_ns == namespace,
-                    LangGraphCheckpointModel.checkpoint_id == checkpoint["id"],
+        metadata_type, metadata_blob = self.serde.dumps_typed(
+            get_checkpoint_metadata(config, metadata)
+        )
+
+        async def put_once() -> None:
+            async with self._sessions.begin() as session:
+                await self._require_thread_owner(
+                    session,
+                    thread_id=thread_id,
+                    workspace_id=workspace_id,
+                    owner_user_id=owner_user_id,
                 )
-                .with_for_update()
-            )
-            if existing is not None and (
-                existing.workspace_id != workspace_id
-                or existing.owner_user_id != owner_user_id
-            ):
-                raise PermissionError("checkpoint belongs to another principal")
-            row = insert(LangGraphCheckpointModel).values(
-                id=str(uuid.uuid4()), thread_id=thread_id, checkpoint_ns=namespace,
-                workspace_id=workspace_id, owner_user_id=owner_user_id,
-                checkpoint_id=checkpoint["id"], parent_checkpoint_id=configured.get("checkpoint_id"),
-                checkpoint_type=checkpoint_type, checkpoint_blob=checkpoint_blob,
-                metadata_type=metadata_type, metadata_blob=metadata_blob,
-            ).on_duplicate_key_update(
-                parent_checkpoint_id=configured.get("checkpoint_id"), checkpoint_type=checkpoint_type,
-                checkpoint_blob=checkpoint_blob, metadata_type=metadata_type, metadata_blob=metadata_blob,
-            )
-            await session.execute(row)
-            for channel, version in new_versions.items():
-                value_type, value_blob = self.serde.dumps_typed(values[channel]) if channel in values else ("empty", b"")
-                existing_blob = await session.scalar(
-                    select(LangGraphCheckpointBlobModel)
+                checkpoint_claim = (
+                    insert(LangGraphCheckpointModel)
+                    .values(
+                        id=str(uuid.uuid4()),
+                        thread_id=thread_id,
+                        checkpoint_ns=namespace,
+                        workspace_id=workspace_id,
+                        owner_user_id=owner_user_id,
+                        checkpoint_id=checkpoint["id"],
+                        parent_checkpoint_id=configured.get("checkpoint_id"),
+                        checkpoint_type=checkpoint_type,
+                        checkpoint_blob=checkpoint_blob,
+                        metadata_type=metadata_type,
+                        metadata_blob=metadata_blob,
+                    )
+                    .on_duplicate_key_update(
+                        id=LangGraphCheckpointModel.id,
+                    )
+                )
+                await session.execute(checkpoint_claim)
+                checkpoint_row = await session.scalar(
+                    select(LangGraphCheckpointModel)
                     .where(
-                        LangGraphCheckpointBlobModel.thread_id == thread_id,
-                        LangGraphCheckpointBlobModel.checkpoint_ns == namespace,
-                        LangGraphCheckpointBlobModel.channel == channel,
-                        LangGraphCheckpointBlobModel.version == str(version),
+                        LangGraphCheckpointModel.thread_id == thread_id,
+                        LangGraphCheckpointModel.checkpoint_ns == namespace,
+                        LangGraphCheckpointModel.checkpoint_id == checkpoint["id"],
                     )
                     .with_for_update()
                 )
-                if existing_blob is not None and (
-                    existing_blob.workspace_id != workspace_id
-                    or existing_blob.owner_user_id != owner_user_id
-                ):
-                    raise PermissionError("checkpoint blob belongs to another principal")
-                blob = insert(LangGraphCheckpointBlobModel).values(
-                    id=str(uuid.uuid4()), thread_id=thread_id, workspace_id=workspace_id,
-                    owner_user_id=owner_user_id, checkpoint_ns=namespace, channel=channel,
-                    version=str(version), value_type=value_type, value_blob=value_blob,
-                ).on_duplicate_key_update(value_type=value_type, value_blob=value_blob)
-                await session.execute(blob)
-        return {"configurable": {
-            "thread_id": thread_id,
-            "checkpoint_ns": namespace,
-            "checkpoint_id": checkpoint["id"],
-            "workspace_id": workspace_id,
-            "user_id": owner_user_id,
-        }}
+                if checkpoint_row is None:
+                    raise RuntimeError("checkpoint claim did not create a row")
+                self._require_owner(
+                    checkpoint_row,
+                    workspace_id=workspace_id,
+                    owner_user_id=owner_user_id,
+                    record_name="checkpoint",
+                )
+                checkpoint_row.parent_checkpoint_id = configured.get("checkpoint_id")
+                checkpoint_row.checkpoint_type = checkpoint_type
+                checkpoint_row.checkpoint_blob = checkpoint_blob
+                checkpoint_row.metadata_type = metadata_type
+                checkpoint_row.metadata_blob = metadata_blob
+                for channel in sorted(new_versions):
+                    version = new_versions[channel]
+                    value_type, value_blob = (
+                        self.serde.dumps_typed(values[channel])
+                        if channel in values
+                        else ("empty", b"")
+                    )
+                    blob_claim = (
+                        insert(LangGraphCheckpointBlobModel)
+                        .values(
+                            id=str(uuid.uuid4()),
+                            thread_id=thread_id,
+                            workspace_id=workspace_id,
+                            owner_user_id=owner_user_id,
+                            checkpoint_ns=namespace,
+                            channel=channel,
+                            version=str(version),
+                            value_type=value_type,
+                            value_blob=value_blob,
+                        )
+                        .on_duplicate_key_update(id=LangGraphCheckpointBlobModel.id)
+                    )
+                    await session.execute(blob_claim)
+                    blob_row = await session.scalar(
+                        select(LangGraphCheckpointBlobModel)
+                        .where(
+                            LangGraphCheckpointBlobModel.thread_id == thread_id,
+                            LangGraphCheckpointBlobModel.checkpoint_ns == namespace,
+                            LangGraphCheckpointBlobModel.channel == channel,
+                            LangGraphCheckpointBlobModel.version == str(version),
+                        )
+                        .with_for_update()
+                    )
+                    if blob_row is None:
+                        raise RuntimeError("checkpoint blob claim did not create a row")
+                    self._require_owner(
+                        blob_row,
+                        workspace_id=workspace_id,
+                        owner_user_id=owner_user_id,
+                        record_name="checkpoint blob",
+                    )
+                    blob_row.value_type = value_type
+                    blob_row.value_blob = value_blob
 
-    async def aput_writes(self, config: dict[str, Any], writes: Sequence[tuple[str, Any]], task_id: str, task_path: str = "") -> None:
+        await _retry_mysql_transaction(put_once)
+        return {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": namespace,
+                "checkpoint_id": checkpoint["id"],
+                "workspace_id": workspace_id,
+                "user_id": owner_user_id,
+            }
+        }
+
+    async def aput_writes(
+        self,
+        config: dict[str, Any],
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
         configured = config["configurable"]
-        thread_id, namespace, checkpoint_id = configured["thread_id"], configured.get("checkpoint_ns", ""), configured["checkpoint_id"]
-        workspace_id, owner_user_id = configured.get("workspace_id"), configured.get("user_id")
+        thread_id, namespace, checkpoint_id = (
+            configured["thread_id"],
+            configured.get("checkpoint_ns", ""),
+            configured["checkpoint_id"],
+        )
+        workspace_id, owner_user_id = (
+            configured.get("workspace_id"),
+            configured.get("user_id"),
+        )
         if not workspace_id or not owner_user_id:
             raise PermissionError("checkpoint identity is required")
-        async with self._sessions.begin() as session:
-            for index, (channel, value) in enumerate(writes):
-                write_index = WRITES_IDX_MAP.get(channel, index)
-                value_type, value_blob = self.serde.dumps_typed(value)
-                existing_write = await session.scalar(
-                    select(LangGraphCheckpointWriteModel)
-                    .where(
-                        LangGraphCheckpointWriteModel.thread_id == thread_id,
-                        LangGraphCheckpointWriteModel.checkpoint_ns == namespace,
-                        LangGraphCheckpointWriteModel.checkpoint_id == checkpoint_id,
-                        LangGraphCheckpointWriteModel.task_id == task_id,
-                        LangGraphCheckpointWriteModel.write_index == write_index,
+        prepared = []
+        for index, (channel, value) in enumerate(writes):
+            write_index = WRITES_IDX_MAP.get(channel, index)
+            value_type, value_blob = self.serde.dumps_typed(value)
+            prepared.append((write_index, channel, value_type, value_blob))
+        prepared.sort(key=lambda item: (item[0], item[1]))
+
+        async def put_writes_once() -> None:
+            async with self._sessions.begin() as session:
+                await self._require_thread_owner(
+                    session,
+                    thread_id=thread_id,
+                    workspace_id=workspace_id,
+                    owner_user_id=owner_user_id,
+                )
+                for write_index, channel, value_type, value_blob in prepared:
+                    claim = (
+                        insert(LangGraphCheckpointWriteModel)
+                        .values(
+                            id=str(uuid.uuid4()),
+                            thread_id=thread_id,
+                            workspace_id=workspace_id,
+                            owner_user_id=owner_user_id,
+                            checkpoint_ns=namespace,
+                            checkpoint_id=checkpoint_id,
+                            task_id=task_id,
+                            write_index=write_index,
+                            channel=channel,
+                            value_type=value_type,
+                            value_blob=value_blob,
+                            task_path=task_path,
+                        )
+                        .on_duplicate_key_update(id=LangGraphCheckpointWriteModel.id)
                     )
-                    .with_for_update()
-                )
-                if existing_write is not None and (
-                    existing_write.workspace_id != workspace_id
-                    or existing_write.owner_user_id != owner_user_id
-                ):
-                    raise PermissionError("checkpoint write belongs to another principal")
-                statement = insert(LangGraphCheckpointWriteModel).values(
-                    id=str(uuid.uuid4()), thread_id=thread_id, workspace_id=workspace_id,
-                    owner_user_id=owner_user_id, checkpoint_ns=namespace,
-                    checkpoint_id=checkpoint_id, task_id=task_id, write_index=write_index,
-                    channel=channel, value_type=value_type, value_blob=value_blob, task_path=task_path,
-                )
-                if write_index < 0:
-                    statement = statement.on_duplicate_key_update(value_type=value_type, value_blob=value_blob, task_path=task_path)
-                else:
-                    statement = statement.prefix_with("IGNORE")
-                await session.execute(statement)
+                    await session.execute(claim)
+                    write_row = await session.scalar(
+                        select(LangGraphCheckpointWriteModel)
+                        .where(
+                            LangGraphCheckpointWriteModel.thread_id == thread_id,
+                            LangGraphCheckpointWriteModel.checkpoint_ns == namespace,
+                            LangGraphCheckpointWriteModel.checkpoint_id
+                            == checkpoint_id,
+                            LangGraphCheckpointWriteModel.task_id == task_id,
+                            LangGraphCheckpointWriteModel.write_index == write_index,
+                        )
+                        .with_for_update()
+                    )
+                    if write_row is None:
+                        raise RuntimeError(
+                            "checkpoint write claim did not create a row"
+                        )
+                    self._require_owner(
+                        write_row,
+                        workspace_id=workspace_id,
+                        owner_user_id=owner_user_id,
+                        record_name="checkpoint write",
+                    )
+                    if write_index < 0:
+                        write_row.value_type = value_type
+                        write_row.value_blob = value_blob
+                        write_row.task_path = task_path
+
+        await _retry_mysql_transaction(put_writes_once)

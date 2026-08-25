@@ -9,7 +9,7 @@ from server.rbac.catalog import MENU_CATALOG, menu_id, menu_row, role_id
 revision = "20260820_25"
 down_revision = "20260820_24"
 branch_labels = None
-depends_on = None
+depends_on = "20260819_20"
 
 
 def upgrade() -> None:

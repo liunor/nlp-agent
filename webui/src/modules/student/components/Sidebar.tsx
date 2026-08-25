@@ -153,7 +153,28 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
               <details className="session-menu"><summary aria-label="会话菜单"><MoreHorizontal size={16} /></summary><div>
                 <button type="button" onClick={() => { const title = prompt("重命名学习对话", meta.title ?? ""); if (title?.trim()) onMeta(session.session_id, { title: title.trim() }); }}><Pencil size={14} />重命名</button>
                 <button type="button" onClick={() => onMeta(session.session_id, { pinnedAt: meta.pinnedAt ? undefined : Date.now() })}><Pin size={14} />{meta.pinnedAt ? "取消置顶" : "置顶"}</button>
-                <button type="button" onClick={() => onMeta(session.session_id, { archived: !meta.archived })}><Archive size={14} />{meta.archived ? "移出归档" : "归档"}</button>
+                <button
+  type="button"
+  onClick={() => {
+    const isUnarchivingLastSession =
+      showArchived &&
+      meta.archived &&
+      !sessions.some(
+        (item) =>
+          item.session_id !== session.session_id &&
+          preferences.sessions[item.session_id]?.archived,
+      );
+
+    onMeta(session.session_id, { archived: !meta.archived });
+
+    if (isUnarchivingLastSession) {
+      setShowArchived(false);
+    }
+  }}
+>
+  <Archive size={14} />
+  {meta.archived ? "移出归档" : "归档"}
+</button>
                 <div className="session-category-actions"><span>移动到分类</span><button type="button" onClick={() => onMeta(session.session_id, { categoryId: undefined })}>未分类</button>{preferences.categories.map((category) => <button key={category.id} type="button" onClick={() => onMeta(session.session_id, { categoryId: category.id })}>{category.name}</button>)}</div>
                 <button className="danger" type="button" onClick={() => onDelete(session.session_id, meta.title ?? "新的学习对话")}><Trash2 size={14} />删除</button>
               </div></details>

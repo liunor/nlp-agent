@@ -1,8 +1,8 @@
-import { ArrowUp, GraduationCap, Paperclip, RotateCcw, Square, X } from "lucide-react";
+import { ArrowUp, GraduationCap, Plus, RotateCcw, Square, X } from "lucide-react";
 import { useState, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 import { uploadAttachment } from "@/platform/http/api";
-import type { RuntimeModelProfile, ChatAttachment } from "@/shared/types";
+import type { ChatAttachment } from "@/shared/types";
 import { createUuid } from "@/shared/utils/uuid";
 
 const prompts = ["用简单语言解释", "举一个实际例子", "逐步推导", "对比两个概念", "出一道练习题", "检查我的答案"];
@@ -19,7 +19,7 @@ function uploadErrorMessage(reason: unknown): string {
   return "上传失败，请检查网络后重试";
 }
 
-export function Composer({ sessionId, disabled, running, centered = false, onSend, onCancel, contextControl, modelProfiles = {}, modelProfile, onModelProfileChange }: {
+export function Composer({ sessionId, disabled, running, centered = false, onSend, onCancel, contextControl }: {
   sessionId?: string | null;
   disabled: boolean;
   running: boolean;
@@ -27,9 +27,6 @@ export function Composer({ sessionId, disabled, running, centered = false, onSen
   onSend: (content: string, attachments?: ChatAttachment[]) => void;
   onCancel: () => void;
   contextControl?: ReactNode;
-  modelProfiles?: Record<string, RuntimeModelProfile>;
-  modelProfile?: string;
-  onModelProfileChange?: (modelProfile: string) => void;
 }) {
   const [content, setContent] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -134,13 +131,10 @@ export function Composer({ sessionId, disabled, running, centered = false, onSen
       )}
       <textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={keyDown} disabled={disabled} rows={centered ? 3 : 1} placeholder="问一个 NLP 问题……" aria-label="学习问题" />
       <div className="composer-toolbar">
-        <span><GraduationCap size={15} />Nova · LSNU NLP Learning Agent</span>
-        {modelProfile && onModelProfileChange && Object.keys(modelProfiles).length > 0 && <select className="model-profile-select" aria-label="选择模型" value={modelProfile} disabled={disabled || running} onChange={(event) => onModelProfileChange(event.target.value)}>
-          {Object.entries(modelProfiles).map(([value, profile]) => <option key={value} value={value} disabled={!profile.available}>{profile.label}{profile.available ? "" : "（不可用）"}</option>)}
-        </select>}
-        {contextControl}
         <input type="file" ref={fileInputRef} hidden accept="image/jpeg,image/png,image/webp" onChange={handleFileSelect} />
-        <button type="button" className="attachment-button" style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={disabled || running || !sessionId} aria-label="上传附件"><Paperclip size={18} /></button>
+        <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={disabled || running || !sessionId} aria-label="上传附件"><Plus size={18} /></button>
+        <span><GraduationCap size={15} />Nova · LSNU NLP Learning Agent</span>
+        {contextControl}
         {running ? <button className="send-button stop" type="button" onClick={onCancel} aria-label="停止生成"><Square size={14} fill="currentColor" /></button> : <button className="send-button" type="button" onClick={submit} disabled={disabled || !attachmentsReady || (!content.trim() && readyAttachments.length === 0)} aria-label="发送"><ArrowUp size={18} /></button>}
       </div>
     </div>

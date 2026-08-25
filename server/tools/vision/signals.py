@@ -5,7 +5,7 @@ models — so every routing decision can be explained by the emitted
 ``VisionSignals`` payload:
 
 - ``has_grid_lines``: at least ``min_grid_lines`` long horizontal *and*
-  vertical lines (morphological opening), i.e. a bordered table.
+  vertical lines with a real lattice of intersections, i.e. a bordered table.
 - ``has_axes``: one dominant vertical line in the left region plus one
   dominant horizontal line in the bottom region, without a full grid.
   Bordered tables are excluded by the grid check; charts with heavy internal
@@ -140,10 +140,14 @@ def _line_boxes(boxes: list[_Box], width: int, height: int) -> list[_Box]:
 def _aligned_text_ratio(lines: list[_Box], width: int) -> float:
     if len(lines) < 4:
         return 0.0
-    tolerance = max(4, int(width * 0.05))
+    tolerance = max(3, int(width * 0.01))
     clusters: list[list[int]] = []
     for start in sorted(line.x for line in lines):
-        if clusters and start - clusters[-1][-1] <= tolerance:
+        if not clusters:
+            clusters.append([start])
+            continue
+        closest_center = sum(clusters[-1]) / len(clusters[-1])
+        if start - closest_center <= tolerance:
             clusters[-1].append(start)
         else:
             clusters.append([start])
@@ -155,6 +159,46 @@ def _aligned_text_ratio(lines: list[_Box], width: int) -> float:
         return 0.0
     aligned = sum(len(cluster) for cluster in multi)
     return aligned / len(lines)
+
+
+def _has_grid_intersections(
+    horizontals: list[_Box],
+    verticals: list[_Box],
+    h_mask: np.ndarray,
+    v_mask: np.ndarray,
+    *,
+    min_grid_lines: int,
+) -> bool:
+    """Reject projected texture lines unless they form an actual lattice."""
+
+    if len(horizontals) < min_grid_lines or len(verticals) < min_grid_lines:
+        return False
+    height, width = h_mask.shape[:2]
+    tolerance = 2
+    intersecting_horizontals: set[int] = set()
+    intersecting_verticals: set[int] = set()
+    intersections = 0
+    for horizontal_index, horizontal in enumerate(horizontals):
+        y = int(round(horizontal.center_y))
+        for vertical_index, vertical in enumerate(verticals):
+            x = int(round(vertical.center_x))
+            if not (
+                horizontal.x - tolerance <= x <= horizontal.x + horizontal.w + tolerance
+                and vertical.y - tolerance <= y <= vertical.y + vertical.h + tolerance
+            ):
+                continue
+            x0, x1 = max(0, x - tolerance), min(width, x + tolerance + 1)
+            y0, y1 = max(0, y - tolerance), min(height, y + tolerance + 1)
+            if not h_mask[y0:y1, x0:x1].any() or not v_mask[y0:y1, x0:x1].any():
+                continue
+            intersections += 1
+            intersecting_horizontals.add(horizontal_index)
+            intersecting_verticals.add(vertical_index)
+    return (
+        len(intersecting_horizontals) >= min_grid_lines
+        and len(intersecting_verticals) >= min_grid_lines
+        and intersections >= min_grid_lines**2
+    )
 
 
 class OpenCVSignalProvider:
@@ -226,9 +270,12 @@ class OpenCVSignalProvider:
             max_thickness=max_thickness,
         )
 
-        has_grid = (
-            len(horizontals) >= self.min_grid_lines
-            and len(verticals) >= self.min_grid_lines
+        has_grid = _has_grid_intersections(
+            horizontals,
+            verticals,
+            h_mask,
+            v_mask,
+            min_grid_lines=self.min_grid_lines,
         )
         left_axis = any(line.center_x < width * 0.35 for line in verticals)
         bottom_axis = any(line.center_y > height * 0.65 for line in horizontals)

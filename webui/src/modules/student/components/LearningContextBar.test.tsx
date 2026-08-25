@@ -56,4 +56,50 @@ describe("LearningContextBar", () => {
     expect(onUnavailableMode).toHaveBeenCalledWith("practice");
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("nests model selection in learning settings and blocks unavailable models", () => {
+    const onModelProfileChange = vi.fn();
+    render(<LearningContextBar
+      value={{ topic_id: null, topic_name: "", level: "beginner", mode: "explain" }}
+      onChange={vi.fn()}
+      modelProfiles={{
+        deepseek: { label: "DeepSeek", provider: "deepseek", available: true },
+        qwen: { label: "Qwen", provider: "dashscope", available: true },
+        offline: { label: "Offline", provider: "local", available: false },
+      }}
+      modelProfile="deepseek"
+      onModelProfileChange={onModelProfileChange}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "学习设置" }));
+    expect(screen.getByRole("button", { name: "对话模型" })).toHaveTextContent("DeepSeek");
+    expect(screen.queryByRole("combobox", { name: "选择模型" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "对话模型" }));
+    fireEvent.click(screen.getByRole("option", { name: "Qwen" }));
+    expect(onModelProfileChange).toHaveBeenCalledWith("qwen");
+
+    fireEvent.click(screen.getByRole("button", { name: "学习设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "对话模型" }));
+    fireEvent.click(screen.getByRole("option", { name: "Offline（不可用）" }));
+    expect(onModelProfileChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not change models while generation is running or the workspace is offline", () => {
+    const onModelProfileChange = vi.fn();
+    render(<LearningContextBar
+      value={{ topic_id: null, topic_name: "", level: "beginner", mode: "explain" }}
+      onChange={vi.fn()}
+      modelProfiles={{ qwen: { label: "Qwen", provider: "dashscope", available: true } }}
+      modelProfile="qwen"
+      onModelProfileChange={onModelProfileChange}
+      modelSelectionDisabled
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "学习设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "对话模型" }));
+    fireEvent.click(screen.getByRole("option", { name: "Qwen" }));
+
+    expect(onModelProfileChange).not.toHaveBeenCalled();
+  });
 });

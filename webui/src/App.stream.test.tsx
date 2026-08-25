@@ -73,9 +73,10 @@ describe("student stream rendering", () => {
   it("selects and saves Qwen for subsequent chat sends", async () => {
     stream.updateSettings.mockClear();
     render(<App />);
-    const modelSelect = await screen.findByRole("combobox", { name: "选择模型" });
+    fireEvent.click(await screen.findByRole("button", { name: "学习设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "对话模型" }));
 
-    fireEvent.change(modelSelect, { target: { value: "qwen" } });
+    fireEvent.click(screen.getByRole("option", { name: "Qwen" }));
     await waitFor(() => expect(stream.updateSettings).toHaveBeenCalledWith({ model_profile: "qwen" }));
 
     const input = screen.getByRole("textbox", { name: "学习问题" });
@@ -152,7 +153,7 @@ describe("student stream rendering", () => {
 
   it("keeps the chat page mounted through real tool, worker and text stream events", async () => {
     render(<App />);
-    expect(await screen.findByRole("combobox", { name: "选择模型" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "学习设置" })).toBeVisible();
     const input = await screen.findByRole("textbox", { name: "学习问题" });
     fireEvent.change(input, { target: { value: "解释 Attention" } });
     fireEvent.click(screen.getByRole("button", { name: "发送" }));

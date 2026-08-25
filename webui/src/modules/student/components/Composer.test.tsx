@@ -73,32 +73,6 @@ describe("Composer", () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
-  it("offers available backend models and disables selection while running", () => {
-    const onModelProfileChange = vi.fn();
-    const props = {
-      disabled: false,
-      onSend: vi.fn(),
-      onCancel: vi.fn(),
-      modelProfiles: {
-        deepseek: { label: "DeepSeek", provider: "deepseek", available: true },
-        qwen: { label: "Qwen", provider: "dashscope", available: true },
-        offline: { label: "Offline", provider: "local", available: false },
-      },
-      modelProfile: "deepseek",
-      onModelProfileChange,
-    };
-    const { rerender } = render(<Composer {...props} running={false} />);
-    const select = screen.getByRole("combobox", { name: "选择模型" });
-
-    expect(screen.getByRole("option", { name: "Qwen" })).toBeEnabled();
-    expect(screen.getByRole("option", { name: "Offline（不可用）" })).toBeDisabled();
-    fireEvent.change(select, { target: { value: "qwen" } });
-    expect(onModelProfileChange).toHaveBeenCalledWith("qwen");
-
-    rerender(<Composer {...props} modelProfile="qwen" running />);
-    expect(screen.getByRole("combobox", { name: "选择模型" })).toBeDisabled();
-  });
-
   it("renders attachment upload button when sessionId is provided and disables when absent", () => {
     const { rerender } = render(
       <Composer disabled={false} running={false} onSend={vi.fn()} onCancel={vi.fn()} sessionId={null} />
@@ -109,6 +83,28 @@ describe("Composer", () => {
       <Composer disabled={false} running={false} onSend={vi.fn()} onCancel={vi.fn()} sessionId="sess-1" />
     );
     expect(screen.getByRole("button", { name: "上传附件" })).toBeEnabled();
+  });
+
+  it("places attachment upload before branding and learning settings before send", () => {
+    const { container } = render(
+      <Composer
+        disabled={false}
+        running={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        sessionId="sess-1"
+        contextControl={<button type="button">学习设置</button>}
+      />
+    );
+    const toolbar = container.querySelector(".composer-toolbar");
+    const visibleControls = Array.from(toolbar?.children ?? []).filter((element) => !element.hasAttribute("hidden"));
+
+    expect(visibleControls).toEqual([
+      screen.getByRole("button", { name: "上传附件" }),
+      screen.getByText("Nova · LSNU NLP Learning Agent"),
+      screen.getByRole("button", { name: "学习设置" }),
+      screen.getByRole("button", { name: "发送" }),
+    ]);
   });
 
   it("keeps the uploaded safe filename and sends a ready image without text", async () => {

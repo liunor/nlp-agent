@@ -598,10 +598,6 @@ button { color: inherit; }
 
   /* Stable composer placement and detached option submenu. */
   .composer-toolbar > span { margin-right:auto; }
-  .model-profile-select { min-width:0; max-width:150px; height:30px; padding:0 24px 0 8px; border:0; border-radius:8px; outline:none; background:transparent; color:var(--muted); font:inherit; font-size:12px; font-weight:500; cursor:pointer; }
-  .model-profile-select:hover,.model-profile-select:focus-visible { background:var(--muted-bg); color:var(--fg); }
-  .model-profile-select:focus-visible { box-shadow:0 0 0 2px var(--accent-soft); }
-  .model-profile-select:disabled { opacity:.55; cursor:not-allowed; }
   .learning-context-menu { flex:0 0 auto; margin-left:0; }
   .composer-toolbar .learning-context-menu + .send-button { margin-left:0; }
   .learning-context-menu-trigger { width:auto; min-width:0; max-width:194px; height:30px; padding:0 8px; border:0; border-radius:8px; background:transparent; color:var(--muted); }
@@ -621,7 +617,7 @@ button { color: inherit; }
   .learning-context-menu-sections { width:100% !important; box-sizing:border-box; grid-template-columns:minmax(0,1fr) !important; }
   .learning-context-menu-sections button { grid-column:1 / -1; }
   @keyframes learning-context-options-in { from { opacity:0; transform:translateX(6px); } to { opacity:1; transform:translateX(0); } }
-  @media (max-width:640px) { .composer-toolbar > span { display:none; }.model-profile-select { max-width:124px; }.learning-context-menu-panel,.learning-context-menu-panel.has-options { right:0; width:196px; }.learning-context-menu-options { right:0; bottom:calc(100% + 8px); width:196px; max-height:190px; } }
+  @media (max-width:640px) { .composer-toolbar > span { display:none; }.composer-toolbar .learning-context-menu { margin-left:auto; }.learning-context-menu-panel,.learning-context-menu-panel.has-options { right:0; width:196px; }.learning-context-menu-options { right:0; bottom:calc(100% + 8px); width:196px; max-height:190px; } }
 
 
   /* Writable Developer control plane. */

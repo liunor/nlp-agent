@@ -9,7 +9,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from server.tools.vision.contracts import ImageAsset, ImageReference
 from server.tools.vision.router import VisionTaskRouter
-from server.tools.vision.signals import OpenCVSignalProvider
+from server.tools.vision.signals import (
+    OpenCVSignalProvider,
+    _Box,
+    _aligned_text_ratio,
+)
 
 
 def _create_asset(img_bytes: bytes, width: int, height: int) -> ImageAsset:
@@ -57,6 +61,57 @@ async def test_grid_image_detects_table_signals(provider, router):
 
     decision = router.route("auto", signals)
     assert decision.task_executed == "table"
+
+
+@pytest.mark.asyncio
+async def test_disconnected_projected_lines_do_not_form_a_table_grid(provider, router):
+    img = np.ones((400, 600, 3), dtype=np.uint8) * 255
+    for y in (80, 160, 240):
+        cv2.line(img, (0, y), (150, y), (0, 0, 0), 2)
+        cv2.line(img, (450, y), (599, y), (0, 0, 0), 2)
+    for x in (250, 300, 350):
+        cv2.line(img, (x, 0), (x, 60), (0, 0, 0), 2)
+        cv2.line(img, (x, 280), (x, 399), (0, 0, 0), 2)
+
+    is_success, buffer = cv2.imencode(".png", img)
+    assert is_success
+    signals = await provider.detect(_create_asset(buffer.tobytes(), 600, 400))
+
+    assert signals.has_grid_lines is False
+    assert router.route("auto", signals).task_executed != "table"
+
+
+def test_stair_step_components_do_not_chain_into_text_columns():
+    starts = [0, 5, 10, 15, 300, 305, 310, 315]
+    lines = [
+        _Box(x=start, y=index * 12, w=20, h=8) for index, start in enumerate(starts)
+    ]
+
+    assert _aligned_text_ratio(lines, width=600) < 0.65
+
+
+@pytest.mark.asyncio
+async def test_borderless_text_columns_still_route_to_table(provider, router):
+    img = np.ones((420, 600, 3), dtype=np.uint8) * 255
+    for row in range(7):
+        y = 45 + row * 52
+        for column, x in enumerate((30, 230, 430)):
+            cv2.putText(
+                img,
+                f"C{column}R{row}",
+                (x, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 0),
+                2,
+            )
+
+    is_success, buffer = cv2.imencode(".png", img)
+    assert is_success
+    signals = await provider.detect(_create_asset(buffer.tobytes(), 600, 420))
+
+    assert signals.aligned_text_ratio >= 0.65
+    assert router.route("auto", signals).task_executed == "table"
 
 
 @pytest.mark.asyncio
