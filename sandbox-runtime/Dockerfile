@@ -3,6 +3,8 @@ FROM python:3.11-slim
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin nova \
     && pip install --no-cache-dir ipykernel==6.29.5
 
+COPY nova_runtime.py /opt/nova-runtime/nova_runtime.py
+
 USER 10001:10001
 WORKDIR /workspace
 ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1

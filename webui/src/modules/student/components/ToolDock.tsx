@@ -34,6 +34,7 @@ function SandboxPhaseZeroPanel() {
   const [leaseStatus, setLeaseStatus] = useState<"creating" | "ready" | "error">("creating");
   const [source, setSource] = useState("# 在这里运行 Python 代码\n");
   const [result, setResult] = useState("");
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -49,7 +50,18 @@ function SandboxPhaseZeroPanel() {
     <p>Phase 0 已完成身份与租约隔离契约；本地开发模式使用 InMemory Kernel，Docker 隔离运行时正在接入。</p>
     <small>{leaseStatus === "creating" ? "正在建立当前登录会话的沙箱租约…" : leaseStatus === "ready" ? "当前会话的沙箱租约已建立。" : "暂时无法建立沙箱租约，请稍后重试。"}</small>
     <textarea aria-label="沙箱代码" value={source} onChange={(event) => setSource(event.target.value)} />
-    <button type="button" onClick={() => void api.executeSandbox(source).then((value) => setResult(value.stdout || value.stderr))}>运行代码</button>
+    <div className="sandbox-phase-zero-actions">
+      <button type="button" disabled={running} onClick={() => {
+        setRunning(true);
+        void api.executeSandbox(source)
+          .then((value) => setResult(value.stdout || value.stderr || "运行完成。"))
+          .catch(() => setResult("当前运行环境不可用。"))
+          .finally(() => setRunning(false));
+      }}>{running ? "运行中…" : "运行代码"}</button>
+      <button type="button" className="secondary" disabled={running} onClick={() => {
+        void api.restartSandbox().then(() => setResult("运行环境已重置。")).catch(() => setResult("当前运行环境不可用。"));
+      }}>重置运行环境</button>
+    </div>
     {result && <pre>{result}</pre>}
   </section>;
 }

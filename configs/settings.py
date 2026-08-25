@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     NLP_AGENT_DB_POOL_RECYCLE_S: int = 1800
     NLP_AGENT_DB_CONNECT_TIMEOUT_S: int = 5
     NLP_AGENT_DB_STATEMENT_TIMEOUT_S: int = 30
+    # In-process execution is deliberately opt-in.  It exists solely for
+    # Phase 1 local Workbench development and is unsafe for untrusted code.
+    NLP_AGENT_SANDBOX_RUNTIME_MODE: str = "disabled"
+    NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST: str = ""
+    NLP_AGENT_SANDBOX_WARM_POOL_READY_TARGET: int = 0
+    NLP_AGENT_SANDBOX_RECONCILE_INTERVAL_S: int = 30
 
     _config: dict = {}
 

@@ -88,6 +88,7 @@ export const api = {
     lease: { id: string; state: string; generation: number; expires_at: string } | null;
   }>("/sandbox/lease", { method: "POST" }),
   executeSandbox: (source: string) => request<{ status: string; stdout: string; stderr: string }>("/sandbox/execute", { method: "POST", body: JSON.stringify({ source }) }),
+  restartSandbox: () => request<{ status: string }>("/sandbox/restart", { method: "POST" }),
   createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
   listSessions: () => request<{ items: SessionSummary[] }>("/sessions"),
   createSession: (workspaceId = "default") =>

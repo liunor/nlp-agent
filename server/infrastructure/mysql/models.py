@@ -815,7 +815,7 @@ class SandboxRuntimeInstanceModel(TimestampedModel, Base):
     external_runtime_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     image_digest: Mapped[str | None] = mapped_column(String(255), nullable=True)
     resource_profile_id: Mapped[str] = mapped_column(String(64), nullable=False, server_default="python-base")
-    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="declared")
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="creating")
     generation: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="1")
     claim_nonce_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
