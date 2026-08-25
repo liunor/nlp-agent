@@ -8,10 +8,17 @@ const stream = vi.hoisted(() => {
     locale: "zh-CN", theme: "system",content_font_size: "medium", reduce_motion: false, show_reasoning: false,
     stream_render_interval_ms: 30, model_profile: "deepseek", ...patch,
   } }));
+  const ensureSandboxLease = vi.fn(async () => ({
+    phase: 0,
+    runtime_available: false,
+    environment: { id: "sandbox-user", status: "ready", generation: 1, profile: "python-base" },
+    lease: { id: "lease-session", state: "active", generation: 1, expires_at: "2026-08-25T10:00:00" },
+  }));
   return {
     lastRequestId: () => lastRequestId,
     lastModelProfile: () => lastModelProfile,
     updateSettings,
+    ensureSandboxLease,
     emit(event: Record<string, unknown>) { onEvent?.(event); },
     StudentSocket: class {
       constructor(event: (value: Record<string, unknown>) => void, private readonly onStatus: (status: "connected") => void) { onEvent = event; }
@@ -44,6 +51,7 @@ vi.mock("@/platform/http/api", () => ({
     createSession: vi.fn().mockResolvedValue({ session_id: "session_1", user_id: "user", workspace_id: "default", channel: "web" }),
     listTurns: vi.fn().mockResolvedValue({ items: [] }),
     deleteSession: vi.fn(), updateSettings: stream.updateSettings,
+    ensureSandboxLease: stream.ensureSandboxLease,
   },
 }));
 
@@ -91,7 +99,7 @@ describe("student stream rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开文件工具" }));
     expect(screen.getByRole("tab", { name: "文件" })).toBeVisible();
 
-    for (const tool of ["打开学习记录工具", "打开浏览器工具", "打开终端工具"]) {
+    for (const tool of ["打开学习记录工具", "打开浏览器工具", "打开终端工具", "打开代码沙箱工具"]) {
       fireEvent.click(screen.getByRole("button", { name: "显示工具列表" }));
       fireEvent.click(screen.getByRole("menuitem", { name: tool }));
     }
@@ -100,6 +108,20 @@ describe("student stream rendering", () => {
     expect(screen.getByRole("tab", { name: "学习记录" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "浏览器" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "终端" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "代码沙箱" })).toBeVisible();
+  });
+
+  it("opens the Phase 0 code sandbox as a first-class right-workbench page", async () => {
+    stream.ensureSandboxLease.mockClear();
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开代码沙箱工具" }));
+
+    expect(screen.getByRole("tab", { name: "代码沙箱" })).toBeVisible();
+    expect(screen.getByText("代码沙箱正在准备中")).toBeVisible();
+    expect(screen.getByText(/Phase 0 已完成身份与租约隔离契约/)).toBeVisible();
+    await waitFor(() => expect(stream.ensureSandboxLease).toHaveBeenCalledTimes(1));
   });
 
   it("opens the tool picker from the plus trigger and closes it with the dock", async () => {

@@ -77,6 +77,7 @@ from server.teacher.models import ExerciseBlueprint, GuidedBlueprint, ReviewBlue
 from server.teacher.service import teacher_service
 from server.rbac.service import rbac_service
 from server.infrastructure.mysql.models import UserModel
+from server.sandbox.service import sandbox_lifecycle_service
 from server.release_notes.service import (
     ReleaseNoteConflictError,
     ReleaseNoteNotFoundError,
@@ -213,9 +214,31 @@ def create_app(
             asyncio.create_task(consume_authorization_changes(), name="authorization-invalidation-listener")
             if redis_client is not None else None
         )
+        sandbox_reconcile_interval_s = max(
+            10, int(web_config.get("sandbox_lease_reconcile_interval_s", 60))
+        )
+
+        async def reconcile_sandbox_leases() -> None:
+            factory = gateway.authorization_session_factory
+            if factory is None:
+                return
+            try:
+                while True:
+                    await sandbox_lifecycle_service.reconcile_expired_leases(factory)
+                    await asyncio.sleep(sandbox_reconcile_interval_s)
+            except asyncio.CancelledError:
+                raise
+
+        sandbox_reconciler = (
+            asyncio.create_task(reconcile_sandbox_leases(), name="sandbox-lease-reconciler")
+            if gateway.authorization_session_factory is not None else None
+        )
         try:
             yield
         finally:
+            if sandbox_reconciler is not None:
+                sandbox_reconciler.cancel()
+                await asyncio.gather(sandbox_reconciler, return_exceptions=True)
             if authorization_listener is not None:
                 authorization_listener.cancel()
                 await asyncio.gather(authorization_listener, return_exceptions=True)
@@ -1335,10 +1358,12 @@ def create_app(
     from server.user.controller import router as user_router
     from server.workspace.controller import router as workspace_router
     from server.classroom_join import router as classroom_join_router
+    from server.sandbox.controller import router as sandbox_router
 
     app.include_router(user_router)
     app.include_router(workspace_router)
     app.include_router(classroom_join_router)
+    app.include_router(sandbox_router)
 
     static_dir_value = str(web_config.get("static_dir", "")).strip()
     static_dir = Path(static_dir_value).expanduser() if static_dir_value else None

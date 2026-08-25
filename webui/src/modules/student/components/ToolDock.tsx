@@ -1,8 +1,9 @@
-import { BookOpenCheck, FileText, Globe2, Plus, Terminal, X } from "lucide-react";
+import { BookOpenCheck, Code2, FileText, Globe2, Plus, Terminal, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent, ReactNode } from "react";
+import { api } from "@/platform/http/api";
 
-export type ToolDockTool = "files" | "learning" | "browser" | "terminal";
+export type ToolDockTool = "files" | "learning" | "browser" | "terminal" | "sandbox";
 
 const tools: Array<{
   id: ToolDockTool;
@@ -16,6 +17,7 @@ const tools: Array<{
   { id: "learning", label: "学习记录", buttonLabel: "打开学习记录工具", shortcut: "Ctrl+Alt+S", icon: BookOpenCheck, description: "查看本次对话的学习目标、概念与进度。" },
   { id: "browser", label: "浏览器", buttonLabel: "打开浏览器工具", shortcut: "Ctrl+T", icon: Globe2, description: "后续可在这里安全查看学习资料与网页。" },
   { id: "terminal", label: "终端", buttonLabel: "打开终端工具", shortcut: "Ctrl+~", icon: Terminal, description: "代码沙箱接入后将在这里显示终端与运行输出。" },
+  { id: "sandbox", label: "代码沙箱", buttonLabel: "打开代码沙箱工具", shortcut: "Ctrl+Alt+R", icon: Code2, description: "为当前登录用户准备独立的代码运行环境。" },
 ];
 
 function EmptyToolPanel({ tool }: { tool: Exclude<ToolDockTool, "learning"> }) {
@@ -25,6 +27,25 @@ function EmptyToolPanel({ tool }: { tool: Exclude<ToolDockTool, "learning"> }) {
     <span><Icon size={20} /></span>
     <strong>{item.label}</strong>
     <p>{item.description}</p>
+  </section>;
+}
+
+function SandboxPhaseZeroPanel() {
+  const [leaseStatus, setLeaseStatus] = useState<"creating" | "ready" | "error">("creating");
+
+  useEffect(() => {
+    let active = true;
+    void api.ensureSandboxLease()
+      .then(() => { if (active) setLeaseStatus("ready"); })
+      .catch(() => { if (active) setLeaseStatus("error"); });
+    return () => { active = false; };
+  }, []);
+
+  return <section className="tool-dock-empty-panel sandbox-phase-zero-panel">
+    <span><Code2 size={20} /></span>
+    <strong>代码沙箱正在准备中</strong>
+    <p>Phase 0 已完成身份与租约隔离契约。代码执行、内核状态和预热运行环境将在下一阶段接入。</p>
+    <small>{leaseStatus === "creating" ? "正在建立当前登录会话的沙箱租约…" : leaseStatus === "ready" ? "当前会话的沙箱租约已建立。" : "暂时无法建立沙箱租约，请稍后重试。"}</small>
   </section>;
 }
 
@@ -150,7 +171,7 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
             <kbd>{item.shortcut}</kbd>
           </button>;
         })}
-      </nav> : activeTool === "learning" ? learningPanel : activeTool ? <EmptyToolPanel tool={activeTool} /> : null}
+      </nav> : activeTool === "learning" ? learningPanel : activeTool === "sandbox" ? <SandboxPhaseZeroPanel /> : activeTool ? <EmptyToolPanel tool={activeTool} /> : null}
     </div>}
   </aside>;
 }

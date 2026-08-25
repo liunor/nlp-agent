@@ -264,9 +264,27 @@ class UserService:
             )
             .values(revoked_at=datetime.now(timezone.utc).replace(tzinfo=None))
         )
+        # A disabled account, password reset, or administrator session revoke
+        # must also fence its Phase-0 sandbox leases in this same transaction.
+        # No runtime exists yet, but the future manager consumes this durable
+        # state rather than trusting a browser logout notification.
+        from server.sandbox.service import sandbox_lifecycle_service
 
-    def _mark_authorization_changed(self, user_id: str, reason: str) -> None:
+        await sandbox_lifecycle_service.revoke_user_leases(
+            self.session,
+            user_id=user_id,
+            reason="authorization.session_revoked",
+        )
+
+    async def _mark_authorization_changed(self, user_id: str, reason: str) -> None:
         """Persist cross-process invalidation in the same transaction."""
+        from server.sandbox.service import sandbox_lifecycle_service
+
+        await sandbox_lifecycle_service.revoke_user_leases(
+            self.session,
+            user_id=user_id,
+            reason=f"authorization.changed:{reason}",
+        )
         self.session.add(
             OutboxMessageModel(
                 id=str(uuid.uuid4()),
@@ -294,7 +312,7 @@ class UserService:
         if status in ("disabled", "locked"):
             await self._revoke_user_sessions(user_id)
 
-        self._mark_authorization_changed(user_id, "user_status_changed")
+        await self._mark_authorization_changed(user_id, "user_status_changed")
         await self.session.flush()
         return user
 
@@ -316,7 +334,7 @@ class UserService:
         user.authorization_version += 1  # Invalidate all sessions
         user.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self._revoke_user_sessions(user_id)
-        self._mark_authorization_changed(user_id, "password_changed")
+        await self._mark_authorization_changed(user_id, "password_changed")
         await self.session.flush()
         return user
 
@@ -333,7 +351,7 @@ class UserService:
         user.authorization_version += 1
         user.updated_at = now
         await self._revoke_user_sessions(user_id)
-        self._mark_authorization_changed(user_id, "user_restored")
+        await self._mark_authorization_changed(user_id, "user_restored")
         await self.session.flush()
         return user
 
@@ -360,7 +378,7 @@ class UserService:
         user.authorization_version += 1
 
         await self._revoke_user_sessions(user_id)
-        self._mark_authorization_changed(user_id, "user_soft_deleted")
+        await self._mark_authorization_changed(user_id, "user_soft_deleted")
         await self.session.flush()
         return user
 
@@ -401,7 +419,7 @@ class UserService:
             sess.revoked_at = now
         user.authorization_version += 1
         user.updated_at = now
-        self._mark_authorization_changed(user_id, "user_sessions_revoked")
+        await self._mark_authorization_changed(user_id, "user_sessions_revoked")
         await self.session.flush()
         return len(active_sessions)
 

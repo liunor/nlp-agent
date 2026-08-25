@@ -81,6 +81,12 @@ export const api = {
     csrfToken = "";
   },
   getAuthSession: ensureAuth,
+  ensureSandboxLease: () => request<{
+    phase: number;
+    runtime_available: boolean;
+    environment: { id: string; status: string; generation: number; profile: string } | null;
+    lease: { id: string; state: string; generation: number; expires_at: string } | null;
+  }>("/sandbox/lease", { method: "POST" }),
   createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
   listSessions: () => request<{ items: SessionSummary[] }>("/sessions"),
   createSession: (workspaceId = "default") =>
