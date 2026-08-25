@@ -51,6 +51,7 @@ export interface FeedbackThreadSummary {
   thread_id: string;
   user_id: string;
   username: string;
+  display_name: string;
   unread_count: number;
   updated_at: string;
   latest: FeedbackMessage | null;
@@ -60,6 +61,7 @@ export interface FeedbackThread {
   thread_id: string;
   user_id: string;
   username: string;
+  display_name: string;
   messages: FeedbackMessage[];
 }
 

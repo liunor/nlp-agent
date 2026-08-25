@@ -51,7 +51,7 @@ async def list_feedback_threads(session: AsyncSession) -> list[dict]:
         if thread.developer_read_at is not None:
             unread_query = unread_query.where(FeedbackMessageModel.created_at > thread.developer_read_at)
         unread = await session.scalar(unread_query)
-        result.append({"thread_id": thread.id, "user_id": user.id, "username": user.username, "unread_count": int(unread or 0), "updated_at": _iso_utc(thread.updated_at), "latest": _message_payload(latest) if latest else None})
+        result.append({"thread_id": thread.id, "user_id": user.id, "username": user.username, "display_name": user.display_name, "unread_count": int(unread or 0), "updated_at": _iso_utc(thread.updated_at), "latest": _message_payload(latest) if latest else None})
     return result
 
 
@@ -62,7 +62,7 @@ async def get_feedback_thread(session: AsyncSession, thread_id: str) -> dict:
         raise LookupError(thread_id)
     thread, user = result
     messages = list((await session.scalars(select(FeedbackMessageModel).where(FeedbackMessageModel.thread_id == thread.id).order_by(FeedbackMessageModel.created_at.asc()))).all())
-    return {"thread_id": thread.id, "user_id": user.id, "username": user.username, "messages": [_message_payload(message) for message in messages]}
+    return {"thread_id": thread.id, "user_id": user.id, "username": user.username, "display_name": user.display_name, "messages": [_message_payload(message) for message in messages]}
 
 
 async def mark_feedback_read(

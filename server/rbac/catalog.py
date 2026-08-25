@@ -28,6 +28,7 @@ MENU_CATALOG = (
     ("developer.skills", "Skills", "/developer/skills", "skills", Permission.SYSTEM_TOOL_CONFIG_MANAGE, 60),
     ("developer.release-notes", "发布说明", "/developer/release-notes", "release-notes", Permission.SYSTEM_RELEASE_NOTES_MANAGE, 70),
     ("developer.automations", "Apps 与自动化", "/developer/automations", "automations", Permission.SYSTEM_RUNTIME_MONITOR, 80),
+    ("developer.feedback", "意见反馈", "/developer/feedback", "feedback", Permission.LEARNING_FEEDBACK_READ, 95),
     ("developer.settings", "运行时设置", "/developer/settings", "settings", Permission.SYSTEM_RUNTIME_INSPECT, 90),
     ("developer.users", "用户管理", "/developer/users", "users", Permission.SYSTEM_USER_MANAGE, 100),
     ("developer.roles", "角色权限", "/developer/roles", "roles", Permission.SYSTEM_ROLE_MANAGE, 110),
