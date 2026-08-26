@@ -134,10 +134,7 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
     const delta = event.key === "ArrowLeft" ? 24 : -24;
     setWidth((current) => Math.min(maxWidth, Math.max(MIN_DOCK_WIDTH, current + delta)));
   };
-  const dockStyle = {
-  "--tool-dock-width": `${width}px`,
-  "--tool-dock-max-width": `${maxWidth}px`,
-} as CSSProperties;
+ const dockStyle = { "--tool-dock-width": `${width}px` } as CSSProperties;
   const showHome = openTools.length === 0;
 
   return <aside className={["tool-dock", open && "open", expanded && "expanded", resizing && "resizing"].filter(Boolean).join(" ")} aria-label="工具侧栏" style={dockStyle}>
