@@ -992,11 +992,17 @@ def create_app(
                 return await submit_feedback(session, principal, body.body)
 
     @app.get("/api/v1/developer/feedback", tags=["developer"])
-    async def get_feedback_list(request: Request, principal: Principal):
+    async def get_feedback_list(
+        request: Request,
+        principal: Principal,
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        q: str | None = Query(default=None, max_length=64),
+    ):
         authorization_service.require(principal, Permission.LEARNING_FEEDBACK_READ)
         session_factory = request.app.state.gateway.authorization_session_factory
         async with session_factory() as session:
-            return {"items": await list_feedback_threads(session)}
+            return await list_feedback_threads(session, limit=limit, offset=offset, search=q)
 
     @app.get("/api/v1/developer/feedback/{thread_id}", tags=["developer"])
     async def get_feedback_detail(thread_id: str, request: Request, principal: Principal):

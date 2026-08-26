@@ -1,5 +1,5 @@
 import type { AuthSession, AuthorizationAuditRecord, DeveloperSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
-import type { FeedbackThread, FeedbackThreadSummary } from "@/shared/types";
+import type { FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
 
@@ -102,7 +102,14 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   submitFeedback: (body: string) => request<{ thread_id: string }>("/feedback", { method: "POST", body: JSON.stringify({ body }) }),
-  listFeedback: () => request<{ items: FeedbackThreadSummary[] }>("/developer/feedback"),
+  listFeedback: (params?: { limit?: number; offset?: number; q?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.limit != null) query.set("limit", String(params.limit));
+    if (params?.offset != null) query.set("offset", String(params.offset));
+    if (params?.q) query.set("q", params.q);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return request<FeedbackThreadList>(`/developer/feedback${suffix}`);
+  },
   getFeedback: (threadId: string) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`),
   markFeedbackRead: (threadId: string, messageId: string) => request<{ ok: boolean }>(`/developer/feedback/${encodeURIComponent(threadId)}/read`, { method: "POST", body: JSON.stringify({ read_through_message_id: messageId }) }),
   getDeveloperSnapshot: () => request<DeveloperSnapshot>("/developer/snapshot"),

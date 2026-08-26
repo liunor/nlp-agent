@@ -23,12 +23,14 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof Setting
 
 const levelLabel: Record<LearningContext["level"], string> = { beginner: "入门", intermediate: "进阶", advanced: "高阶" };
 const modeLabel: Record<LearningContext["mode"], string> = { explain: "讲解", socratic: "苏格拉底追问", practice: "练习", review: "复习" };
+const FEEDBACK_DISABLED_HINT = "当前身份不支持提交反馈";
 
-export function SettingsDialog({ open, settings, learningContext, roles = [], userId, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
+export function SettingsDialog({ open, settings, learningContext, roles = [], permissions, userId, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
   open: boolean;
   settings: UserSettings;
   learningContext: LearningContext;
   roles?: string[];
+  permissions?: string[];
   userId?: string;
   onClose: () => void;
   onChange: (patch: Partial<UserSettings>) => void;
@@ -55,6 +57,11 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], us
   if (!open) return null;
   const canTeach = roles.includes("teacher") || roles.includes("developer");
   const canDevelop = roles.includes("developer");
+  // Server-side permissions win when present (custom RBAC roles); legacy guest
+  // sessions only carry roles, so fall back to the built-in role packages.
+  const canSubmitFeedback = permissions
+    ? permissions.includes("learning:feedback:submit")
+    : ["student", "teacher", "developer"].some((role) => roles.includes(role));
   const updateLearning = (patch: Partial<LearningContext>) => onLearningContextChange({ ...learningContext, ...patch });
 
   return <>
@@ -62,7 +69,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], us
       <section className="settings-dialog" role="dialog" aria-modal="true" aria-label="偏好设置" onMouseDown={(event) => event.stopPropagation()}>
         <aside className="settings-nav">
           <div className="settings-nav-brand"><Settings2 size={19} /><span><strong>偏好设置</strong><small>学习空间</small></span></div>
-          <nav>{sections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} onClick={() => setSection(id)}><Icon size={16} />{label}</button>)}</nav>
+          <nav>{sections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} disabled={id === "feedback" && !canSubmitFeedback} title={id === "feedback" && !canSubmitFeedback ? FEEDBACK_DISABLED_HINT : undefined} onClick={() => setSection(id)}><Icon size={16} />{label}</button>)}</nav>
           <p><CircleHelp size={14} />仅显示学生模式可安全调整的选项。</p>
         </aside>
         <div className="settings-content">
@@ -152,7 +159,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], us
     </SettingGroup>
   </>
 )}
-            {section === "feedback" && <SettingGroup title="提交你的建议" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="feedback-form"><textarea value={feedback} maxLength={2000} placeholder="例如：我希望在学习记录中增加错题复习计划……" onChange={(event) => { setFeedback(event.target.value); setFeedbackSubmitted(false); setFeedbackError(""); }} /><div><small>{feedback.length}/2000</small><button className="settings-primary-button" type="button" disabled={!feedback.trim() || feedbackSubmitting} onClick={() => { const content = feedback.trim(); setFeedbackSubmitting(true); setFeedbackError(""); void api.submitFeedback(content).then(() => { try { saveFeedback(content, userId); } catch { /* Server submission already succeeded. */ } setFeedbackSubmitted(true); setFeedback(""); }).catch((error) => setFeedbackError(error instanceof Error ? error.message : String(error))).finally(() => setFeedbackSubmitting(false)); }}>{feedbackSubmitting ? "发送中…" : "发布意见"}</button></div>{feedbackSubmitted && <p className="feedback-success">意见已发送到开发者工作台。</p>}{feedbackError && <p className="error-card" role="alert">发送失败：{feedbackError}</p>}</div></SettingGroup>}
+            {section === "feedback" && (canSubmitFeedback ? <SettingGroup title="提交你的建议" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="feedback-form"><textarea value={feedback} maxLength={2000} placeholder="例如：我希望在学习记录中增加错题复习计划……" onChange={(event) => { setFeedback(event.target.value); setFeedbackSubmitted(false); setFeedbackError(""); }} /><div><small>{feedback.length}/2000</small><button className="settings-primary-button" type="button" disabled={!feedback.trim() || feedbackSubmitting} onClick={() => { const content = feedback.trim(); setFeedbackSubmitting(true); setFeedbackError(""); void api.submitFeedback(content).then(() => { try { saveFeedback(content, userId); } catch { /* Server submission already succeeded. */ } setFeedbackSubmitted(true); setFeedback(""); }).catch((error) => setFeedbackError(error instanceof Error ? error.message : String(error))).finally(() => setFeedbackSubmitting(false)); }}>{feedbackSubmitting ? "发送中…" : "发布意见"}</button></div>{feedbackSubmitted && <p className="feedback-success">意见已发送到开发者工作台。</p>}{feedbackError && <p className="error-card" role="alert">发送失败：{feedbackError}</p>}</div></SettingGroup> : <SettingGroup title="意见反馈" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="settings-note">{FEEDBACK_DISABLED_HINT}</div></SettingGroup>)}
             {section === "updates" && <><SettingGroup title="当前版本" description={`${APP_NAME} v${APP_VERSION}`}><div className="settings-note"><b>版本号随构建自动同步</b><br />来自当前发布构建，无需手动维护。</div></SettingGroup><SettingGroup title="本次更新与修复" description={releaseNotesError ? "无法读取更新说明，请稍后重试。" : releaseNotes && releaseNotes.length > 0 ? "由开发者工作台维护，学生端实时同步。" : "暂无已发布的更新说明。"}>{releaseNotesError ? <button className="settings-link-button" type="button" onClick={() => setReleaseNotesAttempt((current) => current + 1)}>重新加载 <ChevronRight size={15} /></button> : releaseNotes === null ? <div className="settings-note">正在读取…</div> : releaseNotes.length > 0 && <div className="release-notes-list">{releaseNotes.map((note) => <article className="release-note" key={note.id}><h3>v{note.version}<small>{note.released_at.slice(0, 10)}</small></h3><ul className="release-notes">{note.notes.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>}</SettingGroup></>}
           </div>
         </div>

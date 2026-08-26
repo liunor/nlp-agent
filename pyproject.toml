@@ -45,7 +45,9 @@ target-version = "py311"
 [tool.ruff.lint]
 # Start with correctness-critical checks. Formatting enforcement can be enabled
 # after the existing codebase has been normalized in a separate change.
-select = ["E9", "F63", "F7", "F82"]
+# F811 guards against silent redefinitions, which override earlier definitions
+# at import time and leave dead code behind.
+select = ["E9", "F63", "F7", "F82", "F811"]
 
 [tool.uv]
 package = false

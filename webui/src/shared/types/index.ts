@@ -57,6 +57,11 @@ export interface FeedbackThreadSummary {
   latest: FeedbackMessage | null;
 }
 
+export interface FeedbackThreadList {
+  items: FeedbackThreadSummary[];
+  total: number;
+}
+
 export interface FeedbackThread {
   thread_id: string;
   user_id: string;
