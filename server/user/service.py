@@ -128,7 +128,11 @@ class UserService:
         # async driver (aiomysql), so we force the order explicitly.
         await self.session.flush([user, workspace])
 
-        # Add user as workspace owner
+        # Flush user + workspace first so they exist before adding member
+        await self.session.flush()
+
+        # Add user as workspace owner (must be a separate flush because
+        # MySQL foreign-key constraints require the parent row to exist)
         member = WorkspaceMemberModel(
             workspace_id=workspace.id,
             user_id=user.id,
@@ -190,6 +194,14 @@ class UserService:
             select(UserModel).where(
                 UserModel.username_lower == username.casefold(),
                 UserModel.deleted_at.is_(None),
+            )
+        )
+
+    async def get_user_by_username_or_phone(self, identifier: str) -> Optional[UserModel]:
+        """Get user by username or phone number (for login)."""
+        return await self.session.scalar(
+            select(UserModel).where(
+                (UserModel.username == identifier) | (UserModel.phone_number == identifier)
             )
         )
 
@@ -413,3 +425,115 @@ class UserService:
             .where(UserModel.id == user_id, UserModel.deleted_at.is_(None))
             .values(last_login_at=datetime.now(timezone.utc).replace(tzinfo=None))
         )
+
+    async def register_user(
+        self,
+        data: UserRegister,
+    ) -> UserModel:
+        """Register a new user via phone number with SMS verification."""
+        # 1. Check if phone number is already registered
+        existing = await self.session.scalar(
+            select(UserModel.id).where(UserModel.phone_number == data.phone_number)
+        )
+        if existing:
+            raise PhoneNumberAlreadyUsedError("This phone number is already registered")
+
+        # 2. Verify SMS code (in-memory store — replace with Redis in production)
+        stored_code = _sms_code_store.pop(data.phone_number, None)
+        if stored_code is None or stored_code != data.sms_code:
+            raise InvalidSmsCodeError("Invalid or expired verification code")
+
+        # 3. Generate username from phone number (alphanumeric only)
+        phone_clean = data.phone_number.replace(" ", "").replace("-", "").lstrip("+")
+        # Use pure alphanumeric: user + last 8 digits of phone + first 4 chars of uuid hex
+        username = f"user{phone_clean[-8:]}{uuid.uuid4().hex[:4]}"
+        display_name = data.display_name or f"User {phone_clean[-4:]}"
+
+        # 4. Create user
+        user_create = UserCreate(username=username, display_name=display_name, password=data.password)
+        user = await self.create_user(user_create)
+        user.phone_number = data.phone_number
+        user.registration_source = "phone"
+        await self.session.flush()
+
+        # 5. Assign student role (not guest — students need AGENT_SESSION_* permissions)
+        student_role = await self.session.scalar(
+            select(RoleModel).where(RoleModel.code == "student")
+        )
+        if student_role:
+            self.session.add(
+                UserRoleModel(user_id=user.id, role_id=student_role.id)
+            )
+            await self.session.flush()
+
+        # Refresh user from DB to load server-default fields (created_at, updated_at)
+        # session.get() returns cached identity-map object; refresh() forces a SELECT
+        await self.session.refresh(user)
+        await self.session.commit()  # Commit the transaction — without this, the async with block rolls back
+        return user
+
+    async def replace_user_roles(
+        self,
+        user_id: str,
+        role_codes: list[str],
+        *,
+        actor_user_id: Optional[str] = None,
+    ) -> None:
+        """Replace all roles for a user with new roles.
+        
+        This is used by admins to upgrade users (e.g., student → teacher).
+        """
+        # Validate user exists
+        user = await self.session.scalar(
+            select(UserModel).where(UserModel.id == user_id)
+        )
+        if not user:
+            raise UserNotFoundError(f"User {user_id} not found")
+        
+        # Get target role IDs
+        roles = await self.session.scalars(
+            select(RoleModel).where(RoleModel.code.in_(role_codes))
+        )
+        role_map = {r.code: r.id for r in roles.all()}
+        
+        if len(role_map) != len(role_codes):
+            missing = set(role_codes) - set(role_map.keys())
+            raise ValueError(f"Unknown roles: {missing}")
+        
+        # Delete existing roles
+        await self.session.execute(
+            delete(UserRoleModel).where(UserRoleModel.user_id == user_id)
+        )
+        
+        # Add new roles
+        for code, role_id in role_map.items():
+            self.session.add(UserRoleModel(user_id=user_id, role_id=role_id))
+        
+        # Bump authorization version to invalidate cached permissions
+        user.authorization_version += 1
+        await self.session.flush()
+
+
+# ---------------------------------------------------------------------------
+# In-memory SMS code store (development only — use Redis in production)
+# ---------------------------------------------------------------------------
+import time as _time  # noqa: E402
+
+_sms_code_store: dict[str, str] = {}
+_sms_code_timestamps: dict[str, float] = {}
+_SMS_CODE_TTL_S = 120  # 2 minutes
+
+
+def generate_sms_code(phone: str) -> str:
+    """Generate and store a 6-digit verification code."""
+    import secrets
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    _sms_code_store[phone] = code
+    _sms_code_timestamps[phone] = _time.monotonic()
+    # Expire old entries
+    now = _time.monotonic()
+    expired = [k for k, t in _sms_code_timestamps.items() if now - t > _SMS_CODE_TTL_S]
+    for k in expired:
+        _sms_code_store.pop(k, None)
+        _sms_code_timestamps.pop(k, None)
+    return code

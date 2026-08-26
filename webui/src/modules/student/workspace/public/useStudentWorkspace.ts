@@ -140,15 +140,22 @@ export function useStudentWorkspace() {
     setAuthRevision((current) => current + 1);
   }, []);
   const logout = useCallback(async () => {
-    if (globalAuth) await globalAuth.logout();
-    else await api.logout();
-    socketRef.current?.close();
-    setAuthSession(null);
-    setSessions([]);
-    setActiveSessionId(null);
-    setMessages([]);
-    setModelProfiles({});
-    setBootStatus("unauthenticated");
+    try {
+      if (globalAuth) await globalAuth.logout();
+      else await api.logout();
+    } catch (err) {
+      console.error("Logout failed:", err);
+    } finally {
+      socketRef.current?.close();
+      setAuthSession(null);
+      setSessions([]);
+      setActiveSessionId(null);
+      setMessages([]);
+      setModelProfiles({});
+      setBootStatus("unauthenticated");
+      // Redirect to login page
+      window.location.href = "/";
+    }
   }, [globalAuth, setActiveSessionId, setSessions]);
 
   return {

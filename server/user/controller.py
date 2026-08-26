@@ -279,6 +279,42 @@ async def enable_user(
         raise HTTPException(status_code=404, detail="User not found")
 
 
+@router.put("/{user_id}/roles", response_model=UserResponse)
+async def assign_user_roles(
+    user_id: str,
+    data: UserRoleUpdate,
+    db: DbSession,
+    _write: WriteClaims,
+    principal: Principal,
+):
+    """Assign/replace user roles (admin only).
+    
+    This allows admins to upgrade users from student to teacher,
+    or assign developer roles.
+    """
+    authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
+
+    service = UserService(db)
+    try:
+        # Validate that all role codes exist
+        for code in data.role_codes:
+            if code not in {"guest", "student", "teacher", "developer"}:
+                raise HTTPException(status_code=400, detail=f"Unknown role: {code}")
+        
+        # Replace user's roles
+        await service.replace_user_roles(user_id, data.role_codes, actor_user_id=principal.user_id)
+        
+        # Fetch updated user with roles
+        user = await service.get_user(user_id)
+        role_tuples = await service.get_user_roles(user.id)
+        roles = [RoleBrief(code=c, name=n) for c, n in role_tuples]
+        resp = UserResponse.model_validate(user)
+        resp.roles = roles
+        return resp
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found")
+
+
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(
     user_id: str,

@@ -65,11 +65,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       await api.logout();
+    } catch (err) {
+      console.error("Logout failed:", err);
     } finally {
       // A locally expired/revoked cookie must not leave the React tree looking
       // authenticated after the server has rejected logout.
       setUser(null);
       setError("");
+      // Redirect to login page
+      window.location.href = "/";
     }
   }, []);
 

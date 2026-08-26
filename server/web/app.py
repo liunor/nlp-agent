@@ -549,6 +549,83 @@ def create_app(
             "expires_at": claims.expires_at_epoch if isinstance(claims, DatabaseSessionClaims) else claims.expires_at,
         }
 
+    @app.post("/api/v1/auth/login/db", status_code=status.HTTP_200_OK, tags=["auth"])
+    async def login_db(body: LoginBody, request: Request, response: Response, db: DbSession):
+        """Multi-user login backed by ``nlp_users.password_hash``.
+
+        The session cookie, HMAC signature, claims shape, rate-limit budgets,
+        and CSRF/same-origin guards are identical to ``/api/v1/auth/login`` —
+        only the credential source differs: ``nlp_users.password_hash``
+        (argon2) instead of the env-var fixed credential.  After the session
+        is minted, ``resolve_principal`` re-loads roles/permissions from
+        MySQL, so every authenticated account behaves like nova.
+        """
+        from server.user.service import UserService  # local import: avoids startup cycle
+        from server.web.auth import AuthenticationError
+
+        auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
+
+        username = body.username.strip()
+        client_key = request.client.host if request.client else "unknown"
+
+        # Apply rate-limit budget BEFORE the credential check so failed DB
+        # logins are accounted for identically to the env-credential login.
+        try:
+            auth.check_login_rate_limit(username, client_key)
+        except AuthenticationError:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many login attempts")
+
+        # Look up the account by username or phone number.
+        user_service = UserService(db)
+        user = await user_service.get_user_by_username_or_phone(username)
+        if user is None or user.status != "active" or not user.password_hash:
+            auth.record_login_failure(username, client_key)
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+
+        # Verify the supplied password against the stored argon2 hash.
+        if not await user_service.verify_password(user, body.password):
+            auth.record_login_failure(username, client_key)
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+
+        # Issue a session that is byte-equivalent to the env-credential login.
+        # ``user_id`` is the DB UUID; workspace_ids/roles are intentionally
+        # empty here because ``resolve_principal`` re-populates them from
+        # MySQL on every authenticated request.
+        from core.identity import AuthenticatedPrincipal  # local import: same reason
+        principal = AuthenticatedPrincipal(
+            user_id=user.id,
+            workspace_ids=frozenset(),
+            roles=frozenset(),
+        )
+        token, claims = auth.login_external(
+            principal,
+            client_key=client_key,
+            previous_token=request.cookies.get(auth.cookie_name),
+        )
+        response.set_cookie(
+            auth.cookie_name,
+            token,
+            max_age=auth.ttl_s,
+            httponly=True,
+            secure=auth.secure,
+            samesite="strict",
+            path="/",
+        )
+        # Re-resolve so the response advertises the real DB roles/perms
+        # (incl. admin alias) — same shape as the env-credential login.
+        db_principal = await resolve_principal(request, claims)
+        roles = _with_admin_alias(db_principal.roles)
+        return {
+            "user_id": db_principal.user_id,
+            "workspace_ids": sorted(db_principal.workspace_ids),
+            "classroom_ids": sorted(db_principal.classroom_ids),
+            "roles": sorted(roles),
+            "permissions": sorted(db_principal.permissions),
+            "csrf_token": claims.csrf_token,
+            "expires_at": claims.expires_at,
+            "ephemeral_secret": auth.ephemeral_secret,
+        }
+
     @app.post("/api/v1/auth/guest", status_code=status.HTTP_200_OK, tags=["auth"])
     async def guest_login(request: Request, response: Response):
         if not request.app.state.auth_injected:

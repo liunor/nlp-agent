@@ -147,6 +147,7 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
           {toolDockOpen && <button className="icon-button tool-dock-expand-toggle" type="button" aria-label={toolDockExpanded ? "还原工具面板" : "展开工具面板"} aria-pressed={toolDockExpanded} onClick={() => setToolDockExpanded((value) => !value)}>{toolDockExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>}
           <button className="icon-button thread-tool-toggle" type="button" aria-label={toolDockOpen ? "关闭工具侧栏" : "打开工具侧栏"} aria-pressed={toolDockOpen} onClick={toggleToolDock}>{toolDockOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button>
           <button className="icon-button theme-toggle" type="button" aria-label="切换主题" onClick={() => void workspace.patchSettings({ theme: workspace.settings.theme === "dark" ? "light" : "dark" })}>{workspace.settings.theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button>
+          <SchoolLogo />
         </div>
       </header>
       {hasMessages ? <><div className="thread-scroll" ref={scrollRef} onScroll={onScroll}><MessageList messages={workspace.messages} loading={workspace.loadingMessages} showReasoning={workspace.settings.show_reasoning} onFollowUp={(text) => void workspace.send(text)} /></div>{composer()}</> : <div className="empty-thread-home"><div><h1>《自然语言处理》智能体 欢迎您！</h1><p>从一个 NLP 概念、模型原理或练习问题开始。</p>{composer(true)}</div></div>}
