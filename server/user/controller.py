@@ -25,6 +25,7 @@ from .schemas import (
     UserListResponse,
     UserResponse,
     UserUpdate,
+    UserRoleUpdate,
 )
 from .service import (
     SelfDeleteForbiddenError,
@@ -304,13 +305,9 @@ async def assign_user_roles(
         # Replace user's roles
         await service.replace_user_roles(user_id, data.role_codes, actor_user_id=principal.user_id)
         
-        # Fetch updated user with roles
+        # Fetch updated user
         user = await service.get_user(user_id)
-        role_tuples = await service.get_user_roles(user.id)
-        roles = [RoleBrief(code=c, name=n) for c, n in role_tuples]
-        resp = UserResponse.model_validate(user)
-        resp.roles = roles
-        return resp
+        return UserResponse.model_validate(user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
 

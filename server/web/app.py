@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyCookie
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from configs.settings import settings
@@ -86,6 +87,9 @@ from server.release_notes.service import (
 )
 from server.web.websocket import WebSocketHub, websocket_endpoint
 from server.web.feedback import get_feedback_thread, list_feedback_threads, mark_feedback_read, submit_feedback
+from server.auth.dependencies import get_db_session
+
+DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
 GatewayFactory = Callable[[], BackendGateway]
