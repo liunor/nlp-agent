@@ -147,6 +147,23 @@ describe("Developer feedback list", () => {
     expect(screen.getByText("读取失败：boom")).toBeVisible();
   });
 
+  it("retries a failed detail load", async () => {
+    getFeedbackMock
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce({ ...thread("t1", "alice"), messages: [] });
+    render(<Harness />);
+    await flush();
+
+    fireEvent.click(screen.getByText("alice"));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "重试读取反馈" }));
+    await flush();
+
+    expect(getFeedbackMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("@alice")).toBeVisible();
+    expect(screen.queryByText("读取失败：boom")).not.toBeInTheDocument();
+  });
+
   it("shows a failure block with retry instead of the empty state on first-load errors", async () => {
     listFeedbackMock.mockRejectedValue(new Error("HTTP 403"));
     render(<Harness />);

@@ -152,6 +152,7 @@ export function Feedback({
 }) {
   const [detail, setDetail] = useState<{ threadId: string; thread: FeedbackThread } | null>(null);
   const [error, setError] = useState<{ threadId: string; message: string } | null>(null);
+  const [detailRetryNonce, setDetailRetryNonce] = useState(0);
   const [searchInput, setSearchInput] = useState(search);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -165,6 +166,7 @@ export function Feedback({
     let active = true;
     void api.getFeedback(selectedId).then(async (value) => {
       if (!active) return;
+      setError((current) => current?.threadId === selectedId ? null : current);
       setDetail({ threadId: selectedId, thread: value });
       const lastMessage = value.messages[value.messages.length - 1];
       if (!lastMessage) return;
@@ -178,7 +180,7 @@ export function Feedback({
       if (active) setError({ threadId: selectedId, message: reason instanceof Error ? reason.message : String(reason) });
     });
     return () => { active = false; };
-  }, [refresh, selectedId]);
+  }, [detailRetryNonce, refresh, selectedId]);
   const selected = threads.find((item) => item.thread_id === selectedId);
   const activeThread = detail?.threadId === selectedId ? detail.thread : null;
   const activeError = error?.threadId === selectedId ? error.message : "";
@@ -188,7 +190,7 @@ export function Feedback({
     <div className="developer-inline-form developer-feedback-toolbar">
       <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="搜索用户名或昵称" aria-label="搜索反馈用户" />
     </div>
-    <div className="developer-feedback"><div className="developer-feedback-list">{threads.length === 0 && loadError ? <div className="developer-feedback-failed"><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <p>{search ? "没有匹配的反馈" : "暂无反馈"}</p> : <>{loadError && <p className="developer-feedback-stale">刷新失败：{loadError}，正在显示上次结果</p>}{threads.map((item) => <button type="button" key={item.thread_id} className={item.thread_id === selectedId ? "active" : ""} onClick={() => onSelect(item.thread_id)}><strong>{item.display_name || item.username}</strong><small>@{item.username} · {item.latest?.body ?? "暂无内容"}</small>{item.unread_count > 0 && <b>{item.unread_count}</b>}</button>)}</>}</div><div className="developer-feedback-detail">{activeError && <p className="developer-feedback-error">读取失败：{activeError}</p>}{selected && activeThread ? <><h3>{activeThread.display_name || selected.username}</h3><p>@{activeThread.username}</p>{activeThread.messages.map((message) => <article key={message.id}><strong>{message.sender_type === "student" ? (activeThread.display_name || selected.username) : "开发者"}</strong><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time><p>{message.body}</p></article>)}</> : !activeError && <p>{selected ? "正在读取反馈…" : "选择一个账号查看反馈。"}</p>}</div></div>
+    <div className="developer-feedback"><div className="developer-feedback-list">{threads.length === 0 && loadError ? <div className="developer-feedback-failed"><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <p>{search ? "没有匹配的反馈" : "暂无反馈"}</p> : <>{loadError && <p className="developer-feedback-stale">刷新失败：{loadError}，正在显示上次结果</p>}{threads.map((item) => <button type="button" key={item.thread_id} className={item.thread_id === selectedId ? "active" : ""} onClick={() => onSelect(item.thread_id)}><strong>{item.display_name || item.username}</strong><small>@{item.username} · {item.latest?.body ?? "暂无内容"}</small>{item.unread_count > 0 && <b>{item.unread_count}</b>}</button>)}</>}</div><div className="developer-feedback-detail">{activeError && <div className="developer-feedback-error"><p>读取失败：{activeError}</p><button type="button" onClick={() => setDetailRetryNonce((nonce) => nonce + 1)}>重试读取反馈</button></div>}{selected && activeThread ? <><h3>{activeThread.display_name || selected.username}</h3><p>@{activeThread.username}</p>{activeThread.messages.map((message) => <article key={message.id}><strong>{message.sender_type === "student" ? (activeThread.display_name || selected.username) : "开发者"}</strong><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time><p>{message.body}</p></article>)}</> : !activeError && <p>{selected ? "正在读取反馈…" : "选择一个账号查看反馈。"}</p>}</div></div>
     {total > 0 && <div className="developer-feedback-pagination"><span>共 {total} 条 · 第 {pageIndex}/{pageCount} 页</span><button type="button" disabled={offset <= 0} onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}>上一页</button><button type="button" disabled={offset + pageSize >= total} onClick={() => onOffsetChange(offset + pageSize)}>下一页</button></div>}
   </Section>;
 }

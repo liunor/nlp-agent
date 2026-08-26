@@ -13,6 +13,7 @@ from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
 from core.identity import AuthenticatedPrincipal
+from core.rbac import Permission
 from gateway.core import BackendGateway
 from gateway.repository import GatewayRepository
 from server.web.app import create_app
@@ -245,6 +246,38 @@ def test_guest_cannot_read_feedback_list(developer_app):
         guest_login(client)
 
         assert client.get("/api/v1/developer/feedback").status_code == 403
+
+
+def test_feedback_endpoints_require_system_scope(developer_app, monkeypatch):
+    import server.web.app as web_app_module
+
+    async def fake_for_username(session, username):
+        return AuthenticatedPrincipal(
+            user_id=username,
+            roles=frozenset({"custom-feedback-reader"}),
+            permissions=frozenset({Permission.LEARNING_FEEDBACK_READ.value}),
+            permission_scopes={Permission.LEARNING_FEEDBACK_READ.value: frozenset({"own"})},
+        )
+
+    async def fake_for_user_id(session, user_id):
+        return await fake_for_username(session, user_id)
+
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_username", fake_for_username)
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_user_id", fake_for_user_id)
+
+    with TestClient(developer_app) as client:
+        csrf = authenticate(client)
+        listing = client.get("/api/v1/developer/feedback")
+        detail = client.get("/api/v1/developer/feedback/thread-1")
+        marked = client.post(
+            "/api/v1/developer/feedback/thread-1/read",
+            json={"read_through_message_id": "m-1"},
+            headers=write_headers(csrf),
+        )
+
+    assert listing.status_code == 403
+    assert detail.status_code == 403
+    assert marked.status_code == 403
 
 
 def test_list_feedback_defaults_are_forwarded(developer_app, monkeypatch):
