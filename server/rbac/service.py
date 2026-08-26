@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.identity import AuthenticatedPrincipal
+from core.rbac import Permission
 from server.infrastructure.mysql.models import (
     RoleModel,
     PermissionModel,
@@ -160,6 +161,9 @@ class RbacService:
         valid_scopes = {"public", "own", "classroom", "workspace", "system"}
         if not set(scopes).issubset(permission_codes) or any(not values or not values.issubset(valid_scopes) for values in scopes.values()):
             raise ValueError("each configured permission scope must be valid and non-empty")
+        feedback_read_code = Permission.LEARNING_FEEDBACK_READ.value
+        if feedback_read_code in permission_codes and scopes.get(feedback_read_code) != {"system"}:
+            raise ValueError("learning:feedback:read must use system scope")
         await session.execute(delete(RolePermissionScopeModel).where(RolePermissionScopeModel.role_id == role.id))
         await session.execute(delete(RolePermissionModel).where(RolePermissionModel.role_id == role.id))
         for item in permissions:

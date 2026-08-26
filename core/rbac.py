@@ -213,7 +213,12 @@ class AuthorizationService:
         if not scopes:
             # Compatibility identities use the old role packages: agent data
             # is own-scoped, system controls are system-scoped.
-            scopes = frozenset({"system"}) if required.value.startswith("system:") else frozenset({"own"})
+            scopes = (
+                frozenset({"system"})
+                if required.value.startswith("system:")
+                or required is Permission.LEARNING_FEEDBACK_READ
+                else frozenset({"own"})
+            )
         return ResourcePolicy().allows(principal, frozenset(scopes), resource)
 
     def require_resource(
