@@ -145,7 +145,7 @@ def test_submit_feedback_rejects_missing_csrf(student_app, monkeypatch):
 
     captured = {}
 
-    async def fake_submit(session, principal, body):
+    async def fake_submit(session, principal, body, category=None):
         captured["called"] = True
         return {"thread_id": "t", "message": {}}
 
@@ -182,9 +182,10 @@ def test_student_submission_is_forwarded_and_serialized(student_app, monkeypatch
         "created_at": "2026-08-26T00:00:00+00:00",
     }
 
-    async def fake_submit(session, principal, body):
+    async def fake_submit(session, principal, body, category=None):
         captured["principal_user_id"] = principal.user_id
         captured["body"] = body
+        captured["category"] = category
         return {"thread_id": "thread-9", "message": payload_message}
 
     monkeypatch.setattr(web_app_module, "submit_feedback", fake_submit)
@@ -234,11 +235,27 @@ def test_feedback_endpoints_require_developer_permission(student_app):
             json={"read_through_message_id": "m-1"},
             headers=write_headers(csrf),
         )
+        deleted = client.delete(
+            "/api/v1/developer/feedback/thread-1", headers=write_headers(csrf)
+        )
+        patched = client.patch(
+            "/api/v1/developer/feedback/thread-1",
+            json={"status": "planned"},
+            headers=write_headers(csrf),
+        )
+        replied = client.post(
+            "/api/v1/developer/feedback/thread-1/reply",
+            json={"body": "reply"},
+            headers=write_headers(csrf),
+        )
 
         assert listing.status_code == 403
         assert listing.json()["code"] == "forbidden"
         assert detail.status_code == 403
         assert marked.status_code == 403
+        assert deleted.status_code == 403
+        assert patched.status_code == 403
+        assert replied.status_code == 403
 
 
 def test_guest_cannot_read_feedback_list(developer_app):
@@ -274,10 +291,26 @@ def test_feedback_endpoints_require_system_scope(developer_app, monkeypatch):
             json={"read_through_message_id": "m-1"},
             headers=write_headers(csrf),
         )
+        deleted = client.delete(
+            "/api/v1/developer/feedback/thread-1", headers=write_headers(csrf)
+        )
+        patched = client.patch(
+            "/api/v1/developer/feedback/thread-1",
+            json={"status": "planned"},
+            headers=write_headers(csrf),
+        )
+        replied = client.post(
+            "/api/v1/developer/feedback/thread-1/reply",
+            json={"body": "reply"},
+            headers=write_headers(csrf),
+        )
 
     assert listing.status_code == 403
     assert detail.status_code == 403
     assert marked.status_code == 403
+    assert deleted.status_code == 403
+    assert patched.status_code == 403
+    assert replied.status_code == 403
 
 
 def test_list_feedback_defaults_are_forwarded(developer_app, monkeypatch):
@@ -285,8 +318,8 @@ def test_list_feedback_defaults_are_forwarded(developer_app, monkeypatch):
 
     captured = {}
 
-    async def fake_list(session, *, limit, offset, search):
-        captured.update(limit=limit, offset=offset, search=search)
+    async def fake_list(session, *, limit, offset, search, status=None, category=None, priority=None, sort=None):
+        captured.update(limit=limit, offset=offset, search=search, status=status, category=category, priority=priority, sort=sort)
         return {"items": [], "total": 0}
 
     monkeypatch.setattr(web_app_module, "list_feedback_threads", fake_list)
@@ -296,7 +329,7 @@ def test_list_feedback_defaults_are_forwarded(developer_app, monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"items": [], "total": 0}
-    assert captured == {"limit": 50, "offset": 0, "search": None}
+    assert captured == {"limit": 50, "offset": 0, "search": None, "status": None, "category": None, "priority": None, "sort": None}
 
 
 def test_list_feedback_forwards_limit_offset_and_search(developer_app, monkeypatch):
@@ -304,8 +337,8 @@ def test_list_feedback_forwards_limit_offset_and_search(developer_app, monkeypat
 
     captured = {}
 
-    async def fake_list(session, *, limit, offset, search):
-        captured.update(limit=limit, offset=offset, search=search)
+    async def fake_list(session, *, limit, offset, search, status=None, category=None, priority=None, sort=None):
+        captured.update(limit=limit, offset=offset, search=search, status=status, category=category, priority=priority, sort=sort)
         return {"items": [{"thread_id": "t1"}], "total": 41}
 
     monkeypatch.setattr(web_app_module, "list_feedback_threads", fake_list)
@@ -315,7 +348,7 @@ def test_list_feedback_forwards_limit_offset_and_search(developer_app, monkeypat
 
     assert response.status_code == 200
     assert response.json()["total"] == 41
-    assert captured == {"limit": 20, "offset": 40, "search": "Alice"}
+    assert captured == {"limit": 20, "offset": 40, "search": "Alice", "status": None, "category": None, "priority": None, "sort": None}
 
 
 @pytest.mark.parametrize(
@@ -418,3 +451,104 @@ def test_mark_feedback_read_forwards_ids_and_returns_ok(developer_app, monkeypat
     assert response.status_code == 200
     assert response.json() == {"ok": True}
     assert captured == {"thread_id": "thread-1", "message_id": "m-1"}
+
+
+# --- validation / PATCH / reply / delete ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "?category=suggestion",
+        "?sort=random",
+        "?status=archived",
+        "?priority=urgent",
+    ],
+)
+def test_list_feedback_rejects_invalid_enum_query_params(developer_app, query):
+    with TestClient(developer_app) as client:
+        authenticate(client)
+        response = client.get(f"/api/v1/developer/feedback{query}")
+
+    assert response.status_code == 422
+
+
+def test_patch_feedback_returns_full_thread_payload(developer_app, monkeypatch):
+    import server.web.app as web_app_module
+
+    payload = {
+        "thread_id": "thread-1",
+        "user_id": "user-1",
+        "username": "student",
+        "display_name": "Student",
+        "status": "planned",
+        "category": "ux",
+        "priority": "high",
+        "updated_at": "2026-08-27T08:00:00+00:00",
+        "messages": [{"id": "m-1", "sender_type": "student", "body": "hi", "created_at": "2026-08-27T08:00:00+00:00"}],
+    }
+    captured = {}
+
+    async def fake_update(session, thread_id, *, status=None, category=None, priority=None):
+        captured.update(thread_id=thread_id, status=status, category=category, priority=priority)
+        return payload
+
+    monkeypatch.setattr(web_app_module, "update_feedback_thread", fake_update)
+    with TestClient(developer_app) as client:
+        csrf = authenticate(client)
+        response = client.patch(
+            "/api/v1/developer/feedback/thread-1",
+            json={"status": "planned", "category": "ux", "priority": "high"},
+            headers=write_headers(csrf),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == payload
+    assert captured == {
+        "thread_id": "thread-1",
+        "status": "planned",
+        "category": "ux",
+        "priority": "high",
+    }
+
+
+def test_reply_feedback_forwards_body(developer_app, monkeypatch):
+    import server.web.app as web_app_module
+
+    captured = {}
+
+    async def fake_reply(session, principal, thread_id, body):
+        captured.update(thread_id=thread_id, body=body)
+        return {"thread_id": thread_id, "message": {"id": "m-9"}}
+
+    monkeypatch.setattr(web_app_module, "reply_feedback", fake_reply)
+    with TestClient(developer_app) as client:
+        csrf = authenticate(client)
+        response = client.post(
+            "/api/v1/developer/feedback/thread-1/reply",
+            json={"body": "已处理"},
+            headers=write_headers(csrf),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"thread_id": "thread-1", "message": {"id": "m-9"}}
+    assert captured == {"thread_id": "thread-1", "body": "已处理"}
+
+
+def test_delete_feedback_forwards_thread_id(developer_app, monkeypatch):
+    import server.web.app as web_app_module
+
+    captured = {}
+
+    async def fake_delete(session, thread_id):
+        captured["thread_id"] = thread_id
+
+    monkeypatch.setattr(web_app_module, "delete_feedback_thread", fake_delete)
+    with TestClient(developer_app) as client:
+        csrf = authenticate(client)
+        response = client.delete(
+            "/api/v1/developer/feedback/thread-1", headers=write_headers(csrf)
+        )
+
+    assert response.status_code == 204
+    assert captured == {"thread_id": "thread-1"}

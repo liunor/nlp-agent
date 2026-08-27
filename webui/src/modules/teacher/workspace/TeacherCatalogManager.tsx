@@ -25,8 +25,8 @@ function CardPager({ page, pageCount, onPageChange }: { page: number; pageCount:
   return <div className="teacher-card-pager"><button type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}><ChevronLeft size={14} />上一页</button><span>第{page}页 / 共{pageCount}页</span><button type="button" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)}>下一页<ChevronRight size={14} /></button></div>;
 }
 
-function TopicTile({ topic, selected, onSelect, onOpen }: { topic: CourseTopic; selected: boolean; onSelect: () => void; onOpen: () => void }) {
-  return <button type="button" className={selected ? "teacher-tile selected" : "teacher-tile"} aria-pressed={selected} onClick={onSelect} onDoubleClick={onOpen}><span className="teacher-tile-icon"><BookOpen size={17} /></span><strong className="teacher-tile-name">{topic.name || "未命名主题"}</strong><span className="teacher-tile-meta">{topic.knowledge_points.length} 个知识点</span><StatusBadge status={topic.status} /></button>;
+function TopicTile({ topic, selected, onOpen }: { topic: CourseTopic; selected: boolean; onOpen: () => void }) {
+  return <button type="button" className={selected ? "teacher-tile selected" : "teacher-tile"} aria-pressed={selected} onClick={onOpen}><span className="teacher-tile-icon"><BookOpen size={17} /></span><strong className="teacher-tile-name">{topic.name || "未命名主题"}</strong><span className="teacher-tile-meta">{topic.knowledge_points.length} 个知识点</span><StatusBadge status={topic.status} /></button>;
 }
 
 function PointTile({ point, onEdit }: { point: KnowledgePoint; onEdit: () => void }) {
@@ -34,17 +34,18 @@ function PointTile({ point, onEdit }: { point: KnowledgePoint; onEdit: () => voi
 }
 
 function TopicDetailView({ topic, onBack, onChange, onRemove, onAddPoint, onEditPoint }: { topic: CourseTopic; onBack: () => void; onChange: (topic: CourseTopic) => void; onRemove: () => void; onAddPoint: () => void; onEditPoint: (pointId: string) => void }) {
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(1); const [pageLoading, setPageLoading] = useState(false);
   const pageCount = Math.max(1, Math.ceil(topic.knowledge_points.length / CATALOG_PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
   const visiblePoints = topic.knowledge_points.slice((safePage - 1) * CATALOG_PAGE_SIZE, safePage * CATALOG_PAGE_SIZE);
+  const changePage = (next: number) => { setPageLoading(true); setPage(next); window.setTimeout(() => setPageLoading(false), 0); };
   return <section className="teacher-panel">
     <header className="teacher-detail-bar"><button className="teacher-secondary-button" type="button" onClick={onBack}><ChevronLeft size={15} />返回主题目录</button><div className="teacher-detail-title"><BookOpen size={17} /><h2>{topic.name || "未命名主题"}</h2><StatusBadge status={topic.status} /></div><div className="teacher-detail-actions"><StatusButton status={topic.status} onChange={(status) => onChange({ ...topic, status })} /><RemoveButton label={`主题“${topic.name || "未命名"}”`} onRemove={onRemove} /><button className="teacher-primary-button" type="button" onClick={onAddPoint}><Plus size={16} />新建知识点</button></div></header>
     <div className="teacher-catalog-body">
       <div className="teacher-editor-grid teacher-inset-grid">
         <div className="teacher-editor-two-column"><label>主题名称<input value={topic.name} onChange={(event) => onChange({ ...topic, name: event.target.value })} /></label><label>主题说明<textarea rows={2} value={topic.description} onChange={(event) => onChange({ ...topic, description: event.target.value })} /></label></div>
       </div>
-      {topic.knowledge_points.length ? <><div className="teacher-tile-grid">{visiblePoints.map((point) => <PointTile key={point.id} point={point} onEdit={() => onEditPoint(point.id)} />)}</div><CardPager page={safePage} pageCount={pageCount} onPageChange={setPage} /></> : <Empty text="暂无知识点；点击右上角“新建知识点”开始编写 Markdown 教学边界。" compact />}
+      {topic.knowledge_points.length ? <>{pageLoading ? <p className="teacher-empty-inline">正在加载知识点…</p> : <div className="teacher-tile-grid">{visiblePoints.map((point) => <PointTile key={point.id} point={point} onEdit={() => onEditPoint(point.id)} />)}</div>}<CardPager page={safePage} pageCount={pageCount} onPageChange={changePage} /></> : <Empty text="暂无知识点；点击右上角“新建知识点”开始编写 Markdown 教学边界。" compact />}
     </div>
   </section>;
 }
@@ -60,13 +61,14 @@ function PointEditorView({ point, onBack, onSave, onRemove }: { point: Knowledge
 
 export function TopicCatalogEditor({ topics, onChange }: { topics: CourseTopic[]; onChange: (topics: CourseTopic[]) => void }) {
   const [name, setName] = useState(""); const [description, setDescription] = useState("");
-  const [view, setView] = useState<CatalogView>({ kind: "list" }); const [selectedTopicId, setSelectedTopicId] = useState(""); const [listPage, setListPage] = useState(1);
+  const [view, setView] = useState<CatalogView>({ kind: "list" }); const [selectedTopicId, setSelectedTopicId] = useState(""); const [listPage, setListPage] = useState(1); const [listLoading, setListLoading] = useState(false);
   const update = (topic: CourseTopic) => onChange(topics.map((item) => item.id === topic.id ? topic : item));
   const create = () => { if (!name.trim()) return; const topic = { id: makeId("topic"), name: name.trim(), description: description.trim(), status: "enabled" as const, knowledge_points: [] }; onChange([...topics, topic]); setSelectedTopicId(topic.id); setListPage(Math.floor(topics.length / CATALOG_PAGE_SIZE) + 1); setName(""); setDescription(""); };
   const addPoint = (topic: CourseTopic) => { const point = { id: makeId("kp"), name: "新知识点", markdown: "", status: "enabled" as const, sort_order: topic.knowledge_points.length }; update({ ...topic, knowledge_points: [...topic.knowledge_points, point] }); setView({ kind: "point", topicId: topic.id, pointId: point.id }); };
   const updatePoint = (topicId: string, point: KnowledgePoint) => { const topic = topics.find((item) => item.id === topicId); if (!topic) return; update({ ...topic, knowledge_points: topic.knowledge_points.map((item) => item.id === point.id ? point : item) }); };
   const removePoint = (topicId: string, pointId: string) => { const topic = topics.find((item) => item.id === topicId); if (!topic) return; update({ ...topic, knowledge_points: topic.knowledge_points.filter((item) => item.id !== pointId) }); setView({ kind: "topic", topicId }); };
   const removeTopic = (topicId: string) => { onChange(topics.filter((item) => item.id !== topicId)); setView({ kind: "list" }); };
+  const changeListPage = (next: number) => { setListLoading(true); setListPage(next); window.setTimeout(() => setListLoading(false), 0); };
   const topicPageCount = Math.max(1, Math.ceil(topics.length / CATALOG_PAGE_SIZE));
   const safeListPage = Math.min(listPage, topicPageCount);
   const visibleTopics = topics.slice((safeListPage - 1) * CATALOG_PAGE_SIZE, safeListPage * CATALOG_PAGE_SIZE);
@@ -76,7 +78,7 @@ export function TopicCatalogEditor({ topics, onChange }: { topics: CourseTopic[]
   return <div className="teacher-stack">
     {!detailTopic && !pointView && <>
       <section className="teacher-panel teacher-create-card"><header><div><span className="teacher-eyebrow">课程导航</span><h2>{topics.length ? "新建主题" : "创建第一个主题"}</h2><p>主题、知识点和蓝图均由教师手动创建并保存；不会导入预置课程数据。</p></div></header><div className="teacher-editor-grid"><label>主题名称<input aria-label="主题名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：Transformer" /></label><label>主题说明<textarea aria-label="主题说明" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="说明该主题的学习范围" /></label><button className="teacher-primary-button" type="button" disabled={!name.trim()} onClick={create}><Plus size={16} />创建主题</button></div></section>
-      <section className="teacher-panel"><header><div><h2>主题目录</h2><p>按每页 3 行 × 4 列分页，共 12 个主题；单击选中主题，双击进入知识点管理。</p></div></header>{topics.length ? <div className="teacher-catalog-body"><div className="teacher-tile-grid">{visibleTopics.map((topic) => <TopicTile key={topic.id} topic={topic} selected={selectedTopicId === topic.id} onSelect={() => setSelectedTopicId(topic.id)} onOpen={() => { setSelectedTopicId(topic.id); setView({ kind: "topic", topicId: topic.id }); }} />)}</div><CardPager page={safeListPage} pageCount={topicPageCount} onPageChange={setListPage} /></div> : <Empty text="还没有主题。请先创建一个课程主题，再添加知识点。" />}</section>
+      <section className="teacher-panel"><header><div><h2>主题目录</h2><p>按每页 3 行 × 4 列分页，共 12 个主题；单击主题进入知识点管理。</p></div></header>{topics.length ? <div className="teacher-catalog-body">{listLoading ? <p className="teacher-empty-inline">正在加载主题…</p> : <div className="teacher-tile-grid">{visibleTopics.map((topic) => <TopicTile key={topic.id} topic={topic} selected={selectedTopicId === topic.id} onOpen={() => { setSelectedTopicId(topic.id); setView({ kind: "topic", topicId: topic.id }); }} />)}</div>}<CardPager page={safeListPage} pageCount={topicPageCount} onPageChange={changeListPage} /></div> : <Empty text="还没有主题。请先创建一个课程主题，再添加知识点。" />}</section>
     </>}
     {detailTopic && view.kind === "topic" && <TopicDetailView topic={detailTopic} onBack={() => setView({ kind: "list" })} onChange={update} onRemove={() => removeTopic(detailTopic.id)} onAddPoint={() => addPoint(detailTopic)} onEditPoint={(pointId) => setView({ kind: "point", topicId: detailTopic.id, pointId })} />}
     {pointView && editPoint && <PointEditorView key={editPoint.id} point={editPoint} onBack={() => setView({ kind: "topic", topicId: pointView.topicId })} onSave={(point) => updatePoint(pointView.topicId, point)} onRemove={() => removePoint(pointView.topicId, editPoint.id)} />}

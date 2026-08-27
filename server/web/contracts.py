@@ -27,9 +27,15 @@ class LoginBody(StrictModel):
     workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+FeedbackCategoryValue = Literal["feature", "ux", "bug", "other"]
+FeedbackStatusValue = Literal["open", "under_review", "planned", "in_progress", "complete", "closed"]
+FeedbackPriorityValue = Literal["low", "medium", "high"]
+FeedbackSortValue = Literal["latest", "oldest", "unread"]
+
+
 class FeedbackBody(StrictModel):
     body: str = Field(min_length=1, max_length=2_000)
-    category: str | None = Field(default=None, max_length=32, description="feature/ux/bug/other")
+    category: FeedbackCategoryValue | None = Field(default=None, description="feature/ux/bug/other")
 
     @field_validator("body", mode="before")
     @classmethod
@@ -52,9 +58,9 @@ class FeedbackReadBody(StrictModel):
 
 
 class FeedbackUpdateBody(StrictModel):
-    status: str | None = Field(default=None, max_length=32)
-    category: str | None = Field(default=None, max_length=32)
-    priority: str | None = Field(default=None, max_length=16)
+    status: FeedbackStatusValue | None = None
+    category: FeedbackCategoryValue | None = None
+    priority: FeedbackPriorityValue | None = None
 
 
 class FeedbackReplyBody(StrictModel):

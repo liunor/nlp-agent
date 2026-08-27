@@ -5,15 +5,17 @@ import { GuidedBlueprintCatalogEditor } from "./TeacherCatalogManager";
 import { TeacherWorkspace } from "./TeacherWorkspace";
 import { TeacherRoutes } from "../routes";
 
-const { ensureAuthMock, getSettingsMock, getTeacherCatalog, updateTeacherCatalog } = vi.hoisted(() => ({
+const { ensureAuthMock, getSettingsMock, getTeacherCatalog, updateTeacherCatalog, listTeacherTopics, listTeacherKnowledgePoints } = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
   getSettingsMock: vi.fn(),
   getTeacherCatalog: vi.fn().mockResolvedValue({ catalog: { workspace_id: "default", topics: [{ id: "transformer", name: "Transformer", description: "", status: "enabled", knowledge_points: [{ id: "attention", name: "注意力", markdown: "# Attention", status: "enabled", sort_order: 0 }] }], exercise_blueprints: [], review_blueprints: [], guided_blueprints: [] } }),
   updateTeacherCatalog: vi.fn().mockImplementation(async (_workspaceId, next) => ({ catalog: { workspace_id: "default", ...next } })),
+  listTeacherTopics: vi.fn(),
+  listTeacherKnowledgePoints: vi.fn(),
 }));
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: ensureAuthMock,
-  api: { getSettings: getSettingsMock, getTeacherOverview: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 2, error_questions: 0, exercises: 3, exercise_pass_rate: 66.67, guided_sessions: 1 }, weak_topics: [{ topic_id: "transformer", topic: "Transformer", questions: 2, errors: 0, exercises: 3, average_score: 70, pass_rate: 66.67, misconceptions: 1, risk: "medium" }], topic_distribution: [{ name: "Transformer", count: 2, percentage: 100 }], difficulty_distribution: [{ name: "入门", count: 2, percentage: 100 }], mode_distribution: [{ name: "讲解", count: 2, percentage: 100 }], daily_questions: [{ date: "2026-07-19", count: 2 }], knowledge_point_stats: [{ knowledge_point_id: "attention", name: "注意力", topic: "Transformer", exercises: 3, average_score: 70, pass_rate: 66.67, weak_criteria: [{ criterion: "概念准确", hit_rate: 100 }, { criterion: "步骤完整", hit_rate: 33.33 }] }] }), getTeacherCatalog, updateTeacherCatalog },
+  api: { getSettings: getSettingsMock, listTeacherTopics, listTeacherKnowledgePoints, getTeacherOverview: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 2, error_questions: 0, exercises: 3, exercise_pass_rate: 66.67, guided_sessions: 1 }, weak_topics: [{ topic_id: "transformer", topic: "Transformer", questions: 2, errors: 0, exercises: 3, average_score: 70, pass_rate: 66.67, misconceptions: 1, risk: "medium" }], topic_distribution: [{ name: "Transformer", count: 2, percentage: 100 }], difficulty_distribution: [{ name: "入门", count: 2, percentage: 100 }], mode_distribution: [{ name: "讲解", count: 2, percentage: 100 }], daily_questions: [{ date: "2026-07-19", count: 2 }], knowledge_point_stats: [{ knowledge_point_id: "attention", name: "注意力", topic: "Transformer", exercises: 3, average_score: 70, pass_rate: 66.67, weak_criteria: [{ criterion: "概念准确", hit_rate: 100 }, { criterion: "步骤完整", hit_rate: 33.33 }] }] }), getTeacherCatalog, updateTeacherCatalog },
 }));
 
 describe("TeacherWorkspace catalog CRUD", () => {
@@ -22,6 +24,8 @@ describe("TeacherWorkspace catalog CRUD", () => {
     getTeacherCatalog.mockClear();
     ensureAuthMock.mockResolvedValue({ roles: ["teacher"], workspace_ids: ["default"] });
     getSettingsMock.mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } });
+    listTeacherTopics.mockResolvedValue({ items: [{ id: 'transformer', name: 'Transformer', description: '', status: 'enabled', knowledge_points: [] }], total: 1 });
+    listTeacherKnowledgePoints.mockResolvedValue({ topic: { id: 'transformer', name: 'Transformer', description: '', status: 'enabled', knowledge_points: [] }, items: [{ id: 'attention', name: '注意力', markdown: '# Attention', status: 'enabled', sort_order: 0 }], total: 1 });
   });
 
   it("loads and saves the teacher catalog in the authorized default workspace", async () => {
@@ -63,13 +67,11 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(screen.getByRole("status")).toHaveTextContent("已保存并同步到后端。");
   });
 
-  it("selects a topic on single click and opens its detail page on double click", async () => {
+  it("opens a topic detail page on single click", async () => {
     history.replaceState({}, "", "/teacher/topics"); render(<TeacherWorkspace />);
     const tile = await screen.findByRole("button", { name: /Transformer/ });
     expect(screen.queryByDisplayValue("Transformer")).not.toBeInTheDocument();
     fireEvent.click(tile);
-    expect(tile).toHaveClass("selected");
-    fireEvent.doubleClick(tile);
     expect(await screen.findByRole("heading", { name: /Transformer/ })).toBeVisible();
     expect(screen.getByRole("button", { name: "返回主题目录" })).toBeVisible();
     expect(screen.getByRole("button", { name: "新建知识点" })).toBeVisible();
@@ -79,7 +81,7 @@ describe("TeacherWorkspace catalog CRUD", () => {
 
   it("creates, edits and deletes knowledge points from dedicated pages", async () => {
     history.replaceState({}, "", "/teacher/topics"); render(<TeacherWorkspace />);
-    fireEvent.doubleClick(await screen.findByRole("button", { name: /Transformer/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Transformer/ }));
     expect(await screen.findByRole("button", { name: /注意力/ })).toBeVisible();
     fireEvent.change(screen.getByLabelText("主题名称"), { target: { value: "新版 Transformer" } });
     fireEvent.click(screen.getByRole("button", { name: "新建知识点" }));
@@ -193,4 +195,17 @@ describe("TeacherWorkspace catalog CRUD", () => {
 
     expect(await screen.findByText("从提问统计发现教学线索")).toBeVisible();
   });
+  it("prompts before leaving with unsaved catalog changes", async () => {
+    history.replaceState({}, "", "/teacher/topics");
+    render(<TeacherWorkspace />);
+
+    fireEvent.change(await screen.findByPlaceholderText("例如：Transformer"), { target: { value: "未保存主题" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建主题" }));
+    fireEvent.click(screen.getByRole("button", { name: /教师首页/ }));
+
+    expect(await screen.findByRole("alertdialog", { name: "有未保存的修改" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
 });

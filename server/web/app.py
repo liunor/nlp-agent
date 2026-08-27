@@ -57,6 +57,10 @@ from server.web.contracts import (
     FeedbackReadBody,
     FeedbackReplyBody,
     FeedbackUpdateBody,
+    FeedbackSortValue,
+    FeedbackCategoryValue,
+    FeedbackStatusValue,
+    FeedbackPriorityValue,
     McpServerBody,
     SkillBody,
     WorkerProfileBody,
@@ -1001,12 +1005,7 @@ def create_app(
         async with session_factory() as session:
             async with session.begin():
                 try:
-                    try:
-                        return await submit_feedback(session, principal, body.body, category=body.category)
-                    except TypeError as te:
-                        if "category" in str(te):
-                            return await submit_feedback(session, principal, body.body)  # type: ignore[call-arg]
-                        raise
+                    return await submit_feedback(session, principal, body.body, category=body.category)
                 except ValueError as exc:
                     if str(exc) == "feedback_daily_limit":
                         return _problem(request, status_code=429, code="feedback_daily_limit", title="Daily feedback limit reached", detail="每天最多可发送 3 条建议，明天再试。")
@@ -1027,10 +1026,22 @@ def create_app(
             # per-user single thread: return own thread if exists
             from sqlalchemy import select as _select
             from server.infrastructure.mysql.models import FeedbackThreadModel as _FT
+            from server.infrastructure.mysql.models import UserModel as _UM
 
             thread = await session.scalar(_select(_FT).where(_FT.user_id == principal.user_id))
             if thread is None:
-                return {"thread_id": None, "messages": [], "status": "open", "category": "other", "priority": "medium"}
+                user = await session.scalar(_select(_UM).where(_UM.id == principal.user_id))
+                return {
+                    "thread_id": None,
+                    "user_id": principal.user_id,
+                    "username": user.username if user else "",
+                    "display_name": user.display_name if user else "",
+                    "status": "open",
+                    "category": "other",
+                    "priority": "medium",
+                    "updated_at": None,
+                    "messages": [],
+                }
             return await get_feedback_thread(session, thread.id)
 
     @app.get("/api/v1/developer/feedback", tags=["developer"])
@@ -1040,10 +1051,10 @@ def create_app(
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
         q: str | None = Query(default=None, max_length=64),
-        status: str | None = Query(default=None, max_length=32),
-        category: str | None = Query(default=None, max_length=32),
-        priority: str | None = Query(default=None, max_length=16),
-        sort: str | None = Query(default=None, max_length=16),
+        status: FeedbackStatusValue | None = Query(default=None),
+        category: FeedbackCategoryValue | None = Query(default=None),
+        priority: FeedbackPriorityValue | None = Query(default=None),
+        sort: FeedbackSortValue | None = Query(default=None),
     ):
         authorization_service.require_resource(
             principal, Permission.LEARNING_FEEDBACK_READ, ResourceRef("feedback")
@@ -1051,15 +1062,9 @@ def create_app(
         session_factory = request.app.state.gateway.authorization_session_factory
         async with session_factory() as session:
             try:
-                try:
-                    return await list_feedback_threads(session, limit=limit, offset=offset, search=q, status=status, category=category, priority=priority, sort=sort)
-                except TypeError as te:
-                    if "status" in str(te) or "category" in str(te):
-                        # Backward compat for test stubs that only accept limit/offset/search
-                        return await list_feedback_threads(session, limit=limit, offset=offset, search=q)  # type: ignore[call-arg]
-                    raise
+                return await list_feedback_threads(session, limit=limit, offset=offset, search=q, status=status, category=category, priority=priority, sort=sort)
             except ValueError as exc:
-                return _problem(request, status_code=400, code="invalid_feedback_filter", title=str(exc))
+                return _problem(request, status_code=422, code="invalid_feedback_filter", title=str(exc))
 
     @app.get("/api/v1/developer/feedback/{thread_id}", tags=["developer"])
     async def get_feedback_detail(thread_id: str, request: Request, principal: Principal):
@@ -1089,7 +1094,7 @@ def create_app(
 
     @app.delete("/api/v1/developer/feedback/{thread_id}", tags=["developer"])
     async def delete_feedback(thread_id: str, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_READ)
+        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_WRITE)
         session_factory = request.app.state.gateway.authorization_session_factory
         async with session_factory() as session:
             async with session.begin():
@@ -1101,7 +1106,7 @@ def create_app(
 
     @app.patch("/api/v1/developer/feedback/{thread_id}", tags=["developer"])
     async def patch_feedback(thread_id: str, body: FeedbackUpdateBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require_resource(principal, Permission.LEARNING_FEEDBACK_READ, ResourceRef("feedback"))
+        authorization_service.require_resource(principal, Permission.LEARNING_FEEDBACK_WRITE, ResourceRef("feedback"))
         session_factory = request.app.state.gateway.authorization_session_factory
         async with session_factory() as session:
             async with session.begin():
@@ -1110,12 +1115,12 @@ def create_app(
                 except LookupError:
                     return _problem(request, status_code=404, code="feedback_not_found", title="Feedback thread not found")
                 except ValueError as exc:
-                    return _problem(request, status_code=400, code="invalid_feedback_update", title=str(exc))
+                    return _problem(request, status_code=422, code="invalid_feedback_update", title=str(exc))
                 return result
 
     @app.post("/api/v1/developer/feedback/{thread_id}/reply", tags=["developer"])
     async def reply_feedback_route(thread_id: str, body: FeedbackReplyBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require_resource(principal, Permission.LEARNING_FEEDBACK_READ, ResourceRef("feedback"))
+        authorization_service.require_resource(principal, Permission.LEARNING_FEEDBACK_WRITE, ResourceRef("feedback"))
         session_factory = request.app.state.gateway.authorization_session_factory
         async with session_factory() as session:
             async with session.begin():
@@ -1124,7 +1129,7 @@ def create_app(
                 except LookupError:
                     return _problem(request, status_code=404, code="feedback_not_found", title="Feedback thread not found")
                 except ValueError as exc:
-                    return _problem(request, status_code=400, code="invalid_feedback_reply", title=str(exc))
+                    return _problem(request, status_code=422, code="invalid_feedback_reply", title=str(exc))
                 return result
 
     @app.get("/api/v1/protocol", tags=["runtime"])
@@ -1328,6 +1333,42 @@ def create_app(
     @app.get("/api/v1/teacher/catalog/{workspace_id}", tags=["teacher"])
     async def get_teacher_catalog(workspace_id: str, request: Request, principal: Principal):
         return await teacher_service.catalog(principal, request.app.state.gateway, workspace_id)
+
+    @app.get("/api/v1/teacher/catalog/{workspace_id}/topics", tags=["teacher"])
+    async def get_teacher_topics(
+        workspace_id: str,
+        request: Request,
+        principal: Principal,
+        limit: int = Query(default=12, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ):
+        result = await teacher_service.catalog(principal, request.app.state.gateway, workspace_id)
+        topics = result["catalog"]["topics"]
+        return {"items": topics[offset:offset + limit], "total": len(topics)}
+
+    @app.get("/api/v1/teacher/catalog/{workspace_id}/topics/{topic_id}/knowledge-points", tags=["teacher"])
+    async def get_topic_knowledge_points(
+        workspace_id: str,
+        topic_id: str,
+        request: Request,
+        principal: Principal,
+        limit: int = Query(default=12, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ):
+        result = await teacher_service.catalog(principal, request.app.state.gateway, workspace_id)
+        topic = next(
+            (item for item in result["catalog"]["topics"] if item["id"] == topic_id),
+            None,
+        )
+        if topic is None:
+            return _problem(request, status_code=404, code="topic_not_found", title="Topic not found")
+        points = topic["knowledge_points"]
+        page = points[offset:offset + limit]
+        return {
+            "topic": {**topic, "knowledge_points": page},
+            "items": page,
+            "total": len(points),
+        }
 
     @app.get("/api/v1/learning/catalog/{workspace_id}", tags=["learning"])
     async def get_learning_catalog(workspace_id: str, request: Request, principal: Principal):

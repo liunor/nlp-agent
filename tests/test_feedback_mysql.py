@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -22,7 +23,14 @@ from core.identity import AuthenticatedPrincipal
 from server.infrastructure.mysql import DatabaseConfig, create_engine, create_session_factory
 from server.user.schemas import UserCreate
 from server.user.service import UserService
-from server.web.feedback import list_feedback_threads, mark_feedback_read, submit_feedback
+from server.web.feedback import (
+    delete_feedback_thread,
+    list_feedback_threads,
+    mark_feedback_read,
+    reply_feedback,
+    submit_feedback,
+    update_feedback_thread,
+)
 
 
 @pytest.fixture
@@ -236,3 +244,113 @@ async def test_duplicate_thread_per_user_is_rejected_by_unique_constraint(mysql_
                     {"id": str(uuid4()), "user_id": user_id},
                 )
 
+
+@pytest.mark.asyncio
+async def test_update_feedback_thread_persists_fields_and_returns_full_thread(
+    mysql_session_factory,
+) -> None:
+    factory = mysql_session_factory
+    user_id = await _create_user(factory, f"fbup{uuid4().hex[:10]}")
+    submitted = await _submit(factory, user_id, "update me")
+
+    async with factory() as session:
+        async with session.begin():
+            result = await update_feedback_thread(
+                session,
+                submitted["thread_id"],
+                status="planned",
+                category="bug",
+                priority="high",
+            )
+
+    assert result["thread_id"] == submitted["thread_id"]
+    assert result["status"] == "planned"
+    assert result["category"] == "bug"
+    assert result["priority"] == "high"
+    assert result["username"]
+    assert result["messages"][0]["id"] == submitted["message"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_unread_sort_orders_across_pages_before_pagination(
+    mysql_session_factory,
+) -> None:
+    factory = mysql_session_factory
+    unread_user = await _create_user(factory, f"fbsu{uuid4().hex[:10]}")
+    read_user = await _create_user(factory, f"fbsr{uuid4().hex[:10]}")
+    unread = await _submit(factory, unread_user, "unread first")
+    read = await _submit(factory, read_user, "already read")
+    async with factory() as session:
+        async with session.begin():
+            await mark_feedback_read(session, read["thread_id"], read["message"]["id"])
+
+    async with factory() as session:
+        first_page = await list_feedback_threads(session, limit=1, offset=0, sort="unread")
+        second_page = await list_feedback_threads(session, limit=1, offset=1, sort="unread")
+
+    assert first_page["items"][0]["thread_id"] == unread["thread_id"]
+    assert second_page["items"][0]["thread_id"] == read["thread_id"]
+
+
+@pytest.mark.asyncio
+async def test_conditional_mark_read_does_not_regress_newer_read_time(
+    mysql_session_factory,
+) -> None:
+    factory = mysql_session_factory
+    user_id = await _create_user(factory, f"fbfu{uuid4().hex[:10]}")
+    submitted = await _submit(factory, user_id, "stale update")
+    future = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1)
+
+    async with factory() as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "UPDATE nlp_feedback_threads SET developer_read_at = :ts "
+                    "WHERE id = :thread_id"
+                ),
+                {"ts": future, "thread_id": submitted["thread_id"]},
+            )
+
+    async with factory() as session:
+        async with session.begin():
+            await mark_feedback_read(
+                session, submitted["thread_id"], submitted["message"]["id"]
+            )
+
+    async with factory() as session:
+        read_at = await session.scalar(
+            text(
+                "SELECT developer_read_at FROM nlp_feedback_threads "
+                "WHERE id = :thread_id"
+            ),
+            {"thread_id": submitted["thread_id"]},
+        )
+    assert read_at == future
+
+
+@pytest.mark.asyncio
+async def test_reply_and_delete_feedback_thread(mysql_session_factory) -> None:
+    factory = mysql_session_factory
+    student_id = await _create_user(factory, f"fbrs{uuid4().hex[:10]}")
+    developer_id = await _create_user(factory, f"fbrd{uuid4().hex[:10]}")
+    submitted = await _submit(factory, student_id, "needs reply")
+
+    async with factory() as session:
+        async with session.begin():
+            reply = await reply_feedback(
+                session,
+                _principal(developer_id),
+                submitted["thread_id"],
+                "handled",
+            )
+    assert reply["message"]["sender_type"] == "developer"
+
+    async with factory() as session:
+        async with session.begin():
+            await delete_feedback_thread(session, submitted["thread_id"])
+
+    async with factory() as session:
+        remaining = await list_feedback_threads(session)
+    assert all(
+        item["thread_id"] != submitted["thread_id"] for item in remaining["items"]
+    )

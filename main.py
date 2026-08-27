@@ -208,9 +208,9 @@ if __name__ == "__main__":
     elif command in {"bootstrap-developer", "bootstrap_developer"}:
         asyncio.run(bootstrap_developer())
     elif command in {"bootstrap-teacher", "bootstrap_teacher"}:
-        from scripts.bootstrap_teacher import bootstrap
+        from scripts.bootstrap_teacher import main as bootstrap_teacher_main
 
-        asyncio.run(bootstrap(None, None, None))
+        bootstrap_teacher_main(sys.argv[2:])
     elif command in {"chat", "--chat", "-c"}:
         asyncio.run(main())
     else:

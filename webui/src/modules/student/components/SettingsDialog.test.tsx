@@ -5,8 +5,8 @@ import { loadFeedback } from "@/shared/utils/feedback";
 import { APP_VERSION } from "@/shared/version";
 import type { UserSettings } from "@/shared/types";
 
-const { listPublishedReleaseNotesMock, submitFeedbackMock } = vi.hoisted(() => ({ listPublishedReleaseNotesMock: vi.fn(), submitFeedbackMock: vi.fn() }));
-vi.mock("@/platform/http/api", () => ({ api: { listPublishedReleaseNotes: listPublishedReleaseNotesMock, submitFeedback: submitFeedbackMock } }));
+const { listPublishedReleaseNotesMock, submitFeedbackMock, getFeedbackDailyStateMock, getOwnFeedbackMock } = vi.hoisted(() => ({ listPublishedReleaseNotesMock: vi.fn(), submitFeedbackMock: vi.fn(), getFeedbackDailyStateMock: vi.fn(), getOwnFeedbackMock: vi.fn() }));
+vi.mock("@/platform/http/api", () => ({ api: { listPublishedReleaseNotes: listPublishedReleaseNotesMock, submitFeedback: submitFeedbackMock, getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock } }));
 
 const settings: UserSettings = {
   theme: "system",
@@ -39,6 +39,10 @@ describe("SettingsDialog", () => {
     listPublishedReleaseNotesMock.mockResolvedValue({ items: [] });
     submitFeedbackMock.mockReset();
     submitFeedbackMock.mockResolvedValue({ thread_id: "thread-1" });
+    getFeedbackDailyStateMock.mockReset();
+    getFeedbackDailyStateMock.mockResolvedValue({ used: 0, remaining: 3, limit: 3, today_start_utc: "2026-08-26T16:00:00Z" });
+    getOwnFeedbackMock.mockReset();
+    getOwnFeedbackMock.mockResolvedValue({ thread_id: null, user_id: "u1", username: "student", display_name: "Student", status: "open", category: "other", priority: "medium", updated_at: null, messages: [] });
   });
 
   it("renders the current version from the build-injected constant", () => {

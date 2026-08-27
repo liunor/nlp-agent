@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import Row, func, or_, select
+from sqlalchemy import Row, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.identity import AuthenticatedPrincipal
@@ -25,16 +25,6 @@ FEEDBACK_CATEGORIES = ("feature", "ux", "bug", "other")
 FEEDBACK_PRIORITIES = ("low", "medium", "high")
 FEEDBACK_DAILY_LIMIT = 3
 _BEIJING_TZ = timezone(timedelta(hours=8))
-# Thread-level category mapping for student submission; must stay in sync with FEEDBACK_CATEGORIES check.
-CATEGORY_ALIASES = {
-    "feature": "feature",
-    "ux": "ux",
-    "bug": "bug",
-    "other": "other",
-    # Backwards compat for older UI placeholders
-    "suggestion": "feature",
-    "question": "other",
-}
 
 
 def _iso_utc(value: datetime) -> str:
@@ -57,7 +47,9 @@ def _normalize_category(value: str | None) -> str | None:
     v = value.strip().lower()
     if not v:
         return None
-    return CATEGORY_ALIASES.get(v)
+    if v not in FEEDBACK_CATEGORIES:
+        raise ValueError(f"invalid category: {value}")
+    return v
 
 
 def _thread_payload(thread: FeedbackThreadModel, user: UserModel, latest: Row | None, unread_count: int) -> dict:
@@ -193,16 +185,8 @@ async def update_feedback_thread(
         thread.priority = priority  # type: ignore[assignment]
     thread.updated_at = _now()
     await session.flush()
-    # Return fresh row for response
-    user = await session.scalar(select(UserModel).where(UserModel.id == thread.user_id))
-    return {
-        "thread_id": thread.id,
-        "status": thread.status,  # type: ignore[attr-defined]
-        "category": thread.category,  # type: ignore[attr-defined]
-        "priority": thread.priority,  # type: ignore[attr-defined]
-        "updated_at": _iso_utc(thread.updated_at),
-        "user_id": user.id if user else thread.user_id,
-    }
+    # Return the full thread contract so PATCH responses match the frontend type.
+    return await get_feedback_thread(session, thread.id)
 
 
 def _escape_like(value: str) -> str:
@@ -222,25 +206,38 @@ async def list_feedback_threads(
     priority: str | None = None,
     sort: str | None = None,
 ) -> dict:
-    # Aggregate queries keep the cost constant per page: one page of threads,
-    # one window-function pass for each thread's latest message, one GROUP BY
-    # for unread counts, and one COUNT(*) — never 2N+1 round trips.
     normalized = (search or "").strip().lower()
-    # Sorting: latest (updated_at desc, default), unread (unread first), oldest
     sort_key = (sort or "latest").strip().lower()
+    if sort_key not in ("latest", "oldest", "unread"):
+        raise ValueError(f"invalid sort: {sort}")
     if status and status not in FEEDBACK_STATUSES:
         raise ValueError(f"invalid status: {status}")
-    if category and _normalize_category(category) not in FEEDBACK_CATEGORIES:  # type: ignore
+    norm_cat = _normalize_category(category) if category else None
+    if norm_cat is not None and norm_cat not in FEEDBACK_CATEGORIES:
         raise ValueError(f"invalid category: {category}")
     if priority and priority not in FEEDBACK_PRIORITIES:
         raise ValueError(f"invalid priority: {priority}")
-    order_clause = [FeedbackThreadModel.updated_at.desc(), FeedbackThreadModel.id.desc()]
-    if sort_key == "oldest":
+    unread_subq = (
+        select(func.count(FeedbackMessageModel.id))
+        .where(
+            FeedbackMessageModel.thread_id == FeedbackThreadModel.id,
+            FeedbackMessageModel.sender_type == _STUDENT_SENDER_TYPE,
+            or_(
+                FeedbackThreadModel.developer_read_at.is_(None),
+                FeedbackMessageModel.created_at > FeedbackThreadModel.developer_read_at,
+            ),
+        )
+        .correlate(FeedbackThreadModel)
+        .scalar_subquery()
+    )
+    if sort_key == "unread":
+        order_clause = [unread_subq.desc(), FeedbackThreadModel.updated_at.desc(), FeedbackThreadModel.id.desc()]
+    elif sort_key == "oldest":
         order_clause = [FeedbackThreadModel.updated_at.asc(), FeedbackThreadModel.id.asc()]
-    # unread sort is applied after we know unread counts; default order kept for query,
-    # Python post-sort will reorder.
+    else:
+        order_clause = [FeedbackThreadModel.updated_at.desc(), FeedbackThreadModel.id.desc()]
     thread_query = (
-        select(FeedbackThreadModel, UserModel)
+        select(FeedbackThreadModel, UserModel, unread_subq.label("unread_count"))
         .join(UserModel, UserModel.id == FeedbackThreadModel.user_id)
         .order_by(*order_clause)
         .limit(limit)
@@ -262,8 +259,7 @@ async def list_feedback_threads(
     if status:
         thread_query = thread_query.where(FeedbackThreadModel.status == status)
         total_query = total_query.where(FeedbackThreadModel.status == status)
-    if category:
-        norm_cat = _normalize_category(category) or category
+    if norm_cat:
         thread_query = thread_query.where(FeedbackThreadModel.category == norm_cat)
         total_query = total_query.where(FeedbackThreadModel.category == norm_cat)
     if priority:
@@ -273,9 +269,8 @@ async def list_feedback_threads(
     total = int(await session.scalar(total_query) or 0)
     rows = (await session.execute(thread_query)).all()
 
-    thread_ids = [thread.id for thread, _user in rows]
+    thread_ids = [thread.id for thread, _user, _unread in rows]
     latest_by_thread: dict[str, Row] = {}
-    unread_by_thread: dict[str, int] = {}
     if thread_ids:
         ranked = (
             select(
@@ -287,7 +282,6 @@ async def list_feedback_threads(
                 func.row_number()
                 .over(
                     partition_by=FeedbackMessageModel.thread_id,
-                    # id breaks ties when two messages share one microsecond.
                     order_by=(FeedbackMessageModel.created_at.desc(), FeedbackMessageModel.id.desc()),
                 )
                 .label("rn"),
@@ -297,30 +291,11 @@ async def list_feedback_threads(
         )
         latest_rows = await session.execute(select(ranked).where(ranked.c.rn == 1))
         latest_by_thread = {row.thread_id: row for row in latest_rows}
-        unread_rows = await session.execute(
-            select(FeedbackMessageModel.thread_id, func.count(FeedbackMessageModel.id))
-            .join(FeedbackThreadModel, FeedbackThreadModel.id == FeedbackMessageModel.thread_id)
-            .where(
-                FeedbackMessageModel.thread_id.in_(thread_ids),
-                FeedbackMessageModel.sender_type == _STUDENT_SENDER_TYPE,
-                or_(
-                    FeedbackThreadModel.developer_read_at.is_(None),
-                    FeedbackMessageModel.created_at > FeedbackThreadModel.developer_read_at,
-                ),
-            )
-            .group_by(FeedbackMessageModel.thread_id)
-        )
-        unread_by_thread = {thread_id: int(count) for thread_id, count in unread_rows}
 
     result = []
-    for thread, user in rows:
+    for thread, user, unread_count in rows:
         latest = latest_by_thread.get(thread.id)
-        result.append(_thread_payload(thread, user, latest, unread_by_thread.get(thread.id, 0)))
-    # Python-side unread sort: unread desc, then updated_at desc
-    if sort_key == "unread":
-        result.sort(key=lambda x: (-x["unread_count"], x["updated_at"]), reverse=False)
-        # Note: updated_at is iso string; sorting by it as string works for UTC iso, but we already
-        # have rows ordered by updated_at desc; unread sort overrides.
+        result.append(_thread_payload(thread, user, latest, int(unread_count)))
     return {"items": result, "total": total}
 
 
@@ -358,9 +333,17 @@ async def mark_feedback_read(
     )
     if message is None:
         raise LookupError(read_through_message_id)
-    if thread.developer_read_at is None or message.created_at > thread.developer_read_at:
-        thread.developer_read_at = message.created_at
-    await session.flush()
+    await session.execute(
+        update(FeedbackThreadModel)
+        .where(
+            FeedbackThreadModel.id == thread_id,
+            or_(
+                FeedbackThreadModel.developer_read_at.is_(None),
+                FeedbackThreadModel.developer_read_at < message.created_at,
+            ),
+        )
+        .values(developer_read_at=message.created_at)
+    )
 
 
 async def delete_feedback_thread(session: AsyncSession, thread_id: str) -> None:

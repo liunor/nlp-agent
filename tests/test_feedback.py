@@ -54,7 +54,7 @@ async def test_feedback_list_aggregates_latest_and_unread_per_page() -> None:
             "created_at": now,
         })(),
     ])
-    session = _Session(scalars=[1], results=[_Result([(thread, user)]), latest, _Result([("thread-1", 3)])])
+    session = _Session(scalars=[1], results=[_Result([(thread, user, 3)]), latest])
 
     result = await list_feedback_threads(session, limit=50, offset=0)
 
@@ -66,13 +66,12 @@ async def test_feedback_list_aggregates_latest_and_unread_per_page() -> None:
     assert row["latest"]["created_at"] == "2026-08-18T12:00:00+00:00"
     assert row["updated_at"] == "2026-08-18T12:00:00+00:00"
 
-    # Exactly four statements regardless of thread count:
-    # total COUNT, page query, latest-message window, unread GROUP BY.
-    assert len(session.statements) == 4
-    unread_sql = _sql(session.statements[-1])
-    assert "COUNT" in unread_sql.upper()
-    assert "sender_type" in unread_sql and "'student'" in unread_sql
-    assert "developer_read_at IS NULL" in unread_sql
+    # Three statements: total COUNT, page query with correlated unread count, latest window.
+    assert len(session.statements) == 3
+    page_sql = _sql(session.statements[1])
+    assert "COUNT" in page_sql.upper()
+    assert "sender_type" in page_sql and "'student'" in page_sql
+    assert "developer_read_at IS NULL" in page_sql
 
 
 @pytest.mark.asyncio
@@ -109,16 +108,15 @@ async def test_feedback_list_read_cutoff_scopes_unread_to_developer_read_at() ->
     session = _Session(
         scalars=[1],
         results=[
-            _Result([(thread, user)]),
+            _Result([(thread, user, 2)]),
             _Result([]),
-            _Result([("thread-2", 2)]),
         ],
     )
 
     result = await list_feedback_threads(session)
 
-    unread_sql = _sql(session.statements[-1])
-    assert "nlp_feedback_messages.created_at > nlp_feedback_threads.developer_read_at" in unread_sql
+    page_sql = _sql(session.statements[1])
+    assert "nlp_feedback_messages.created_at > nlp_feedback_threads.developer_read_at" in page_sql
     assert result["items"][0]["unread_count"] == 2
 
 

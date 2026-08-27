@@ -158,6 +158,7 @@ export function Feedback({
   offset,
   search,
   loadError,
+  loading = false,
   selectedId,
   onSelect,
   onSearchChange,
@@ -179,6 +180,7 @@ export function Feedback({
   offset: number;
   search: string;
   loadError: string;
+  loading?: boolean;
   selectedId: string | null;
   onSelect: (threadId: string) => void;
   onSearchChange: (value: string) => void;
@@ -325,7 +327,7 @@ export function Feedback({
     {patchError && <p className="developer-feedback-error" role="alert">更新失败：{patchError}</p>}
     <div className="developer-feedback">
       <div className="developer-feedback-list">
-        {threads.length === 0 && loadError ? <div className="developer-feedback-failed"><Inbox size={20} /><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <div className="developer-feedback-empty"><Inbox size={22} /><strong>{search || statusFilter || categoryFilter || priorityFilter ? "没有匹配的反馈" : "暂无反馈"}</strong><p>{search || statusFilter || categoryFilter || priorityFilter ? "调整筛选条件或搜索" : "学生提交的反馈会出现在这里"}</p></div> : <>
+        {loading && threads.length === 0 ? <div className="developer-feedback-empty"><RefreshCw className="spin" /><strong>正在加载反馈…</strong></div> : threads.length === 0 && loadError ? <div className="developer-feedback-failed"><Inbox size={20} /><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <div className="developer-feedback-empty"><Inbox size={22} /><strong>{search || statusFilter || categoryFilter || priorityFilter ? "没有匹配的反馈" : "暂无反馈"}</strong><p>{search || statusFilter || categoryFilter || priorityFilter ? "调整筛选条件或搜索" : "学生提交的反馈会出现在这里"}</p></div> : <>
           {loadError && <p className="developer-feedback-stale">刷新失败：{loadError}，正在显示上次结果</p>}
           {threads.map((item) => {
             const name = item.display_name || item.username;
@@ -490,6 +492,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [feedbackThreads, setFeedbackThreads] = useState<FeedbackThreadSummary[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedbackSelectedId, setFeedbackSelectedId] = useState<string | null>(null);
   const [feedbackTotal, setFeedbackTotal] = useState(0);
   const [feedbackOffset, setFeedbackOffset] = useState(0);
@@ -513,27 +516,19 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   useEffect(() => { feedbackSortRef.current = feedbackSort; }, [feedbackSort]);
   const updateFeedbackThreads = useCallback((items: FeedbackThreadSummary[]) => {
     setFeedbackThreads(items);
-    // Only seed a selection when none exists yet: paging or filtering must not
-    // silently reselect (and thereby auto-mark-read) whatever thread tops the
-    // new page.
-    setFeedbackSelectedId((current) => current ?? items[0]?.thread_id ?? null);
   }, []);
   const fetchFeedback = useCallback(async (nextOffset: number, nextSearch: string, nextStatus: string, nextCategory: string, nextPriority: string, nextSort: string) => {
+    setFeedbackLoading(true);
+    setFeedbackThreads([]);
     try {
       const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: nextOffset, q: nextSearch || undefined, status: (nextStatus || undefined) as never, category: (nextCategory || undefined) as never, priority: (nextPriority || undefined) as never, sort: nextSort || undefined });
       updateFeedbackThreads(result.items);
       setFeedbackTotal(result.total);
       setFeedbackLoadError("");
-      // If the current selection was deleted externally (or by another tab), clear it.
-      setFeedbackSelectedId((current) => {
-        if (current && !result.items.some((item) => item.thread_id === current)) {
-          // Keep the new page's first item if we lost selection, but avoid auto-mark-read loops
-          // by not forcing a selection when the new page is empty.
-          return result.items[0]?.thread_id ?? null;
-        }
-        if (!current) return result.items[0]?.thread_id ?? null;
-        return current;
-      });
+      // Clear a stale selection without auto-selecting the new page's first row.
+      setFeedbackSelectedId((current) =>
+        current && !result.items.some((item) => item.thread_id === current) ? null : current,
+      );
       // If offset is beyond total (e.g. after delete), correct it.
       if (result.total > 0 && nextOffset >= result.total) {
         const corrected = Math.max(0, Math.floor((result.total - 1) / FEEDBACK_PAGE_SIZE) * FEEDBACK_PAGE_SIZE);
@@ -542,9 +537,9 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
       if (result.total === 0 && nextOffset !== 0) setFeedbackOffset(0);
     }
     catch (reason) {
-      // Keep the last list while offline, but surface the failure instead of
-      // letting a 403/500 read as "no feedback yet".
       setFeedbackLoadError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setFeedbackLoading(false);
     }
   }, [updateFeedbackThreads]);
   const refreshFeedback = useCallback(async () => {
@@ -583,8 +578,6 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     setFeedbackTotal(result.total);
     setFeedbackLoadError("");
     if (result.total === 0) setFeedbackOffset(0);
-    // Seed selection if we cleared it
-    setFeedbackSelectedId((current) => current ?? result.items[0]?.thread_id ?? null);
   }, [fetchFeedback, updateFeedbackThreads]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -643,7 +636,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const content = useMemo(() => {
     // Pages that own their data sources render regardless of the snapshot.
     if (page === "release-notes") return <ReleaseNotes />;
-    if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} onDelete={handleDeleteFeedback} refresh={refreshFeedback} statusFilter={feedbackStatus} categoryFilter={feedbackCategory} priorityFilter={feedbackPriority} sort={feedbackSort} onStatusFilterChange={changeFeedbackStatus} onCategoryFilterChange={changeFeedbackCategory} onPriorityFilterChange={changeFeedbackPriority} onSortChange={changeFeedbackSort} />;
+    if (page === "feedback") return <Feedback loading={feedbackLoading} threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} onDelete={handleDeleteFeedback} refresh={refreshFeedback} statusFilter={feedbackStatus} categoryFilter={feedbackCategory} priorityFilter={feedbackPriority} sort={feedbackSort} onStatusFilterChange={changeFeedbackStatus} onCategoryFilterChange={changeFeedbackCategory} onPriorityFilterChange={changeFeedbackPriority} onSortChange={changeFeedbackSort} />;
     if (page === "users") return <UserManagementPage />;
     if (page === "roles") return <RoleManagementPageV2 />;
     if (page === "menus") return <MenuManagementPageV2 />;
@@ -658,7 +651,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
     return <Overview snapshot={snapshot} />;
-  }, [changeFeedbackSearch, changeFeedbackCategory, changeFeedbackPriority, changeFeedbackStatus, changeFeedbackSort, feedbackCategory, feedbackLoadError, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, handleDeleteFeedback, page, refreshFeedback, snapshot, snapshotError, load]);
+  }, [changeFeedbackSearch, changeFeedbackCategory, changeFeedbackPriority, changeFeedbackStatus, changeFeedbackSort, feedbackCategory, feedbackLoadError, feedbackLoading, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, handleDeleteFeedback, page, refreshFeedback, snapshot, snapshotError, load]);
   const accessDenied = !loading && visiblePages.size > 0 && !visiblePages.has(page);
   return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void load(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
 }

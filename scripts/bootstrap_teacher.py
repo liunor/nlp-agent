@@ -31,8 +31,7 @@ async def bootstrap(
     from sqlalchemy import select
 
     from server.infrastructure.mysql import MySQLRuntime
-    from server.infrastructure.mysql.models import UserModel
-    from server.rbac.service import rbac_service
+    from server.infrastructure.mysql.models import RoleModel, UserModel, UserRoleModel
     from server.user.schemas import UserCreate
     from server.user.service import UserService
 
@@ -80,23 +79,43 @@ async def bootstrap(
                 await service.change_password(user.id, password)
                 action = "updated"
 
-            await rbac_service.replace_user_roles(
-                session,
-                user_id=user.id,
-                role_codes={"teacher"},
-                assigned_by_user_id=None,
+            teacher_role = await session.scalar(
+                select(RoleModel).where(
+                    RoleModel.code == "teacher", RoleModel.status == "active"
+                )
             )
+            if teacher_role is None:
+                raise SystemExit("the built-in teacher role is missing or disabled")
+            current_roles = set(
+                await session.scalars(
+                    select(RoleModel.code)
+                    .join(UserRoleModel, UserRoleModel.role_id == RoleModel.id)
+                    .where(
+                        UserRoleModel.user_id == user.id,
+                        RoleModel.status == "active",
+                    )
+                )
+            )
+            if "teacher" not in current_roles:
+                session.add(
+                    UserRoleModel(
+                        user_id=user.id,
+                        role_id=teacher_role.id,
+                        assigned_by_user_id=None,
+                    )
+                )
+                user.authorization_version += 1
             print(f"teacher account {action}: {user.username}")
     finally:
         await runtime.close()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Bootstrap a Pro_NLP teacher account")
     parser.add_argument("--username", default="")
     parser.add_argument("--display-name", default="")
     parser.add_argument("--password", default="")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     asyncio.run(
         bootstrap(
             args.username or None, args.display_name or None, args.password or None

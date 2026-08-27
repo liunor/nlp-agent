@@ -1,4 +1,4 @@
-import type { AuthSession, AuthorizationAuditRecord, DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { AuthSession, AuthorizationAuditRecord, CourseTopic, DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, KnowledgePoint, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
 import type { FeedbackDailyState, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
@@ -150,6 +150,8 @@ export const api = {
       body: JSON.stringify(goals),
     }),
   getTeacherCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}`),
+  listTeacherTopics: (workspaceId = "default", limit = 12, offset = 0) => request<{ items: CourseTopic[]; total: number }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/topics?limit=${limit}&offset=${offset}`),
+  listTeacherKnowledgePoints: (workspaceId: string, topicId: string, limit = 12, offset = 0) => request<{ topic: CourseTopic; items: KnowledgePoint[]; total: number }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/topics/${encodeURIComponent(topicId)}/knowledge-points?limit=${limit}&offset=${offset}`),
   updateTeacherCatalog: (workspaceId: string, catalog: Omit<TeacherCatalog, "workspace_id">) => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}`, { method: "PUT", body: JSON.stringify(catalog) }),
   saveExerciseBlueprint: (workspaceId: string, blueprint: TeacherCatalog["exercise_blueprints"][number]) => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/exercise-blueprints/${encodeURIComponent(blueprint.id)}`, { method: "PUT", body: JSON.stringify(blueprint) }),
   saveReviewBlueprint: (workspaceId: string, blueprint: TeacherCatalog["review_blueprints"][number]) => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/review-blueprints/${encodeURIComponent(blueprint.id)}`, { method: "PUT", body: JSON.stringify(blueprint) }),

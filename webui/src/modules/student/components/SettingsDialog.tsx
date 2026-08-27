@@ -68,10 +68,8 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   }, [open, section, releaseNotes, releaseNotesAttempt]);
   useEffect(() => {
     if (!open || section !== "feedback" || !canSubmitFeedback) return;
-    const dailyFn = (api as unknown as { getFeedbackDailyState?: () => Promise<{ used: number; remaining: number; limit: number }> }).getFeedbackDailyState;
-    if (dailyFn) void dailyFn.call(api).then(setFeedbackDaily).catch(() => setFeedbackDaily(null));
-    const ownFn = (api as unknown as { getOwnFeedback?: () => Promise<FeedbackThread & { thread_id: string | null }> }).getOwnFeedback;
-    if (ownFn) void ownFn.call(api).then((thread) => {
+    void api.getFeedbackDailyState().then(setFeedbackDaily).catch(() => setFeedbackDaily(null));
+    void api.getOwnFeedback().then((thread) => {
       if (thread.thread_id) setFeedbackHistory(thread as FeedbackThread);
       else setFeedbackHistory(null);
       setFeedbackHistoryError("");
@@ -200,11 +198,9 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
                         setFeedback("");
                         if (res && typeof res.remaining === "number") setFeedbackDaily((prev) => prev ? { ...prev, remaining: res.remaining as number, used: (prev.limit - (res.remaining as number)) } : prev);
                         else {
-                          const df = (api as unknown as { getFeedbackDailyState?: () => Promise<{ used: number; remaining: number; limit: number }> }).getFeedbackDailyState;
-                          if (df) void df.call(api).then(setFeedbackDaily).catch(() => {});
+                          void api.getFeedbackDailyState().then(setFeedbackDaily).catch(() => {});
                         }
-                        const ownFn2 = (api as unknown as { getOwnFeedback?: () => Promise<FeedbackThread & { thread_id: string | null }> }).getOwnFeedback;
-                        if (ownFn2) void ownFn2.call(api).then((t) => {
+                        void api.getOwnFeedback().then((t) => {
                           if (t.thread_id) setFeedbackHistory(t as FeedbackThread);
                         }).catch(() => {});
                       }).catch((error) => {

@@ -22,21 +22,27 @@ def upgrade() -> None:
     # Indexes for filtered list queries
     op.create_index("ix_nlp_feedback_threads_status", "nlp_feedback_threads", ["status"])
     op.create_index("ix_nlp_feedback_threads_category", "nlp_feedback_threads", ["category"])
-    # CHECK constraints
-    op.create_check_constraint(
-        "ck_nlp_feedback_threads_status",
-        "nlp_feedback_threads",
-        "status IN ('open','under_review','planned','in_progress','complete','closed')",
+    # CHECK constraints use explicit names so they match the ORM metadata.
+    op.execute(
+        sa.text(
+            "ALTER TABLE nlp_feedback_threads ADD CONSTRAINT "
+            "ck_nlp_feedback_threads_status CHECK "
+            "(status IN ('open','under_review','planned','in_progress','complete','closed'))"
+        )
     )
-    op.create_check_constraint(
-        "ck_nlp_feedback_threads_category",
-        "nlp_feedback_threads",
-        "category IN ('feature','ux','bug','other')",
+    op.execute(
+        sa.text(
+            "ALTER TABLE nlp_feedback_threads ADD CONSTRAINT "
+            "ck_nlp_feedback_threads_category CHECK "
+            "(category IN ('feature','ux','bug','other'))"
+        )
     )
-    op.create_check_constraint(
-        "ck_nlp_feedback_threads_priority",
-        "nlp_feedback_threads",
-        "priority IN ('low','medium','high')",
+    op.execute(
+        sa.text(
+            "ALTER TABLE nlp_feedback_threads ADD CONSTRAINT "
+            "ck_nlp_feedback_threads_priority CHECK "
+            "(priority IN ('low','medium','high'))"
+        )
     )
     # Remove server_default after backfill to keep model defaults explicit? Keep it for safety,
     # but ensure new inserts without value still get a sane default.
@@ -45,11 +51,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for name in ("ck_nlp_feedback_threads_priority", "ck_nlp_feedback_threads_category", "ck_nlp_feedback_threads_status"):
-        try:
-            op.drop_constraint(name, "nlp_feedback_threads", type_="check")
-        except Exception:
-            # Fallback for MySQL named CHECK drop
-            op.execute(sa.text(f"ALTER TABLE nlp_feedback_threads DROP CHECK {name}"))
+        op.execute(sa.text(f"ALTER TABLE nlp_feedback_threads DROP CHECK {name}"))
     op.drop_index("ix_nlp_feedback_threads_category", table_name="nlp_feedback_threads")
     op.drop_index("ix_nlp_feedback_threads_status", table_name="nlp_feedback_threads")
     op.drop_column("nlp_feedback_threads", "priority")
