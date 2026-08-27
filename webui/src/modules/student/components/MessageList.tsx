@@ -5,15 +5,27 @@ import { ActivityPanel } from "./ActivityPanel";
 import { MarkdownContent, stripInternalChatMetadata } from "./MarkdownContent";
 import type { ChatMessage } from "@/shared/types";
 
-function AssistantMessage({ message, showReasoning, onFollowUp }: {
+export function formatConversationAsMarkdown(messages: ChatMessage[]): string {
+  const sections = messages.flatMap((message) => {
+    const content = stripInternalChatMetadata(message.content).trim();
+    if (!content) return [];
+
+    const role = message.role === "user" ? "用户" : "助手";
+    return [`## ${role}\n\n${content}`];
+  });
+
+  return `# 会话记录\n\n${sections.join("\n\n")}`;
+}
+function AssistantMessage({ message, conversationMarkdown, showReasoning, onFollowUp }: {
   message: ChatMessage;
+  conversationMarkdown: string;
   showReasoning: boolean;
   onFollowUp: (text: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const streaming = ["accepted", "running"].includes(message.status ?? "");
   const copy = async () => {
-    await navigator.clipboard.writeText(stripInternalChatMetadata(message.content));
+    await navigator.clipboard.writeText(conversationMarkdown);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
   };
@@ -103,12 +115,19 @@ export function MessageList({ messages, loading, showReasoning, onFollowUp }: {
       </div>
     );
   }
+  const conversationMarkdown = formatConversationAsMarkdown(messages);
   return (
     <div className="message-list">
       {messages.map((message) => message.role === "user" ? (
         <UserMessage key={message.id} message={message} />
       ) : (
-        <AssistantMessage key={message.id} message={message} showReasoning={showReasoning} onFollowUp={onFollowUp} />
+        <AssistantMessage
+  key={message.id}
+  message={message}
+  showReasoning={showReasoning}
+  onFollowUp={onFollowUp}
+  conversationMarkdown={conversationMarkdown}
+/>
       ))}
     </div>
   );

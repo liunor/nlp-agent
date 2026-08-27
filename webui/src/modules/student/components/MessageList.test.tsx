@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 
 import { AppErrorBoundary } from "@/shared/ui/AppErrorBoundary";
-import { MessageList } from "./MessageList";
+import { formatConversationAsMarkdown, MessageList } from "./MessageList";
 import type { ChatMessage } from "@/shared/types";
 
 const message = (id: string, content: string): ChatMessage => ({ id, turnId: id, role: "user", content, createdAt: "2026-07-19T00:00:00Z" });
@@ -57,3 +57,25 @@ describe("MessageList session updates", () => {
     expect(img).toHaveAttribute("src", "/api/v1/uploads/sess/sample.png");
   });
 });
+  it("formats the complete conversation as Markdown", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "turn-4",
+        turnId: "turn-4",
+        role: "user",
+        content: "什么是词向量？",
+        createdAt: "2026-07-19T00:00:00Z",
+      },
+      {
+        id: "turn-5",
+        turnId: "turn-5",
+        role: "assistant",
+        content: "## 定义\n\n- 要点",
+        createdAt: "2026-07-19T00:01:00Z",
+      },
+    ];
+
+    expect(formatConversationAsMarkdown(messages)).toBe(
+      "# 会话记录\n\n## 用户\n\n什么是词向量？\n\n## 助手\n\n## 定义\n\n- 要点"
+    );
+  });
