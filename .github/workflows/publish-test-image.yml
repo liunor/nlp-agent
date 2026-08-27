@@ -130,7 +130,12 @@ jobs:
             exit 1
           }
           docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx
+          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx; then
+            echo "::error::Compose startup failed; collecting migration diagnostics."
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps || true
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml logs --no-color --tail=200 nova-migrate || true
+            exit 1
+          fi
           for attempt in {1..12}; do
             if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \

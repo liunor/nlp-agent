@@ -20,6 +20,8 @@ def test_deployment_workflows_update_and_check_worker() -> None:
             "up -d --force-recreate --no-build --remove-orphans "
             "nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx"
         ) in workflow
+        assert "if ! docker compose" in workflow
+        assert "logs --no-color --tail=200 nova-migrate" in workflow
         assert (
             "ps --status running --services nova-worker | grep -Fxq \"nova-worker\""
         ) in workflow
