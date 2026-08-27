@@ -5,29 +5,58 @@ import { ActivityPanel } from "./ActivityPanel";
 import { MarkdownContent, stripInternalChatMetadata } from "./MarkdownContent";
 import type { ChatMessage } from "@/shared/types";
 
-export function formatConversationAsMarkdown(messages: ChatMessage[]): string {
-  const sections = messages.flatMap((message) => {
-    const content = stripInternalChatMetadata(message.content).trim();
-    if (!content) return [];
 
-    const role = message.role === "user" ? "用户" : "助手";
-    return [`## ${role}\n\n${content}`];
-  });
+export async function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back when Clipboard API access is denied.
+    }
+  }
 
-  return `# 会话记录\n\n${sections.join("\n\n")}`;
+  const textarea = document.createElement("textarea");
+  const activeElement =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+
+  try {
+    textarea.focus();
+    textarea.select();
+
+    if (!document.execCommand("copy")) {
+      throw new Error("Unable to copy conversation");
+    }
+  } finally {
+    textarea.remove();
+    activeElement?.focus();
+  }
 }
-function AssistantMessage({ message, conversationMarkdown, showReasoning, onFollowUp }: {
+function AssistantMessage({ message, showReasoning, onFollowUp }: {
   message: ChatMessage;
-  conversationMarkdown: string;
+
   showReasoning: boolean;
   onFollowUp: (text: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const streaming = ["accepted", "running"].includes(message.status ?? "");
   const copy = async () => {
-    await navigator.clipboard.writeText(conversationMarkdown);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
+    try {
+      await copyTextToClipboard(
+        stripInternalChatMetadata(message.content).trim()
+      );
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
   };
   return (
     <article className="assistant-message">
@@ -62,7 +91,7 @@ function AssistantMessage({ message, conversationMarkdown, showReasoning, onFoll
 function UserMessage({ message }: { message: ChatMessage }) {
   let content = message.content;
   const attachments = [...(message.attachments || [])];
-  
+
   const markerIdx = content.indexOf("---附件---");
   if (markerIdx !== -1) {
     const attachmentBlock = content.slice(markerIdx);
@@ -115,7 +144,7 @@ export function MessageList({ messages, loading, showReasoning, onFollowUp }: {
       </div>
     );
   }
-  const conversationMarkdown = formatConversationAsMarkdown(messages);
+
   return (
     <div className="message-list">
       {messages.map((message) => message.role === "user" ? (
@@ -126,7 +155,6 @@ export function MessageList({ messages, loading, showReasoning, onFollowUp }: {
   message={message}
   showReasoning={showReasoning}
   onFollowUp={onFollowUp}
-  conversationMarkdown={conversationMarkdown}
 />
       ))}
     </div>

@@ -1,7 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { AppErrorBoundary } from "@/shared/ui/AppErrorBoundary";
-import { formatConversationAsMarkdown, MessageList } from "./MessageList";
+import {
+  copyTextToClipboard,
+  MessageList,
+} from "./MessageList";
 import type { ChatMessage } from "@/shared/types";
 
 const message = (id: string, content: string): ChatMessage => ({ id, turnId: id, role: "user", content, createdAt: "2026-07-19T00:00:00Z" });
@@ -57,25 +60,88 @@ describe("MessageList session updates", () => {
     expect(img).toHaveAttribute("src", "/api/v1/uploads/sess/sample.png");
   });
 });
-  it("formats the complete conversation as Markdown", () => {
-    const messages: ChatMessage[] = [
-      {
-        id: "turn-4",
-        turnId: "turn-4",
-        role: "user",
-        content: "什么是词向量？",
-        createdAt: "2026-07-19T00:00:00Z",
-      },
-      {
-        id: "turn-5",
-        turnId: "turn-5",
-        role: "assistant",
-        content: "## 定义\n\n- 要点",
-        createdAt: "2026-07-19T00:01:00Z",
-      },
-    ];
+it("copies only the selected assistant response as Markdown", async () => {
+  const clipboardDescriptor = Object.getOwnPropertyDescriptor(
+    navigator,
+    "clipboard"
+  );
+  const writeText = vi.fn(() => Promise.resolve());
 
-    expect(formatConversationAsMarkdown(messages)).toBe(
-      "# 会话记录\n\n## 用户\n\n什么是词向量？\n\n## 助手\n\n## 定义\n\n- 要点"
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+
+  const messages: ChatMessage[] = [
+    {
+      id: "turn-user",
+      turnId: "turn-user",
+      role: "user",
+      content: "什么是词向量？",
+      createdAt: "2026-07-19T00:00:00Z",
+    },
+    {
+      id: "turn-assistant",
+      turnId: "turn-assistant",
+      role: "assistant",
+      content: "## 定义\n\n- **要点**",
+      createdAt: "2026-07-19T00:01:00Z",
+    },
+  ];
+
+  try {
+    render(
+      <MessageList
+        messages={messages}
+        loading={false}
+        showReasoning={false}
+        onFollowUp={vi.fn()}
+      />
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("## 定义\n\n- **要点**");
+    });
+  } finally {
+    if (clipboardDescriptor) {
+      Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+    } else {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  }
+});
+      it("falls back when the Clipboard API is unavailable", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const execCommand = vi.fn(() => true);
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+
+    try {
+      await copyTextToClipboard("# 会话记录");
+
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      expect(document.querySelector("textarea")).not.toBeInTheDocument();
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "clipboard");
+      }
+
+      if (execCommandDescriptor) {
+        Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "execCommand");
+      }
+    }
   });
