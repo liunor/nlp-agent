@@ -221,4 +221,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ phone_number: phoneNumber, captcha_id: captchaId, captcha_code: captchaCode }),
     }),
+
+  // ---------------------------------------------------------------------------
+  // Self-service profile (当前用户)
+  // ---------------------------------------------------------------------------
+  getCurrentUser: () => request<UserProfile>("/users/me"),
+  updateProfile: (data: { display_name: string }) =>
+    request<UserProfile>("/users/me", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  changePassword: (data: { current_password: string; new_password: string }) =>
+    request<void>("/users/me/password", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };

@@ -176,7 +176,7 @@ async def change_own_password(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
         )
-    await service.change_password(principal.user_id, data.new_password)
+    await service.change_password(principal.user_id, data.new_password, user=user)
     # 高危账号操作写入审计事件
     await rbac_service.audit(
         db,

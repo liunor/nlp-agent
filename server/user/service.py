@@ -6,6 +6,7 @@ and uses the shared MySQL async session factory.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -332,9 +333,9 @@ class UserService:
         return user
 
     async def verify_password(self, user: UserModel, password: str) -> bool:
-        """Verify a password against the stored hash."""
+        """Verify a password against the stored hash (non-blocking)."""
         try:
-            return self.hasher.verify(user.password_hash, password)
+            return await asyncio.to_thread(self.hasher.verify, user.password_hash, password)
         except (VerifyMismatchError, VerificationError, ValueError, TypeError):
             return False
 
@@ -342,10 +343,13 @@ class UserService:
         self,
         user_id: str,
         new_password: str,
+        *,
+        user: UserModel | None = None,
     ) -> UserModel:
-        """Change user password."""
-        user = await self.get_user(user_id)
-        user.password_hash = self.hasher.hash(new_password)
+        """Change user password (non-blocking hash)."""
+        if user is None:
+            user = await self.get_user(user_id)
+        user.password_hash = await asyncio.to_thread(self.hasher.hash, new_password)
         user.authorization_version += 1  # Invalidate all sessions
         user.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self._revoke_user_sessions(user_id)

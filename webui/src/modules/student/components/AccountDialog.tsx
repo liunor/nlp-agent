@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { LogOut, ShieldCheck, UserRound, X } from "lucide-react";
+import { LogOut, Settings, ShieldCheck, UserRound, X } from "lucide-react";
 
 import type { AuthSession } from "@/shared/types";
 
@@ -30,6 +30,7 @@ export function AccountDialog({
           <div><dt>名称</dt><dd>{displayName}</dd></div>
           <div><dt>角色</dt><dd><ShieldCheck size={15} />{roles}</dd></div>
         </dl>
+        <button className="account-dialog-profile" type="button" onClick={() => { onClose(); window.location.href = "/profile"; }}><Settings size={16} />个人设置</button>
         <button className="account-dialog-logout" type="button" onClick={() => void onLogout()}><LogOut size={16} />退出登录</button>
       </Dialog.Content>
     </Dialog.Portal>

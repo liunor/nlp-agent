@@ -266,17 +266,21 @@ def create_app(
         finally:
             end_authorization_audit(audit_token)
         session_factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
-        if session_factory is not None and decisions:
-            async with session_factory() as session:
-                async with session.begin():
-                    for decision in decisions:
-                        await rbac_service.audit(
-                            session, actor_user_id=decision.actor_user_id, target_user_id=None,
-                            decision=decision.decision, reason_code="authorization_required",
-                            permission_code=decision.permission_code, resource_type=decision.resource_type,
-                            resource_id=decision.resource_id,
-                            detail={"workspace_id": decision.workspace_id, "request_id": request.state.request_id},
-                        )
+        if session_factory is not None and decisions and response.status_code != 401:
+            try:
+                async with session_factory() as session:
+                    async with session.begin():
+                        for decision in decisions:
+                            await rbac_service.audit(
+                                session, actor_user_id=decision.actor_user_id, target_user_id=None,
+                                decision=decision.decision, reason_code="authorization_required",
+                                permission_code=decision.permission_code, resource_type=decision.resource_type,
+                                resource_id=decision.resource_id,
+                                detail={"workspace_id": decision.workspace_id, "request_id": request.state.request_id},
+                            )
+            except Exception as audit_exc:
+                import logging
+                logging.getLogger("audit").warning("authorization audit flush failed: %s", audit_exc)
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
