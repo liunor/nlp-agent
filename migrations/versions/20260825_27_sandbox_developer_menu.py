@@ -14,6 +14,10 @@ depends_on = None
 
 def upgrade() -> None:
     item = next(item for item in MENU_CATALOG if item[0] == "developer.sandbox")
+    # ``bulk_insert`` only emits columns declared on the lightweight table
+    # object.  Keep this projection in sync with ``MenuModel``; declaring just
+    # ``id`` silently dropped all required menu fields and failed on MySQL's
+    # strict mode with ``Field 'menu_type' doesn't have a default value``.
     menus = sa.table(
         "nlp_menus",
         sa.column("id", sa.String()),
