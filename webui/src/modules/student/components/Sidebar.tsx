@@ -23,7 +23,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
   onAddCategory: (name: string) => string;
   onRenameCategory: (id: string, name: string) => void;
   onDeleteCategory: (id: string, name: string) => void;
-  onDelete: (id: string, title: string) => void;
+  onDelete: (id: string, title: string, onDeleted?: () => void) => void;
   onAccount: () => void;
   onSettings: () => void;
 }) {
@@ -155,7 +155,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
                 <button type="button" onClick={() => onMeta(session.session_id, { pinnedAt: meta.pinnedAt ? undefined : Date.now() })}><Pin size={14} />{meta.pinnedAt ? "取消置顶" : "置顶"}</button>
                 <button
   type="button"
-  onClick={() => {
+  onClick={(event) => {
     const isUnarchivingLastSession =
       showArchived &&
       meta.archived &&
@@ -166,7 +166,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
       );
 
     onMeta(session.session_id, { archived: !meta.archived });
-
+    event.currentTarget.closest("details")?.removeAttribute("open");
     if (isUnarchivingLastSession) {
       setShowArchived(false);
     }
@@ -176,7 +176,32 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
   {meta.archived ? "移出归档" : "归档"}
 </button>
                 <div className="session-category-actions"><span>移动到分类</span><button type="button" onClick={() => onMeta(session.session_id, { categoryId: undefined })}>未分类</button>{preferences.categories.map((category) => <button key={category.id} type="button" onClick={() => onMeta(session.session_id, { categoryId: category.id })}>{category.name}</button>)}</div>
-                <button className="danger" type="button" onClick={() => onDelete(session.session_id, meta.title ?? "新的学习对话")}><Trash2 size={14} />删除</button>
+                <button
+  className="danger"
+  type="button"
+  onClick={(event) => {
+  const isDeletingLastArchivedSession =
+    showArchived &&
+    meta.archived &&
+    !sessions.some(
+      (item) =>
+        item.session_id !== session.session_id &&
+        preferences.sessions[item.session_id]?.archived,
+    );
+
+  event.currentTarget.closest("details")?.removeAttribute("open");
+  onDelete(
+    session.session_id,
+    meta.title ?? "新的学习对话",
+    isDeletingLastArchivedSession
+      ? () => setShowArchived(false)
+      : undefined,
+  );
+}}
+>
+  <Trash2 size={14} />
+  删除
+</button>
               </div></details>
             </div>;
           })}

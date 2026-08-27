@@ -29,7 +29,11 @@ describe("Sidebar delete requests", () => {
   it("delegates session and category deletion to the shared confirmation owner", () => {
     render(<Sidebar {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
-    expect(props.onDelete).toHaveBeenCalledWith("session_1", "Attention 入门");
+    expect(props.onDelete).toHaveBeenCalledWith(
+  "session_1",
+  "Attention 入门",
+  undefined,
+);
 
     fireEvent.click(screen.getByRole("button", { name: "删除分类" }));
     expect(props.onDeleteCategory).toHaveBeenCalledWith("category_1", "注意力机制");

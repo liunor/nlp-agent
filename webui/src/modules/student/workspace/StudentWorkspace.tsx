@@ -35,7 +35,12 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
   const [courseTopics, setCourseTopics] = useState<CourseTopic[]>([]);
   const [learningCatalog, setLearningCatalog] = useState<TeacherCatalog | null>(null);
   const [modeNotice, setModeNotice] = useState<"practice" | "review" | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ kind: "session" | "category"; id: string; label: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+  kind: "session" | "category";
+  id: string;
+  label: string;
+  onDeleted?: () => void;
+} | null>(null);
   const refreshCourseTopics = useCallback(async () => {
     try {
       const { catalog } = await api.getLearningCatalog(workspace.workspaceId);
@@ -126,7 +131,14 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
   return <div className={["app-shell", "student-app-shell", sidebarCollapsed ? "sidebar-is-collapsed" : "sidebar-is-expanded", toolDockOpen && toolDockExpanded && "tool-dock-expanded"].filter(Boolean).join(" ")}>
     {workspace.settingsError && <div className="error-card settings-save-error" role="alert">{workspace.settingsError}</div>}
     {(modeNotice || workspace.requestError) && <section className="learning-config-notice" role="alert"><div><strong>{modeNotice ? `${modeNotice === "practice" ? "练习" : "复习"}模式尚未配置蓝图` : "学习配置不可用"}</strong><p>{modeNotice ? `请先在教师空间创建、启用并保存该主题的${modeNotice === "practice" ? "出题" : "复习"}蓝图。` : workspace.requestError}</p></div><div><button type="button" className="teacher-primary-button" onClick={() => { const path = modeNotice === "review" ? "/teacher/reviews" : "/teacher/exercises"; if (onNavigateTo) onNavigateTo(path); else location.href = path; }}>去配置</button><button type="button" className="learning-notice-close" aria-label="关闭提示" onClick={() => { setModeNotice(null); workspace.clearRequestError(); }}><X size={16} /></button></div></section>}
-    <Sidebar sessions={workspace.sessions} preferences={workspace.preferences} activeId={workspace.activeSessionId} open={sidebarOpen} collapsed={sidebarCollapsed} connected={statusOnline} onClose={() => setSidebarOpen(false)} onCollapse={() => setCollapsed(true)} onExpand={() => setCollapsed(false)} onSelect={workspace.setActiveSessionId} onCreate={() => void workspace.startNewChat()} onMeta={workspace.updateSessionMeta} onAddCategory={workspace.addCategory} onRenameCategory={workspace.renameCategory} onDeleteCategory={(id, name) => setDeleteTarget({ kind: "category", id, label: name })} onDelete={(id, title) => setDeleteTarget({ kind: "session", id, label: title })} onAccount={() => setAccountOpen(true)} onSettings={() => setSettingsOpen(true)} />
+    <Sidebar sessions={workspace.sessions} preferences={workspace.preferences} activeId={workspace.activeSessionId} open={sidebarOpen} collapsed={sidebarCollapsed} connected={statusOnline} onClose={() => setSidebarOpen(false)} onCollapse={() => setCollapsed(true)} onExpand={() => setCollapsed(false)} onSelect={workspace.setActiveSessionId} onCreate={() => void workspace.startNewChat()} onMeta={workspace.updateSessionMeta} onAddCategory={workspace.addCategory} onRenameCategory={workspace.renameCategory} onDeleteCategory={(id, name) => setDeleteTarget({ kind: "category", id, label: name })} onDelete={(id, title, onDeleted) =>
+  setDeleteTarget({
+    kind: "session",
+    id,
+    label: title,
+    onDeleted,
+  })
+} onAccount={() => setAccountOpen(true)} onSettings={() => setSettingsOpen(true)} />
     <main className="thread-shell">
       <header className="thread-header">
         <SidebarToggle onClick={() => { setCollapsed(false); setSidebarOpen(true); }} />
@@ -154,7 +166,35 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
     <div className="student-school-logo"><SchoolLogo /></div>
     <SettingsDialog open={settingsOpen} settings={workspace.settings} learningContext={workspace.preferences.context} roles={workspace.authSession?.roles} permissions={workspace.authSession?.permissions} userId={workspace.authSession?.user_id} onClose={() => setSettingsOpen(false)} onChange={(patch) => void workspace.patchSettings(patch)} onReset={workspace.resetSettings} onLearningContextChange={workspace.setLearningContext} onOpenDeveloper={() => { if (onNavigateTo) onNavigateTo("/developer"); else location.href = "/developer"; }} onOpenTeacher={() => { if (onNavigateTo) onNavigateTo("/teacher"); else location.href = "/teacher"; }} />
     <AccountDialog open={accountOpen} session={workspace.authSession} onClose={() => setAccountOpen(false)} onLogout={async () => { await workspace.logout(); setAccountOpen(false); }} />
-    <ConfirmDialog open={!!deleteTarget} title={deleteTarget?.kind === "session" ? `删除“${deleteTarget.label}”对话？` : `删除“${deleteTarget?.label ?? ""}”分类？`} description={deleteTarget?.kind === "session" ? "删除后将同时清除后端对话记录，此操作无法撤销。" : "分类中的对话会保留，并移回“未分类”。"} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (!deleteTarget) return; if (deleteTarget.kind === "session") void workspace.deleteSession(deleteTarget.id); else workspace.deleteCategory(deleteTarget.id); setDeleteTarget(null); }} />
-    {archived.length > 0 && <span className="sr-only">已归档 {archived.length} 个学习对话</span>}
+    <ConfirmDialog
+  open={!!deleteTarget}
+  title={
+    deleteTarget?.kind === "session"
+      ? `删除“${deleteTarget.label}”对话？`
+      : `删除“${deleteTarget?.label ?? ""}”分类？`
+  }
+  description={
+    deleteTarget?.kind === "session"
+      ? "删除后将同时清除后端对话记录，此操作无法撤销。"
+      : "分类中的对话会保留，并移回“未分类”。"
+  }
+  onClose={() => setDeleteTarget(null)}
+  onConfirm={() => {
+    if (!deleteTarget) return;
+
+    const target = deleteTarget;
+    setDeleteTarget(null);
+
+    if (target.kind === "session") {
+      void workspace.deleteSession(target.id).then(() => {
+        target.onDeleted?.();
+      });
+      return;
+    }
+
+    workspace.deleteCategory(target.id);
+  }}
+  />
+{archived.length > 0 && <span className="sr-only">已归档 {archived.length} 个学习对话</span>}
   </div>;
 }

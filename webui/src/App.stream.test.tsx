@@ -130,10 +130,12 @@ describe("student stream rendering", () => {
 
     const separator = screen.getByRole("separator", { name: "调整工具侧栏宽度" });
     expect(separator).toHaveAttribute("aria-valuenow", "420");
+    const maxWidth = Number(separator.getAttribute("aria-valuemax"));
+    expect(maxWidth).toBe(window.innerWidth - 560);
     fireEvent.pointerDown(separator, { clientX: 480 });
     fireEvent.pointerMove(window, { clientX: 360 });
     fireEvent.pointerUp(window);
-    expect(Number(separator.getAttribute("aria-valuenow"))).toBeGreaterThan(420);
+    expect(Number(separator.getAttribute("aria-valuenow"))).toBe(maxWidth);
 
     fireEvent.click(screen.getByRole("button", { name: "展开工具面板" }));
     expect(document.querySelector(".app-shell")).toHaveClass("tool-dock-expanded");
