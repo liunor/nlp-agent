@@ -164,3 +164,12 @@ async def mark_feedback_read(
     if thread.developer_read_at is None or message.created_at > thread.developer_read_at:
         thread.developer_read_at = message.created_at
     await session.flush()
+
+
+async def delete_feedback_thread(session: AsyncSession, thread_id: str) -> None:
+    """Hard-delete a feedback thread and its messages (不可恢复)."""
+    thread = await session.scalar(select(FeedbackThreadModel).where(FeedbackThreadModel.id == thread_id))
+    if thread is None:
+        raise LookupError(thread_id)
+    await session.delete(thread)
+    await session.flush()

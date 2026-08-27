@@ -85,7 +85,7 @@ from server.release_notes.service import (
     release_note_service,
 )
 from server.web.websocket import WebSocketHub, websocket_endpoint
-from server.web.feedback import get_feedback_thread, list_feedback_threads, mark_feedback_read, submit_feedback
+from server.web.feedback import delete_feedback_thread, get_feedback_thread, list_feedback_threads, mark_feedback_read, submit_feedback
 
 
 GatewayFactory = Callable[[], BackendGateway]
@@ -1031,6 +1031,18 @@ def create_app(
                 except LookupError:
                     return _problem(request, status_code=404, code="feedback_not_found", title="Feedback thread not found")
         return {"ok": True}
+
+    @app.delete("/api/v1/developer/feedback/{thread_id}", tags=["developer"])
+    async def delete_feedback(thread_id: str, request: Request, principal: Principal, _claims: WriteClaims):
+        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_READ)
+        session_factory = request.app.state.gateway.authorization_session_factory
+        async with session_factory() as session:
+            async with session.begin():
+                try:
+                    await delete_feedback_thread(session, thread_id)
+                except LookupError:
+                    return _problem(request, status_code=404, code="feedback_not_found", title="Feedback thread not found")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/protocol", tags=["runtime"])
     async def get_protocol(_principal: Principal):

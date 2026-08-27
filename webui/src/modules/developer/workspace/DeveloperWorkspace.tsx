@@ -1,10 +1,10 @@
 import {
-  Activity, AppWindow, Bot, Box, ChevronLeft, Clock3, Code2, Database,
-  ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Mail, Newspaper, PlugZap,
-  RefreshCw, Settings2, ShieldCheck, Sparkles, TerminalSquare, Wrench,
+  Activity, AppWindow, Bot, Box, ChevronLeft, ChevronRight, Clock3, Code2, Database,
+  ExternalLink, FileKey2, Gauge, Globe2, Inbox, KeyRound, Mail, MessageCircle, Newspaper, PlugZap,
+  RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TerminalSquare, Trash2, User, Wrench,
   Users, LayoutList, ScrollText, MessageSquare,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ensureAuth } from "@/platform/http/api";
 import type { DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
@@ -120,7 +120,7 @@ function Automations({ snapshot }: { snapshot: DeveloperSnapshot }) {
   return <><Section title="Apps"><div className="developer-empty"><Box /><strong>Apps Registry 未启用</strong><p>{snapshot.features.apps.reason}</p></div></Section><Section title="Automations / Cron"><div className="developer-empty"><Clock3 /><strong>Cron Runtime 未启用</strong><p>{snapshot.features.automations.reason}</p></div></Section></>;
 }
 
-const FEEDBACK_PAGE_SIZE = 20;
+const FEEDBACK_PAGE_SIZE = 8;
 // Pages whose content is derived from the runtime snapshot; every other page
 // fetches its own data and must render without it.
 const SNAPSHOT_PAGES: DeveloperPage[] = ["overview", "agents", "tools", "models", "mcp", "skills", "automations", "settings"];
@@ -136,6 +136,7 @@ export function Feedback({
   onSelect,
   onSearchChange,
   onOffsetChange,
+  onDelete,
   refresh,
 }: {
   threads: FeedbackThreadSummary[];
@@ -148,12 +149,19 @@ export function Feedback({
   onSelect: (threadId: string) => void;
   onSearchChange: (value: string) => void;
   onOffsetChange: (offset: number) => void;
+  onDelete?: (threadId: string) => Promise<void>;
   refresh: () => Promise<void>;
 }) {
   const [detail, setDetail] = useState<{ threadId: string; thread: FeedbackThread } | null>(null);
   const [error, setError] = useState<{ threadId: string; message: string } | null>(null);
   const [detailRetryNonce, setDetailRetryNonce] = useState(0);
   const [searchInput, setSearchInput] = useState(search);
+  const [deleteError, setDeleteError] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Keep the controlled input in sync when the parent resets the search (e.g. paging clears filters).
+  useEffect(() => {
+    setSearchInput(search);
+  }, [search]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const trimmed = searchInput.trim();
@@ -162,8 +170,13 @@ export function Feedback({
     return () => window.clearTimeout(timer);
   }, [searchInput, search, onSearchChange]);
   useEffect(() => {
-    if (!selectedId) return undefined;
+    if (!selectedId) {
+      setDetail(null);
+      setError(null);
+      return undefined;
+    }
     let active = true;
+    setError(null);
     void api.getFeedback(selectedId).then(async (value) => {
       if (!active) return;
       setError((current) => current?.threadId === selectedId ? null : current);
@@ -186,12 +199,104 @@ export function Feedback({
   const activeError = error?.threadId === selectedId ? error.message : "";
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const pageIndex = Math.floor(offset / pageSize) + 1;
-  return <Section title="学生意见反馈" hint="按账号查看反馈；读取和标记已读均由后端权限控制。">
-    <div className="developer-inline-form developer-feedback-toolbar">
-      <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="搜索用户名或昵称" aria-label="搜索反馈用户" />
+  const handleDelete = async (threadId: string) => {
+    if (!onDelete) return;
+    const target = threads.find((item) => item.thread_id === threadId) || (detail?.threadId === threadId ? { username: detail.thread.username, display_name: detail.thread.display_name } as FeedbackThreadSummary : undefined);
+    const name = target?.display_name || target?.username || threadId;
+    if (!confirm(`删除 ${name} 的反馈？该操作不可恢复。`)) return;
+    setDeleteError("");
+    setDeletingId(threadId);
+    try {
+      await onDelete(threadId);
+    } catch (reason) {
+      setDeleteError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+  const getInitial = (name: string) => (name.trim().charAt(0) || "?").toUpperCase();
+  const formatTime = (value: string) => {
+    try { return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch { return value; }
+  };
+  return <Section title="学生意见反馈" hint="按账号查看反馈 · 选中一条可查看完整对话并删除（不可恢复）">
+    <div className="developer-feedback-toolbar">
+      <label className="developer-feedback-search">
+        <Search size={14} />
+        <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="搜索用户名或昵称" aria-label="搜索反馈用户" autoComplete="off" />
+      </label>
+      <span className="developer-feedback-count"><Inbox size={12} />共 {total} 条</span>
     </div>
-    <div className="developer-feedback"><div className="developer-feedback-list">{threads.length === 0 && loadError ? <div className="developer-feedback-failed"><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <p>{search ? "没有匹配的反馈" : "暂无反馈"}</p> : <>{loadError && <p className="developer-feedback-stale">刷新失败：{loadError}，正在显示上次结果</p>}{threads.map((item) => <button type="button" key={item.thread_id} className={item.thread_id === selectedId ? "active" : ""} onClick={() => onSelect(item.thread_id)}><strong>{item.display_name || item.username}</strong><small>@{item.username} · {item.latest?.body ?? "暂无内容"}</small>{item.unread_count > 0 && <b>{item.unread_count}</b>}</button>)}</>}</div><div className="developer-feedback-detail">{activeError && <div className="developer-feedback-error"><p>读取失败：{activeError}</p><button type="button" onClick={() => setDetailRetryNonce((nonce) => nonce + 1)}>重试读取反馈</button></div>}{selected && activeThread ? <><h3>{activeThread.display_name || selected.username}</h3><p>@{activeThread.username}</p>{activeThread.messages.map((message) => <article key={message.id}><strong>{message.sender_type === "student" ? (activeThread.display_name || selected.username) : "开发者"}</strong><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time><p>{message.body}</p></article>)}</> : !activeError && <p>{selected ? "正在读取反馈…" : "选择一个账号查看反馈。"}</p>}</div></div>
-    {total > 0 && <div className="developer-feedback-pagination"><span>共 {total} 条 · 第 {pageIndex}/{pageCount} 页</span><button type="button" disabled={offset <= 0} onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}>上一页</button><button type="button" disabled={offset + pageSize >= total} onClick={() => onOffsetChange(offset + pageSize)}>下一页</button></div>}
+    {deleteError && <p className="developer-feedback-error" role="alert">删除失败：{deleteError}</p>}
+    <div className="developer-feedback">
+      <div className="developer-feedback-list">
+        {threads.length === 0 && loadError ? <div className="developer-feedback-failed"><Inbox size={20} /><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <div className="developer-feedback-empty"><Inbox size={22} /><strong>{search ? "没有匹配的反馈" : "暂无反馈"}</strong><p>{search ? `没有找到与 “${search}” 相关的用户` : "学生提交的反馈会出现在这里"}</p></div> : <>
+          {loadError && <p className="developer-feedback-stale">刷新失败：{loadError}，正在显示上次结果</p>}
+          {threads.map((item) => {
+            const name = item.display_name || item.username;
+            const isActive = item.thread_id === selectedId;
+            return (
+              <div key={item.thread_id} className={`developer-feedback-row ${isActive ? "active" : ""}`}>
+                <button type="button" className="developer-feedback-row-main" onClick={() => onSelect(item.thread_id)} aria-label={`查看 ${name} 的反馈`}>
+                  <span className="developer-feedback-avatar" aria-hidden>{getInitial(name)}</span>
+                  <span className="developer-feedback-row-text">
+                    <span className="developer-feedback-row-name">
+                      <strong>{name}</strong>
+                      {item.unread_count > 0 && <b className="developer-feedback-unread">{item.unread_count > 99 ? "99+" : item.unread_count}</b>}
+                    </span>
+                    <small><span className="developer-feedback-username">@{item.username}</span><span className="developer-feedback-dot">·</span><span className="developer-feedback-preview">{item.latest?.body?.trim() || "暂无内容"}</span></small>
+                  </span>
+                </button>
+                {onDelete && <button type="button" className="developer-feedback-row-delete" aria-label={`删除 ${name} 的反馈`} disabled={deletingId === item.thread_id} onClick={() => void handleDelete(item.thread_id)}>
+                  <Trash2 size={14} />
+                </button>}
+              </div>
+            );
+          })}
+          {threads.length > 0 && threads.length < pageSize && Array.from({ length: pageSize - threads.length }).map((_, index) => (
+            <div key={`placeholder-${index}`} className="developer-feedback-placeholder" aria-hidden />
+          ))}
+        </>}
+      </div>
+      <div className="developer-feedback-detail">
+        {activeError && <div className="developer-feedback-error"><p>读取失败：{activeError}</p><button type="button" onClick={() => setDetailRetryNonce((nonce) => nonce + 1)}>重试读取反馈</button></div>}
+        {selected && activeThread ? <>
+          <div className="developer-feedback-detail-head">
+            <div className="developer-feedback-detail-identity">
+              <span className="developer-feedback-avatar large" aria-hidden>{getInitial(activeThread.display_name || selected.username)}</span>
+              <div>
+                <h3>{activeThread.display_name || selected.username}</h3>
+                <p><User size={11} />@{activeThread.username} · {activeThread.messages.length} 条消息</p>
+              </div>
+            </div>
+            {onDelete && <button type="button" className="danger" disabled={deletingId === selected.thread_id} onClick={() => void handleDelete(selected.thread_id)}>
+              <Trash2 size={14} />删除该反馈
+            </button>}
+          </div>
+          <div className="developer-feedback-messages">
+            {activeThread.messages.map((message) => {
+              const isStudent = message.sender_type === "student";
+              return (
+                <article key={message.id} className={`developer-feedback-message ${isStudent ? "student" : "developer"}`}>
+                  <span className="developer-feedback-message-avatar" aria-hidden>{isStudent ? getInitial(activeThread.display_name || selected.username) : "D"}</span>
+                  <div className="developer-feedback-bubble">
+                    <header>
+                      <strong>{isStudent ? (activeThread.display_name || selected.username) : "开发者"}</strong>
+                      <time><Clock3 size={10} />{formatTime(message.created_at)}</time>
+                    </header>
+                    <p>{message.body}</p>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </> : !activeError && <div className="developer-feedback-detail-empty">
+          <MessageCircle size={20} />
+          <strong>{selected ? "正在读取反馈…" : "选择一个账号查看反馈"}</strong>
+          <p>{selected ? "正在加载对话详情" : "从左侧选择用户，查看完整反馈时间线"}</p>
+        </div>}
+      </div>
+    </div>
+    {total > 0 && <div className="developer-feedback-pagination"><span>共 {total} 条 · 第 {pageIndex}/{pageCount} 页</span><button type="button" className="developer-feedback-page-btn" disabled={offset <= 0} onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}><ChevronLeft size={13} />上一页</button><button type="button" className="developer-feedback-page-btn primary" disabled={offset + pageSize >= total} onClick={() => onOffsetChange(offset + pageSize)}>下一页<ChevronRight size={13} /></button></div>}
   </Section>;
 }
 
@@ -263,6 +368,10 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const [feedbackOffset, setFeedbackOffset] = useState(0);
   const [feedbackSearch, setFeedbackSearch] = useState("");
   const [feedbackLoadError, setFeedbackLoadError] = useState("");
+  const feedbackOffsetRef = useRef(feedbackOffset);
+  const feedbackSearchRef = useRef(feedbackSearch);
+  useEffect(() => { feedbackOffsetRef.current = feedbackOffset; }, [feedbackOffset]);
+  useEffect(() => { feedbackSearchRef.current = feedbackSearch; }, [feedbackSearch]);
   const updateFeedbackThreads = useCallback((items: FeedbackThreadSummary[]) => {
     setFeedbackThreads(items);
     // Only seed a selection when none exists yet: paging or filtering must not
@@ -270,23 +379,66 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     // new page.
     setFeedbackSelectedId((current) => current ?? items[0]?.thread_id ?? null);
   }, []);
-  const refreshFeedback = useCallback(async () => {
+  const fetchFeedback = useCallback(async (nextOffset: number, nextSearch: string) => {
     try {
-      const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: feedbackOffset, q: feedbackSearch || undefined });
+      const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: nextOffset, q: nextSearch || undefined });
       updateFeedbackThreads(result.items);
       setFeedbackTotal(result.total);
       setFeedbackLoadError("");
+      // If the current selection was deleted externally (or by another tab), clear it.
+      setFeedbackSelectedId((current) => {
+        if (current && !result.items.some((item) => item.thread_id === current)) {
+          // Keep the new page's first item if we lost selection, but avoid auto-mark-read loops
+          // by not forcing a selection when the new page is empty.
+          return result.items[0]?.thread_id ?? null;
+        }
+        if (!current) return result.items[0]?.thread_id ?? null;
+        return current;
+      });
+      // If offset is beyond total (e.g. after delete), correct it.
+      if (result.total > 0 && nextOffset >= result.total) {
+        const corrected = Math.max(0, Math.floor((result.total - 1) / FEEDBACK_PAGE_SIZE) * FEEDBACK_PAGE_SIZE);
+        if (corrected !== nextOffset) setFeedbackOffset(corrected);
+      }
+      if (result.total === 0 && nextOffset !== 0) setFeedbackOffset(0);
     }
     catch (reason) {
       // Keep the last list while offline, but surface the failure instead of
       // letting a 403/500 read as "no feedback yet".
       setFeedbackLoadError(reason instanceof Error ? reason.message : String(reason));
     }
-  }, [updateFeedbackThreads, feedbackOffset, feedbackSearch]);
+  }, [updateFeedbackThreads]);
+  const refreshFeedback = useCallback(async () => {
+    await fetchFeedback(feedbackOffsetRef.current, feedbackSearchRef.current);
+  }, [fetchFeedback]);
   const changeFeedbackSearch = useCallback((value: string) => {
     setFeedbackSearch(value);
     setFeedbackOffset(0);
   }, []);
+  const handleDeleteFeedback = useCallback(async (threadId: string) => {
+    await api.deleteFeedback(threadId);
+    // Clear selection if we deleted the active thread
+    setFeedbackSelectedId((current) => (current === threadId ? null : current));
+    const nextSearch = feedbackSearchRef.current;
+    const nextOffset = feedbackOffsetRef.current;
+    // Fetch with current paging; fetchFeedback will auto-correct offset if page became empty
+    const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: nextOffset, q: nextSearch || undefined }).catch((reason) => {
+      throw reason;
+    });
+    // Handle empty-page after delete: if we deleted the last item on this page, go back one page
+    if (result.items.length === 0 && result.total > 0 && nextOffset > 0) {
+      const corrected = Math.max(0, nextOffset - FEEDBACK_PAGE_SIZE);
+      setFeedbackOffset(corrected);
+      await fetchFeedback(corrected, nextSearch);
+      return;
+    }
+    updateFeedbackThreads(result.items);
+    setFeedbackTotal(result.total);
+    setFeedbackLoadError("");
+    if (result.total === 0) setFeedbackOffset(0);
+    // Seed selection if we cleared it
+    setFeedbackSelectedId((current) => current ?? result.items[0]?.thread_id ?? null);
+  }, [fetchFeedback, updateFeedbackThreads]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
@@ -314,6 +466,12 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     finally { setLoading(false); }
   }, []);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
+  // Direct data effect: fetch when paging or search changes — fixes the deployed pagination/search stall.
+  useEffect(() => {
+    if (page !== "feedback") return;
+    void fetchFeedback(feedbackOffset, feedbackSearch);
+  }, [page, feedbackOffset, feedbackSearch, fetchFeedback]);
+  // Polling effect uses refs to avoid stale closure on interval.
   useEffect(() => {
     if (page !== "feedback") return undefined;
     let timer: number | undefined;
@@ -329,7 +487,6 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
       if (document.visibilityState === "visible") { void refreshFeedback(); startTimer(); }
       else stopTimer();
     };
-    queueMicrotask(() => void refreshFeedback());
     startTimer();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => { document.removeEventListener("visibilitychange", onVisibilityChange); stopTimer(); };
@@ -338,7 +495,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const content = useMemo(() => {
     // Pages that own their data sources render regardless of the snapshot.
     if (page === "release-notes") return <ReleaseNotes />;
-    if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} refresh={refreshFeedback} />;
+    if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} onDelete={handleDeleteFeedback} refresh={refreshFeedback} />;
     if (page === "users") return <UserManagementPage />;
     if (page === "roles") return <RoleManagementPageV2 />;
     if (page === "menus") return <MenuManagementPageV2 />;
@@ -353,7 +510,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
     return <Overview snapshot={snapshot} />;
-  }, [changeFeedbackSearch, feedbackLoadError, feedbackOffset, feedbackSearch, feedbackSelectedId, feedbackThreads, feedbackTotal, page, refreshFeedback, snapshot, snapshotError, load]);
+  }, [changeFeedbackSearch, feedbackLoadError, feedbackOffset, feedbackSearch, feedbackSelectedId, feedbackThreads, feedbackTotal, handleDeleteFeedback, page, refreshFeedback, fetchFeedback, snapshot, snapshotError, load]);
   const accessDenied = !loading && visiblePages.size > 0 && !visiblePages.has(page);
   return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void load(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
 }
