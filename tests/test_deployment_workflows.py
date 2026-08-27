@@ -40,6 +40,23 @@ def test_publish_workflow_builds_and_publishes_the_runtime_image() -> None:
     assert "runtime_digest" in workflow
 
 
+def test_deploy_workflows_overlay_published_digests_without_mutating_server_env() -> None:
+    for workflow_path in WORKFLOW_PATHS:
+        workflow = workflow_path.read_text(encoding="utf-8")
+
+        assert 'DEPLOY_ENV_FILE="$(mktemp' in workflow
+        assert 'export NOVA_ENV_FILE="$DEPLOY_ENV_FILE"' in workflow
+        assert 'awk -v nova_image_ref="$NOVA_IMAGE_REF"' in workflow
+        assert '-v sandbox_runtime_ref="$SANDBOX_RUNTIME_REF"' in workflow
+        assert 'print "NOVA_IMAGE_REF=\\\"" nova_image_ref' in workflow
+        assert (
+            'print "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=\\\"" '
+            'sandbox_runtime_ref'
+        ) in workflow
+        assert 'rm -f "$DEPLOY_ENV_FILE"' in workflow
+        assert "The deployment directory" in workflow
+
+
 def test_ci_workflow_can_be_dispatched_after_a_skip_ci_metadata_commit() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
