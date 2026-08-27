@@ -1,0 +1,201 @@
+name: Sandbox Linux Validation
+
+on:
+  push:
+    branches:
+      - feature/sandbox-phase3-develop
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sandbox-runtime:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+    env:
+      NLP_AGENT_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: pytest tests/test_sandbox_docker_runtime.py tests/test_sandbox_runtime_protocol.py tests/test_sandbox_events.py -q
+      - name: Verify Phase 4 model Sandbox contracts
+        run: pytest tests/test_sandbox_model_tools.py tests/test_sandbox_optimization.py tests/test_sandbox_commands.py tests/test_sandbox_manager_rpc.py tests/test_sandbox_fault_injection.py tests/test_sandbox_metrics_trim.py -q
+      - name: Verify Phase 5 extension contracts
+        run: pytest tests/test_sandbox_phase5.py -q
+      - name: Verify durable Redis Stream replay
+        run: RUN_SANDBOX_REDIS_INTEGRATION=1 pytest tests/test_sandbox_redis_integration.py -q
+      - name: Install gVisor runsc
+        run: |
+          ARCH=$(uname -m)
+          URL=https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}
+          curl -fsSLO ${URL}/gvisor.tar.bz2
+          curl -fsSLO ${URL}/gvisor.tar.bz2.sha512
+          sha512sum -c gvisor.tar.bz2.sha512
+          sudo tar -xjf gvisor.tar.bz2 -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1
+          sudo runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}' | grep -q '"runsc"'
+      - run: docker build --tag nova-sandbox-runtime:ci sandbox-runtime
+      - name: Verify gVisor container isolation
+        run: RUN_SANDBOX_DOCKER_INTEGRATION=1 NLP_AGENT_SANDBOX_INTEGRATION_IMAGE=nova-sandbox-runtime:ci pytest tests/test_sandbox_security_integration.py -q
+      - name: Smoke-test hardened Kernel on Linux
+        run: |
+          docker run --detach --rm --name nova-ci --runtime runsc --read-only --network none --cap-drop ALL --security-opt no-new-privileges=true --memory 768m --cpus 1 --pids-limit 128 --tmpfs /workspace:rw,nosuid,nodev,size=256m --tmpfs /tmp:rw,nosuid,nodev,size=256m --tmpfs /run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m --user 10001:10001 nova-sandbox-runtime:ci
+          for attempt in $(seq 1 60); do
+            if docker exec nova-ci python /opt/nova-runtime/nova_runtime.py health; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs nova-ci || true
+              docker rm --force nova-ci || true
+              exit 1
+            fi
+            sleep 1
+          done
+          echo '{"source":"print(42)"}' | docker exec --interactive nova-ci python /opt/nova-runtime/nova_runtime.py execute --timeout-seconds 10 --output-limit-bytes 1024
+          docker rm --force nova-ci
+      - name: Record Linux image metadata
+        run: docker image inspect nova-sandbox-runtime:ci --format '{{.Id}}' | tee sandbox-linux-image.txt
+      - name: Benchmark runsc Scratch startup
+        run: |
+          set -o pipefail
+          IMAGE_ID=$(docker image inspect nova-sandbox-runtime:ci --format '{{.Id}}')
+          python scripts/benchmark_sandbox_startup.py --image "${IMAGE_ID}" --iterations 3 --matrix-path configs/sandbox_preload_matrix.json --update-matrix | tee sandbox-startup-benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-linux-metadata
+          path: |
+            sandbox-linux-image.txt
+            sandbox-startup-benchmark.json
+            configs/sandbox_preload_matrix.json
+
+  sandbox-auth-lifecycle:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: pro_nlp
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      NLP_AGENT_DATABASE_URL: mysql+aiomysql://root:root@127.0.0.1:3306/pro_nlp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: alembic upgrade head
+      - name: Verify authentication lifecycle releases leases
+        run: pytest tests/test_sandbox_phase0.py -q
+      - name: Verify Artifact TTL against MySQL and filesystem
+        env:
+          RUN_SANDBOX_ARTIFACT_INTEGRATION: '1'
+        run: pytest tests/test_sandbox_artifact_retention_integration.py -q
+
+  # runsc installation restarts Docker, so this job starts MySQL only after
+  # the runtime is registered instead of using a GitHub service container.
+  sandbox-manager-runsc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    env:
+      NLP_AGENT_DATABASE_URL: mysql+aiomysql://root:root@127.0.0.1:3306/pro_nlp
+      RUN_SANDBOX_DOCKER_MANAGER_INTEGRATION: '1'
+      NLP_AGENT_DOCKER_RUNTIME: runsc
+      NLP_AGENT_SANDBOX_MANAGER_TEST_IMAGE: nova-sandbox-runtime:manager-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Install gVisor runsc for lifecycle tests
+        run: |
+          ARCH=$(uname -m)
+          URL=https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}
+          curl -fsSLO ${URL}/gvisor.tar.bz2
+          curl -fsSLO ${URL}/gvisor.tar.bz2.sha512
+          sha512sum -c gvisor.tar.bz2.sha512
+          sudo tar -xjf gvisor.tar.bz2 -C /usr/local/bin
+          sudo chmod +x /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1
+          sudo runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}' | grep -q '"runsc"'
+      - name: Start MySQL after Docker runtime setup
+        run: |
+          docker run --detach --name nova-ci-mysql --publish 3306:3306 \
+            --env MYSQL_ROOT_PASSWORD=root --env MYSQL_DATABASE=pro_nlp mysql:8.4
+          for attempt in $(seq 1 60); do
+            if docker exec nova-ci-mysql mysqladmin ping -h 127.0.0.1 -uroot -proot --silent; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs nova-ci-mysql || true
+              exit 1
+            fi
+            sleep 2
+          done
+      - run: alembic upgrade head
+      - name: Build pinned runtime for Manager claim benchmark
+        run: docker build --tag nova-sandbox-runtime:manager-ci sandbox-runtime
+      - name: Benchmark real Manager claim path
+        run: |
+          set -o pipefail
+          IMAGE_ID=$(docker image inspect nova-sandbox-runtime:manager-ci --format '{{.Id}}')
+          python scripts/benchmark_sandbox_startup.py \
+            --image "${IMAGE_ID}" \
+            --iterations 3 \
+            --matrix-path configs/sandbox_preload_matrix.json \
+            --update-matrix \
+            --measure-manager-claim | tee sandbox-manager-claim-benchmark.json
+      - name: Verify Docker reconcile destroys orphan runtimes
+        run: |
+          mapfile -t TESTS < <(pytest tests/test_sandbox_manager_docker_integration.py --collect-only -q | sed -n '/::/p')
+          for test in "${TESTS[@]}"; do
+            echo "Running Manager integration test: ${test}"
+            timeout --signal=TERM --kill-after=15s 120s pytest "${test}" -vv -s -o faulthandler_timeout=30
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-manager-claim-benchmark
+          path: |
+            sandbox-manager-claim-benchmark.json
+            configs/sandbox_preload_matrix.json
+      - name: Persist preload compatibility matrix
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/sandbox-phase3-develop'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- configs/sandbox_preload_matrix.json; then
+            exit 0
+          fi
+          git add configs/sandbox_preload_matrix.json
+          git commit -m "ci(sandbox): update preload compatibility matrix"
+          git push origin HEAD:${GITHUB_REF_NAME}
+          gh workflow run CI --ref "${GITHUB_REF_NAME}"
+      - name: Remove MySQL test container
+        if: always()
+        run: docker rm --force nova-ci-mysql || true

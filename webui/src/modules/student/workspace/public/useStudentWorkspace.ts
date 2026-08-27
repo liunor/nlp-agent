@@ -34,6 +34,7 @@ export function useStudentWorkspace() {
     activeSessionId,
     setActiveSessionId,
     activeSessionRef,
+    freshSessionIdsRef,
     loadSessions,
     createBackendSession,
     startNewChat,
@@ -110,13 +111,15 @@ export function useStudentWorkspace() {
     loadGenerationRef.current += 1;
     socketRef.current?.setSession(activeSessionId);
     queueMicrotask(() => {
-      if (activeSessionId) void loadTurns(activeSessionId).catch((reason) => setError(String(reason)));
+      if (activeSessionId && freshSessionIdsRef.current.delete(activeSessionId)) {
+        setLoadingMessages(false);
+      } else if (activeSessionId) void loadTurns(activeSessionId).catch((reason) => setError(String(reason)));
       else {
         setMessages([]);
         setLoadingMessages(false);
       }
     });
-  }, [activeSessionId, loadTurns]);
+  }, [activeSessionId, freshSessionIdsRef, loadTurns]);
 
   const { send, cancel } = useTurnSender({
     activeSessionRef,
@@ -170,6 +173,7 @@ export function useStudentWorkspace() {
     loadingMessages,
     isRunning,
     startNewChat,
+    ensureSession: createBackendSession,
     send,
     cancel,
     deleteSession,

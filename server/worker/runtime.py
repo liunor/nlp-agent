@@ -18,6 +18,20 @@ from gateway.turn_execution import InProcessTurnExecutor
 from server.application.turn_reliability import OutboxRelay, TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
 from server.worker.fencing import FencedTurnExecutor
+from server.sandbox.manager_rpc import create_sandbox_manager_rpc_client
+from server.sandbox.model_tools import configure_model_sandbox_service
+
+
+def configure_worker_sandbox_service(session_factory):
+    """Bind model tools in the Worker; Web-only setup is insufficient remotely."""
+    mode = settings.NLP_AGENT_SANDBOX_RUNTIME_MODE.strip().lower()
+    manager = create_sandbox_manager_rpc_client() if mode == "docker" else None
+    service = configure_model_sandbox_service(
+        mode=mode,
+        session_factory=session_factory,
+        manager=manager,
+    )
+    return service, manager
 
 
 def redis_config() -> RedisTransportConfig:
@@ -45,6 +59,9 @@ async def run_worker() -> None:
 
     database_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
     await database_runtime.start()
+    sandbox_model_service, sandbox_manager = configure_worker_sandbox_service(
+        database_runtime.session_factory
+    )
     config = redis_config()
     redis = Redis.from_url(config.url, decode_responses=True)
     gateway_config = settings.gateway_runtime
@@ -160,6 +177,9 @@ async def run_worker() -> None:
         await asyncio.gather(relay_task, return_exceptions=True)
         await worker.close()
         await engine.close()
+        await sandbox_model_service.close()
+        if sandbox_manager is not None:
+            await sandbox_manager.close()
         repository.close()
         await redis.aclose()
         await database_runtime.close()

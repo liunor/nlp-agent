@@ -19,13 +19,14 @@ function uploadErrorMessage(reason: unknown): string {
   return "上传失败，请检查网络后重试";
 }
 
-export function Composer({ sessionId, disabled, running, centered = false, onSend, onCancel, contextControl }: {
+export function Composer({ sessionId, disabled, running, centered = false, onSend, onCancel, onEnsureSession, contextControl }: {
   sessionId?: string | null;
   disabled: boolean;
   running: boolean;
   centered?: boolean;
   onSend: (content: string, attachments?: ChatAttachment[]) => void;
   onCancel: () => void;
+  onEnsureSession?: () => Promise<string | null>;
   contextControl?: ReactNode;
 }) {
   const [content, setContent] = useState("");
@@ -59,12 +60,13 @@ export function Composer({ sessionId, disabled, running, centered = false, onSen
     }
   };
   const upload = async (attachment: ComposerAttachment) => {
-    if (!sessionId) return;
     setAttachments((current) => current.map((item) => item.clientId === attachment.clientId
       ? { ...item, status: "uploading", errorMessage: undefined }
       : item));
     try {
-      const response = await uploadAttachment(sessionId, attachment.sourceFile);
+      const uploadSessionId = sessionId ?? await onEnsureSession?.();
+      if (!uploadSessionId) throw new Error("A conversation is required before uploading an attachment");
+      const response = await uploadAttachment(uploadSessionId, attachment.sourceFile);
       if (attachment.url.startsWith("blob:") && typeof URL.revokeObjectURL === "function") {
         URL.revokeObjectURL(attachment.url);
       }
@@ -95,7 +97,7 @@ export function Composer({ sessionId, disabled, running, centered = false, onSen
   };
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file || !sessionId) return;
+    if (!file) return;
     event.target.value = "";
 
     const newAttachment: ComposerAttachment = {
@@ -132,7 +134,7 @@ export function Composer({ sessionId, disabled, running, centered = false, onSen
       <textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={keyDown} disabled={disabled} rows={centered ? 3 : 1} placeholder="问一个 NLP 问题……" aria-label="学习问题" />
       <div className="composer-toolbar">
         <input type="file" ref={fileInputRef} hidden accept="image/jpeg,image/png,image/webp" onChange={handleFileSelect} />
-        <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={disabled || running || !sessionId} aria-label="上传附件"><Plus size={18} /></button>
+        <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={disabled || running || (!sessionId && !onEnsureSession)} aria-label="上传附件"><Plus size={18} /></button>
         <span><GraduationCap size={15} />Nova · LSNU NLP Learning Agent</span>
         {contextControl}
         {running ? <button className="send-button stop" type="button" onClick={onCancel} aria-label="停止生成"><Square size={14} fill="currentColor" /></button> : <button className="send-button" type="button" onClick={submit} disabled={disabled || !attachmentsReady || (!content.trim() && readyAttachments.length === 0)} aria-label="发送"><ArrowUp size={18} /></button>}

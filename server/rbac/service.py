@@ -28,6 +28,7 @@ from server.infrastructure.mysql.models import (
     MenuModel,
     RoleMenuModel,
 )
+from server.sandbox.service import sandbox_lifecycle_service
 
 
 class UnknownRoleError(ValueError):
@@ -215,6 +216,10 @@ class RbacService:
         user_ids = set((await session.scalars(select(UserRoleModel.user_id).where(UserRoleModel.role_id == role_id))).all())
         if user_ids:
             await session.execute(UserModel.__table__.update().where(UserModel.id.in_(user_ids)).values(authorization_version=UserModel.authorization_version + 1))
+            for user_id in user_ids:
+                await sandbox_lifecycle_service.revoke_user_leases(
+                    session, user_id=user_id, reason=f"authorization.changed:{reason}"
+                )
             session.add_all([OutboxMessageModel(id=str(uuid.uuid4()), topic="authorization.changed", payload_json={"user_id": user_id, "reason": reason}) for user_id in user_ids])
         return user_ids
 
@@ -253,6 +258,9 @@ class RbacService:
         else:
             member.member_role, member.status = member_role, status
         user.authorization_version += 1
+        await sandbox_lifecycle_service.revoke_user_leases(
+            session, user_id=user_id, reason="authorization.changed:classroom_membership_changed"
+        )
         session.add(OutboxMessageModel(id=str(uuid.uuid4()), topic="authorization.changed", payload_json={"user_id": user_id, "reason": "classroom_membership_changed"}))
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=user_id, decision="allow", reason_code="classroom_member_replaced", permission_code="classroom:member:manage", resource_type="classroom", resource_id=classroom_id, detail={"member_role": member_role, "status": status})
 
@@ -401,6 +409,9 @@ class RbacService:
             ]
         )
         user.authorization_version += 1
+        await sandbox_lifecycle_service.revoke_user_leases(
+            session, user_id=user_id, reason="authorization.changed:user_roles_changed"
+        )
         session.add(OutboxMessageModel(id=str(uuid.uuid4()), topic="authorization.changed", payload_json={"user_id": user_id, "reason": "user_roles_changed"}))
         await self.audit(
             session,

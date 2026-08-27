@@ -154,6 +154,36 @@ export interface TeacherOverview {
   knowledge_point_stats: KnowledgePointStat[];
 }
 
+// Teacher/learner book contracts are intentionally small on this branch;
+// the API module is shared with the knowledge-book UI and must remain
+// type-safe even when that optional feature is not bundled.
+export interface TeacherBookNavigationItem {
+  knowledge_point_id: string;
+  topic_id?: string;
+  title: string;
+  status?: string;
+  sort_order?: number;
+}
+
+export interface TeacherBookPage {
+  workspace_id: string;
+  knowledge_point_id: string;
+  content_markdown: string;
+  revision: number;
+  status: string;
+  updated_at?: string | null;
+}
+
+export type LearningBookPage = TeacherBookPage;
+
+export interface TeacherBookImportPreview {
+  file_name: string;
+  title?: string;
+  knowledge_point_id?: string | null;
+  content_markdown?: string;
+  warnings: string[];
+}
+
 export interface SessionSummary {
   session_id: string;
   user_id: string;

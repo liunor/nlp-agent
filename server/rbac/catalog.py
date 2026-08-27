@@ -30,6 +30,7 @@ MENU_CATALOG = (
     ("developer.automations", "Apps 与自动化", "/developer/automations", "automations", Permission.SYSTEM_RUNTIME_MONITOR, 80),
     ("developer.feedback", "意见反馈", "/developer/feedback", "feedback", Permission.LEARNING_FEEDBACK_READ, 95),
     ("developer.settings", "运行时设置", "/developer/settings", "settings", Permission.SYSTEM_RUNTIME_INSPECT, 90),
+    ("developer.sandbox", "代码沙箱", "/developer/sandbox", "sandbox", Permission.SYSTEM_RUNTIME_MONITOR, 95),
     ("developer.users", "用户管理", "/developer/users", "users", Permission.SYSTEM_USER_MANAGE, 100),
     ("developer.roles", "角色权限", "/developer/roles", "roles", Permission.SYSTEM_ROLE_MANAGE, 110),
     ("developer.menus", "菜单管理", "/developer/menus", "menus", Permission.SYSTEM_ROLE_MANAGE, 120),

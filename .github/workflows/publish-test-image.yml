@@ -14,11 +14,13 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/nlp-agent
+  RUNTIME_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/nova-sandbox-runtime
 
 jobs:
   publish:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      runtime_digest: ${{ steps.build_runtime.outputs.digest }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +47,23 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - uses: docker/metadata-action@v5
+        id: meta_runtime
+        with:
+          images: ${{ env.RUNTIME_IMAGE_NAME }}
+          tags: |
+            type=raw,value=develop,enable=${{ github.ref_name == 'develop' }}
+            type=sha,prefix=develop-,enable=${{ github.ref_name == 'develop' }}
+            type=raw,value=release-candidate-${{ github.sha }},enable=${{ github.ref_name == 'main' }}
+      - uses: docker/build-push-action@v6
+        id: build_runtime
+        with:
+          context: sandbox-runtime
+          push: true
+          tags: ${{ steps.meta_runtime.outputs.tags }}
+          labels: ${{ steps.meta_runtime.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy Test Environment (${{ github.ref_name }})
@@ -63,11 +82,15 @@ jobs:
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
           COMPOSE_PROJECT_NAME: nova-test
           NOVA_IMAGE_REF: ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}
+          SANDBOX_RUNTIME_REF: ghcr.io/${{ github.repository_owner }}/nova-sandbox-runtime@${{ needs.publish.outputs.runtime_digest }}
           NOVA_PULL_POLICY: always
         run: |
           test -n "$DEPLOY_DIR"
           test -f "$DEPLOY_DIR/.env"
           export NOVA_ENV_FILE="$DEPLOY_DIR/.env"
+          SANDBOX_CONFIGURED_REF="$(awk -F= '$1 == "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST" {sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit}' "$DEPLOY_DIR/.env")"
+          test "$SANDBOX_CONFIGURED_REF" = "$SANDBOX_RUNTIME_REF"
+          docker pull "$SANDBOX_CONFIGURED_REF"
           test "$NOVA_IMAGE_REF" = "ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}"
           resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml config --images)"
           printf '%s\n' "$resolved_images"
@@ -75,12 +98,13 @@ jobs:
             echo "Compose did not resolve the expected published image: $NOVA_IMAGE_REF"
             exit 1
           }
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nginx
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nginx
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx
           for attempt in {1..12}; do
             if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml ps --status running --services nova-sandbox-manager | grep -Fxq "nova-sandbox-manager" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
               exit 0
             fi

@@ -57,6 +57,11 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_tool_audits": "工具执行审计及请求/结果快照。",
     "nlp_runtime_config_versions": "按作用域保存的运行时配置版本快照。",
     "nlp_observability_records": "trace、span 与 telemetry 的统一可观测性记录。",
+    "nlp_sandbox_environments": "每位用户唯一的逻辑沙箱归属与配置版本，不保存代码。",
+    "nlp_sandbox_runtime_instances": "沙箱运行实例声明与健康状态；Phase 0 不创建容器。",
+    "nlp_sandbox_leases": "认证会话绑定的沙箱租约、过期与撤销状态。",
+    "nlp_sandbox_executions": "沙箱执行的最小审计摘要，不保存代码或标准输出。",
+    "nlp_sandbox_artifacts": "沙箱产物的受控存储指针与过期信息。",
 }
 
 

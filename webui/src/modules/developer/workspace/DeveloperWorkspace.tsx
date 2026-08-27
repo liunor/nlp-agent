@@ -15,7 +15,7 @@ import { AuditLogPageV2 } from "@/modules/admin/AuditLogPageV2";
 import { AgentSessionListPageV2 } from "@/modules/admin/AgentSessionListPageV2";
 import { monitorUrl } from "@/monitor/monitor-helpers";
 
-export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "menus" | "audit" | "sessions";
+export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "sandbox" | "users" | "roles" | "menus" | "audit" | "sessions";
 
 const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "overview", label: "工作台", icon: Gauge },
@@ -28,6 +28,7 @@ const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "automations", label: "Apps 与自动化", icon: Clock3 },
   { page: "feedback", label: "意见反馈", icon: Mail },
   { page: "settings", label: "运行时设置", icon: Settings2 },
+  { page: "sandbox", label: "代码沙箱", icon: TerminalSquare },
   { page: "users", label: "用户管理", icon: Users },
   { page: "roles", label: "角色权限", icon: ShieldCheck },
   { page: "menus", label: "菜单管理", icon: LayoutList },
@@ -433,6 +434,31 @@ function RuntimeSettings({ snapshot }: { snapshot: DeveloperSnapshot }) {
   return <><Section title="网络与协议"><JsonBlock value={snapshot.web} /></Section><Section title="Workspace 本地数据权限"><div className="developer-list">{snapshot.workspace.roots.map((root) => <article key={root.name}><Database size={18} /><span><strong>{root.name}</strong><small>{root.path}</small></span><StatusPill ok={root.exists}>{root.exists ? "可用" : "未创建"}</StatusPill></article>)}</div></Section><Section title="敏感配置规则" hint="浏览器只能读取脱敏快照。"><div className="developer-callout"><ShieldCheck /><p>Provider 密钥、MCP headers/env、Cookie secret 和 Authorization 字段不会通过开发者 API 返回。配置写入继续由本地 YAML/.env 管理。</p></div></Section></>;
 }
 
+function SandboxManagement() {
+  const [overview, setOverview] = useState<Awaited<ReturnType<typeof api.getSandboxOverview>> | null>(null);
+  const [runtimes, setRuntimes] = useState<Awaited<ReturnType<typeof api.listSandboxRuntimes>>["items"]>([]);
+  const [executions, setExecutions] = useState<Awaited<ReturnType<typeof api.listSandboxExecutions>>["items"]>([]);
+  const [runtimeDetail, setRuntimeDetail] = useState<Awaited<ReturnType<typeof api.getSandboxRuntime>> | null>(null);
+  const [executionEvents, setExecutionEvents] = useState<Awaited<ReturnType<typeof api.replaySandboxExecutionEvents>> | null>(null);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try { setError(""); const [nextOverview, nextRuntimes, nextExecutions] = await Promise.all([api.getSandboxOverview(), api.listSandboxRuntimes(), api.listSandboxExecutions()]); setOverview(nextOverview); setRuntimes(nextRuntimes.items); setExecutions(nextExecutions.items); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }, []);
+  useEffect(() => { queueMicrotask(() => void load()); const timer = window.setInterval(() => void load(), 30_000); return () => window.clearInterval(timer); }, [load]);
+  return <Section title="Sandbox 容量与运行指标" hint="生命周期由 Sandbox Manager 控制；Drain 会将实例交给下一轮 reconcile 销毁。"><button type="button" onClick={() => void load()}>刷新</button>{error && <p>{error}</p>}{overview && <><div className="developer-kpis">{Object.entries(overview.runtime_states).map(([state, count]) => <article key={state}><TerminalSquare /><span>{state}</span><strong>{count}</strong></article>)}<article><Activity /><span>active executions</span><strong>{overview.active_executions.length}</strong></article><article><ShieldCheck /><span>recent failures</span><strong>{overview.recent_failures.length}</strong></article></div><p>Ready {overview.capacity.ready}/{overview.capacity.target} · deficit {overview.capacity.deficit} · 执行 P50/P95/P99 {overview.execution_latency.p50_ms ?? "—"}/{overview.execution_latency.p95_ms ?? "—"}/{overview.execution_latency.p99_ms ?? "—"} ms · samples {overview.capacity_history.length}</p><CapacitySparkline samples={overview.capacity_history} />{overview.alerts.map((alert) => <p key={alert.code} role="alert">[{alert.severity}] {alert.message}</p>)}<div className="developer-list">{runtimes.map((runtime) => <article key={runtime.id}><TerminalSquare /><span><strong>{runtime.id}</strong><small>{runtime.state} · {runtime.node_id ?? "unassigned"}</small></span><button type="button" onClick={() => void api.getSandboxRuntime(runtime.id).then(setRuntimeDetail)}>详情</button>{["assigned", "ready_unbound", "claiming"].includes(runtime.state) && <button type="button" onClick={() => void api.drainSandboxRuntime(runtime.id).then(() => void load())}>Drain</button>}</article>)}</div><div className="developer-list">{executions.slice(0, 20).map((execution) => <article key={execution.id}><TerminalSquare /><span><strong>{execution.id}</strong><small>{execution.status} · {execution.owner_user_id}</small></span><button type="button" onClick={() => void api.replaySandboxExecutionEvents(execution.id).then(setExecutionEvents)}>事件</button></article>)}</div>{runtimeDetail && <pre>{JSON.stringify(runtimeDetail, null, 2)}</pre>}{executionEvents && <pre>{JSON.stringify(executionEvents.events, null, 2)}</pre>}</>}</Section>;
+}
+
+function CapacitySparkline({ samples }: { samples: Array<{ ready: number; target: number; deficit: number }> }) {
+  if (samples.length < 2) return null;
+  const width = 320;
+  const height = 72;
+  const max = Math.max(1, ...samples.map((sample) => Math.max(sample.ready, sample.target)));
+  const points = samples.map((sample, index) => `${(index / (samples.length - 1)) * width},${height - (sample.ready / max) * height}`).join(" ");
+  const targetPoints = samples.map((sample, index) => `${(index / (samples.length - 1)) * width},${height - (sample.target / max) * height}`).join(" ");
+  return <svg role="img" aria-label="Warm Pool ready and target capacity history" viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", maxWidth: width, height }}><polyline fill="none" stroke="currentColor" strokeOpacity="0.35" strokeDasharray="4 3" points={targetPoints} /><polyline fill="none" stroke="currentColor" strokeWidth="2" points={points} /></svg>;
+}
+
 export function ReleaseNotes() {
   const [items, setItems] = useState<ReleaseNoteEntry[] | null>(null);
   const [error, setError] = useState("");
@@ -650,6 +676,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "skills") return <Skills snapshot={snapshot} refresh={load} />;
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
+    if (page === "sandbox") return <SandboxManagement />;
     return <Overview snapshot={snapshot} />;
   }, [changeFeedbackSearch, changeFeedbackCategory, changeFeedbackPriority, changeFeedbackStatus, changeFeedbackSort, feedbackCategory, feedbackLoadError, feedbackLoading, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, handleDeleteFeedback, page, refreshFeedback, snapshot, snapshotError, load]);
   const accessDenied = !loading && visiblePages.size > 0 && !visiblePages.has(page);

@@ -2,11 +2,14 @@
 
 import asyncio
 import json
+import logging
 import secrets
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, Security, WebSocket, status
 from fastapi.exceptions import RequestValidationError
@@ -85,6 +88,9 @@ from server.teacher.models import ExerciseBlueprint, GuidedBlueprint, ReviewBlue
 from server.teacher.service import teacher_service
 from server.rbac.service import rbac_service
 from server.infrastructure.mysql.models import UserModel
+from server.sandbox.service import sandbox_lifecycle_service
+from server.sandbox.artifact_retention import purge_expired_artifacts
+from server.sandbox.metrics import record_sandbox_capacity_sample
 from server.release_notes.service import (
     ReleaseNoteConflictError,
     ReleaseNoteNotFoundError,
@@ -202,6 +208,24 @@ def create_app(
                 gateway.authorization_session_factory
             )
         app.state.gateway = gateway
+        # Bind model-facing Sandbox tools to the same authenticated DB session
+        # factory as the HTTP gateway.  The module-level tool objects remain
+        # stable for LangChain catalogs while their service is request-safe.
+        from server.sandbox.manager_rpc import create_sandbox_manager_rpc_client
+        from server.sandbox.model_tools import configure_model_sandbox_service
+
+        sandbox_manager = (
+            create_sandbox_manager_rpc_client()
+            if settings.NLP_AGENT_SANDBOX_RUNTIME_MODE.strip().lower() == "docker"
+            else None
+        )
+        app.state.sandbox_manager = sandbox_manager
+
+        sandbox_model_service = configure_model_sandbox_service(
+            mode=settings.NLP_AGENT_SANDBOX_RUNTIME_MODE,
+            session_factory=gateway.authorization_session_factory,
+            manager=sandbox_manager,
+        )
         await gateway.start()
         redis_client = getattr(getattr(gateway, "dispatcher", None), "client", None)
         authorization_channel = str(settings.gateway_runtime.get("redis_authorization_channel", "nlp-agent:authorization"))
@@ -231,12 +255,46 @@ def create_app(
             asyncio.create_task(consume_authorization_changes(), name="authorization-invalidation-listener")
             if redis_client is not None else None
         )
+        sandbox_reconcile_interval_s = max(
+            10, int(web_config.get("sandbox_lease_reconcile_interval_s", 60))
+        )
+
+        async def reconcile_sandbox_leases() -> None:
+            factory = gateway.authorization_session_factory
+            if factory is None:
+                return
+            while True:
+                try:
+                    await sandbox_lifecycle_service.reconcile_expired_leases(factory)
+                    store_root = settings.NLP_AGENT_SANDBOX_ARTIFACT_STORE_ROOT.strip()
+                    if store_root:
+                        await purge_expired_artifacts(factory, store_root=Path(store_root))
+                    await record_sandbox_capacity_sample(factory)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # Reconciliation is a periodic repair loop. One transient
+                    # DB/Redis/filesystem failure must not kill all later runs.
+                    logger.exception("sandbox reconciliation pass failed")
+                finally:
+                    await asyncio.sleep(sandbox_reconcile_interval_s)
+
+        sandbox_reconciler = (
+            asyncio.create_task(reconcile_sandbox_leases(), name="sandbox-lease-reconciler")
+            if gateway.authorization_session_factory is not None else None
+        )
         try:
             yield
         finally:
+            if sandbox_reconciler is not None:
+                sandbox_reconciler.cancel()
+                await asyncio.gather(sandbox_reconciler, return_exceptions=True)
             if authorization_listener is not None:
                 authorization_listener.cancel()
                 await asyncio.gather(authorization_listener, return_exceptions=True)
+            if sandbox_manager is not None:
+                await sandbox_manager.close()
+            await sandbox_model_service.close()
             await gateway.begin_shutdown()
             await hub.close()
             await gateway.close()
@@ -934,6 +992,9 @@ def create_app(
         accepted = await request.app.state.gateway.submit_turn(
             principal,
             SubmitTurnRequest(**body.model_dump()),
+            auth_session_id=(
+                _claims.session_id if isinstance(_claims, DatabaseSessionClaims) else None
+            ),
         )
         return accepted.model_dump(mode="json")
 
@@ -1523,10 +1584,16 @@ def create_app(
     from server.user.controller import router as user_router
     from server.workspace.controller import router as workspace_router
     from server.classroom_join import router as classroom_join_router
+    from server.sandbox.controller import router as sandbox_router
+    from server.sandbox.artifact_controller import router as sandbox_artifact_router
+    from server.sandbox.developer_controller import router as sandbox_developer_router
 
     app.include_router(user_router)
     app.include_router(workspace_router)
     app.include_router(classroom_join_router)
+    app.include_router(sandbox_router)
+    app.include_router(sandbox_artifact_router)
+    app.include_router(sandbox_developer_router)
 
     static_dir_value = str(web_config.get("static_dir", "")).strip()
     static_dir = Path(static_dir_value).expanduser() if static_dir_value else None

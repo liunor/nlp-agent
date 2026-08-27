@@ -15,6 +15,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const activeSessionRef = useRef<string | null>(null);
   const creationRef = useRef<Promise<string | null> | null>(null);
+  const freshSessionIdsRef = useRef(new Set<string>());
   const chatEpochRef = useRef(0);
 
   useEffect(() => {
@@ -49,6 +50,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
         void api.deleteSession(session.session_id).catch(() => undefined);
         return null;
       }
+      freshSessionIdsRef.current.add(session.session_id);
       setSessions((current) => current.some((item) => item.session_id === session.session_id) ? current : [session, ...current]);
       updateSessionMeta(session.session_id, { topic: preferences.context.topic_name, title: "新的学习对话" });
       setActiveSessionId(session.session_id);
@@ -88,6 +90,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     activeSessionId,
     setActiveSessionId,
     activeSessionRef: activeSessionRef as MutableRefObject<string | null>,
+    freshSessionIdsRef: freshSessionIdsRef as MutableRefObject<Set<string>>,
     loadSessions,
     createBackendSession,
     startNewChat,

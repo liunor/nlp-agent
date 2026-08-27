@@ -100,6 +100,27 @@ services:
       redis:
         condition: service_healthy
 
+  # The only service granted Docker Engine access.  The Web process reaches
+  # it through the signed Redis Manager RPC stream and never mounts the socket.
+  nova-sandbox-manager:
+    image: ${NOVA_IMAGE_REF:-nova-agent:local}
+    pull_policy: ${NOVA_PULL_POLICY:-build}
+    command: [".venv/bin/python", "main.py", "sandbox-manager"]
+    env_file:
+      - ${NOVA_ENV_FILE:-.env}
+    environment:
+      NLP_AGENT_REDIS_URL: redis://redis:6379/0
+      NLP_AGENT_GATEWAY_TRANSPORT: redis
+      NLP_AGENT_SANDBOX_RUNTIME_MODE: docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    depends_on:
+      nova-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
   nova-monitor:
     image: ${NOVA_IMAGE_REF:-nova-agent:local}
     pull_policy: ${NOVA_PULL_POLICY:-build}

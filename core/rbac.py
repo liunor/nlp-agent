@@ -149,6 +149,11 @@ HIGH_RISK_TOOL_PERMISSIONS: Final[dict[str, Permission]] = {
     "runtime.model_profile.write": Permission.SYSTEM_MODEL_PROFILE_MANAGE,
     "runtime.prompt_template.write": Permission.SYSTEM_PROMPT_TEMPLATE_MANAGE,
     "runtime.tool_config.write": Permission.SYSTEM_TOOL_CONFIG_MANAGE,
+    # Sandbox model tools are deliberately mapped to existing session-control
+    # permissions so the approval path remains fail-closed without widening
+    # the public permission vocabulary.
+    "sandbox_run_active_kernel": Permission.AGENT_TURN_SUBMIT,
+    "sandbox_reset": Permission.AGENT_TURN_CANCEL,
 }
 
 

@@ -74,6 +74,9 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
   const openTool = (tool: ToolDockTool) => {
     setOpenTools((current) => current.includes(tool) ? current : [...current, tool]);
     setActiveTool(tool);
+    // The sandbox has its own editor layout, but remains a normal resizable
+    // dock until the user explicitly asks for full workbench mode.
+    setToolDockExpanded(false);
   };
   const closeTool = (tool: ToolDockTool) => {
     const next = openTools.filter((item) => item !== tool);
@@ -126,7 +129,7 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
     if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, { topic: context.topic_name });
   };
   const unavailableModes = (["practice", "review"] as const).filter((mode) => !!learningContext.topic_id && !(mode === "practice" ? learningCatalog?.exercise_blueprints : learningCatalog?.review_blueprints)?.some((blueprint) => blueprint.topic_id === learningContext.topic_id));
-  const composer = (centered = false) => <Composer sessionId={workspace.activeSessionId} centered={centered} disabled={!statusOnline} running={workspace.isRunning} onSend={(text, attachments) => void workspace.send(text, attachments)} onCancel={workspace.cancel} contextControl={<LearningContextBar value={learningContext} onChange={updateContext} topics={courseTopics} unavailableModes={unavailableModes} onUnavailableMode={setModeNotice} modelProfiles={workspace.modelProfiles} modelProfile={workspace.settings.model_profile} onModelProfileChange={(modelProfile) => void workspace.patchSettings({ model_profile: modelProfile })} modelSelectionDisabled={!statusOnline || workspace.isRunning} />} />;
+  const composer = (centered = false) => <Composer sessionId={workspace.activeSessionId} centered={centered} disabled={!statusOnline} running={workspace.isRunning} onSend={(text, attachments) => void workspace.send(text, attachments)} onCancel={workspace.cancel} onEnsureSession={workspace.ensureSession} contextControl={<LearningContextBar value={learningContext} onChange={updateContext} topics={courseTopics} unavailableModes={unavailableModes} onUnavailableMode={setModeNotice} modelProfiles={workspace.modelProfiles} modelProfile={workspace.settings.model_profile} onModelProfileChange={(modelProfile) => void workspace.patchSettings({ model_profile: modelProfile })} modelSelectionDisabled={!statusOnline || workspace.isRunning} />} />;
 
   return <div className={["app-shell", "student-app-shell", sidebarCollapsed ? "sidebar-is-collapsed" : "sidebar-is-expanded", toolDockOpen && toolDockExpanded && "tool-dock-expanded"].filter(Boolean).join(" ")}>
     {workspace.settingsError && <div className="error-card settings-save-error" role="alert">{workspace.settingsError}</div>}
@@ -161,6 +164,12 @@ export function StudentWorkspace({ onNavigateTo }: { onNavigateTo?: (path: strin
       onOpenTool={openTool}
       onCloseTool={closeTool}
       onActiveToolChange={setActiveTool}
+      onExplainCode={(source) => {
+        setToolDockOpen(false);
+        setToolDockExpanded(false);
+        setToolMenuOpen(false);
+        void workspace.send("请解释以下 Python 代码：\n\n```python\n" + source + "\n```");
+      }}
       learningPanel={<LearningPanel open onClose={() => closeTool("learning")} title={activeTitle} context={workspace.preferences.context} meta={workspace.activeMeta} messages={workspace.messages} onPrompt={(content) => { setToolDockOpen(false); setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(content); }} onMeta={(patch) => { if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, patch); }} />}
     />
     <div className="student-school-logo"><SchoolLogo /></div>

@@ -41,6 +41,41 @@ class Settings(BaseSettings):
     NLP_AGENT_DB_POOL_RECYCLE_S: int = 1800
     NLP_AGENT_DB_CONNECT_TIMEOUT_S: int = 5
     NLP_AGENT_DB_STATEMENT_TIMEOUT_S: int = 30
+    # In-process execution is deliberately opt-in.  It exists solely for
+    # Phase 1 local Workbench development and is unsafe for untrusted code.
+    NLP_AGENT_SANDBOX_RUNTIME_MODE: str = "disabled"
+    NLP_AGENT_SANDBOX_RUNTIME_BACKEND: str = "runsc"
+    NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST: str = ""
+    NLP_AGENT_SANDBOX_KUBERNETES_CLIENT_FACTORY: str = ""
+    NLP_AGENT_SANDBOX_FIRECRACKER_KERNEL_IMAGE: str = ""
+    NLP_AGENT_SANDBOX_FIRECRACKER_ROOTFS_IMAGE: str = ""
+    NLP_AGENT_SANDBOX_WARM_POOL_READY_TARGET: int = 0
+    NLP_AGENT_SANDBOX_ADAPTIVE_POOL_ENABLED: bool = False
+    NLP_AGENT_SANDBOX_WARM_POOL_READY_MIN: int = 1
+    NLP_AGENT_SANDBOX_WARM_POOL_READY_MAX: int = 5
+    NLP_AGENT_SANDBOX_BURST_BUFFER: int = 1
+    NLP_AGENT_SANDBOX_ARRIVAL_RATE_PER_MIN: float = 0.0
+    NLP_AGENT_SANDBOX_REFILL_P95_S: float = 4.0
+    NLP_AGENT_SANDBOX_FAULT_INJECTION: str = ""
+    NLP_AGENT_SANDBOX_PRELOAD_MATRIX_PATH: str = ""
+    NLP_AGENT_SANDBOX_RECONCILE_INTERVAL_S: int = 30
+    NLP_AGENT_SANDBOX_EVENT_RETENTION_S: int = 86_400
+    NLP_AGENT_SANDBOX_EVENT_MAXLEN: int = 10_000
+    NLP_AGENT_SANDBOX_COMMAND_RETENTION_S: int = 86_400
+    # Scratch permits up to 60 seconds; keep RPC response budget above that
+    # limit so a valid long-running execution cannot outlive its Web request.
+    NLP_AGENT_SANDBOX_MANAGER_RPC_TIMEOUT_S: float = 75.0
+    NLP_AGENT_SANDBOX_METRICS_RETENTION_S: int = 7 * 24 * 3600
+    NLP_AGENT_SANDBOX_ARTIFACT_ORIGIN: str = ""
+    # Public Nova origin allowed to embed artifact documents.  It is kept
+    # separate from the artifact host so the delivery service can emit a
+    # precise frame-ancestors policy without trusting request Host headers.
+    NLP_AGENT_SANDBOX_APPLICATION_ORIGIN: str = ""
+    NLP_AGENT_SANDBOX_ARTIFACT_STORE_ROOT: str = ""
+    NLP_AGENT_SANDBOX_ARTIFACT_TTL_S: int = 3600
+    NLP_AGENT_SANDBOX_PROJECT_STORAGE_ENABLED: bool = False
+    NLP_AGENT_SANDBOX_PROJECT_STORAGE_ROOT: str = ""
+    NLP_AGENT_SANDBOX_SNAPSHOTS_ENABLED: bool = False
 
     _config: dict = {}
 

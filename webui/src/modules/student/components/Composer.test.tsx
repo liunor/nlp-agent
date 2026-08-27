@@ -73,16 +73,53 @@ describe("Composer", () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
-  it("renders attachment upload button when sessionId is provided and disables when absent", () => {
+  it("enables attachment upload when a session exists or can be created on demand", () => {
     const { rerender } = render(
       <Composer disabled={false} running={false} onSend={vi.fn()} onCancel={vi.fn()} sessionId={null} />
     );
     expect(screen.getByRole("button", { name: "上传附件" })).toBeDisabled();
 
     rerender(
+      <Composer disabled={false} running={false} onSend={vi.fn()} onCancel={vi.fn()} sessionId={null} onEnsureSession={vi.fn()} />
+    );
+    expect(screen.getByRole("button", { name: "上传附件" })).toBeEnabled();
+
+    rerender(
       <Composer disabled={false} running={false} onSend={vi.fn()} onCancel={vi.fn()} sessionId="sess-1" />
     );
     expect(screen.getByRole("button", { name: "上传附件" })).toBeEnabled();
+  });
+
+  it("creates a session before uploading the first image in a new chat", async () => {
+    const onEnsureSession = vi.fn().mockResolvedValue("session-new");
+    vi.mocked(uploadAttachment).mockResolvedValue({
+      file_name: "safe-image.png",
+      url: "/api/v1/uploads/session-new/safe-image.png",
+      media_type: "image/png",
+      size_bytes: 100,
+      width: 120,
+      height: 80,
+      sha256: "a".repeat(64),
+    });
+    const { container } = render(
+      <Composer
+        disabled={false}
+        running={false}
+        onSend={vi.fn()}
+        onCancel={vi.fn()}
+        sessionId={null}
+        onEnsureSession={onEnsureSession}
+      />
+    );
+    const file = new File(["image"], "first-image.png", { type: "image/png" });
+
+    expect(screen.getByRole("button", { name: "上传附件" })).toBeEnabled();
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+
+    await waitFor(() => expect(uploadAttachment).toHaveBeenCalledWith("session-new", file));
+    expect(onEnsureSession).toHaveBeenCalledOnce();
+    expect(screen.getByRole("img", { name: "first-image.png" })).toBeVisible();
+    expect(screen.getByLabelText("发送")).toBeEnabled();
   });
 
   it("places attachment upload before branding and learning settings before send", () => {

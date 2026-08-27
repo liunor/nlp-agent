@@ -1,4 +1,4 @@
-import type { AuthSession, AuthorizationAuditRecord, CourseTopic, DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, KnowledgePoint, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { AuthSession, AuthorizationAuditRecord, CourseTopic, DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, KnowledgePoint, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
 import type { FeedbackDailyState, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
@@ -82,6 +82,33 @@ export const api = {
     csrfToken = "";
   },
   getAuthSession: ensureAuth,
+  ensureSandboxLease: () => request<{
+    phase: number;
+      runtime_available: boolean;
+      environment: { id: string; status: string; generation: number; profile: string } | null;
+      lease: { id: string; state: string; generation: number; expires_at: string } | null;
+      runtime: { id: string; generation: number; ticket: string | null } | { kind: "inmemory"; ticket: null } | null;
+      pool_status?: string;
+    }>("/sandbox/lease", { method: "POST" }),
+  executeSandbox: (source: string, ticket: string | null) => request<{ status?: string; stdout: string; stderr: string; ticket?: string; execution_id?: string; artifacts?: Array<{ id: string; mime_type: string }> }>("/sandbox/execute", { method: "POST", body: JSON.stringify({ source, ticket }) }),
+  restartSandbox: (ticket: string | null) => request<{ status: string; ticket?: string | null }>("/sandbox/restart", { method: "POST", body: JSON.stringify({ ticket }) }),
+  replaySandboxEvents: (executionId: string, afterEventId?: string) => request<{ execution_id: string; events: Array<{ event_id: string; seq: number | string; type: string; payload: { text?: string } }> }>(`/sandbox/executions/${encodeURIComponent(executionId)}/events${afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : ""}`),
+  getSandboxOverview: () => request<{
+    runtime_states: Record<string, number>;
+    capacity: { ready: number; creating: number; target: number; deficit: number };
+    execution_latency: { sample_count: number; p50_ms: number | null; p95_ms: number | null; p99_ms: number | null };
+    active_executions: Array<{ id: string; owner_user_id: string; environment_id: string; runtime_instance_id: string | null; status: string; generation: number; started_at: string | null; completed_at: string | null; exit_reason: string | null }>;
+    recent_failures: Array<Record<string, unknown>>;
+    alerts: Array<{ code: string; severity: string; message: string }>;
+    capacity_history: Array<{ timestamp: number; ready: number; creating: number; target: number; deficit: number }>;
+    sampled_at: string;
+  }>("/developer/sandbox/overview"),
+  listSandboxRuntimes: () => request<{ items: Array<{ id: string; state: string; node_id: string | null; runtime_kind: string; resource_profile_id: string; external_runtime_id: string | null; failure_reason: string | null; updated_at: string | null }> }>("/developer/sandbox/runtimes"),
+  drainSandboxRuntime: (runtimeId: string) => request<{ id: string; state: string }>(`/developer/sandbox/runtimes/${encodeURIComponent(runtimeId)}/drain`, { method: "POST", body: "{}" }),
+  getSandboxRuntime: (runtimeId: string) => request<{ id: string; state: string; node_id: string | null; runtime_kind: string; resource_profile_id: string; external_runtime_id: string | null; image_digest: string | null; environment_id: string | null; generation: number; last_heartbeat_at: string | null; failure_reason: string | null; updated_at: string | null }>(`/developer/sandbox/runtimes/${encodeURIComponent(runtimeId)}`),
+  listSandboxExecutions: (status?: string) => request<{ items: Array<{ id: string; owner_user_id: string; environment_id: string; runtime_instance_id: string | null; status: string; generation: number; started_at: string | null; completed_at: string | null; exit_reason: string | null }> }>(`/developer/sandbox/executions${status ? `?status_filter=${encodeURIComponent(status)}` : ""}`),
+  replaySandboxExecutionEvents: (executionId: string, afterEventId?: string) => request<{ execution_id: string; events: Array<{ event_id: string; seq: number | string; type: string; payload: Record<string, unknown> }> }>(`/developer/sandbox/executions/${encodeURIComponent(executionId)}/events${afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : ""}`),
+  getSandboxArtifactUrl: (artifactId: string) => request<{ url: string }>(`/sandbox/artifacts/${encodeURIComponent(artifactId)}/access`),
   createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
   listSessions: () => request<{ items: SessionSummary[] }>("/sessions"),
   createSession: (workspaceId = "default") =>
@@ -158,6 +185,14 @@ export const api = {
   saveGuidedBlueprint: (workspaceId: string, blueprint: TeacherCatalog["guided_blueprints"][number]) => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/guided-blueprints/${encodeURIComponent(blueprint.id)}`, { method: "PUT", body: JSON.stringify(blueprint) }),
   deleteBlueprint: (workspaceId: string, kind: "exercise" | "review", blueprintId: string) => request<void>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/${kind}-blueprints/${encodeURIComponent(blueprintId)}`, { method: "DELETE" }),
   getLearningCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/learning/catalog/${encodeURIComponent(workspaceId)}`),
+  getTeacherBookNavigation: (workspaceId = "default") => request<{ workspace_id: string; items: TeacherBookNavigationItem[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/navigation`),
+  getTeacherBookPage: (workspaceId: string, knowledgePointId: string) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`),
+  updateTeacherBookPage: (workspaceId: string, knowledgePointId: string, content_markdown: string, expected_revision: number) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`, { method: "PUT", body: JSON.stringify({ content_markdown, expected_revision }) }),
+  publishTeacherBookPage: (workspaceId: string, knowledgePointId: string, expected_revision: number) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/publish`, { method: "POST", body: JSON.stringify({ expected_revision }) }),
+  previewTeacherBookImport: (workspaceId: string, file_name: string, content_markdown: string) => request<TeacherBookImportPreview>(`/teacher/book/${encodeURIComponent(workspaceId)}/imports/preview`, { method: "POST", body: JSON.stringify({ file_name, content_markdown }) }),
+  applyTeacherBookImport: (workspaceId: string, knowledgePointId: string, file_name: string, content_markdown: string, expected_revision: number) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/imports/apply`, { method: "POST", body: JSON.stringify({ knowledge_point_id: knowledgePointId, file_name, content_markdown, expected_revision }) }),
+  getLearningBookNavigation: (workspaceId = "default") => request<{ workspace_id: string; items: TeacherBookNavigationItem[] }>(`/learning/book/${encodeURIComponent(workspaceId)}/navigation`),
+  getLearningBookPage: (workspaceId: string, knowledgePointId: string) => request<{ page: LearningBookPage }>(`/learning/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`),
   getTeacherResource: (resource: "courses" | "prompts" | "reports", workspaceId = "default") =>
     request<{ items: unknown[]; status: string }>(`/teacher/${resource}?workspace_id=${encodeURIComponent(workspaceId)}`),
 

@@ -82,3 +82,12 @@ NLP_AGENT_AUTH_COOKIE_SECURE=true
 docker compose up -d --force-recreate nginx nova-web
 curl.exe -I https://nova.example.com/
 ```
+# Sandbox Artifact Origin
+
+Sandbox HTML artifacts must be served through a hostname distinct from the
+Nova application origin. Use `artifact-origin.conf.example` as a deployment
+template, substitute the artifact hostname and certificate paths, and set
+`NLP_AGENT_SANDBOX_ARTIFACT_ORIGIN` to that HTTPS origin and set
+`NLP_AGENT_SANDBOX_APPLICATION_ORIGIN` to the Nova HTTPS origin. The latter is
+used as the only `frame-ancestors` value for HTML/SVG artifacts. The artifact proxy
+must strip cookies and only expose `/api/v1/sandbox/artifacts/`.

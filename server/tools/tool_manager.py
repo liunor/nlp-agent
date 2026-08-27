@@ -2,11 +2,13 @@ from server.tools.api.file_read_tool import read_local_file
 from server.tools.api.image_analyze_tool import image_analyze
 from server.tools.api.time_tool import get_current_time
 from server.tools.api.web_fetch_tool import web_fetch
+from server.sandbox.model_tools import MODEL_SANDBOX_TOOLS
 from core.tool_runtime import (
     ToolCatalog,
     ToolDescriptor,
     ToolRisk,
     ToolRetryPolicy,
+    ToolLockScope,
     ToolScope,
     ToolSource,
     global_tool_runtime,
@@ -84,6 +86,61 @@ def register_builtin_tools(catalog: ToolCatalog | None = None) -> list[str]:
             factory=lambda: image_analyze.model_copy(deep=True),
         ),
     ]
+    sandbox_policies = {
+        "sandbox_status": dict(
+            risk=ToolRisk.LOW,
+            read_only=True,
+            concurrency_safe=True,
+            capabilities=frozenset({"sandbox.observe"}),
+            timeout_s=15,
+        ),
+        "sandbox_run_scratch": dict(
+            risk=ToolRisk.MEDIUM,
+            capabilities=frozenset({"sandbox.scratch"}),
+            timeout_s=60,
+            lock_scope=ToolLockScope.SESSION,
+        ),
+        "sandbox_explain_execution": dict(
+            risk=ToolRisk.LOW,
+            read_only=True,
+            concurrency_safe=True,
+            capabilities=frozenset({"sandbox.observe"}),
+            timeout_s=15,
+        ),
+        "sandbox_interrupt_own": dict(
+            risk=ToolRisk.MEDIUM,
+            capabilities=frozenset({"sandbox.interrupt"}),
+            timeout_s=30,
+            lock_scope=ToolLockScope.SESSION,
+        ),
+        "sandbox_run_active_kernel": dict(
+            risk=ToolRisk.HIGH,
+            capabilities=frozenset({"sandbox.active_kernel"}),
+            timeout_s=180,
+            exclusive=True,
+            lock_scope=ToolLockScope.SESSION,
+        ),
+        "sandbox_reset": dict(
+            risk=ToolRisk.CRITICAL,
+            capabilities=frozenset({"sandbox.reset"}),
+            timeout_s=180,
+            exclusive=True,
+            lock_scope=ToolLockScope.SESSION,
+        ),
+    }
+    for sandbox_tool in MODEL_SANDBOX_TOOLS:
+        policy = sandbox_policies[sandbox_tool.name]
+        definitions.append(
+            ToolDescriptor(
+                name=sandbox_tool.name,
+                description=sandbox_tool.description,
+                source=ToolSource.BUILTIN,
+                provider="sandbox",
+                scopes=frozenset({ToolScope.COORDINATOR, ToolScope.WORKER}),
+                factory=lambda sandbox_tool=sandbox_tool: sandbox_tool.model_copy(deep=True),
+                **policy,
+            )
+        )
     registered: list[str] = []
     for descriptor in definitions:
         existing = catalog.get(descriptor.name)

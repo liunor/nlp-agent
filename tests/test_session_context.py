@@ -39,6 +39,23 @@ def test_session_identity_is_unique_safe_and_collision_resistant():
         SessionContext.from_config({}, require=True)
 
 
+def test_context_keeps_auth_session_separate_from_conversation_thread() -> None:
+    context = SessionContext.from_config(
+        {
+            "configurable": {
+                "thread_id": "conversation-42",
+                "auth_session_id": "login-session-9",
+                "user_id": "user-1",
+                "workspace_id": "workspace-1",
+            }
+        },
+        require=True,
+    )
+
+    assert context.session_id == "conversation-42"
+    assert context.auth_session_id == "login-session-9"
+
+
 def test_context_state_is_persisted_and_isolated_per_session(tmp_path: Path):
     repository = LocalContextStateRepository(tmp_path)
     first = SessionContext(session_id="one", user_id="user")
