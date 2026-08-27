@@ -198,6 +198,11 @@ export function Feedback({
   const [error, setError] = useState<{ threadId: string; message: string } | null>(null);
   const [detailRetryNonce, setDetailRetryNonce] = useState(0);
   const [searchInput, setSearchInput] = useState(search);
+  const [syncedSearch, setSyncedSearch] = useState(search);
+  if (syncedSearch !== search) {
+    setSyncedSearch(search);
+    setSearchInput(search);
+  }
   const [deleteError, setDeleteError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
@@ -205,10 +210,6 @@ export function Feedback({
   const [replySending, setReplySending] = useState(false);
   const [patchError, setPatchError] = useState("");
   const [patching, setPatching] = useState(false);
-  // Keep the controlled input in sync when the parent resets the search (e.g. paging clears filters).
-  useEffect(() => {
-    setSearchInput(search);
-  }, [search]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const trimmed = searchInput.trim();
@@ -217,13 +218,8 @@ export function Feedback({
     return () => window.clearTimeout(timer);
   }, [searchInput, search, onSearchChange]);
   useEffect(() => {
-    if (!selectedId) {
-      setDetail(null);
-      setError(null);
-      return undefined;
-    }
+    if (!selectedId) return undefined;
     let active = true;
-    setError(null);
     void api.getFeedback(selectedId).then(async (value) => {
       if (!active) return;
       setError((current) => current?.threadId === selectedId ? null : current);
@@ -620,6 +616,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   // Direct data effect: fetch when paging or search changes — fixes the deployed pagination/search stall.
   useEffect(() => {
     if (page !== "feedback") return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch is the effect's purpose.
     void fetchFeedback(feedbackOffset, feedbackSearch, feedbackStatus, feedbackCategory, feedbackPriority, feedbackSort);
   }, [page, feedbackOffset, feedbackSearch, feedbackStatus, feedbackCategory, feedbackPriority, feedbackSort, fetchFeedback]);
   // Polling effect uses refs to avoid stale closure on interval.
@@ -661,7 +658,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
     return <Overview snapshot={snapshot} />;
-  }, [changeFeedbackSearch, changeFeedbackCategory, changeFeedbackPriority, changeFeedbackStatus, changeFeedbackSort, feedbackCategory, feedbackLoadError, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, handleDeleteFeedback, page, refreshFeedback, fetchFeedback, snapshot, snapshotError, load]);
+  }, [changeFeedbackSearch, changeFeedbackCategory, changeFeedbackPriority, changeFeedbackStatus, changeFeedbackSort, feedbackCategory, feedbackLoadError, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, handleDeleteFeedback, page, refreshFeedback, snapshot, snapshotError, load]);
   const accessDenied = !loading && visiblePages.size > 0 && !visiblePages.has(page);
   return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void load(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
 }
