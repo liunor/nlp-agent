@@ -93,6 +93,10 @@ jobs:
             echo "::error::The deployment directory $DEPLOY_DIR does not contain .env. Provision it from deploy/env/test.env.example on the test runner."
             exit 1
           fi
+          if [ ! -r "$DEPLOY_DIR/.env" ]; then
+            echo "::error::The runner user cannot read $DEPLOY_DIR/.env. Grant the configured Actions runner account read access without exposing the file."
+            exit 1
+          fi
           DEPLOY_ENV_FILE="$(mktemp)"
           trap 'rm -f "$DEPLOY_ENV_FILE"' EXIT
           awk -v nova_image_ref="$NOVA_IMAGE_REF" -v sandbox_runtime_ref="$SANDBOX_RUNTIME_REF" '

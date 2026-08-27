@@ -46,6 +46,7 @@ def test_deploy_workflows_overlay_published_digests_without_mutating_server_env(
 
         assert 'DEPLOY_ENV_FILE="$(mktemp' in workflow
         assert 'export NOVA_ENV_FILE="$DEPLOY_ENV_FILE"' in workflow
+        assert 'if [ ! -r "$DEPLOY_DIR/.env" ]' in workflow
         assert 'awk -v nova_image_ref="$NOVA_IMAGE_REF"' in workflow
         assert '-v sandbox_runtime_ref="$SANDBOX_RUNTIME_REF"' in workflow
         assert 'print "NOVA_IMAGE_REF=\\\"" nova_image_ref' in workflow
