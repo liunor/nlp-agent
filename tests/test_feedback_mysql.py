@@ -276,8 +276,9 @@ async def test_unread_sort_orders_across_pages_before_pagination(
     mysql_session_factory,
 ) -> None:
     factory = mysql_session_factory
-    unread_user = await _create_user(factory, f"fbsu{uuid4().hex[:10]}")
-    read_user = await _create_user(factory, f"fbsr{uuid4().hex[:10]}")
+    prefix = f"fbpage{uuid4().hex[:10]}"
+    unread_user = await _create_user(factory, prefix + "u")
+    read_user = await _create_user(factory, prefix + "r")
     unread = await _submit(factory, unread_user, "unread first")
     read = await _submit(factory, read_user, "already read")
     async with factory() as session:
@@ -285,8 +286,8 @@ async def test_unread_sort_orders_across_pages_before_pagination(
             await mark_feedback_read(session, read["thread_id"], read["message"]["id"])
 
     async with factory() as session:
-        first_page = await list_feedback_threads(session, limit=1, offset=0, sort="unread")
-        second_page = await list_feedback_threads(session, limit=1, offset=1, sort="unread")
+        first_page = await list_feedback_threads(session, limit=1, offset=0, sort="unread", search=prefix)
+        second_page = await list_feedback_threads(session, limit=1, offset=1, sort="unread", search=prefix)
 
     assert first_page["items"][0]["thread_id"] == unread["thread_id"]
     assert second_page["items"][0]["thread_id"] == read["thread_id"]
