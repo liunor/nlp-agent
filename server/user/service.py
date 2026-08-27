@@ -251,6 +251,27 @@ class UserService:
 
         return users, total or 0
 
+    async def get_roles_for_users(
+        self, user_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """Return ``user_id -> [role_code, ...]`` for the given users.
+
+        A single JOIN avoids per-user lazy loading (which would raise
+        ``MissingGreenlet`` under the async driver) and N+1 queries.
+        """
+        if not user_ids:
+            return {}
+        rows = await self.session.execute(
+            select(UserRoleModel.user_id, RoleModel.code)
+            .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
+            .where(UserRoleModel.user_id.in_(user_ids))
+            .order_by(RoleModel.code)
+        )
+        mapping: dict[str, list[str]] = {uid: [] for uid in user_ids}
+        for user_id, code in rows.all():
+            mapping.setdefault(user_id, []).append(code)
+        return mapping
+
     async def update_user(
         self,
         user_id: str,

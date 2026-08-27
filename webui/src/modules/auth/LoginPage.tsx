@@ -145,7 +145,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
       await api.sendSmsCode(phone.trim(), smsCaptchaId, smsCaptchaCode.trim());
       setSmsCooldown(60);
       setSmsSent(true);
-      setSmsCaptchaCode("");
+      // 保留用户已输入的图片验证码字符串，不在此处清空
       await loadCaptcha("reg");
       const timer = setInterval(() => {
         setSmsCooldown((prev) => {

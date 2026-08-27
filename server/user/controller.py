@@ -39,6 +39,16 @@ router = APIRouter(prefix="/api/v1/users", tags=["users"])
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
+async def _user_response_with_roles(
+    service: UserService, user
+) -> UserResponse:
+    """Build a ``UserResponse`` including the user's role codes."""
+    roles_map = await service.get_roles_for_users([user.id])
+    return UserResponse.model_validate(user).model_copy(
+        update={"roles": roles_map.get(user.id, [])}
+    )
+
+
 @router.get("", response_model=UserListResponse)
 async def list_users(
     db: DbSession,
@@ -60,9 +70,15 @@ async def list_users(
         keyword=keyword,
         include_deleted=include_deleted or status == "deleted",
     )
+    roles_map = await service.get_roles_for_users([u.id for u in users])
 
     return UserListResponse(
-        users=[UserResponse.model_validate(u) for u in users],
+        users=[
+            UserResponse.model_validate(u).model_copy(
+                update={"roles": roles_map.get(u.id, [])}
+            )
+            for u in users
+        ],
         total=total,
         offset=offset,
         limit=limit,
@@ -186,7 +202,7 @@ async def get_user(
     service = UserService(db)
     try:
         user = await service.get_user(user_id)
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -307,7 +323,7 @@ async def assign_user_roles(
         
         # Fetch updated user
         user = await service.get_user(user_id)
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
 

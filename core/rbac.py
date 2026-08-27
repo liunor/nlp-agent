@@ -92,16 +92,18 @@ _GUEST: Final[frozenset[Permission]] = frozenset(
         Permission.IDENTITY_PROFILE_READ_SELF,
         Permission.IDENTITY_PROFILE_UPDATE_SELF,
         Permission.LEARNING_CONTENT_READ_PUBLIC,
+        # 基础 agent 使用权限：guest 是"来试用智能体的人"，必须能创建/读写会话、提交对话。
+        Permission.AGENT_SESSION_CREATE,
+        Permission.AGENT_SESSION_READ,
+        Permission.AGENT_SESSION_UPDATE,
+        Permission.AGENT_SESSION_DELETE,
+        Permission.AGENT_TURN_SUBMIT,
+        Permission.AGENT_TURN_CANCEL,
+        Permission.AGENT_EVENT_REPLAY,
     }
 )
 _STUDENT: Final[frozenset[Permission]] = _GUEST | {
-    Permission.AGENT_SESSION_CREATE,
-    Permission.AGENT_SESSION_READ,
-    Permission.AGENT_SESSION_UPDATE,
-    Permission.AGENT_SESSION_DELETE,
-    Permission.AGENT_TURN_SUBMIT,
-    Permission.AGENT_TURN_CANCEL,
-    Permission.AGENT_EVENT_REPLAY,
+    # 学习/教学增强权限：练习、进度、反馈、检查点恢复、工作区内容。
     Permission.AGENT_CHECKPOINT_RESTORE,
     Permission.LEARNING_CONTENT_READ_WORKSPACE,
     Permission.LEARNING_EXERCISE_SUBMIT,

@@ -54,6 +54,7 @@ class UserResponse(BaseModel):
     updated_at: datetime
     deleted_at: datetime | None = None
     last_login_at: datetime | None = None
+    roles: list[str] = Field(default_factory=list)
 
 
 class UserListResponse(BaseModel):

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, Query, Request, Response, Security, WebSocket, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security, WebSocket, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -88,6 +88,9 @@ from server.release_notes.service import (
 from server.web.websocket import WebSocketHub, websocket_endpoint
 from server.web.feedback import get_feedback_thread, list_feedback_threads, mark_feedback_read, submit_feedback
 from server.auth.dependencies import get_db_session
+from server.auth.captcha import generate_captcha_image, verify_captcha
+from server.user.schemas import SmsCodeRequest, UserCreate, UserRegister
+from server.user.service import UserService, generate_sms_code, _sms_code_store
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
@@ -476,6 +479,29 @@ def create_app(
             status_code=200 if ready else 503,
         )
 
+    @app.get("/api/v1/auth/captcha", tags=["auth"])
+    async def get_captcha():
+        """Generate a CAPTCHA image for registration/SMS verification."""
+        captcha_id, image_data = generate_captcha_image()
+        return {"captcha_id": captcha_id, "image": image_data}
+
+    @app.post("/api/v1/auth/sms/send", status_code=status.HTTP_200_OK, tags=["auth"])
+    async def send_sms_code(body: SmsCodeRequest):
+        """Validate the image CAPTCHA, then issue an SMS verification code.
+
+        Development only: the code is stored in-memory (``_sms_code_store``) and
+        printed to the server console.  Production must integrate a real SMS
+        gateway (Aliyun / Tencent Cloud / Twilio) and back the store with Redis.
+        """
+        if not verify_captcha(body.captcha_id, body.captcha_code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired CAPTCHA",
+            )
+        code = generate_sms_code(body.phone_number)
+        print(f"[SMS] Verification code for {body.phone_number}: {code}")
+        return {"message": "SMS code sent successfully"}
+
     @app.post("/api/v1/auth/login", status_code=status.HTTP_200_OK, tags=["auth"])
     async def login(body: LoginBody, request: Request, response: Response):
         factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
@@ -551,6 +577,64 @@ def create_app(
             "permissions": sorted(principal.permissions),
             "csrf_token": claims.csrf_token,
             "expires_at": claims.expires_at_epoch if isinstance(claims, DatabaseSessionClaims) else claims.expires_at,
+        }
+
+    @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED, tags=["auth"])
+    async def register_user(body: UserRegister, db: DbSession):
+        """Register a new account via phone number (image CAPTCHA + SMS code).
+
+        The account's ``username`` is set to the digits of the phone number so
+        that ``database_auth.login`` (which matches on ``username_lower``) can
+        authenticate the user with their phone number directly.
+        """
+        # 1. Validate the image CAPTCHA.
+        if not verify_captcha(body.captcha_id, body.captcha_code):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired CAPTCHA",
+            )
+        # 2. Validate the SMS code issued by /auth/sms/send.
+        stored_code = _sms_code_store.pop(body.phone_number, None)
+        if stored_code is None or stored_code != body.sms_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired SMS code",
+            )
+        # 3. Reject duplicate phones (username == phone digits).
+        phone = body.phone_number.strip()
+        username = "".join(ch for ch in phone if ch.isdigit()) or phone
+        existing = await db.scalar(
+            select(UserModel).where(
+                (UserModel.username_lower == username.casefold())
+                | (UserModel.phone_number == phone)
+            )
+        )
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This phone number is already registered",
+            )
+        # 4. Create the account.  ``create_user`` provisions a personal workspace
+        #    and assigns the default least-privilege ``guest`` (游客) role, which is
+        #    the correct self-registration identity: a curious outsider who just
+        #    wants to try the agent.  Admins promote accounts to student/teacher/
+        #    developer later through the user-management roles API.
+        service = UserService(db)
+        user = await service.create_user(
+            UserCreate(
+                username=username,
+                display_name=(body.display_name or "").strip() or username,
+                password=body.password,
+            )
+        )
+        user.phone_number = phone
+        user.registration_source = "phone"
+        await db.flush()
+        return {
+            "message": "User registered successfully",
+            "user_id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
         }
 
     @app.post("/api/v1/auth/login/db", status_code=status.HTTP_200_OK, tags=["auth"])

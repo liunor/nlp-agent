@@ -56,6 +56,15 @@ class UserModel(TimestampedModel, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DATETIME(fsp=6), nullable=True, index=True
     )
+    # 手机号注册：``phone_number`` 与 ``registration_source`` 在数据库已存在，
+    # 但 develop 合并后的模型缺失定义，导致 ``server/user/service.py`` 里的
+    # ``UserModel.phone_number`` 查询/赋值会抛 AttributeError。此处补齐保持一致。
+    phone_number: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, unique=True, index=True
+    )
+    registration_source: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="manual"
+    )
 
     sessions: Mapped[list["SessionModel"]] = relationship(back_populates="user")
 

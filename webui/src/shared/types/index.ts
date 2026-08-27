@@ -284,6 +284,7 @@ export interface UserProfile {
   updated_at: string;
   deleted_at?: string | null;
   last_login_at?: string | null;
+  roles?: string[];
 }
 
 export interface RbacRole { code: string; name: string; description: string; status: string; is_builtin: boolean }
