@@ -101,7 +101,7 @@ describe("SettingsDialog", () => {
 
     await waitFor(() => expect(loadFeedback().map((item) => item.content)).toEqual(["请增加错题计划"]));
     expect(screen.getByText("意见已发送到开发者工作台。")).toBeVisible();
-    expect(submitFeedbackMock).toHaveBeenCalledWith("请增加错题计划");
+    expect(submitFeedbackMock).toHaveBeenCalledWith("请增加错题计划", expect.any(String));
   });
 
   it("shows an error card and keeps the draft when submission fails", async () => {
@@ -116,7 +116,7 @@ describe("SettingsDialog", () => {
     expect(screen.getByPlaceholderText(/我希望/)).toHaveValue("会失败的意见");
     expect(screen.getByRole("button", { name: "发布意见" })).toBeEnabled();
     expect(loadFeedback()).toEqual([]);
-    expect(submitFeedbackMock).toHaveBeenCalledWith("会失败的意见");
+    expect(submitFeedbackMock).toHaveBeenCalledWith("会失败的意见", expect.any(String));
   });
 
   it("disables the feedback entry for guests instead of rendering a doomed form", () => {
@@ -133,7 +133,7 @@ describe("SettingsDialog", () => {
     fireEvent.change(screen.getByPlaceholderText(/我希望/), { target: { value: "自定义角色也能提交" } });
     fireEvent.click(screen.getByRole("button", { name: "发布意见" }));
 
-    await waitFor(() => expect(submitFeedbackMock).toHaveBeenCalledWith("自定义角色也能提交"));
+    await waitFor(() => expect(submitFeedbackMock).toHaveBeenCalledWith("自定义角色也能提交", expect.any(String)));
   });
 
   it("defers to server permissions even when built-in roles suggest otherwise", () => {

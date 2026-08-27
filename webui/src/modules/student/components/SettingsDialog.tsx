@@ -1,9 +1,10 @@
-import { BadgeInfo, BookOpenCheck, ChevronRight, CircleHelp, Database, Gauge, Globe2, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, X } from "lucide-react";
+import { BadgeInfo, BookOpenCheck, ChevronRight, CircleHelp, Clock3, Database, Gauge, Globe2, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import { api } from "@/platform/http/api";
-import type { LearningContext, ReleaseNoteEntry, UserSettings } from "@/shared/types";
+import type { FeedbackCategory, LearningContext, ReleaseNoteEntry, UserSettings } from "@/shared/types";
+import type { FeedbackThread } from "@/shared/types";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { supportedLocales } from "@/shared/i18n/config";
 import { saveFeedback } from "@/shared/utils/feedback";
@@ -42,19 +43,16 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   const [section, setSection] = useState<SettingsSection>("general");
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const [feedbackCategory, setFeedbackCategory] = useState<FeedbackCategory>("other");
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackDaily, setFeedbackDaily] = useState<{ used: number; remaining: number; limit: number } | null>(null);
+  const [feedbackHistory, setFeedbackHistory] = useState<FeedbackThread | null>(null);
+  const [feedbackHistoryError, setFeedbackHistoryError] = useState("");
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNoteEntry[] | null>(null);
   const [releaseNotesError, setReleaseNotesError] = useState(false);
   const [releaseNotesAttempt, setReleaseNotesAttempt] = useState(0);
-  useEffect(() => {
-    if (!open || section !== "updates" || releaseNotes !== null) return;
-    api.listPublishedReleaseNotes()
-      .then(({ items }) => { setReleaseNotesError(false); setReleaseNotes(items); })
-      .catch(() => setReleaseNotesError(true));
-  }, [open, section, releaseNotes, releaseNotesAttempt]);
-  if (!open) return null;
   const canTeach = roles.includes("teacher") || roles.includes("developer");
   const canDevelop = roles.includes("developer");
   // Server-side permissions win when present (custom RBAC roles); legacy guest
@@ -62,6 +60,24 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   const canSubmitFeedback = permissions
     ? permissions.includes("learning:feedback:submit")
     : ["student", "teacher", "developer"].some((role) => roles.includes(role));
+  useEffect(() => {
+    if (!open || section !== "updates" || releaseNotes !== null) return;
+    api.listPublishedReleaseNotes()
+      .then(({ items }) => { setReleaseNotesError(false); setReleaseNotes(items); })
+      .catch(() => setReleaseNotesError(true));
+  }, [open, section, releaseNotes, releaseNotesAttempt]);
+  useEffect(() => {
+    if (!open || section !== "feedback" || !canSubmitFeedback) return;
+    const dailyFn = (api as unknown as { getFeedbackDailyState?: () => Promise<{ used: number; remaining: number; limit: number }> }).getFeedbackDailyState;
+    if (dailyFn) void dailyFn.call(api).then(setFeedbackDaily).catch(() => setFeedbackDaily(null));
+    const ownFn = (api as unknown as { getOwnFeedback?: () => Promise<FeedbackThread & { thread_id: string | null }> }).getOwnFeedback;
+    if (ownFn) void ownFn.call(api).then((thread) => {
+      if (thread.thread_id) setFeedbackHistory(thread as FeedbackThread);
+      else setFeedbackHistory(null);
+      setFeedbackHistoryError("");
+    }).catch((e) => setFeedbackHistoryError(e instanceof Error ? e.message : String(e)));
+  }, [open, section, canSubmitFeedback]);
+  if (!open) return null;
   const updateLearning = (patch: Partial<LearningContext>) => onLearningContextChange({ ...learningContext, ...patch });
 
   return <>
@@ -159,7 +175,66 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
     </SettingGroup>
   </>
 )}
-            {section === "feedback" && (canSubmitFeedback ? <SettingGroup title="提交你的建议" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="feedback-form"><textarea value={feedback} maxLength={2000} placeholder="例如：我希望在学习记录中增加错题复习计划……" onChange={(event) => { setFeedback(event.target.value); setFeedbackSubmitted(false); setFeedbackError(""); }} /><div><small>{feedback.length}/2000</small><button className="settings-primary-button" type="button" disabled={!feedback.trim() || feedbackSubmitting} onClick={() => { const content = feedback.trim(); setFeedbackSubmitting(true); setFeedbackError(""); void api.submitFeedback(content).then(() => { try { saveFeedback(content, userId); } catch { /* Server submission already succeeded. */ } setFeedbackSubmitted(true); setFeedback(""); }).catch((error) => setFeedbackError(error instanceof Error ? error.message : String(error))).finally(() => setFeedbackSubmitting(false)); }}>{feedbackSubmitting ? "发送中…" : "发布意见"}</button></div>{feedbackSubmitted && <p className="feedback-success">意见已发送到开发者工作台。</p>}{feedbackError && <p className="error-card" role="alert">发送失败：{feedbackError}</p>}</div></SettingGroup> : <SettingGroup title="意见反馈" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="settings-note">{FEEDBACK_DISABLED_HINT}</div></SettingGroup>)}
+            {section === "feedback" && (canSubmitFeedback ? <>
+              <SettingGroup title="提交你的建议" description="选择分类后提交，开发者可在工作台回复与更新状态。每日最多 3 条（自然日，北京时间）。">
+                <div className="feedback-form">
+                  <label className="settings-field" style={{ marginBottom: 8 }}>
+                    <span>分类</span>
+                    <select value={feedbackCategory} onChange={(e) => setFeedbackCategory(e.target.value as FeedbackCategory)} aria-label="反馈分类">
+                      <option value="feature">功能建议</option>
+                      <option value="ux">体验问题</option>
+                      <option value="bug">Bug 反馈</option>
+                      <option value="other">其他</option>
+                    </select>
+                  </label>
+                  <textarea value={feedback} maxLength={2000} placeholder="例如：我希望在学习记录中增加错题复习计划……" onChange={(event) => { setFeedback(event.target.value); setFeedbackSubmitted(false); setFeedbackError(""); }} disabled={feedbackDaily !== null && feedbackDaily.remaining <= 0} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
+                    <small>{feedback.length}/2000 {feedbackDaily && <span style={{ marginLeft: 8, color: feedbackDaily.remaining <= 0 ? "#ef4444" : "#6b7280" }}>今日剩余 {feedbackDaily.remaining}/{feedbackDaily.limit}</span>}</small>
+                    <button className="settings-primary-button" type="button" disabled={!feedback.trim() || feedbackSubmitting || (feedbackDaily !== null && feedbackDaily.remaining <= 0)} onClick={() => {
+                      const content = feedback.trim();
+                      setFeedbackSubmitting(true);
+                      setFeedbackError("");
+                      void api.submitFeedback(content, feedbackCategory).then((res) => {
+                        try { saveFeedback(content, userId); } catch { /* Server already succeeded */ }
+                        setFeedbackSubmitted(true);
+                        setFeedback("");
+                        if (res && typeof res.remaining === "number") setFeedbackDaily((prev) => prev ? { ...prev, remaining: res.remaining as number, used: (prev.limit - (res.remaining as number)) } : prev);
+                        else {
+                          const df = (api as unknown as { getFeedbackDailyState?: () => Promise<{ used: number; remaining: number; limit: number }> }).getFeedbackDailyState;
+                          if (df) void df.call(api).then(setFeedbackDaily).catch(() => {});
+                        }
+                        const ownFn2 = (api as unknown as { getOwnFeedback?: () => Promise<FeedbackThread & { thread_id: string | null }> }).getOwnFeedback;
+                        if (ownFn2) void ownFn2.call(api).then((t) => {
+                          if (t.thread_id) setFeedbackHistory(t as FeedbackThread);
+                        }).catch(() => {});
+                      }).catch((error) => {
+                        const msg = error instanceof Error ? error.message : String(error);
+                        const code = (error as unknown as { code?: string })?.code;
+                        if (code === "feedback_daily_limit" || msg.includes("每天最多")) setFeedbackDaily((prev) => prev ? { ...prev, remaining: 0, used: prev.limit } : { used: 3, remaining: 0, limit: 3 });
+                        setFeedbackError(msg);
+                      }).finally(() => setFeedbackSubmitting(false));
+                    }}>{feedbackSubmitting ? "发送中…" : feedbackDaily !== null && feedbackDaily.remaining <= 0 ? "今日已达上限" : "发布意见"}</button>
+                  </div>
+                  {feedbackDaily !== null && feedbackDaily.remaining <= 0 && <p className="settings-note" style={{ color: "#b45309", background: "#fffbeb", borderColor: "#fde68a" }}>今日已发送 {feedbackDaily.used}/{feedbackDaily.limit} 条，明天 0 点后可继续提交。</p>}
+                  {feedbackSubmitted && <p className="feedback-success">意见已发送到开发者工作台。</p>}
+                  {feedbackError && <p className="error-card" role="alert">发送失败：{feedbackError}</p>}
+                </div>
+              </SettingGroup>
+              <SettingGroup title="我的反馈与回复" description={feedbackHistory && feedbackHistory.messages.length > 0 ? `共 ${feedbackHistory.messages.length} 条 · 状态：${({ open: "待处理", under_review: "审视中", planned: "已规划", in_progress: "进行中", complete: "已完成", closed: "已关闭" } as Record<string,string>)[feedbackHistory.status] || feedbackHistory.status} · 分类：${({ feature: "功能建议", ux: "体验问题", bug: "Bug", other: "其他" } as Record<string,string>)[feedbackHistory.category]}` : "提交后，开发者的回复与处理状态会在这里显示。"}>
+                {feedbackHistoryError && <p className="error-card" role="alert">读取失败：{feedbackHistoryError}</p>}
+                {!feedbackHistory || feedbackHistory.messages.length === 0 ? <div className="settings-note">暂无历史反馈，提交后可在此查看时间线。</div> : <div className="feedback-history" style={{ display: "grid", gap: 10, padding: "10px", paddingRight: 8, border: "1px solid var(--border)", borderRadius: 10, background: "var(--soft-bg)" }}>
+                  {feedbackHistory.messages.map((m) => (
+                    <article key={m.id} className={`developer-feedback-message ${m.sender_type === "student" ? "student" : "developer"}`} style={{ alignItems: "flex-start" }}>
+                      <span className="developer-feedback-message-avatar" aria-hidden style={{ width: 26, height: 26, flexBasis: 26, fontSize: 10 }}>{m.sender_type === "student" ? "我" : "D"}</span>
+                      <div className="developer-feedback-bubble" style={{ padding: "9px 11px" }}>
+                        <header><strong>{m.sender_type === "student" ? "我" : "开发者"}</strong><time style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: "auto", color: "#6b7280", fontSize: 10 }}><Clock3 size={10} />{new Date(m.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</time></header>
+                        <p style={{ fontSize: 12.5 }}>{m.body}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>}
+              </SettingGroup>
+            </> : <SettingGroup title="意见反馈" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="settings-note">{FEEDBACK_DISABLED_HINT}</div></SettingGroup>)}
             {section === "updates" && <><SettingGroup title="当前版本" description={`${APP_NAME} v${APP_VERSION}`}><div className="settings-note"><b>版本号随构建自动同步</b><br />来自当前发布构建，无需手动维护。</div></SettingGroup><SettingGroup title="本次更新与修复" description={releaseNotesError ? "无法读取更新说明，请稍后重试。" : releaseNotes && releaseNotes.length > 0 ? "由开发者工作台维护，学生端实时同步。" : "暂无已发布的更新说明。"}>{releaseNotesError ? <button className="settings-link-button" type="button" onClick={() => setReleaseNotesAttempt((current) => current + 1)}>重新加载 <ChevronRight size={15} /></button> : releaseNotes === null ? <div className="settings-note">正在读取…</div> : releaseNotes.length > 0 && <div className="release-notes-list">{releaseNotes.map((note) => <article className="release-note" key={note.id}><h3>v{note.version}<small>{note.released_at.slice(0, 10)}</small></h3><ul className="release-notes">{note.notes.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>}</SettingGroup></>}
           </div>
         </div>

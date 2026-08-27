@@ -1,5 +1,5 @@
-import type { AuthSession, AuthorizationAuditRecord, DeveloperSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
-import type { FeedbackThread, FeedbackThreadList } from "@/shared/types";
+import type { AuthSession, AuthorizationAuditRecord, DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { FeedbackDailyState, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
 
@@ -101,18 +101,26 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(settings),
     }),
-  submitFeedback: (body: string) => request<{ thread_id: string }>("/feedback", { method: "POST", body: JSON.stringify({ body }) }),
-  listFeedback: (params?: { limit?: number; offset?: number; q?: string }) => {
+  submitFeedback: (body: string, category?: FeedbackCategory) => request<{ thread_id: string; remaining?: number; daily_limit?: number }>("/feedback", { method: "POST", body: JSON.stringify({ body, category }) }),
+  getFeedbackDailyState: () => request<FeedbackDailyState>("/feedback/daily-state"),
+  getOwnFeedback: () => request<FeedbackThread & { thread_id: string | null } >("/feedback"),
+  listFeedback: (params?: { limit?: number; offset?: number; q?: string; status?: FeedbackStatus | ""; category?: FeedbackCategory | ""; priority?: FeedbackPriority | ""; sort?: string }) => {
     const query = new URLSearchParams();
     if (params?.limit != null) query.set("limit", String(params.limit));
     if (params?.offset != null) query.set("offset", String(params.offset));
     if (params?.q) query.set("q", params.q);
+    if (params?.status) query.set("status", params.status);
+    if (params?.category) query.set("category", params.category);
+    if (params?.priority) query.set("priority", params.priority);
+    if (params?.sort) query.set("sort", params.sort);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     return request<FeedbackThreadList>(`/developer/feedback${suffix}`);
   },
   getFeedback: (threadId: string) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`),
   markFeedbackRead: (threadId: string, messageId: string) => request<{ ok: boolean }>(`/developer/feedback/${encodeURIComponent(threadId)}/read`, { method: "POST", body: JSON.stringify({ read_through_message_id: messageId }) }),
   deleteFeedback: (threadId: string) => request<void>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "DELETE" }),
+  updateFeedback: (threadId: string, patch: { status?: FeedbackStatus; category?: FeedbackCategory; priority?: FeedbackPriority }) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  replyFeedback: (threadId: string, body: string) => request<{ thread_id: string; message: { id: string } }>(`/developer/feedback/${encodeURIComponent(threadId)}/reply`, { method: "POST", body: JSON.stringify({ body }) }),
   getDeveloperSnapshot: () => request<DeveloperSnapshot>("/developer/snapshot"),
   updateToolPolicies: (policies: Record<string, unknown>) =>
     request<Record<string, unknown>>("/developer/tools/policies", { method: "PUT", body: JSON.stringify({ policies }) }),

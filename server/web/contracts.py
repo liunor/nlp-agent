@@ -29,15 +29,41 @@ class LoginBody(StrictModel):
 
 class FeedbackBody(StrictModel):
     body: str = Field(min_length=1, max_length=2_000)
+    category: str | None = Field(default=None, max_length=32, description="feature/ux/bug/other")
 
     @field_validator("body", mode="before")
     @classmethod
     def strip_body(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_category(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            v = value.strip().lower()
+            return v or None
+        return value
+
 
 class FeedbackReadBody(StrictModel):
     read_through_message_id: str = Field(min_length=1, max_length=128)
+
+
+class FeedbackUpdateBody(StrictModel):
+    status: str | None = Field(default=None, max_length=32)
+    category: str | None = Field(default=None, max_length=32)
+    priority: str | None = Field(default=None, max_length=16)
+
+
+class FeedbackReplyBody(StrictModel):
+    body: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def strip_body(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class ReplaceUserRolesBody(StrictModel):

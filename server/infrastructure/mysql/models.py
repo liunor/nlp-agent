@@ -111,11 +111,28 @@ class FeedbackThreadModel(TimestampedModel, Base):
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_nlp_feedback_threads_user_id"),
         Index("ix_nlp_feedback_threads_updated_at", "updated_at"),
+        Index("ix_nlp_feedback_threads_status", "status"),
+        Index("ix_nlp_feedback_threads_category", "category"),
+        CheckConstraint(
+            "status IN ('open','under_review','planned','in_progress','complete','closed')",
+            name="status",
+        ),
+        CheckConstraint(
+            "category IN ('feature','ux','bug','other')",
+            name="category",
+        ),
+        CheckConstraint(
+            "priority IN ('low','medium','high')",
+            name="priority",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False)
     developer_read_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="open")
+    category: Mapped[str] = mapped_column(String(16), nullable=False, server_default="other")
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, server_default="medium")
 
 
 class FeedbackMessageModel(TimestampedModel, Base):

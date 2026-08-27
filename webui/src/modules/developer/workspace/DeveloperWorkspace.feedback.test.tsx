@@ -26,6 +26,9 @@ const thread = (id: string, name: string): FeedbackThreadSummary => ({
   display_name: name,
   unread_count: 1,
   updated_at: "2026-08-26T00:00:00+00:00",
+  status: "open",
+  category: "other",
+  priority: "medium",
   latest: { id: `${id}-m`, sender_type: "student", body: "你好", created_at: "2026-08-26T00:00:00+00:00" },
 });
 

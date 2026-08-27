@@ -47,6 +47,10 @@ export interface FeedbackMessage {
   created_at: string;
 }
 
+export type FeedbackStatus = "open" | "under_review" | "planned" | "in_progress" | "complete" | "closed";
+export type FeedbackCategory = "feature" | "ux" | "bug" | "other";
+export type FeedbackPriority = "low" | "medium" | "high";
+
 export interface FeedbackThreadSummary {
   thread_id: string;
   user_id: string;
@@ -54,6 +58,9 @@ export interface FeedbackThreadSummary {
   display_name: string;
   unread_count: number;
   updated_at: string;
+  status: FeedbackStatus;
+  category: FeedbackCategory;
+  priority: FeedbackPriority;
   latest: FeedbackMessage | null;
 }
 
@@ -67,7 +74,18 @@ export interface FeedbackThread {
   user_id: string;
   username: string;
   display_name: string;
+  status: FeedbackStatus;
+  category: FeedbackCategory;
+  priority: FeedbackPriority;
+  updated_at?: string;
   messages: FeedbackMessage[];
+}
+
+export interface FeedbackDailyState {
+  used: number;
+  remaining: number;
+  limit: number;
+  today_start_utc: string;
 }
 
 export interface TeachingGoals {
