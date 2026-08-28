@@ -88,6 +88,82 @@ export interface ExerciseBlueprint { id: string; name: string; topic_id: string;
 export interface ReviewBlueprint { id: string; name: string; topic_id: string; knowledge_point_id: string; instructions: string; exercise_blueprint_id: string | null; status: BlueprintStatus; question_type: string; rubric: RubricPoint[] }
 export interface GuidedBlueprint { id: string; name: string; topic_id: string; knowledge_point_id: string; guidance: string; status: BlueprintStatus }
 export interface TeacherCatalog { workspace_id: string; topics: CourseTopic[]; exercise_blueprints: ExerciseBlueprint[]; review_blueprints: ReviewBlueprint[]; guided_blueprints: GuidedBlueprint[] }
+export interface TeacherBookNavigationItem {
+  topic_id: string;
+  topic_name: string;
+  knowledge_point_id: string;
+  title: string;
+  sort_order: number;
+  topic_status: AvailabilityStatus;
+  knowledge_point_status: AvailabilityStatus;
+  has_draft: boolean;
+  has_published: boolean;
+  revision: number;
+  published_revision: number | null;
+}
+export interface LearningBookNavigationItem {
+  topic_id: string;
+  topic_name: string;
+  knowledge_point_id: string;
+  title: string;
+  sort_order: number;
+  revision: number;
+}
+export interface TeacherBookPage {
+  workspace_id: string;
+  topic_id: string;
+  topic_name: string;
+  knowledge_point_id: string;
+  title: string;
+  draft_markdown: string;
+  published_markdown: string | null;
+  revision: number;
+  published_revision: number | null;
+  updated_at: string | null;
+}
+export interface LearningBookPage {
+  workspace_id: string;
+  topic_id: string;
+  topic_name: string;
+  knowledge_point_id: string;
+  title: string;
+  content_markdown: string;
+  revision: number;
+}
+export interface TeacherBookImportPreview {
+  file_name: string;
+  content_markdown: string;
+  removed_frameworks: string[];
+  warnings: string[];
+}
+export interface TeacherBookAssetInput {
+  asset_path: string;
+  media_type: string;
+  content_base64: string;
+}
+
+export interface TeacherBookArchiveItemPreview {
+  topic_id: string;
+  knowledge_point_id: string;
+  title: string;
+  file_name: string;
+  action: "create" | "update" | "unchanged";
+  expected_revision: number;
+  current_markdown: string;
+  content_markdown: string;
+  removed_frameworks: string[];
+  warnings: string[];
+}
+
+export interface TeacherBookArchiveImportPreview {
+  file_name: string;
+  format_version: number;
+  title: string;
+  items: TeacherBookArchiveItemPreview[];
+  asset_paths: string[];
+  omitted_knowledge_points: string[];
+  warnings: string[];
+}
 
 export interface TeacherDistribution { name: string; count: number; percentage: number }
 

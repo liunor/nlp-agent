@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, Header, Query, Request, Response, Security
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyCookie
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketDisconnect
 
@@ -60,6 +61,10 @@ def create_monitor_app(
     cookie_secure = database_auth.secure if not auth_injected else auth.secure
     resetter = resetter or LocalRuntimeResetter(runtime)
     rbac_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
+
+    async def monitor_db_session() -> AsyncIterator[AsyncSession]:
+        async with rbac_runtime.session_factory() as db_session:
+            yield db_session
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -156,6 +161,16 @@ def create_monitor_app(
     WriteClaims = Annotated[
         SessionClaims | DatabaseSessionClaims, Depends(write_access)
     ]
+
+    from server.sandbox.monitor_controller import create_sandbox_monitor_router
+
+    app.include_router(
+        create_sandbox_monitor_router(
+            db_session_dependency=monitor_db_session,
+            principal_dependency=principal,
+            write_access_dependency=write_access,
+        )
+    )
 
     @app.exception_handler(AuthenticationError)
     async def auth_error(_request: Request, _error: AuthenticationError):

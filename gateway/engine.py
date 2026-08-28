@@ -97,6 +97,7 @@ class LangGraphAgentEngine:
             "recursion_limit": 64,
             "configurable": {
                 "thread_id": context.session_id,
+                "auth_session_id": context.auth_session_id,
                 "turn_id": turn_id,
                 "user_id": context.user_id,
                 "workspace_id": context.workspace_id,

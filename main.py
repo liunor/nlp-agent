@@ -205,10 +205,14 @@ if __name__ == "__main__":
         from server.worker.runtime import run_worker
 
         asyncio.run(run_worker())
+    elif command in {"sandbox-manager", "sandbox_manager"}:
+        from server.sandbox.manager_runner import run_forever
+
+        asyncio.run(run_forever())
     elif command in {"bootstrap-developer", "bootstrap_developer"}:
         asyncio.run(bootstrap_developer())
     elif command in {"chat", "--chat", "-c"}:
         asyncio.run(main())
     else:
-        print("Usage: python main.py [chat|serve|monitor|worker|bootstrap-developer]")
+        print("Usage: python main.py [chat|serve|monitor|worker|sandbox-manager|bootstrap-developer]")
         raise SystemExit(2)

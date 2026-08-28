@@ -158,6 +158,10 @@ class TurnConflictError(RuntimeError):
     pass
 
 
+class KnowledgeBookRevisionConflictError(ValueError):
+    """Raised when a teacher saves a stale knowledge-book revision."""
+
+
 class ResourceNotFoundError(LookupError):
     pass
 

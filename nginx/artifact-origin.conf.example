@@ -1,0 +1,20 @@
+# Serve this on a hostname distinct from Nova (for example artifacts.nova.example).
+server {
+    listen 443 ssl http2;
+    server_name artifacts.nova.example;
+    ssl_certificate /etc/letsencrypt/live/artifacts.nova.example/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/artifacts.nova.example/privkey.pem;
+
+    location /api/v1/sandbox/artifacts/ {
+        proxy_set_header Cookie "";
+        proxy_hide_header Set-Cookie;
+        proxy_pass http://nova_web;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Nova-Artifact-Delivery "1";
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / { return 404; }
+}

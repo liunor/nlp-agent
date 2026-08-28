@@ -172,6 +172,35 @@ def test_learning_state_and_teaching_catalog_are_isolated_from_turn_history(tmp_
     repository.close()
 
 
+def test_knowledge_book_page_keeps_draft_and_published_content_separate(tmp_path):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    repository.update_teaching_catalog("workspace-1", {
+        "workspace_id": "workspace-1",
+        "topics": [{
+            "id": "transformer", "name": "Transformer", "description": "",
+            "knowledge_points": [{"id": "attention", "name": "注意力", "markdown": "Q、K、V", "status": "enabled"}],
+        }],
+        "exercise_blueprints": [], "review_blueprints": [], "guided_blueprints": [],
+    })
+
+    saved = repository.update_knowledge_page(
+        "workspace-1", "attention", "# 注意力\n\n草稿内容", expected_revision=0,
+    )
+    assert saved["revision"] == 1
+    assert saved["published_markdown"] is None
+    assert repository.get_published_knowledge_page("workspace-1", "attention") is None
+
+    published = repository.publish_knowledge_page("workspace-1", "attention", expected_revision=1)
+    assert published["published_revision"] == 1
+    assert published["published_markdown"] == "# 注意力\n\n草稿内容"
+
+    repository.update_knowledge_page(
+        "workspace-1", "attention", "# 注意力\n\n第二版", expected_revision=1,
+    )
+    assert repository.get_published_knowledge_page("workspace-1", "attention")["published_markdown"] == "# 注意力\n\n草稿内容"
+    repository.close()
+
+
 def test_turn_persists_the_real_guided_session_and_blueprint_snapshot_reference(tmp_path):
     repository = GatewayRepository(tmp_path / "gateway.sqlite3")
     turn, _ = repository.create_turn(

@@ -85,6 +85,24 @@ uv run python main.py serve
 - 开发者：<http://127.0.0.1:8765/developer>
 - 运行监控：先执行 `uv run python main.py monitor`，再打开监控页面
 
+开发环境需要快速查看教材页面时，可以为指定的空 workspace 写入一套可重复执行的
+PyTorch 教材样例（包含 3 个主题、9 个知识点、代码块和一张图片）：
+
+```powershell
+uv run python -m scripts.seed_knowledge_book_demo --workspace-id <workspace-id>
+```
+
+脚本只允许写入没有现有教学内容的 workspace，不会覆盖教师已经编写的目录或教材；如需刷新本脚本已有的演示目录（例如补充小标题目录），必须显式使用 `--refresh-demo`。
+
+开发环境需要快速查看教材页面时，可以为指定的空 workspace 写入一套可重复执行的
+PyTorch 教材样例（包含 3 个主题、9 个知识点、代码块和一张图片）：
+
+```powershell
+uv run python -m scripts.seed_knowledge_book_demo --workspace-id <workspace-id>
+```
+
+脚本只允许写入没有现有教学内容的 workspace，不会覆盖教师已经编写的目录或教材。
+
 ## 其他启动方式
 
 命令行对话：

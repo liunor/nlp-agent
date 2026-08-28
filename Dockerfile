@@ -20,6 +20,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        docker.io \
         libgl1 \
         libice6 \
         libsm6 \

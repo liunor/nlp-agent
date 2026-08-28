@@ -1,12 +1,12 @@
 import type { TelemetryEvent, Trace } from "./api";
 
 export type BrowserLocation = Pick<Location, "protocol" | "hostname" | "port">;
-export type MonitorPage = "overview" | "traces" | "sessions" | "errors" | "events" | "storage";
+export type MonitorPage = "overview" | "traces" | "sessions" | "errors" | "events" | "storage" | "sandbox";
 
 // Keep navigation and telemetry helpers outside the React entry module so Fast Refresh sees a component-only boundary.
 export function monitorPageFromLocation(current: Pick<Location, "search"> = location): MonitorPage {
   const candidate = new URLSearchParams(current.search).get("page");
-  return ["overview", "traces", "sessions", "errors", "events", "storage"].includes(candidate ?? "")
+  return ["overview", "traces", "sessions", "errors", "events", "storage", "sandbox"].includes(candidate ?? "")
     ? candidate as MonitorPage
     : "overview";
 }

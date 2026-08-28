@@ -159,4 +159,24 @@ describe("Sidebar delete requests", () => {
 
     expect(onMeta).toHaveBeenCalledWith("session_1", { pinnedAt: expect.any(Number) });
   });
+  it("renames a session inline without using a native prompt", () => {
+  const onMeta = vi.fn();
+  const { container } = render(<Sidebar {...props} onMeta={onMeta} />);
+
+  fireEvent.click(container.querySelector(".session-menu summary")!);
+  fireEvent.click(container.querySelector(".session-menu button")!);
+
+  const input = container.querySelector<HTMLInputElement>(".session-rename-input")!;
+
+  expect(input).toHaveValue("Attention 入门");
+
+  fireEvent.change(input, { target: { value: "Transformer 学习" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+
+  expect(onMeta).toHaveBeenCalledWith("session_1", {
+    title: "Transformer 学习",
+  });
+
+  expect(container.querySelector(".session-rename-input")).not.toBeInTheDocument();
+});
 });

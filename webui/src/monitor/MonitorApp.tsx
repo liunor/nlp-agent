@@ -1,8 +1,9 @@
-import { Activity, AlertTriangle, Bot, Clock3, Database, Gauge, HardDrive, Radio, RefreshCw, Search, Server, Timer, Trash2, X, Zap } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, AlertTriangle, Bot, Clock3, Database, Gauge, HardDrive, Radio, RefreshCw, Search, Server, TerminalSquare, Timer, Trash2, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { authenticate, monitorApi, type ErrorRow, type Overview, type SessionRow, type TelemetryEvent, type Trace, type TraceDetail, type UsageRow } from "./api";
 import { controlPlaneUrl, groupEventsByTrace, groupTracesIntoChains, monitorPageFromLocation, resetMonitorData, telemetryFrame, type MonitorPage, type TraceChain } from "./monitor-helpers";
+import { mergeSandboxCapacitySamples, mergeSandboxLogs, SANDBOX_REFRESH_INTERVAL_MS, SandboxMonitorPage, type SandboxExecution, type SandboxLogEntry, type SandboxOverview, type SandboxRuntime } from "./SandboxMonitorPage";
 
 type Page = MonitorPage;
 const NAV: Array<{ page: Page; label: string; icon: typeof Gauge }> = [
@@ -11,6 +12,7 @@ const NAV: Array<{ page: Page; label: string; icon: typeof Gauge }> = [
   { page: "sessions", label: "Sessions", icon: Bot },
   { page: "errors", label: "错误分析", icon: AlertTriangle },
   { page: "events", label: "实时运行流", icon: Radio },
+  { page: "sandbox", label: "代码沙箱", icon: TerminalSquare },
   { page: "storage", label: "数据留存", icon: HardDrive },
 ];
 function fmt(value: number | null | undefined, suffix = "") { return value == null ? "—" : `${value.toLocaleString()}${suffix}`; }
@@ -41,16 +43,87 @@ function ChainDrawer({ chain, onClose, onOpenTrace }: { chain: TraceChain; onClo
 }
 
 export function MonitorApp() {
-  const [page, setPage] = useState<Page>(() => monitorPageFromLocation()); const [days, setDays] = useState(30); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [overview, setOverview] = useState<Overview | null>(null); const [traces, setTraces] = useState<Trace[]>([]); const [usage, setUsage] = useState<UsageRow[]>([]); const [sessions, setSessions] = useState<SessionRow[]>([]); const [errors, setErrors] = useState<ErrorRow[]>([]); const [events, setEvents] = useState<TelemetryEvent[]>([]); const [storage, setStorage] = useState<Record<string, unknown>>({}); const [chain, setChain] = useState<TraceChain | null>(null); const [detail, setDetail] = useState<TraceDetail | null>(null); const [live, setLive] = useState(false); const [resetOpen, setResetOpen] = useState(false); const [resetting, setResetting] = useState(false);
+  const [page, setPage] = useState<Page>(() => monitorPageFromLocation());
+  const [days, setDays] = useState(30);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [overview, setOverview] = useState<Overview | null>(null);
+  const [traces, setTraces] = useState<Trace[]>([]);
+  const [usage, setUsage] = useState<UsageRow[]>([]);
+  const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [errors, setErrors] = useState<ErrorRow[]>([]);
+  const [events, setEvents] = useState<TelemetryEvent[]>([]);
+  const [storage, setStorage] = useState<Record<string, unknown>>({});
+  const [sandboxOverview, setSandboxOverview] = useState<SandboxOverview | null>(null);
+  const [sandboxRuntimes, setSandboxRuntimes] = useState<SandboxRuntime[]>([]);
+  const [sandboxExecutions, setSandboxExecutions] = useState<SandboxExecution[]>([]);
+  const [sandboxLogs, setSandboxLogs] = useState<SandboxLogEntry[]>([]);
+  const [sandboxLoading, setSandboxLoading] = useState(false);
+  const [sandboxLogLoading, setSandboxLogLoading] = useState(false);
+  const [sandboxError, setSandboxError] = useState("");
+  const [sandboxLive, setSandboxLive] = useState(false);
+  const sandboxRefreshInFlight = useRef(false);
+  const [chain, setChain] = useState<TraceChain | null>(null);
+  const [detail, setDetail] = useState<TraceDetail | null>(null);
+  const [live, setLive] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const load = useCallback(async () => { setLoading(true); setError(""); try { await authenticate(); const [o, t, u, s, e, ev, st] = await Promise.all([monitorApi.overview(days), monitorApi.traces(), monitorApi.usage(days), monitorApi.sessions(days), monitorApi.errors(days), monitorApi.events(), monitorApi.storage()]); setOverview(o); setTraces(t.items); setUsage(u.items); setSessions(s.items); setErrors(e.items); setEvents(ev.items); setStorage(st); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } }, [days]);
+  const loadSandbox = useCallback(async (initial = false) => {
+    if (sandboxRefreshInFlight.current) return;
+    sandboxRefreshInFlight.current = true;
+    if (initial) setSandboxLoading(true);
+    else setSandboxLogLoading(true);
+    setSandboxError("");
+    try {
+      const [nextOverview, nextRuntimes, nextExecutions, nextLogs] = await Promise.all([
+        monitorApi.sandboxOverview(), monitorApi.sandboxRuntimes(), monitorApi.sandboxExecutions(), monitorApi.sandboxLogs(),
+      ]);
+      setSandboxOverview((current) => ({
+        ...nextOverview,
+        capacity_history: mergeSandboxCapacitySamples(current?.capacity_history ?? [], nextOverview.capacity_history),
+      }));
+      setSandboxRuntimes(nextRuntimes.items);
+      setSandboxExecutions(nextExecutions.items);
+      setSandboxLogs((current) => mergeSandboxLogs(current, nextLogs.items));
+      setSandboxLive(true);
+    } catch (reason) {
+      setSandboxError(reason instanceof Error ? reason.message : String(reason));
+      setSandboxLive(false);
+    } finally {
+      sandboxRefreshInFlight.current = false;
+      if (initial) setSandboxLoading(false);
+      else setSandboxLogLoading(false);
+    }
+  }, []);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => { const onPopState = () => setPage(monitorPageFromLocation()); addEventListener("popstate", onPopState); return () => removeEventListener("popstate", onPopState); }, []);
+  useEffect(() => {
+    if (page !== "sandbox") return undefined;
+    queueMicrotask(() => void loadSandbox(true));
+    const refreshTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadSandbox(false);
+    }, SANDBOX_REFRESH_INTERVAL_MS);
+    const cleanupTimer = window.setInterval(() => {
+      setSandboxLogs((current) => mergeSandboxLogs(current, []));
+    }, 60_000);
+    return () => { window.clearInterval(refreshTimer); window.clearInterval(cleanupTimer); };
+  }, [loadSandbox, page]);
   useEffect(() => { if (!overview) return; let socket: WebSocket | null = null; let cancelled = false; void monitorApi.createWsTicket().then(({ ticket }) => { if (cancelled) return; const protocol = location.protocol === "https:" ? "wss:" : "ws:"; socket = new WebSocket(`${protocol}//${location.host}/ws/observability?ticket=${encodeURIComponent(ticket)}`); socket.onopen = () => setLive(true); socket.onclose = () => setLive(false); socket.onmessage = (message) => { const frame = telemetryFrame(message.data); if (frame) setEvents((current) => [frame.payload, ...current.filter((item) => item.event_id !== frame.payload.event_id)].slice(0, 300)); }; }).catch(() => setLive(false)); return () => { cancelled = true; socket?.close(); }; }, [overview]);
   const openTrace = async (trace: Trace) => setDetail(await monitorApi.trace(trace.trace_id));
   const chains = useMemo(() => groupTracesIntoChains(traces), [traces]);
   const resetAll = useCallback(async () => { setResetting(true); setError(""); try { await resetMonitorData(monitorApi.reset, load); setDetail(null); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setResetting(false); setResetOpen(false); } }, [load]);
   const navigate = (next: Page) => { const url = new URL(location.href); if (next === "overview") url.searchParams.delete("page"); else url.searchParams.set("page", next); history.pushState({}, "", `${url.pathname}${url.search}${url.hash}`); setPage(next); };
-  const pageContent = useMemo(() => { if (!overview) return null; if (page === "traces") return <RunList chains={chains} onOpen={setChain} />; if (page === "sessions") return <section className="mon-panel"><header><div><h2>活跃 Session</h2><p>请求量、错误、平均响应与 Token</p></div></header><div className="mon-table"><table><thead><tr><th>Session</th><th>用户 / Workspace</th><th>Turn</th><th>错误</th><th>平均响应</th><th>Token</th><th>最后活跃</th></tr></thead><tbody>{sessions.map((row) => <tr key={row.session_id}><td><code>{row.session_id}</code></td><td>{row.user_id}<small>{row.workspace_id} · {row.channel}</small></td><td>{row.turns}</td><td>{row.errors}</td><td>{fmt(row.avg_duration_ms, " ms")}</td><td>{fmt(row.total_tokens)}</td><td>{time(row.last_seen)}</td></tr>)}</tbody></table>{!sessions.length && <Empty text="没有 Session 数据" />}</div></section>; if (page === "errors") return <section className="mon-panel"><header><div><h2>错误、超时与重试</h2><p>按组件和错误类型聚合，点击样例 Trace 进入完整链路</p></div></header><div className="mon-error-grid">{errors.map((row) => <button key={`${row.error_kind}-${row.kind}-${row.name}`} type="button" onClick={() => { const trace = traces.find((item) => item.trace_id === row.sample_trace_id); if (trace) void openTrace(trace); }}><AlertTriangle /><span><strong>{row.error_kind}</strong><small>{row.kind} · {row.name}</small></span><b>{row.count}</b><time>{time(row.last_seen)}</time></button>)}</div>{!errors.length && <Empty text="当前周期没有错误" />}</section>; if (page === "events") return <RunEventStream events={events} traces={traces} live={live} onOpen={(trace) => void openTrace(trace)} />; if (page === "storage") return <section className="mon-panel"><header><div><h2>数据留存与清理</h2><p>Telemetry SQLite 大小、队列、丢弃事件和表记录数</p></div></header><div className="mon-storage"><Json value={storage} /><button type="button" onClick={async () => { if (confirm(`清理 ${days} 天以前的 Trace 与 Event？`)) { setStorage(await monitorApi.prune(days, days)); } }}><HardDrive size={16} />按当前周期清理过期数据</button></div></section>; return <OverviewPage data={overview} usage={usage} />; }, [chains, days, errors, events, live, overview, page, sessions, storage, traces, usage]);
-  return <div className="monitor-shell"><aside className="monitor-nav"><div className="monitor-brand"><Server /><span><strong>NLP Monitor</strong><small>OBSERVABILITY · 8766</small></span></div><nav>{NAV.map(({ page: item, label, icon: Icon }) => <button className={page === item ? "active" : ""} type="button" key={item} onClick={() => navigate(item)}><Icon size={17} />{label}</button>)}</nav><a href={controlPlaneUrl()}>返回控制面</a></aside><main><header className="monitor-top"><div><h1>{NAV.find((item) => item.page === page)?.label}</h1><span><i className={`mon-live-dot ${live ? "on" : ""}`} />{live ? "实时" : "离线"}</span></div><label>统计周期<select value={days} onChange={(event) => setDays(Number(event.target.value))}><option value={1}>24 小时</option><option value={7}>7 天</option><option value={30}>30 天</option><option value={90}>90 天</option></select></label><button className="mon-reset-button" type="button" onClick={() => setResetOpen(true)} disabled={loading || resetting}><Trash2 />重置全部数据</button><button type="button" onClick={() => void load()} disabled={loading || resetting}><RefreshCw className={loading ? "spin" : ""} />刷新</button></header><div className="monitor-content">{error ? <div className="mon-fatal"><AlertTriangle /><strong>监控数据加载失败</strong><p>{error}</p></div> : loading && !overview ? <div className="mon-fatal"><RefreshCw className="spin" /><strong>正在连接 Monitor</strong></div> : pageContent}</div></main>{chain && <ChainDrawer chain={chain} onClose={() => setChain(null)} onOpenTrace={(trace) => void openTrace(trace)} />}{detail && <TraceDrawer detail={detail} onClose={() => setDetail(null)} />}<ConfirmDialog open={resetOpen} title="重置全部本地运行数据？" description="将永久清除所有学生会话、消息、练习记录、学习记忆、Trace、日志、调试事件和工具审计。教师主题、知识点、蓝图、模型与用户设置会保留。请先停止正在运行的对话。" confirmLabel={resetting ? "正在重置…" : "确认重置全部数据"} cancelLabel="取消" onClose={() => { if (!resetting) setResetOpen(false); }} onConfirm={() => void resetAll()} /></div>;
+  const pageContent = useMemo(() => {
+    if (page === "sandbox") return <SandboxMonitorPage overview={sandboxOverview} logs={sandboxLogs} runtimes={sandboxRuntimes} executions={sandboxExecutions} live={sandboxLive} loading={sandboxLoading} logLoading={sandboxLogLoading} error={sandboxError} onRefresh={() => void loadSandbox(false)} onDrain={(runtimeId) => { if (confirm("确认排空这个运行时？")) void monitorApi.drainSandboxRuntime(runtimeId).then(() => loadSandbox(false)); }} />;
+    if (!overview) return null;
+    if (page === "traces") return <RunList chains={chains} onOpen={setChain} />;
+    if (page === "sessions") return <section className="mon-panel"><header><div><h2>活跃 Session</h2><p>请求量、错误、平均响应与 Token</p></div></header><div className="mon-table"><table><thead><tr><th>Session</th><th>用户 / Workspace</th><th>Turn</th><th>错误</th><th>平均响应</th><th>Token</th><th>最后活跃</th></tr></thead><tbody>{sessions.map((row) => <tr key={row.session_id}><td><code>{row.session_id}</code></td><td>{row.user_id}<small>{row.workspace_id} · {row.channel}</small></td><td>{row.turns}</td><td>{row.errors}</td><td>{fmt(row.avg_duration_ms, " ms")}</td><td>{fmt(row.total_tokens)}</td><td>{time(row.last_seen)}</td></tr>)}</tbody></table>{!sessions.length && <Empty text="没有 Session 数据" />}</div></section>;
+    if (page === "errors") return <section className="mon-panel"><header><div><h2>错误、超时与重试</h2><p>按组件和错误类型聚合，点击样例 Trace 进入完整链路</p></div></header><div className="mon-error-grid">{errors.map((row) => <button key={`${row.error_kind}-${row.kind}-${row.name}`} type="button" onClick={() => { const trace = traces.find((item) => item.trace_id === row.sample_trace_id); if (trace) void openTrace(trace); }}><AlertTriangle /><span><strong>{row.error_kind}</strong><small>{row.kind} · {row.name}</small></span><b>{row.count}</b><time>{time(row.last_seen)}</time></button>)}</div>{!errors.length && <Empty text="当前周期没有错误" />}</section>;
+    if (page === "events") return <RunEventStream events={events} traces={traces} live={live} onOpen={(trace) => void openTrace(trace)} />;
+    if (page === "storage") return <section className="mon-panel"><header><div><h2>数据留存与清理</h2><p>Telemetry SQLite 大小、队列、丢弃事件和表记录数</p></div></header><div className="mon-storage"><Json value={storage} /><button type="button" onClick={async () => { if (confirm(`清理 ${days} 天以前的 Trace 与 Event？`)) { setStorage(await monitorApi.prune(days, days)); } }}><HardDrive size={16} />按当前周期清理过期数据</button></div></section>;
+    return <OverviewPage data={overview} usage={usage} />;
+  }, [chains, days, errors, events, live, loadSandbox, overview, page, sandboxError, sandboxExecutions, sandboxLive, sandboxLoading, sandboxLogLoading, sandboxLogs, sandboxOverview, sandboxRuntimes, sessions, storage, traces, usage]);
+  return <div className="monitor-shell"><aside className="monitor-nav"><div className="monitor-brand"><Server /><span><strong>NLP Monitor</strong><small>OBSERVABILITY · 8766</small></span></div><nav>{NAV.map(({ page: item, label, icon: Icon }) => <button className={page === item ? "active" : ""} type="button" key={item} onClick={() => navigate(item)}><Icon size={17} />{label}</button>)}</nav><a href={controlPlaneUrl()}>返回控制面</a></aside><main><header className="monitor-top"><div><h1>{NAV.find((item) => item.page === page)?.label}</h1><span><i className={`mon-live-dot ${(live || sandboxLive) ? "on" : ""}`} />{(live || sandboxLive) ? "实时" : "离线"}</span></div><label>统计周期<select value={days} onChange={(event) => setDays(Number(event.target.value))}><option value={1}>24 小时</option><option value={7}>7 天</option><option value={30}>30 天</option><option value={90}>90 天</option></select></label><button className="mon-reset-button" type="button" onClick={() => setResetOpen(true)} disabled={loading || resetting}><Trash2 />重置全部数据</button><button type="button" onClick={() => page === "sandbox" ? void loadSandbox(false) : void load()} disabled={loading || resetting || sandboxLoading}><RefreshCw className={(loading || sandboxLoading) ? "spin" : ""} />刷新</button></header><div className="monitor-content">{error && page !== "sandbox" ? <div className="mon-fatal"><AlertTriangle /><strong>监控数据加载失败</strong><p>{error}</p></div> : loading && !overview && page !== "sandbox" ? <div className="mon-fatal"><RefreshCw className="spin" /><strong>正在连接 Monitor</strong></div> : pageContent}</div></main>{chain && <ChainDrawer chain={chain} onClose={() => setChain(null)} onOpenTrace={(trace) => void openTrace(trace)} />}{detail && <TraceDrawer detail={detail} onClose={() => setDetail(null)} />}<ConfirmDialog open={resetOpen} title="重置全部本地运行数据？" description="将永久清除所有学生会话、消息、练习记录、学习记忆、Trace、日志、调试事件和工具审计。教师主题、知识点、蓝图、模型与用户设置会保留。请先停止正在运行的对话。" confirmLabel={resetting ? "正在重置…" : "确认重置全部数据"} cancelLabel="取消" onClose={() => { if (!resetting) setResetOpen(false); }} onConfirm={() => void resetAll()} /></div>;
 }
 function Json({ value }: { value: unknown }) { return <pre className="mon-json">{JSON.stringify(value, null, 2)}</pre>; }

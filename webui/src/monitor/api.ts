@@ -6,6 +6,8 @@ export interface TraceDetail { trace: Trace; spans: Span[]; events: TelemetryEve
 export interface UsageRow { day: string; component: string; name: string; requests: number; successes: number; errors: number; duration_sum_ms: number; input_tokens: number; output_tokens: number; cached_tokens: number; cache_miss_tokens: number; reasoning_tokens: number; total_tokens: number; }
 export interface SessionRow { session_id: string; workspace_id: string; user_id: string; channel: string; turns: number; errors: number; avg_duration_ms: number; total_tokens: number; last_seen: string; }
 export interface ErrorRow { error_kind: string; kind: string; name: string; count: number; last_seen: string; sample_trace_id: string; }
+export type { SandboxExecution, SandboxLogEntry, SandboxOverview, SandboxRuntime } from "./SandboxMonitorPage";
+import type { SandboxExecution, SandboxLogEntry, SandboxOverview, SandboxRuntime } from "./SandboxMonitorPage";
 
 let csrf = "";
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -25,6 +27,13 @@ export const monitorApi = {
   events: (limit = 300) => request<{ items: TelemetryEvent[] }>(`/observability/events?limit=${limit}`),
   errors: (days: number) => request<{ items: ErrorRow[] }>(`/observability/errors?days=${days}&limit=200`),
   storage: () => request<Record<string, unknown>>("/observability/storage"),
+  sandboxOverview: () => request<SandboxOverview>("/observability/sandbox/overview"),
+  sandboxLogs: (limit = 80, sinceSeconds = 600) => request<{ items: SandboxLogEntry[]; retention_seconds: number; sampled_at: string }>(`/observability/sandbox/logs?limit=${limit}&since_seconds=${sinceSeconds}`),
+  sandboxRuntimes: () => request<{ items: SandboxRuntime[] }>("/observability/sandbox/runtimes"),
+  sandboxRuntime: (runtimeId: string) => request<SandboxRuntime>(`/observability/sandbox/runtimes/${encodeURIComponent(runtimeId)}`),
+  drainSandboxRuntime: (runtimeId: string) => request<{ id: string; state: string }>(`/observability/sandbox/runtimes/${encodeURIComponent(runtimeId)}/drain`, { method: "POST", body: "{}" }),
+  sandboxExecutions: (status?: string) => request<{ items: SandboxExecution[] }>(`/observability/sandbox/executions${status ? `?status_filter=${encodeURIComponent(status)}` : ""}`),
+  sandboxExecutionEvents: (executionId: string, afterEventId?: string) => request<{ execution_id: string; events: Array<{ event_id: string; seq: number | string; type: string; payload: Record<string, unknown> }> }>(`/observability/sandbox/executions/${encodeURIComponent(executionId)}/events${afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : ""}`),
   prune: (traceDays: number, eventDays: number) => request<Record<string, unknown>>(`/observability/storage/prune?trace_days=${traceDays}&event_days=${eventDays}`, { method: "POST" }),
   reset: () => request<Record<string, unknown>>("/observability/storage/reset", { method: "POST" }),
 };

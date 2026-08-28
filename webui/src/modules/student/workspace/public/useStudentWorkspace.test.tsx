@@ -197,13 +197,29 @@ describe("useStudentWorkspace settings", () => {
   it("starts a new chat without creating a backend session until a message is sent", async () => {
     const { result } = renderHook(() => useStudentWorkspace());
     await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+    const composerRevision = result.current.composerRevision;
 
     await act(async () => { await result.current.startNewChat(); });
 
     expect(createSessionMock).not.toHaveBeenCalled();
     expect(result.current.activeSessionId).toBeNull();
+    expect(result.current.composerRevision).toBe(composerRevision + 1);
     expect(result.current.messages).toEqual([]);
     expect(result.current.loadingMessages).toBe(false);
+  });
+
+  it("changes the composer scope only when selecting a different conversation", async () => {
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+    const composerRevision = result.current.composerRevision;
+
+    act(() => result.current.selectSession("session-a"));
+
+    expect(result.current.activeSessionId).toBe("session-a");
+    expect(result.current.composerRevision).toBe(composerRevision + 1);
+
+    act(() => result.current.selectSession("session-a"));
+    expect(result.current.composerRevision).toBe(composerRevision + 1);
   });
 
   it("creates the backend session in the resolved workspace only on the first message", async () => {

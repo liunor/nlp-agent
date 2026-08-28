@@ -2,6 +2,7 @@ import asyncio
 import time
 
 import pytest
+from unittest.mock import Mock
 
 from core.task_manager import TaskManager
 from core.worker_lifecycle import (
@@ -91,3 +92,30 @@ def test_budget_retry_policy_and_failure_classification():
     assert policy.should_retry("context", 1) is False
     assert classify_worker_error(TimeoutError("slow")) == ("timeout", True)
     assert classify_worker_error(RuntimeError("maximum context length")) == ("context", False)
+
+
+def test_worker_configures_model_sandbox_tools_with_its_database_and_manager(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "NLP_AGENT_DATABASE_URL",
+        "mysql+aiomysql://nlp_agent:nlp_agent_dev@127.0.0.1:3306/nlp_agent?charset=utf8mb4",
+    )
+    monkeypatch.setenv("NLP_AGENT_REDIS_URL", "redis://127.0.0.1:6379/0")
+    monkeypatch.setenv("NLP_AGENT_WEB_SECRET", "worker-sandbox-test-secret")
+    import server.worker.runtime as worker_runtime
+    from configs.settings import settings
+
+    manager = object()
+    service = object()
+    configured = Mock(return_value=service)
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_RUNTIME_MODE", "docker")
+    monkeypatch.setattr(worker_runtime, "create_sandbox_manager_rpc_client", lambda: manager, raising=False)
+    monkeypatch.setattr(worker_runtime, "configure_model_sandbox_service", configured, raising=False)
+
+    result = worker_runtime.configure_worker_sandbox_service("database-session-factory")
+
+    assert result == (service, manager)
+    configured.assert_called_once_with(
+        mode="docker",
+        session_factory="database-session-factory",
+        manager=manager,
+    )

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 from collections.abc import Iterable
 from typing import Any
 
@@ -77,11 +78,58 @@ class MySQLTelemetryRepository:
         return [{"error_kind": row.get("error_kind") or "unknown", "kind": row.get("kind"), "name": row.get("name"), "count": 1} for row in self._rows("span") if row.get("status") in {"error", "timeout"}][:limit]
 
     def usage(self, days: int = 30) -> list[dict[str, Any]]:
-        rows = [row for row in self._rows("trace") if row.get("completed_at")]
-        if not rows:
-            return []
-        totals = {key: sum(int((row.get("usage") or {}).get(key, 0) or 0) for row in rows) for key in ("input_tokens", "output_tokens", "cached_tokens", "cache_miss_tokens", "reasoning_tokens", "total_tokens")}
-        return [totals]
+        since = (
+            datetime.now(timezone.utc).date() - timedelta(days=max(1, days))
+        ).isoformat()
+        metrics: dict[tuple[str, str, str], dict[str, Any]] = {}
+        token_fields = (
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "cache_miss_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+        )
+
+        for row in self._rows("span"):
+            completed_at = row.get("completed_at")
+            if not completed_at:
+                continue
+
+            day = str(completed_at)[:10]
+            if day < since:
+                continue
+
+            component = str(row.get("kind") or "unknown")
+            name = str(row.get("name") or "unknown")
+            attributes = row.get("attributes") or {}
+            if component == "model" and attributes.get("model"):
+                name = f"{name}:{attributes['model']}"
+
+            key = (day, component, name)
+            metric = metrics.setdefault(
+                key,
+                {
+                    "day": day,
+                    "component": component,
+                    "name": name,
+                    "requests": 0,
+                    "successes": 0,
+                    "errors": 0,
+                    "duration_sum_ms": 0,
+                    **{field: 0 for field in token_fields},
+                },
+            )
+
+            status = row.get("status")
+            metric["requests"] += 1
+            metric["successes"] += int(status == "ok")
+            metric["errors"] += int(status in {"error", "timeout"})
+            metric["duration_sum_ms"] += int(row.get("duration_ms") or 0)
+            for field in token_fields:
+                metric[field] += int(row.get(field, 0) or 0)
+
+        return [metrics[key] for key in sorted(metrics)]
 
     def sessions(self, days: int = 30, limit: int = 100, **_: Any) -> list[dict[str, Any]]:
         return []

@@ -42,6 +42,19 @@ class CourseTopic(StrictTeacherModel):
     knowledge_points: list[KnowledgePoint] = Field(default_factory=list, max_length=100)
 
 
+def _validate_unique_catalog_ids(topics: list[CourseTopic]) -> None:
+    topic_ids: set[str] = set()
+    knowledge_point_ids: set[str] = set()
+    for topic in topics:
+        if topic.id in topic_ids:
+            raise ValueError(f"主题 ID 必须唯一：{topic.id}")
+        topic_ids.add(topic.id)
+        for point in topic.knowledge_points:
+            if point.id in knowledge_point_ids:
+                raise ValueError(f"知识点 ID 必须唯一：{point.id}")
+            knowledge_point_ids.add(point.id)
+
+
 class ExerciseBlueprint(StrictTeacherModel):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=120)
@@ -114,9 +127,131 @@ class TeacherCatalog(StrictTeacherModel):
     review_blueprints: list[ReviewBlueprint] = Field(default_factory=list, max_length=100)
     guided_blueprints: list[GuidedBlueprint] = Field(default_factory=list, max_length=100)
 
+    @model_validator(mode="after")
+    def _validate_unique_ids(self) -> "TeacherCatalog":
+        _validate_unique_catalog_ids(self.topics)
+        return self
+
 
 class UpdateTeacherCatalog(StrictTeacherModel):
     topics: list[CourseTopic] = Field(default_factory=list, max_length=100)
     exercise_blueprints: list[ExerciseBlueprint] = Field(default_factory=list, max_length=100)
     review_blueprints: list[ReviewBlueprint] = Field(default_factory=list, max_length=100)
     guided_blueprints: list[GuidedBlueprint] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def _validate_unique_ids(self) -> "UpdateTeacherCatalog":
+        _validate_unique_catalog_ids(self.topics)
+        return self
+
+
+class TeacherBookNavigationItem(StrictTeacherModel):
+    topic_id: str
+    topic_name: str
+    knowledge_point_id: str
+    title: str
+    sort_order: int = Field(ge=0)
+    topic_status: Literal["enabled", "disabled"]
+    knowledge_point_status: Literal["enabled", "disabled"]
+    has_draft: bool = False
+    has_published: bool = False
+    revision: int = Field(default=0, ge=0)
+    published_revision: int | None = Field(default=None, ge=0)
+
+
+class LearningBookNavigationItem(StrictTeacherModel):
+    topic_id: str
+    topic_name: str
+    knowledge_point_id: str
+    title: str
+    sort_order: int = Field(ge=0)
+    revision: int = Field(ge=0)
+
+
+class TeacherBookPage(StrictTeacherModel):
+    workspace_id: str
+    topic_id: str
+    topic_name: str
+    knowledge_point_id: str
+    title: str
+    draft_markdown: str = ""
+    published_markdown: str | None = None
+    revision: int = Field(default=0, ge=0)
+    published_revision: int | None = Field(default=None, ge=0)
+    updated_at: str | None = None
+
+
+class LearningBookPage(StrictTeacherModel):
+    workspace_id: str
+    topic_id: str
+    topic_name: str
+    knowledge_point_id: str
+    title: str
+    content_markdown: str
+    revision: int = Field(ge=0)
+
+
+class TeacherBookAssetInput(StrictTeacherModel):
+    asset_path: str = Field(min_length=1, max_length=256)
+    media_type: str = Field(min_length=1, max_length=64)
+    content_base64: str = Field(min_length=1, max_length=7_000_000)
+
+
+class UpdateTeacherBookPage(StrictTeacherModel):
+    content_markdown: str = Field(default="", max_length=200_000)
+    expected_revision: int = Field(default=0, ge=0)
+    assets: list[TeacherBookAssetInput] = Field(default_factory=list, max_length=50)
+
+
+class PublishTeacherBookPage(StrictTeacherModel):
+    expected_revision: int = Field(ge=0)
+
+
+class TeacherBookImportPreviewRequest(StrictTeacherModel):
+    file_name: str = Field(min_length=1, max_length=256)
+    content_markdown: str = Field(max_length=200_000)
+
+
+class TeacherBookImportApplyRequest(TeacherBookImportPreviewRequest):
+    knowledge_point_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(default=0, ge=0)
+    assets: list[TeacherBookAssetInput] = Field(default_factory=list, max_length=50)
+
+
+class TeacherBookImportPreview(StrictTeacherModel):
+    file_name: str
+    content_markdown: str
+    removed_frameworks: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class TeacherBookArchiveImportPreviewRequest(StrictTeacherModel):
+    file_name: str = Field(min_length=1, max_length=256)
+    archive_base64: str = Field(min_length=1, max_length=16_000_000)
+
+
+class TeacherBookArchiveItemPreview(StrictTeacherModel):
+    topic_id: str
+    knowledge_point_id: str
+    title: str
+    file_name: str
+    action: Literal["create", "update", "unchanged"]
+    expected_revision: int = Field(ge=0)
+    current_markdown: str = ""
+    content_markdown: str
+    removed_frameworks: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class TeacherBookArchiveImportPreview(StrictTeacherModel):
+    file_name: str
+    format_version: int = Field(ge=1)
+    title: str
+    items: list[TeacherBookArchiveItemPreview] = Field(max_length=1000)
+    asset_paths: list[str] = Field(default_factory=list, max_length=1000)
+    omitted_knowledge_points: list[str] = Field(default_factory=list, max_length=1000)
+    warnings: list[str] = Field(default_factory=list, max_length=100)
+
+
+class TeacherBookArchiveImportApplyRequest(TeacherBookArchiveImportPreviewRequest):
+    expected_revisions: dict[str, int] = Field(max_length=1000)

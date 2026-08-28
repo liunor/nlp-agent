@@ -1,4 +1,6 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
 
 import { MarkdownContent, stripInternalChatMetadata } from "./MarkdownContent";
 
@@ -69,5 +71,29 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(screen.getByText("反斜杠绕过")).not.toHaveAttribute("href");
     expect(screen.getByRole("link", { name: "课程目录" })).toHaveAttribute("href", "/teacher");
     expect(screen.getByRole("link", { name: "本节" })).toHaveAttribute("href", "#attention");
+  });
+
+  it("exposes copy and ask-Nova actions only when lesson code actions are enabled", async () => {
+    const user = userEvent.setup();
+    const askNova = vi.fn();
+    const openInSandbox = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
+
+    render(<MarkdownContent codeActions={{ onAskNova: askNova, onOpenInSandbox: openInSandbox }}>{"```python\nprint('hello')\n```"}</MarkdownContent>);
+
+    expect(screen.getByRole("button", { name: "复制 python 代码" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "复制 python 代码" }));
+    expect(await screen.findByRole("button", { name: "已复制 python 代码" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "问 Nova" }));
+    expect(askNova).toHaveBeenCalledWith("print('hello')", "python");
+    await user.click(screen.getByRole("button", { name: "在沙箱中打开" }));
+    expect(openInSandbox).toHaveBeenCalledWith("print('hello')", "python");
+  });
+
+  it("keeps the copy action when Nova actions are unavailable", () => {
+    render(<MarkdownContent codeActions={{ }}>{"```python\nprint('hello')\n```"}</MarkdownContent>);
+
+    expect(screen.getByRole("button", { name: "复制 python 代码" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "问 Nova" })).not.toBeInTheDocument();
   });
 });

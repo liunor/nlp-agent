@@ -43,6 +43,18 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(screen.getByRole("button", { name: "刷新" }).closest(".teacher-brand")).toBeVisible();
   });
 
+  it("places the knowledge book entry between home and topic management", async () => {
+    history.replaceState({}, "", "/teacher");
+    render(<TeacherWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "教材内容" })).toBeVisible();
+    const home = screen.getByRole("button", { name: "教师首页" });
+    const book = screen.getByRole("button", { name: "教材内容" });
+    const topics = screen.getByRole("button", { name: "主题与知识点" });
+    expect(home.compareDocumentPosition(book) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(book.compareDocumentPosition(topics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("updates the visible page when the routed page changes", async () => {
     const view = render(<TeacherWorkspace page="topics" />);
 

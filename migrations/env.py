@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+from dotenv import load_dotenv
 
 from server.infrastructure.mysql.base import Base
 from server.infrastructure.mysql import models  # noqa: F401
@@ -16,6 +18,12 @@ from server.infrastructure.mysql import models  # noqa: F401
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# ``alembic`` is commonly invoked directly from the project root.  In that
+# mode pydantic-settings is not involved, so load the same local configuration
+# that the application uses before reading the database URL.  Existing process
+# environment values still win over the local file.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 if database_url := os.getenv("NLP_AGENT_DATABASE_URL"):
     config.set_main_option(

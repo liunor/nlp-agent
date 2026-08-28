@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from core.identity import AccessDeniedError, AuthenticatedPrincipal
-from core.rbac import Permission, ResourceRef, authorization_service
+from core.rbac import (
+    Permission,
+    ResourceRef,
+    authorization_service,
+    required_permission_for_high_risk_tool,
+)
 from core.session_context import SessionContext
 from core.learning import LearningContext, TeachingMaterials, default_progress
 from gateway.contracts import (
@@ -273,16 +278,18 @@ class BackendGateway:
         )
 
     async def submit_turn(
-        self, principal: AuthenticatedPrincipal, request: SubmitTurnRequest
+        self, principal: AuthenticatedPrincipal, request: SubmitTurnRequest, *, auth_session_id: str | None = None
     ) -> TurnAccepted:
         self._require_started()
         async with self._session_turn_locks[request.session_id]:
-            return await self._submit_turn_locked(principal, request)
+            return await self._submit_turn_locked(principal, request, auth_session_id=auth_session_id)
 
     async def _submit_turn_locked(
-        self, principal: AuthenticatedPrincipal, request: SubmitTurnRequest
+        self, principal: AuthenticatedPrincipal, request: SubmitTurnRequest, *, auth_session_id: str | None = None
     ) -> TurnAccepted:
         context = await self.sessions.resolve(principal, request.session_id)
+        if auth_session_id:
+            context = context.model_copy(update={"auth_session_id": auth_session_id})
         authorization_service.require(principal, Permission.AGENT_TURN_SUBMIT, workspace_id=context.workspace_id)
         if request.model_profile is not None:
             from core.model_runtime.factory import get_global_model_factory
@@ -689,6 +696,128 @@ class BackendGateway:
         )
         return await asyncio.to_thread(self.repository.update_teaching_catalog, workspace_id, catalog)
 
+    async def get_knowledge_page(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> dict[str, Any] | None:
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_READ_WORKSPACE,
+            workspace_id=workspace_id,
+        )
+        return await asyncio.to_thread(
+            self.repository.get_knowledge_page, workspace_id, knowledge_point_id
+        )
+
+    async def list_knowledge_pages(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+    ) -> list[dict[str, Any]]:
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_READ_WORKSPACE,
+            workspace_id=workspace_id,
+        )
+        return await asyncio.to_thread(self.repository.list_knowledge_pages, workspace_id)
+
+    async def get_published_knowledge_page(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> dict[str, Any] | None:
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_READ_WORKSPACE,
+            workspace_id=workspace_id,
+        )
+        return await asyncio.to_thread(
+            self.repository.get_published_knowledge_page,
+            workspace_id,
+            knowledge_point_id,
+        )
+
+    async def update_knowledge_page(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        draft_markdown: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_MANAGE,
+            workspace_id=workspace_id,
+        )
+        return await asyncio.to_thread(
+            self.repository.update_knowledge_page,
+            workspace_id,
+            knowledge_point_id,
+            draft_markdown,
+            expected_revision=expected_revision,
+        )
+
+    async def publish_knowledge_page(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_MANAGE,
+            workspace_id=workspace_id,
+        )
+        return await asyncio.to_thread(
+            self.repository.publish_knowledge_page,
+            workspace_id,
+            knowledge_point_id,
+            expected_revision=expected_revision,
+        )
+
+    async def apply_knowledge_book_import(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        pages: list[dict[str, Any]],
+        assets: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_MANAGE,
+            workspace_id=workspace_id,
+        )
+        return await asyncio.to_thread(
+            self.repository.apply_knowledge_book_import,
+            workspace_id,
+            pages,
+            assets,
+        )
+
+    async def get_knowledge_book_asset(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        asset_path: str,
+    ) -> dict[str, Any] | None:
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_READ_WORKSPACE,
+            workspace_id=workspace_id,
+        )
+        return await asyncio.to_thread(
+            self.repository.get_knowledge_book_asset,
+            workspace_id,
+            asset_path,
+        )
+
     async def stream_events(
         self,
         principal: AuthenticatedPrincipal,
@@ -789,7 +918,13 @@ class BackendGateway:
         reason: str,
         ttl_s: float = 300,
     ) -> dict[str, Any]:
-        await self.sessions.resolve(principal, session_id)
+        context = await self.sessions.resolve(principal, session_id)
+        permission = required_permission_for_high_risk_tool(tool_name)
+        authorization_service.require(
+            principal,
+            permission,
+            workspace_id=context.workspace_id,
+        )
         from core.tool_registry import physical_tool_manager
 
         grant = physical_tool_manager.grant_high_risk_tool(

@@ -28,13 +28,19 @@ class SessionContext(BaseModel):
     workspace_id: str = "default"
     channel: str = "local"
     agent_id: str = "coordinator"
+    # Login-session identity is distinct from the conversation thread.  It is
+    # propagated only across the trusted Gateway/Worker execution path so
+    # tools can validate a live database session without changing chat storage.
+    auth_session_id: str | None = None
     # Runtime-only labels for observability.  They deliberately do not affect
     # the storage key, so evaluation cases retain the same session semantics.
     observability_attributes: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("session_id", "user_id", "workspace_id", "channel", "agent_id")
+    @field_validator("session_id", "user_id", "workspace_id", "channel", "agent_id", "auth_session_id")
     @classmethod
-    def validate_identifier(cls, value: str) -> str:
+    def validate_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if not _SESSION_ID.fullmatch(value):
             raise ValueError("session identifiers may contain letters, digits, . _ : - only")
         return value
@@ -52,6 +58,11 @@ class SessionContext(BaseModel):
             workspace_id=str(configurable.get("workspace_id") or "default"),
             channel=str(configurable.get("channel") or "local"),
             agent_id=str(configurable.get("worker_id") or "coordinator"),
+            auth_session_id=(
+                str(configurable["auth_session_id"])
+                if configurable.get("auth_session_id")
+                else None
+            ),
         )
 
     @classmethod

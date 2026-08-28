@@ -163,6 +163,7 @@ class WebSocketConnection:
         max_queue: int,
         send_queue_size: int,
         send_timeout_s: float,
+        auth_session_id: str | None = None,
         session_fingerprint: bytes | None = None,
         session_check: Callable[[], Any] | None = None,
         session_touch: Callable[[], Any] | None = None,
@@ -181,6 +182,7 @@ class WebSocketConnection:
             maxsize=max(1, send_queue_size)
         )
         self.send_timeout_s = max(0.1, send_timeout_s)
+        self.auth_session_id = auth_session_id
         self.session_fingerprint = session_fingerprint
         self._session_check = session_check
         self._session_touch = session_touch
@@ -503,6 +505,7 @@ async def _dispatch_command(
                 learning_context=payload.learning_context,
                 model_profile=payload.model_profile,
             ),
+            auth_session_id=connection.auth_session_id,
         )
         await connection.send(
             control_event(
@@ -658,6 +661,7 @@ async def websocket_endpoint(
         max_queue=max_queue,
         send_queue_size=send_queue_size,
         send_timeout_s=send_timeout_s,
+        auth_session_id=(claims.session_id if isinstance(claims, DatabaseSessionClaims) else None),
         session_fingerprint=session_fingerprint,
         session_check=session_check,
         session_touch=session_touch,

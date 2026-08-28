@@ -10,6 +10,7 @@ export function TeacherRoutes() {
     <Routes>
       <Route index element={<TeacherWorkspace page="overview" onNavigate={page} />} />
       <Route path="topics" element={<TeacherWorkspace page="topics" onNavigate={page} />} />
+      <Route path="book" element={<TeacherWorkspace page="book" onNavigate={page} />} />
       <Route path="exercises" element={<TeacherWorkspace page="exercises" onNavigate={page} />} />
       <Route path="reviews" element={<TeacherWorkspace page="reviews" onNavigate={page} />} />
       <Route path="guided" element={<TeacherWorkspace page="guided" onNavigate={page} />} />

@@ -1,5 +1,5 @@
 import { Archive, BookOpen, FolderPlus,  Menu, MoreHorizontal, Pencil, Pin, Plus, Search, Settings, Trash2, UserRound, X } from "lucide-react";
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import novaMarkUrl from "../../../../logo/nova-remove.png";
 
@@ -32,6 +32,9 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
   const [searchOpen, setSearchOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const skipRenameBlurRef = useRef(false);
   const visible = useMemo(() => sessions.filter((session) => {
     const meta = preferences.sessions[session.session_id];
     if (!!meta?.archived !== showArchived) return false;
@@ -125,17 +128,61 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
           </h3>
           {group.items.map((session) => {
             const meta = preferences.sessions[session.session_id] ?? {};
+            const title = meta.title ?? "新的学习对话";
+            const isRenaming = renamingSessionId === session.session_id;
             return <div className={`session-item ${activeId === session.session_id ? "active" : ""}`} key={session.session_id}>
-              <button
-  className="session-main"
-  type="button"
-  onClick={() => {
-    onSelect(session.session_id);
-    onClose();
+              {isRenaming ? (
+  <input
+  className="session-rename-input"
+  value={renameValue}
+  autoFocus
+  onFocus={(event) => event.currentTarget.select()}
+  onChange={(event) => setRenameValue(event.target.value)}
+  onKeyDown={(event) => {
+    if (event.key === "Enter") {
+      skipRenameBlurRef.current = true;
+      const nextTitle = renameValue.trim();
+
+      if (nextTitle) {
+        onMeta(session.session_id, { title: nextTitle });
+      }
+
+      setRenamingSessionId(null);
+    }
+
+    if (event.key === "Escape") {
+      skipRenameBlurRef.current = true;
+      setRenameValue(title);
+      setRenamingSessionId(null);
+    }
   }}
->
-  <span>{meta.title ?? "新的学习对话"}</span>
-</button>
+  onBlur={() => {
+    if (skipRenameBlurRef.current) {
+      skipRenameBlurRef.current = false;
+      return;
+    }
+
+    const nextTitle = renameValue.trim();
+
+    if (nextTitle) {
+      onMeta(session.session_id, { title: nextTitle });
+    }
+
+    setRenamingSessionId(null);
+  }}
+/>
+) : (
+  <button
+    className="session-main"
+    type="button"
+    onClick={() => {
+      onSelect(session.session_id);
+      onClose();
+    }}
+  >
+    <span>{title}</span>
+  </button>
+)}
               <button
   type="button"
   className={`session-pin ${meta.pinnedAt ? "active" : ""}`}
@@ -151,7 +198,16 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
   <Pin size={14} />
 </button>
               <details className="session-menu"><summary aria-label="会话菜单"><MoreHorizontal size={16} /></summary><div>
-                <button type="button" onClick={() => { const title = prompt("重命名学习对话", meta.title ?? ""); if (title?.trim()) onMeta(session.session_id, { title: title.trim() }); }}><Pencil size={14} />重命名</button>
+                <button
+  type="button"
+  onClick={(event) => {
+    setRenamingSessionId(session.session_id);
+    setRenameValue(title);
+    event.currentTarget.closest("details")?.removeAttribute("open");
+  }}
+>
+  <Pencil size={14} />重命名
+</button>
                 <button type="button" onClick={() => onMeta(session.session_id, { pinnedAt: meta.pinnedAt ? undefined : Date.now() })}><Pin size={14} />{meta.pinnedAt ? "取消置顶" : "置顶"}</button>
                 <button
   type="button"

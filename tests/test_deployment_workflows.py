@@ -12,11 +12,92 @@ def test_deployment_workflows_update_and_check_worker() -> None:
     for workflow_path in WORKFLOW_PATHS:
         workflow = workflow_path.read_text(encoding="utf-8")
 
-        assert "pull nova-migrate nova-web nova-worker nova-monitor nginx" in workflow
+        assert (
+            "pull nova-migrate nova-web nova-worker nova-monitor "
+            "nova-sandbox-manager nginx"
+        ) in workflow
         assert (
             "up -d --force-recreate --no-build --remove-orphans "
-            "nova-migrate nova-web nova-worker nova-monitor nginx"
+            "nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx"
         ) in workflow
+        assert "if ! docker compose" in workflow
+        assert "logs --no-color --tail=200 nova-migrate" in workflow
         assert (
             "ps --status running --services nova-worker | grep -Fxq \"nova-worker\""
         ) in workflow
+        assert (
+            "ps --status running --services nova-sandbox-manager | "
+            "grep -Fxq \"nova-sandbox-manager\""
+        ) in workflow
+        assert 'docker pull "$SANDBOX_CONFIGURED_REF"' in workflow
+
+
+def test_publish_workflow_builds_and_publishes_the_runtime_image() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "publish-test-image.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "RUNTIME_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/nova-sandbox-runtime" in workflow
+    assert "context: sandbox-runtime" in workflow
+    assert "id: build_runtime" in workflow
+    assert "runtime_digest" in workflow
+
+
+def test_publish_workflow_recovers_squash_merges_and_supports_manual_replay() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "publish-test-image.yml").read_text(
+        encoding="utf-8"
+    )
+
+    # Squash merge messages can contain a historical ``[skip ci]`` marker,
+    # which suppresses the subsequent develop push event.  The deployment
+    # workflow must therefore have a merged-PR fallback and an operator
+    # replay path for the already-merged commit.
+    assert "  workflow_dispatch:" in workflow
+    assert "  pull_request_target:" in workflow
+    assert "    types: [closed]" in workflow
+    assert "github.event.pull_request.merged == true" in workflow
+
+
+def test_publish_workflow_uses_trusted_skip_ci_fallback_without_duplicate_pr_publish() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "publish-test-image.yml").read_text(
+        encoding="utf-8"
+    )
+
+    # A pull_request token cannot publish to GHCR reliably for collaborator merges.
+    # The fallback must run in the base-repository context and only publish when
+    # the merged commit really contains a skip-CI marker; ordinary merges use the
+    # single develop push run and must not publish twice.
+    assert "  pull_request_target:" in workflow
+    assert "    types: [closed]" in workflow
+    assert "fallback_check:" in workflow
+    assert "github.event.pull_request.merge_commit_sha" in workflow
+    assert "skip ci" in workflow.lower()
+    assert "ci skip" in workflow.lower()
+    assert "pull_request:" not in workflow
+    assert "needs: fallback_check" in workflow
+    assert "always()" in workflow
+    assert "      packages: write" in workflow
+    assert "      packages: read" in workflow
+
+
+def test_deploy_workflows_overlay_published_digests_without_mutating_server_env() -> None:
+    for workflow_path in WORKFLOW_PATHS:
+        workflow = workflow_path.read_text(encoding="utf-8")
+
+        assert 'DEPLOY_ENV_FILE="$(mktemp' in workflow
+        assert 'export NOVA_ENV_FILE="$DEPLOY_ENV_FILE"' in workflow
+        assert 'if [ ! -r "$DEPLOY_DIR/.env" ]' in workflow
+        assert 'awk -v nova_image_ref="$NOVA_IMAGE_REF"' in workflow
+        assert '-v sandbox_runtime_ref="$SANDBOX_RUNTIME_REF"' in workflow
+        assert 'print "NOVA_IMAGE_REF=\\\"" nova_image_ref' in workflow
+        assert (
+            'print "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=\\\"" '
+            'sandbox_runtime_ref'
+        ) in workflow
+        assert 'rm -f "$DEPLOY_ENV_FILE"' in workflow
+        assert "The deployment directory" in workflow
+
+
+def test_ci_workflow_can_be_dispatched_after_a_skip_ci_metadata_commit() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "  workflow_dispatch:" in workflow

@@ -235,4 +235,3 @@ async def test_duplicate_thread_per_user_is_rejected_by_unique_constraint(mysql_
                     ),
                     {"id": str(uuid4()), "user_id": user_id},
                 )
-

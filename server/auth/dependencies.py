@@ -44,6 +44,19 @@ async def _claims(request: Request) -> SessionClaims | DatabaseSessionClaims:
     return auth.authenticate(token)
 
 
+async def get_database_session_claims(
+    claims: Annotated[SessionClaims | DatabaseSessionClaims, Depends(_claims)],
+) -> DatabaseSessionClaims:
+    """Require the persistent user session used by sandbox ownership.
+
+    The legacy injected authentication mode carries a mutable username rather
+    than a database user UUID, so it cannot be used as a sandbox owner.
+    """
+    if not isinstance(claims, DatabaseSessionClaims):
+        raise AuthenticationError("database authentication is required for sandbox access")
+    return claims
+
+
 async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
     """Yield an async database session bound to a single request-scoped transaction.
 

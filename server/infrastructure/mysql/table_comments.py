@@ -28,6 +28,8 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_course_catalogs": "工作区课程目录的当前版本指针。",
     "nlp_course_topics": "课程目录中的主题或章节。",
     "nlp_knowledge_points": "主题下的知识点内容。",
+    "nlp_knowledge_pages": "知识点教材正文的草稿与已发布版本。",
+    "nlp_knowledge_book_assets": "知识教材批量导入后经过校验的图片资源。",
     "nlp_teaching_blueprints": "教学或练习蓝图及其载荷版本。",
     "nlp_blueprint_rubrics": "蓝图评分标准、权重与排序。",
     "nlp_course_catalog_versions": "课程目录发布版本的完整快照。",
@@ -57,6 +59,11 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_tool_audits": "工具执行审计及请求/结果快照。",
     "nlp_runtime_config_versions": "按作用域保存的运行时配置版本快照。",
     "nlp_observability_records": "trace、span 与 telemetry 的统一可观测性记录。",
+    "nlp_sandbox_environments": "每位用户唯一的逻辑沙箱归属与配置版本，不保存代码。",
+    "nlp_sandbox_runtime_instances": "沙箱运行实例声明与健康状态；Phase 0 不创建容器。",
+    "nlp_sandbox_leases": "认证会话绑定的沙箱租约、过期与撤销状态。",
+    "nlp_sandbox_executions": "沙箱执行的最小审计摘要，不保存代码或标准输出。",
+    "nlp_sandbox_artifacts": "沙箱产物的受控存储指针与过期信息。",
 }
 
 

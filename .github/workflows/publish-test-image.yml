@@ -3,25 +3,83 @@ name: Publish Test Image
 on:
   push:
     branches: [develop, main]
+  # A squash merge can contain a historical [skip ci] marker in its body,
+  # which suppresses the develop push event.  The fallback runs in the base
+  # repository context so it can publish to GHCR, and only when the merged
+  # commit actually contains a skip marker.  Ordinary merges use the single
+  # develop push run and are never published twice.
+  pull_request_target:
+    branches: [develop]
+    types: [closed]
+  workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: ghcr-${{ github.ref_name }}
+  group: ghcr-${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref_name }}
   cancel-in-progress: true
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/nlp-agent
+  RUNTIME_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/nova-sandbox-runtime
 
 jobs:
+  fallback_check:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'develop'
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check merged commit for skip-CI marker
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MERGE_SHA" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "No merge commit SHA; push fallback is not applicable."
+            exit 0
+          fi
+          message="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGE_SHA}" --jq '.commit.message')"
+          printf 'Merged commit: %s\n' "${MERGE_SHA}"
+          if printf '%s\n' "$message" | grep -Eiq '\[(skip ci|ci skip|skip actions|actions skip|no ci)\]'; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Merged commit contains a skip-CI marker; running trusted fallback publish."
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Merged commit has no skip-CI marker; the develop push workflow is authoritative."
+          fi
+
   publish:
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request_target' ||
+      (github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'develop' &&
+      needs.fallback_check.outputs.publish == 'true'))
+    needs: fallback_check
+    permissions:
+      contents: read
+      packages: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      runtime_digest: ${{ steps.build_runtime.outputs.digest }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha) || github.sha }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -33,8 +91,8 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=develop,enable=${{ github.ref_name == 'develop' }}
-            type=sha,prefix=develop-,enable=${{ github.ref_name == 'develop' }}
+            type=raw,value=develop,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
+            type=sha,prefix=develop-,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
             type=raw,value=release-candidate-${{ github.sha }},enable=${{ github.ref_name == 'main' }}
       - uses: docker/build-push-action@v6
         id: build
@@ -45,14 +103,37 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - uses: docker/metadata-action@v5
+        id: meta_runtime
+        with:
+          images: ${{ env.RUNTIME_IMAGE_NAME }}
+          tags: |
+            type=raw,value=develop,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
+            type=sha,prefix=develop-,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
+            type=raw,value=release-candidate-${{ github.sha }},enable=${{ github.ref_name == 'main' }}
+      - uses: docker/build-push-action@v6
+        id: build_runtime
+        with:
+          context: sandbox-runtime
+          push: true
+          tags: ${{ steps.meta_runtime.outputs.tags }}
+          labels: ${{ steps.meta_runtime.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy Test Environment (${{ github.ref_name }})
+    if: always() && needs.publish.result == 'success'
     needs: publish
+    permissions:
+      contents: read
+      packages: read
     runs-on: [self-hosted, linux, test]
     environment: test
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha) || github.sha }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -63,25 +144,66 @@ jobs:
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
           COMPOSE_PROJECT_NAME: nova-test
           NOVA_IMAGE_REF: ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}
+          SANDBOX_RUNTIME_REF: ghcr.io/${{ github.repository_owner }}/nova-sandbox-runtime@${{ needs.publish.outputs.runtime_digest }}
           NOVA_PULL_POLICY: always
         run: |
-          test -n "$DEPLOY_DIR"
-          test -f "$DEPLOY_DIR/.env"
-          export NOVA_ENV_FILE="$DEPLOY_DIR/.env"
+          if [ -z "$DEPLOY_DIR" ]; then
+            echo "::error::The deployment directory is not configured on the test environment. Set the DEPLOY_DIR environment variable."
+            exit 1
+          fi
+          if [ ! -f "$DEPLOY_DIR/.env" ]; then
+            echo "::error::The deployment directory $DEPLOY_DIR does not contain .env. Provision it from deploy/env/test.env.example on the test runner."
+            exit 1
+          fi
+          if [ ! -r "$DEPLOY_DIR/.env" ]; then
+            echo "::error::The runner user cannot read $DEPLOY_DIR/.env. Grant the configured Actions runner account read access without exposing the file."
+            exit 1
+          fi
+          DEPLOY_ENV_FILE="$(mktemp)"
+          trap 'rm -f "$DEPLOY_ENV_FILE"' EXIT
+          awk -v nova_image_ref="$NOVA_IMAGE_REF" -v sandbox_runtime_ref="$SANDBOX_RUNTIME_REF" '
+            BEGIN { nova_found = 0; sandbox_found = 0 }
+            /^NOVA_IMAGE_REF=/ {
+              print "NOVA_IMAGE_REF=\"" nova_image_ref "\""
+              nova_found = 1
+              next
+            }
+            /^NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=/ {
+              print "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=\"" sandbox_runtime_ref "\""
+              sandbox_found = 1
+              next
+            }
+            { print }
+            END {
+              if (!nova_found) print "NOVA_IMAGE_REF=\"" nova_image_ref "\""
+              if (!sandbox_found) print "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=\"" sandbox_runtime_ref "\""
+            }
+          ' "$DEPLOY_DIR/.env" > "$DEPLOY_ENV_FILE"
+          chmod 600 "$DEPLOY_ENV_FILE"
+          export NOVA_ENV_FILE="$DEPLOY_ENV_FILE"
+          SANDBOX_CONFIGURED_REF="$(awk -F= '$1 == "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST" {sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit}' "$DEPLOY_ENV_FILE")"
+          test "$SANDBOX_CONFIGURED_REF" = "$SANDBOX_RUNTIME_REF"
+          docker pull "$SANDBOX_CONFIGURED_REF"
           test "$NOVA_IMAGE_REF" = "ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}"
-          resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml config --images)"
+          resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml config --images)"
           printf '%s\n' "$resolved_images"
           printf '%s\n' "$resolved_images" | grep -Fxq "$NOVA_IMAGE_REF" || {
             echo "Compose did not resolve the expected published image: $NOVA_IMAGE_REF"
             exit 1
           }
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nginx
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nginx
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx
+          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx; then
+            echo "::error::Compose startup failed; collecting migration diagnostics."
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps || true
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml logs --no-color --tail=200 nova-migrate || true
+            exit 1
+          fi
           for attempt in {1..12}; do
-            if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
-              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
-              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker" \
-              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_DIR/.env" -f compose.yaml exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
+            if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-sandbox-manager | grep -Fxq "nova-sandbox-manager" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
               exit 0
             fi
             sleep 5

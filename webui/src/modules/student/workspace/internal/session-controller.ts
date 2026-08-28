@@ -13,8 +13,10 @@ export function useSessionController({ preferences, persistPreferences, updateSe
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [workspaceId, setWorkspaceId] = useState("default");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [composerRevision, setComposerRevision] = useState(0);
   const activeSessionRef = useRef<string | null>(null);
   const creationRef = useRef<Promise<string | null> | null>(null);
+  const freshSessionIdsRef = useRef(new Set<string>());
   const chatEpochRef = useRef(0);
 
   useEffect(() => {
@@ -49,8 +51,10 @@ export function useSessionController({ preferences, persistPreferences, updateSe
         void api.deleteSession(session.session_id).catch(() => undefined);
         return null;
       }
+      freshSessionIdsRef.current.add(session.session_id);
       setSessions((current) => current.some((item) => item.session_id === session.session_id) ? current : [session, ...current]);
       updateSessionMeta(session.session_id, { topic: preferences.context.topic_name, title: "新的学习对话" });
+      activeSessionRef.current = session.session_id;
       setActiveSessionId(session.session_id);
       return session.session_id;
     })();
@@ -62,9 +66,20 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     return creation;
   }, [preferences.context.topic_name, updateSessionMeta, workspaceId]);
 
+  const selectSession = useCallback((sessionId: string) => {
+    if (activeSessionRef.current === sessionId) return;
+    chatEpochRef.current += 1;
+    creationRef.current = null;
+    activeSessionRef.current = sessionId;
+    setComposerRevision((current) => current + 1);
+    setActiveSessionId(sessionId);
+  }, []);
+
   const startNewChat = useCallback(() => {
     chatEpochRef.current += 1;
     creationRef.current = null;
+    activeSessionRef.current = null;
+    setComposerRevision((current) => current + 1);
     setActiveSessionId(null);
   }, []);
 
@@ -77,7 +92,12 @@ export function useSessionController({ preferences, persistPreferences, updateSe
       delete nextSessions[sessionId];
       return { ...current, sessions: nextSessions };
     });
-    if (activeSessionRef.current === sessionId) setActiveSessionId(remaining[0]?.session_id ?? null);
+    if (activeSessionRef.current === sessionId) {
+      const nextSessionId = remaining[0]?.session_id ?? null;
+      activeSessionRef.current = nextSessionId;
+      setComposerRevision((current) => current + 1);
+      setActiveSessionId(nextSessionId);
+    }
   }, [persistPreferences, sessions]);
 
   return {
@@ -86,8 +106,11 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     workspaceId,
     setWorkspaceId,
     activeSessionId,
+    composerRevision,
     setActiveSessionId,
+    selectSession,
     activeSessionRef: activeSessionRef as MutableRefObject<string | null>,
+    freshSessionIdsRef: freshSessionIdsRef as MutableRefObject<Set<string>>,
     loadSessions,
     createBackendSession,
     startNewChat,

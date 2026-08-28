@@ -241,7 +241,12 @@ async def test_worker_retries_heartbeat_after_transient_redis_failure():
 
     worker = RedisWorkerRuntime(redis, config, execute, consumer_name="worker-1")
     run = asyncio.create_task(worker.run_once(block_ms=0))
-    await asyncio.sleep(0.04)
+
+    async def wait_for_retry() -> None:
+        while not redis.claims:
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(wait_for_retry(), timeout=1)
     release.set()
 
     assert await run == 1

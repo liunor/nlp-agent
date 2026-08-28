@@ -5,16 +5,26 @@ short SQLAlchemy transaction per command while the schema remains Alembic-only.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import unquote
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
-from gateway.contracts import GatewayEvent, GatewayEventType, TeachingConfigurationError, TurnRecord, TurnStatus
+from gateway.contracts import (
+    GatewayEvent,
+    GatewayEventType,
+    KnowledgeBookRevisionConflictError,
+    TeachingConfigurationError,
+    TurnRecord,
+    TurnStatus,
+)
 
 
 def _now() -> datetime:
@@ -594,6 +604,234 @@ class MySQLGatewayRepository:
         result = self.get_teaching_catalog(workspace_id)
         result["revision"] = revision
         return result
+
+    def get_knowledge_page(self, workspace_id: str, knowledge_point_id: str) -> dict[str, Any] | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT workspace_id,knowledge_point_id,draft_markdown,published_markdown,"
+                    "revision,published_revision,updated_at FROM nlp_knowledge_pages "
+                    "WHERE workspace_id=:workspace_id AND knowledge_point_id=:knowledge_point_id"
+                ),
+                {"workspace_id": workspace_id, "knowledge_point_id": knowledge_point_id},
+            ).mappings().first()
+        return dict(row) if row else None
+
+    def list_knowledge_pages(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT workspace_id,knowledge_point_id,draft_markdown,published_markdown,"
+                    "revision,published_revision,updated_at FROM nlp_knowledge_pages "
+                    "WHERE workspace_id=:workspace_id"
+                ),
+                {"workspace_id": workspace_id},
+            ).mappings().all()
+        return [dict(row) for row in rows]
+
+    def get_published_knowledge_page(self, workspace_id: str, knowledge_point_id: str) -> dict[str, Any] | None:
+        row = self.get_knowledge_page(workspace_id, knowledge_point_id)
+        if row is None or row["published_markdown"] is None:
+            return None
+        return row
+
+    @staticmethod
+    def _check_knowledge_page_revision(current: dict[str, Any] | None, expected_revision: int | None) -> int:
+        revision = int(current["revision"]) if current is not None else 0
+        if expected_revision is not None and expected_revision != revision:
+            raise KnowledgeBookRevisionConflictError(f"知识点教材版本冲突：当前版本为 {revision}")
+        return revision
+
+    def update_knowledge_page(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+        draft_markdown: str,
+        *,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT workspace_id,knowledge_point_id,draft_markdown,published_markdown,"
+                    "revision,published_revision,updated_at FROM nlp_knowledge_pages "
+                    "WHERE workspace_id=:workspace_id AND knowledge_point_id=:knowledge_point_id FOR UPDATE"
+                ),
+                {"workspace_id": workspace_id, "knowledge_point_id": knowledge_point_id},
+            ).mappings().first()
+            current = dict(row) if row else None
+            revision = self._check_knowledge_page_revision(current, expected_revision) + 1
+            if current is None:
+                connection.execute(
+                    text(
+                        "INSERT INTO nlp_knowledge_pages("
+                        "id,workspace_id,knowledge_point_id,draft_markdown,revision) "
+                        "VALUES(:id,:workspace_id,:knowledge_point_id,:draft_markdown,:revision)"
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "workspace_id": workspace_id,
+                        "knowledge_point_id": knowledge_point_id,
+                        "draft_markdown": draft_markdown,
+                        "revision": revision,
+                    },
+                )
+            else:
+                connection.execute(
+                    text(
+                        "UPDATE nlp_knowledge_pages SET draft_markdown=:draft_markdown,revision=:revision,"
+                        "updated_at=UTC_TIMESTAMP(6) "
+                        "WHERE workspace_id=:workspace_id AND knowledge_point_id=:knowledge_point_id"
+                    ),
+                    {
+                        "draft_markdown": draft_markdown,
+                        "revision": revision,
+                        "workspace_id": workspace_id,
+                        "knowledge_point_id": knowledge_point_id,
+                    },
+                )
+        return self.get_knowledge_page(workspace_id, knowledge_point_id)  # type: ignore[return-value]
+
+    def publish_knowledge_page(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT draft_markdown,revision FROM nlp_knowledge_pages "
+                    "WHERE workspace_id=:workspace_id AND knowledge_point_id=:knowledge_point_id FOR UPDATE"
+                ),
+                {"workspace_id": workspace_id, "knowledge_point_id": knowledge_point_id},
+            ).mappings().first()
+            current = dict(row) if row else None
+            if current is None:
+                raise ValueError("教材页面尚未保存草稿")
+            revision = self._check_knowledge_page_revision(current, expected_revision)
+            if not str(current["draft_markdown"]).strip():
+                raise ValueError("教材正文为空，不能发布")
+            connection.execute(
+                text(
+                    "UPDATE nlp_knowledge_pages SET published_markdown=draft_markdown,"
+                    "published_revision=:revision,updated_at=UTC_TIMESTAMP(6) "
+                    "WHERE workspace_id=:workspace_id "
+                    "AND knowledge_point_id=:knowledge_point_id"
+                ),
+                {
+                    "revision": revision,
+                    "workspace_id": workspace_id,
+                    "knowledge_point_id": knowledge_point_id,
+                },
+            )
+            for asset_path in self._asset_paths_from_markdown(str(current["draft_markdown"])):
+                connection.execute(
+                    text(
+                        "UPDATE nlp_knowledge_book_assets SET published_content=draft_content,"
+                        "updated_at=UTC_TIMESTAMP(6) WHERE workspace_id=:workspace_id AND asset_path=:asset_path"
+                    ),
+                    {"workspace_id": workspace_id, "asset_path": asset_path},
+                )
+        return self.get_knowledge_page(workspace_id, knowledge_point_id)  # type: ignore[return-value]
+
+    @staticmethod
+    def _asset_paths_from_markdown(markdown: str) -> set[str]:
+        paths: set[str] = set()
+        for raw_path in re.findall(r"/assets/(assets/[^)\s\"']+)", markdown):
+            path = unquote(raw_path)
+            if path.startswith("assets/") and ".." not in path.split("/"):
+                paths.add(path)
+        return paths
+
+    def apply_knowledge_book_import(
+        self,
+        workspace_id: str,
+        pages: list[dict[str, Any]],
+        assets: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        with self._engine.begin() as connection:
+            currents: dict[str, dict[str, Any] | None] = {}
+            for page in pages:
+                point_id = str(page["knowledge_point_id"])
+                row = connection.execute(
+                    text(
+                        "SELECT workspace_id,knowledge_point_id,draft_markdown,published_markdown,"
+                        "revision,published_revision,updated_at FROM nlp_knowledge_pages "
+                        "WHERE workspace_id=:workspace_id AND knowledge_point_id=:knowledge_point_id FOR UPDATE"
+                    ),
+                    {"workspace_id": workspace_id, "knowledge_point_id": point_id},
+                ).mappings().first()
+                current = dict(row) if row else None
+                self._check_knowledge_page_revision(current, int(page["expected_revision"]))
+                currents[point_id] = current
+
+            for page in pages:
+                point_id = str(page["knowledge_point_id"])
+                current = currents[point_id]
+                revision = int(page["expected_revision"]) + 1
+                if current is None:
+                    connection.execute(
+                        text(
+                            "INSERT INTO nlp_knowledge_pages(id,workspace_id,knowledge_point_id,draft_markdown,revision) "
+                            "VALUES(:id,:workspace_id,:knowledge_point_id,:draft_markdown,:revision)"
+                        ),
+                        {
+                            "id": str(uuid.uuid4()),
+                            "workspace_id": workspace_id,
+                            "knowledge_point_id": point_id,
+                            "draft_markdown": str(page["content_markdown"]),
+                            "revision": revision,
+                        },
+                    )
+                else:
+                    connection.execute(
+                        text(
+                            "UPDATE nlp_knowledge_pages SET draft_markdown=:draft_markdown,revision=:revision,"
+                            "updated_at=UTC_TIMESTAMP(6) WHERE workspace_id=:workspace_id "
+                            "AND knowledge_point_id=:knowledge_point_id"
+                        ),
+                        {
+                            "draft_markdown": str(page["content_markdown"]),
+                            "revision": revision,
+                            "workspace_id": workspace_id,
+                            "knowledge_point_id": point_id,
+                        },
+                    )
+
+            for asset in assets:
+                content = bytes(asset["content"])
+                connection.execute(
+                    text(
+                        "INSERT INTO nlp_knowledge_book_assets(workspace_id,asset_path,media_type,draft_content,"
+                        "size_bytes,sha256) VALUES(:workspace_id,:asset_path,:media_type,:draft_content,:size_bytes,:sha256) "
+                        "ON DUPLICATE KEY UPDATE media_type=VALUES(media_type),draft_content=VALUES(draft_content),"
+                        "size_bytes=VALUES(size_bytes),sha256=VALUES(sha256),updated_at=UTC_TIMESTAMP(6)"
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "asset_path": str(asset["asset_path"]),
+                        "media_type": str(asset["media_type"]),
+                        "draft_content": content,
+                        "size_bytes": len(content),
+                        "sha256": str(asset.get("sha256") or hashlib.sha256(content).hexdigest()),
+                    },
+                )
+        return [self.get_knowledge_page(workspace_id, str(page["knowledge_point_id"])) for page in pages]  # type: ignore[list-item]
+
+    def get_knowledge_book_asset(self, workspace_id: str, asset_path: str) -> dict[str, Any] | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT workspace_id,asset_path,media_type,published_content AS content,size_bytes,sha256 "
+                    "FROM nlp_knowledge_book_assets WHERE workspace_id=:workspace_id AND asset_path=:asset_path"
+                ),
+                {"workspace_id": workspace_id, "asset_path": asset_path},
+            ).mappings().first()
+        if row is None or row["content"] is None:
+            return None
+        return dict(row)
 
     def teaching_topic(self, workspace_id: str, topic_id: str):
         catalog = self.get_teaching_catalog(workspace_id)["catalog"]

@@ -31,6 +31,7 @@ from server.infrastructure.mysql.models import (
     WsTicketModel,
 )
 from server.user.service import PasswordHasherSingleton
+from server.sandbox.service import sandbox_lifecycle_service
 from server.web.auth import AuthenticationError, CsrfRejectedError, OriginRejectedError
 
 
@@ -269,6 +270,13 @@ class DatabaseSessionAuth:
                 failure = "authentication cookie has expired"
             elif touch:
                 row.last_seen_at = now
+            if failure is not None:
+                await sandbox_lifecycle_service.release_auth_session_in_transaction(
+                    session,
+                    user_id=row.user_id,
+                    auth_session_id=row.id,
+                    reason="auth.session.expired",
+                )
             if failure is None:
                 claims = self._claims(row)
         if failure is not None:
@@ -309,14 +317,19 @@ class DatabaseSessionAuth:
         token_hash: str,
     ) -> None:
         async with factory.begin() as session:
-            await session.execute(
-                update(SessionModel)
-                .where(
-                    SessionModel.token_hash == token_hash,
-                    SessionModel.revoked_at.is_(None),
-                )
-                .values(revoked_at=_utc_now())
+            row = await session.scalar(
+                select(SessionModel)
+                .where(SessionModel.token_hash == token_hash)
+                .with_for_update()
             )
+            if row is not None and row.revoked_at is None:
+                row.revoked_at = _utc_now()
+                await sandbox_lifecycle_service.release_auth_session_in_transaction(
+                    session,
+                    user_id=row.user_id,
+                    auth_session_id=row.id,
+                    reason="auth.session.logged_out",
+                )
 
     async def list_user_sessions(
         self,
@@ -367,6 +380,12 @@ class DatabaseSessionAuth:
                 return None
             if row.revoked_at is None:
                 row.revoked_at = _utc_now()
+                await sandbox_lifecycle_service.release_auth_session_in_transaction(
+                    session,
+                    user_id=row.user_id,
+                    auth_session_id=row.id,
+                    reason="auth.session.revoked",
+                )
             return row.token_hash
 
     async def issue_ws_ticket(

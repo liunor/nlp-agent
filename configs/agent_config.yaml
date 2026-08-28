@@ -285,6 +285,14 @@ tools:
         - TaskStop
         - read_local_file
         - get_current_time
+        # Phase 4 model-facing Sandbox surface. High-risk entries still need
+        # a ToolRuntime grant and explicit confirmation at invocation time.
+        - sandbox_status
+        - sandbox_run_scratch
+        - sandbox_explain_execution
+        - sandbox_interrupt_own
+        - sandbox_run_active_kernel
+        - sandbox_reset
       allowed_capabilities:
         - context.manage
         - nlp.analyze
