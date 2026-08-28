@@ -84,7 +84,29 @@ button { color: inherit; }
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}.session-main small { color: var(--muted); font-size: 10px; }
+}
+
+.session-rename-input {
+  min-width: 0;
+  flex: 1;
+  padding: 7px 7px 7px 10px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: normal;
+}
+
+
+.session-main small {
+  color: var(--muted);
+   font-size: 10px;
+}
 .session-pin {
   display: grid;
   width: 28px;
