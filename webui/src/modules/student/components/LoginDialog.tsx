@@ -171,7 +171,7 @@ function RegisterForm({
     }
   }, []);
 
-  useEffect(() => { void loadCaptcha("sms"); }, [loadCaptcha]);
+  useEffect(() => { void loadCaptcha("sms"); }, [loadCaptcha]); // eslint-disable-line react-hooks/set-state-in-effect
 
   const sendCode = async () => {
     if (!phone.trim() || smsSending || smsCooldown > 0 || !smsCaptchaCode.trim()) return;

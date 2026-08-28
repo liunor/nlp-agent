@@ -26,7 +26,7 @@ from server.infrastructure.mysql.models import (
     OutboxMessageModel,
 )
 
-from .schemas import UserCreate, UserUpdate
+from .schemas import UserCreate, UserRegister, UserUpdate
 
 
 class UserServiceError(Exception):
@@ -39,6 +39,14 @@ class UserNotFoundError(UserServiceError):
 
 class UserAlreadyExistsError(UserServiceError):
     """Raised when attempting to create a duplicate user."""
+
+
+class PhoneNumberAlreadyUsedError(UserServiceError):
+    """Raised when a phone number is already registered."""
+
+
+class InvalidSmsCodeError(UserServiceError):
+    """Raised when an SMS verification code is invalid or expired."""
 
 
 class SelfDeleteForbiddenError(UserServiceError):

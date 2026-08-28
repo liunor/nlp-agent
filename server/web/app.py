@@ -177,6 +177,13 @@ def _public_runtime_settings() -> dict[str, Any]:
     }
 
 
+def _with_admin_alias(roles: frozenset[str]) -> frozenset[str]:
+    """Developer role implies admin; expose an 'admin' alias for the browser."""
+    if "developer" in roles:
+        return roles | {"admin"}
+    return roles
+
+
 def create_app(
     *,
     gateway_factory: GatewayFactory = BackendGateway,

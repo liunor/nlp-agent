@@ -56,3 +56,7 @@ nano.md
 coverage/
 htmlcov/
 evaluation/result/
+
+# ── 本地截图和敏感文档 ──
+screenshot_*.png
+docs/tencent-sms-setup.md
