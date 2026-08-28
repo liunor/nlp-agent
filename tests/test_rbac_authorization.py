@@ -181,6 +181,32 @@ def test_feedback_read_resource_requires_system_scope() -> None:
     )
 
 
+def test_feedback_write_resource_requires_system_scope() -> None:
+    authorization = AuthorizationService()
+    own_scoped = AuthenticatedPrincipal(
+        user_id="developer-1",
+        permissions=frozenset({Permission.LEARNING_FEEDBACK_WRITE.value}),
+        permission_scopes={Permission.LEARNING_FEEDBACK_WRITE.value: frozenset({"own"})},
+    )
+    system_scoped = own_scoped.model_copy(
+        update={
+            "permission_scopes": {
+                Permission.LEARNING_FEEDBACK_WRITE.value: frozenset({"system"})
+            }
+        }
+    )
+
+    assert not authorization.allowed_resource(
+        own_scoped, Permission.LEARNING_FEEDBACK_WRITE, ResourceRef("feedback")
+    )
+    assert authorization.allowed_resource(
+        system_scoped, Permission.LEARNING_FEEDBACK_WRITE, ResourceRef("feedback")
+    )
+    assert authorization.allowed_resource(
+        principal("developer"), Permission.LEARNING_FEEDBACK_WRITE, ResourceRef("feedback")
+    )
+
+
 def test_builtin_catalog_has_stable_ids_and_complete_role_permission_rows() -> None:
     assert set(ROLE_NAMES) == {"guest", "student", "teacher", "developer"}
     assert role_id("student") == role_id("student")

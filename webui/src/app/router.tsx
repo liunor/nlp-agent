@@ -1,5 +1,5 @@
-import { lazy } from "react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { lazy, useState } from "react";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
 
 import { AppShell } from "./layouts/AppShell";
 import { NotFoundPage } from "./NotFoundPage";
@@ -11,19 +11,28 @@ const TeacherRoutes = lazy(() => import("@/modules/teacher").then(({ TeacherRout
 const DeveloperRoutes = lazy(() => import("@/modules/developer").then(({ DeveloperRoutes: route }) => ({ default: route })));
 const AdminRoutes = lazy(() => import("@/modules/admin").then(({ AdminRoutes: route }) => ({ default: route })));
 
+function createAppRouter() {
+  return createBrowserRouter([
+    { path: "/login", element: <LoginPage /> },
+    {
+      element: <AuthGate><AppShell /></AuthGate>,
+      children: [
+        { index: true, element: <StudentRoutes /> },
+        { path: "teacher/*", element: <TeacherRoutes /> },
+        { path: "developer/*", element: <DeveloperRoutes /> },
+        { path: "admin/*", element: <AdminRoutes /> },
+        { path: "*", element: <NotFoundPage /> },
+      ],
+    },
+  ]);
+}
+
+// Exported for tests that need a fresh instance per render.
+export const router = createAppRouter();
+
 export function AppRouter() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route element={<AuthGate><AppShell /></AuthGate>}>
-          <Route index element={<StudentRoutes />} />
-          <Route path="teacher/*" element={<TeacherRoutes />} />
-          <Route path="developer/*" element={<DeveloperRoutes />} />
-          <Route path="admin/*" element={<AdminRoutes />} />
-          <Route path="*" element={<NotFoundPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  );
+  // Create a fresh router per App mount so tests that pushState before render
+  // see the expected initial location (createBrowserRouter reads window.location at creation).
+  const [routerInstance] = useState(() => createAppRouter());
+  return <RouterProvider router={routerInstance} />;
 }

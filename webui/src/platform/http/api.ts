@@ -15,6 +15,10 @@ export class ApiError extends Error {
 
 let csrfToken = "";
 
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
@@ -128,10 +132,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(settings),
     }),
-  submitFeedback: (body: string, category?: FeedbackCategory) => request<{ thread_id: string; remaining?: number; daily_limit?: number }>("/feedback", { method: "POST", body: JSON.stringify({ body, category }) }),
-  getFeedbackDailyState: () => request<FeedbackDailyState>("/feedback/daily-state"),
-  getOwnFeedback: () => request<FeedbackThread & { thread_id: string | null } >("/feedback"),
-  listFeedback: (params?: { limit?: number; offset?: number; q?: string; status?: FeedbackStatus | ""; category?: FeedbackCategory | ""; priority?: FeedbackPriority | ""; sort?: string }) => {
+  submitFeedback: (body: string, category?: FeedbackCategory, opts?: { signal?: AbortSignal }) => request<{ thread_id: string; remaining?: number; daily_limit?: number }>("/feedback", { method: "POST", body: JSON.stringify({ body, category }), signal: opts?.signal }),
+  getFeedbackDailyState: (opts?: { signal?: AbortSignal }) => request<FeedbackDailyState>("/feedback/daily-state", { signal: opts?.signal }),
+  getOwnFeedback: (opts?: { signal?: AbortSignal }) => request<FeedbackThread & { thread_id: string | null } >("/feedback", { signal: opts?.signal }),
+  listFeedback: (params?: { limit?: number; offset?: number; q?: string; status?: FeedbackStatus | ""; category?: FeedbackCategory | ""; priority?: FeedbackPriority | ""; sort?: string }, opts?: { signal?: AbortSignal }) => {
     const query = new URLSearchParams();
     if (params?.limit != null) query.set("limit", String(params.limit));
     if (params?.offset != null) query.set("offset", String(params.offset));
@@ -141,13 +145,13 @@ export const api = {
     if (params?.priority) query.set("priority", params.priority);
     if (params?.sort) query.set("sort", params.sort);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    return request<FeedbackThreadList>(`/developer/feedback${suffix}`);
+    return request<FeedbackThreadList>(`/developer/feedback${suffix}`, { signal: opts?.signal });
   },
-  getFeedback: (threadId: string) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`),
-  markFeedbackRead: (threadId: string, messageId: string) => request<{ ok: boolean }>(`/developer/feedback/${encodeURIComponent(threadId)}/read`, { method: "POST", body: JSON.stringify({ read_through_message_id: messageId }) }),
-  deleteFeedback: (threadId: string) => request<void>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "DELETE" }),
-  updateFeedback: (threadId: string, patch: { status?: FeedbackStatus; category?: FeedbackCategory; priority?: FeedbackPriority }) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  replyFeedback: (threadId: string, body: string) => request<{ thread_id: string; message: { id: string } }>(`/developer/feedback/${encodeURIComponent(threadId)}/reply`, { method: "POST", body: JSON.stringify({ body }) }),
+  getFeedback: (threadId: string, opts?: { signal?: AbortSignal }) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`, { signal: opts?.signal }),
+  markFeedbackRead: (threadId: string, messageId: string, opts?: { signal?: AbortSignal }) => request<{ ok: boolean }>(`/developer/feedback/${encodeURIComponent(threadId)}/read`, { method: "POST", body: JSON.stringify({ read_through_message_id: messageId }), signal: opts?.signal }),
+  deleteFeedback: (threadId: string, opts?: { signal?: AbortSignal }) => request<void>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "DELETE", signal: opts?.signal }),
+  updateFeedback: (threadId: string, patch: { status?: FeedbackStatus; category?: FeedbackCategory; priority?: FeedbackPriority }, opts?: { signal?: AbortSignal }) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "PATCH", body: JSON.stringify(patch), signal: opts?.signal }),
+  replyFeedback: (threadId: string, body: string, opts?: { signal?: AbortSignal }) => request<{ thread_id: string; message: { id: string } }>(`/developer/feedback/${encodeURIComponent(threadId)}/reply`, { method: "POST", body: JSON.stringify({ body }), signal: opts?.signal }),
   getDeveloperSnapshot: () => request<DeveloperSnapshot>("/developer/snapshot"),
   updateToolPolicies: (policies: Record<string, unknown>) =>
     request<Record<string, unknown>>("/developer/tools/policies", { method: "PUT", body: JSON.stringify({ policies }) }),

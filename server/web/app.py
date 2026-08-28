@@ -1155,7 +1155,9 @@ def create_app(
 
     @app.delete("/api/v1/developer/feedback/{thread_id}", tags=["developer"])
     async def delete_feedback(thread_id: str, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.LEARNING_FEEDBACK_WRITE)
+        authorization_service.require_resource(
+            principal, Permission.LEARNING_FEEDBACK_WRITE, ResourceRef("feedback")
+        )
         session_factory = request.app.state.gateway.authorization_session_factory
         async with session_factory() as session:
             async with session.begin():

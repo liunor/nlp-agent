@@ -1,11 +1,14 @@
 import { render, screen } from "@testing-library/react";
 
-vi.mock("@/platform/http/api", () => ({
-  ensureAuth: vi.fn().mockResolvedValue({
-    roles: ["admin", "teacher"],
-    workspace_ids: ["default"],
-  }),
-  api: {
+vi.mock("@/platform/http/api", async (importOriginal) => {
+  const actual = await importOriginal() as typeof import("@/platform/http/api");
+  return {
+    ...actual,
+    ensureAuth: vi.fn().mockResolvedValue({
+      roles: ["admin", "teacher"],
+      workspace_ids: ["default"],
+    }),
+    api: {
     getSettings: vi.fn().mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } }),
     getTeacherOverview: vi.fn().mockResolvedValue({
       workspace_id: "default",
@@ -26,8 +29,9 @@ vi.mock("@/platform/http/api", () => ({
         guided_blueprints: [],
       },
     }),
-  },
-}));
+    },
+  };
+});
 
 import { App } from "./App";
 

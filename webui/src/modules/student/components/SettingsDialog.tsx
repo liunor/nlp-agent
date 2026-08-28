@@ -2,7 +2,7 @@ import { BadgeInfo, BookOpenCheck, ChevronRight, CircleHelp, Clock3, Database, G
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { api } from "@/platform/http/api";
+import { ApiError, api } from "@/platform/http/api";
 import type { FeedbackCategory, LearningContext, ReleaseNoteEntry, UserSettings } from "@/shared/types";
 import type { FeedbackThread } from "@/shared/types";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
@@ -50,6 +50,8 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   const [feedbackDaily, setFeedbackDaily] = useState<{ used: number; remaining: number; limit: number } | null>(null);
   const [feedbackHistory, setFeedbackHistory] = useState<FeedbackThread | null>(null);
   const [feedbackHistoryError, setFeedbackHistoryError] = useState("");
+  const [feedbackDailyError, setFeedbackDailyError] = useState("");
+  const [feedbackHistoryLoading, setFeedbackHistoryLoading] = useState(false);
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNoteEntry[] | null>(null);
   const [releaseNotesError, setReleaseNotesError] = useState(false);
   const [releaseNotesAttempt, setReleaseNotesAttempt] = useState(0);
@@ -68,13 +70,60 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   }, [open, section, releaseNotes, releaseNotesAttempt]);
   useEffect(() => {
     if (!open || section !== "feedback" || !canSubmitFeedback) return;
-    void api.getFeedbackDailyState().then(setFeedbackDaily).catch(() => setFeedbackDaily(null));
+    void api.getFeedbackDailyState().then((daily) => { setFeedbackDaily(daily); setFeedbackDailyError(""); }).catch((e) => setFeedbackDailyError(e instanceof Error ? e.message : String(e)));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- feedback history loading is synced to section open
+    setFeedbackHistoryLoading(true);
     void api.getOwnFeedback().then((thread) => {
       if (thread.thread_id) setFeedbackHistory(thread as FeedbackThread);
       else setFeedbackHistory(null);
       setFeedbackHistoryError("");
-    }).catch((e) => setFeedbackHistoryError(e instanceof Error ? e.message : String(e)));
+    }).catch((e) => setFeedbackHistoryError(e instanceof Error ? e.message : String(e))).finally(() => setFeedbackHistoryLoading(false));
   }, [open, section, canSubmitFeedback]);
+  const handleSubmitFeedback = async () => {
+    const content = feedback.trim();
+    if (!content) return;
+    setFeedbackSubmitting(true);
+    setFeedbackError("");
+    try {
+      const res = await api.submitFeedback(content, feedbackCategory);
+      try { saveFeedback(content, userId); } catch { /* Server already succeeded */ }
+      setFeedbackSubmitted(true);
+      setFeedback("");
+      if (res && typeof res.remaining === "number") {
+        setFeedbackDaily((prev) => prev ? { ...prev, remaining: res.remaining as number, used: prev.limit - (res.remaining as number) } : prev);
+        setFeedbackDailyError("");
+      } else {
+        try {
+          const daily = await api.getFeedbackDailyState();
+          setFeedbackDaily(daily);
+          setFeedbackDailyError("");
+        } catch (e) {
+          setFeedbackDailyError(e instanceof Error ? e.message : String(e));
+        }
+      }
+      try {
+        setFeedbackHistoryLoading(true);
+        const t = await api.getOwnFeedback();
+        if (t.thread_id) setFeedbackHistory(t as FeedbackThread);
+        else setFeedbackHistory(null);
+        setFeedbackHistoryError("");
+      } catch (e) {
+        setFeedbackHistoryError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setFeedbackHistoryLoading(false);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const code = error instanceof ApiError ? error.code : (error as { code?: string })?.code;
+      if (code === "feedback_daily_limit" || msg.includes("每天最多")) {
+        setFeedbackDaily((prev) => prev ? { ...prev, remaining: 0, used: prev.limit } : { used: 3, remaining: 0, limit: 3 });
+        setFeedbackDailyError("");
+      }
+      setFeedbackError(msg);
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  };
   if (!open) return null;
   const updateLearning = (patch: Partial<LearningContext>) => onLearningContextChange({ ...learningContext, ...patch });
 
@@ -188,31 +237,12 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
                   <textarea value={feedback} maxLength={2000} placeholder="例如：我希望在学习记录中增加错题复习计划……" onChange={(event) => { setFeedback(event.target.value); setFeedbackSubmitted(false); setFeedbackError(""); }} disabled={feedbackDaily !== null && feedbackDaily.remaining <= 0} />
                   <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
                     <small>{feedback.length}/2000 {feedbackDaily && <span style={{ marginLeft: 8, color: feedbackDaily.remaining <= 0 ? "#ef4444" : "#6b7280" }}>今日剩余 {feedbackDaily.remaining}/{feedbackDaily.limit}</span>}</small>
-                    <button className="settings-primary-button" type="button" disabled={!feedback.trim() || feedbackSubmitting || (feedbackDaily !== null && feedbackDaily.remaining <= 0)} onClick={() => {
-                      const content = feedback.trim();
-                      setFeedbackSubmitting(true);
-                      setFeedbackError("");
-                      void api.submitFeedback(content, feedbackCategory).then((res) => {
-                        try { saveFeedback(content, userId); } catch { /* Server already succeeded */ }
-                        setFeedbackSubmitted(true);
-                        setFeedback("");
-                        if (res && typeof res.remaining === "number") setFeedbackDaily((prev) => prev ? { ...prev, remaining: res.remaining as number, used: (prev.limit - (res.remaining as number)) } : prev);
-                        else {
-                          void api.getFeedbackDailyState().then(setFeedbackDaily).catch(() => {});
-                        }
-                        void api.getOwnFeedback().then((t) => {
-                          if (t.thread_id) setFeedbackHistory(t as FeedbackThread);
-                        }).catch(() => {});
-                      }).catch((error) => {
-                        const msg = error instanceof Error ? error.message : String(error);
-                        const code = (error as unknown as { code?: string })?.code;
-                        if (code === "feedback_daily_limit" || msg.includes("每天最多")) setFeedbackDaily((prev) => prev ? { ...prev, remaining: 0, used: prev.limit } : { used: 3, remaining: 0, limit: 3 });
-                        setFeedbackError(msg);
-                      }).finally(() => setFeedbackSubmitting(false));
-                    }}>{feedbackSubmitting ? "发送中…" : feedbackDaily !== null && feedbackDaily.remaining <= 0 ? "今日已达上限" : "发布意见"}</button>
+                    <button className="settings-primary-button" type="button" disabled={!feedback.trim() || feedbackSubmitting || (feedbackDaily !== null && feedbackDaily.remaining <= 0)} onClick={handleSubmitFeedback}>{feedbackSubmitting ? "发送中…" : feedbackDaily !== null && feedbackDaily.remaining <= 0 ? "今日已达上限" : "发布意见"}</button>
                   </div>
+                  {feedbackDailyError && <p className="error-card" role="alert">刷新配额失败：{feedbackDailyError}</p>}
                   {feedbackDaily !== null && feedbackDaily.remaining <= 0 && <p className="settings-note" style={{ color: "#b45309", background: "#fffbeb", borderColor: "#fde68a" }}>今日已发送 {feedbackDaily.used}/{feedbackDaily.limit} 条，明天 0 点后可继续提交。</p>}
                   {feedbackSubmitted && <p className="feedback-success">意见已发送到开发者工作台。</p>}
+                  {feedbackHistoryLoading && <p className="settings-note">正在同步历史反馈…</p>}
                   {feedbackError && <p className="error-card" role="alert">发送失败：{feedbackError}</p>}
                 </div>
               </SettingGroup>

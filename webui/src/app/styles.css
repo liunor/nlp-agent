@@ -996,3 +996,24 @@ button { color: inherit; }
     width: 100%;
   }
 }
+
+/* Teacher markdown editor with live preview */
+.teacher-markdown-field { display: grid; gap: 8px; }
+.teacher-markdown-field-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.teacher-markdown-field-header span { color: #454857; font-size: 12px; font-weight: 600; }
+.teacher-markdown-tabs { display: flex; gap: 6px; }
+.teacher-markdown-tabs button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid var(--teacher-border); border-radius: 7px; background: #fff; color: #4b4e5d; font-size: 11px; font-weight: 600; cursor: pointer; transition: background 0.18s, color 0.18s, border-color 0.18s; }
+.teacher-markdown-tabs button.active { background: var(--teacher-accent); border-color: var(--teacher-accent); color: #fff; }
+.teacher-markdown-tabs button:hover:not(.active) { background: #f6f4ff; border-color: #aba3e4; color: #5547b6; }
+.teacher-markdown-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.teacher-markdown-split.mode-edit { grid-template-columns: 1fr; }
+.teacher-markdown-split.mode-preview { grid-template-columns: 1fr; }
+.teacher-markdown-split textarea { min-height: 140px; width: 100%; padding: 10px 11px; border: 1px solid var(--teacher-border); border-radius: 8px; background: #fff; color: #272938; font: 13px/1.6 "Segoe UI", sans-serif; resize: vertical; }
+.teacher-markdown-split textarea:focus { border-color: var(--teacher-accent); box-shadow: 0 0 0 3px rgb(103 88 201 / 14%); outline: none; }
+.teacher-markdown-preview { min-height: 140px; max-height: 420px; overflow-y: auto; padding: 12px 14px; border: 1px solid var(--teacher-border); border-radius: 8px; background: #fbfbfd; }
+.teacher-markdown-preview .markdown-content { font-size: 13px; line-height: 1.7; }
+.teacher-markdown-preview .markdown-content .katex { font-size: 1em; }
+.teacher-markdown-preview-empty { color: var(--teacher-muted); font-size: 12px; font-style: italic; }
+@media (max-width: 780px) {
+  .teacher-markdown-split { grid-template-columns: 1fr; }
+}

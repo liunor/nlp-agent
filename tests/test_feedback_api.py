@@ -268,7 +268,8 @@ def test_guest_cannot_read_feedback_list(developer_app):
 def test_feedback_endpoints_require_system_scope(developer_app, monkeypatch):
     import server.web.app as web_app_module
 
-    async def fake_for_username(session, username):
+    # READ-scoped principal must be rejected on READ endpoints
+    async def fake_read_own_for_username(session, username):
         return AuthenticatedPrincipal(
             user_id=username,
             roles=frozenset({"custom-feedback-reader"}),
@@ -276,11 +277,11 @@ def test_feedback_endpoints_require_system_scope(developer_app, monkeypatch):
             permission_scopes={Permission.LEARNING_FEEDBACK_READ.value: frozenset({"own"})},
         )
 
-    async def fake_for_user_id(session, user_id):
-        return await fake_for_username(session, user_id)
+    async def fake_read_own_for_user_id(session, user_id):
+        return await fake_read_own_for_username(session, user_id)
 
-    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_username", fake_for_username)
-    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_user_id", fake_for_user_id)
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_username", fake_read_own_for_username)
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_user_id", fake_read_own_for_user_id)
 
     with TestClient(developer_app) as client:
         csrf = authenticate(client)
@@ -291,6 +292,28 @@ def test_feedback_endpoints_require_system_scope(developer_app, monkeypatch):
             json={"read_through_message_id": "m-1"},
             headers=write_headers(csrf),
         )
+
+    assert listing.status_code == 403
+    assert detail.status_code == 403
+    assert marked.status_code == 403
+
+    # WRITE-scoped principal must be rejected on WRITE endpoints (delete/patch/reply)
+    async def fake_write_own_for_username(session, username):
+        return AuthenticatedPrincipal(
+            user_id=username,
+            roles=frozenset({"custom-feedback-writer"}),
+            permissions=frozenset({Permission.LEARNING_FEEDBACK_WRITE.value}),
+            permission_scopes={Permission.LEARNING_FEEDBACK_WRITE.value: frozenset({"own"})},
+        )
+
+    async def fake_write_own_for_user_id(session, user_id):
+        return await fake_write_own_for_username(session, user_id)
+
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_username", fake_write_own_for_username)
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_user_id", fake_write_own_for_user_id)
+
+    with TestClient(developer_app) as client:
+        csrf = authenticate(client)
         deleted = client.delete(
             "/api/v1/developer/feedback/thread-1", headers=write_headers(csrf)
         )
@@ -305,12 +328,73 @@ def test_feedback_endpoints_require_system_scope(developer_app, monkeypatch):
             headers=write_headers(csrf),
         )
 
-    assert listing.status_code == 403
-    assert detail.status_code == 403
-    assert marked.status_code == 403
     assert deleted.status_code == 403
     assert patched.status_code == 403
     assert replied.status_code == 403
+
+
+def test_delete_feedback_requires_system_scope(developer_app, monkeypatch):
+    """Non-system WRITE scope must not delete arbitrary feedback (regression for P0-1)."""
+    import server.web.app as web_app_module
+
+    async def fake_write_own_for_username(session, username):
+        return AuthenticatedPrincipal(
+            user_id=username,
+            roles=frozenset({"custom-feedback-writer"}),
+            permissions=frozenset({Permission.LEARNING_FEEDBACK_WRITE.value}),
+            permission_scopes={Permission.LEARNING_FEEDBACK_WRITE.value: frozenset({"own"})},
+        )
+
+    async def fake_write_own_for_user_id(session, user_id):
+        return await fake_write_own_for_username(session, user_id)
+
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_username", fake_write_own_for_username)
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_user_id", fake_write_own_for_user_id)
+
+    async def must_not_reach_service(session, thread_id):  # pragma: no cover
+        raise AssertionError("delete_feedback_thread must not be called for non-system scope")
+
+    monkeypatch.setattr(web_app_module, "delete_feedback_thread", must_not_reach_service)
+
+    with TestClient(developer_app) as client:
+        csrf = authenticate(client)
+        response = client.delete(
+            "/api/v1/developer/feedback/thread-1", headers=write_headers(csrf)
+        )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "forbidden"
+
+    # System-scoped WRITE must succeed (service is reached)
+    async def fake_write_system_for_username(session, username):
+        return AuthenticatedPrincipal(
+            user_id=username,
+            roles=frozenset({"custom-feedback-writer"}),
+            permissions=frozenset({Permission.LEARNING_FEEDBACK_WRITE.value}),
+            permission_scopes={Permission.LEARNING_FEEDBACK_WRITE.value: frozenset({"system"})},
+        )
+
+    async def fake_write_system_for_user_id(session, user_id):
+        return await fake_write_system_for_username(session, user_id)
+
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_username", fake_write_system_for_username)
+    monkeypatch.setattr(web_app_module.rbac_service, "principal_for_user_id", fake_write_system_for_user_id)
+
+    called: dict[str, str] = {}
+
+    async def fake_delete_ok(session, thread_id):
+        called["thread_id"] = thread_id
+
+    monkeypatch.setattr(web_app_module, "delete_feedback_thread", fake_delete_ok)
+
+    with TestClient(developer_app) as client:
+        csrf = authenticate(client)
+        response = client.delete(
+            "/api/v1/developer/feedback/thread-1", headers=write_headers(csrf)
+        )
+
+    assert response.status_code == 204
+    assert called["thread_id"] == "thread-1"
 
 
 def test_list_feedback_defaults_are_forwarded(developer_app, monkeypatch):

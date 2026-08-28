@@ -7,7 +7,9 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ensureAuth } from "@/platform/http/api";
-import type { DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
+import type { DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
+
+const isAbortError = (error: unknown): boolean => error instanceof DOMException && error.name === "AbortError";
 import { UserManagementPage } from "@/modules/admin/UserManagementPage";
 import { RoleManagementPageV2 } from "@/modules/admin/RoleManagementPageV2";
 import { MenuManagementPageV2 } from "@/modules/admin/MenuManagementPageV2";
@@ -213,6 +215,9 @@ export function Feedback({
   const [replySending, setReplySending] = useState(false);
   const [patchError, setPatchError] = useState("");
   const [patching, setPatching] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const detailSeqRef = useRef(0);
+  const detailAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const trimmed = searchInput.trim();
@@ -221,27 +226,43 @@ export function Feedback({
     return () => window.clearTimeout(timer);
   }, [searchInput, search, onSearchChange]);
   useEffect(() => {
-    if (!selectedId) return undefined;
-    let active = true;
-    void api.getFeedback(selectedId).then(async (value) => {
-      if (!active) return;
+    if (!selectedId) {
+      detailAbortRef.current?.abort();
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- detail loading flag is synced to selectedId transition
+      setDetailLoading(false);
+      return undefined;
+    }
+    const seq = ++detailSeqRef.current;
+    detailAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    detailAbortRef.current = ctrl;
+    setDetailLoading(true);
+    void api.getFeedback(selectedId, { signal: ctrl.signal }).then(async (value) => {
+      if (seq !== detailSeqRef.current || ctrl.signal.aborted) return;
       setError((current) => current?.threadId === selectedId ? null : current);
       setDetail({ threadId: selectedId, thread: value });
+      setDetailLoading(false);
       setReplyText("");
       setReplyError("");
       setPatchError("");
       const lastMessage = value.messages[value.messages.length - 1];
       if (!lastMessage) return;
       try {
-        await api.markFeedbackRead(selectedId, lastMessage.id);
-        if (active) await refresh();
+        await api.markFeedbackRead(selectedId, lastMessage.id, { signal: ctrl.signal });
+        if (seq !== detailSeqRef.current || ctrl.signal.aborted) return;
+        await refresh();
       } catch (reason) {
-        if (active) setError({ threadId: selectedId, message: reason instanceof Error ? reason.message : String(reason) });
+        if (isAbortError(reason)) return;
+        if (seq === detailSeqRef.current) setError({ threadId: selectedId, message: reason instanceof Error ? reason.message : String(reason) });
       }
     }).catch((reason) => {
-      if (active) setError({ threadId: selectedId, message: reason instanceof Error ? reason.message : String(reason) });
+      if (isAbortError(reason)) return;
+      if (seq === detailSeqRef.current) {
+        setDetailLoading(false);
+        setError({ threadId: selectedId, message: reason instanceof Error ? reason.message : String(reason) });
+      }
     });
-    return () => { active = false; };
+    return () => { ctrl.abort(); };
   }, [detailRetryNonce, refresh, selectedId]);
   const selected = threads.find((item) => item.thread_id === selectedId);
   const activeThread = detail?.threadId === selectedId ? detail.thread : null;
@@ -274,20 +295,22 @@ export function Feedback({
       setDetail({ threadId: activeThread.thread_id, thread: fresh });
       await refresh();
     } catch (reason) {
+      if (isAbortError(reason)) return;
       setReplyError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setReplySending(false);
     }
   };
-  const handlePatch = async (patch: { status?: string; category?: string; priority?: string }) => {
+  const handlePatch = async (patch: { status?: FeedbackStatus; category?: FeedbackCategory; priority?: FeedbackPriority }) => {
     if (!activeThread) return;
     setPatching(true);
     setPatchError("");
     try {
-      const updated = await api.updateFeedback(activeThread.thread_id, patch as never);
-      setDetail((prev) => prev ? { threadId: prev.threadId, thread: { ...prev.thread, status: (updated as unknown as FeedbackThread).status ?? prev.thread.status, category: (updated as unknown as FeedbackThread).category ?? prev.thread.category, priority: (updated as unknown as FeedbackThread).priority ?? prev.thread.priority } } : prev);
+      const updated = await api.updateFeedback(activeThread.thread_id, patch);
+      setDetail((prev) => prev ? { threadId: prev.threadId, thread: { ...prev.thread, status: updated.status ?? prev.thread.status, category: updated.category ?? prev.thread.category, priority: updated.priority ?? prev.thread.priority } } : prev);
       await refresh();
     } catch (reason) {
+      if (isAbortError(reason)) return;
       setPatchError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setPatching(false);
@@ -333,10 +356,10 @@ export function Feedback({
           {threads.map((item) => {
             const name = item.display_name || item.username;
             const isActive = item.thread_id === selectedId;
-            const stColor = statusColor((item as unknown as { status?: string }).status || "open");
-            const cat = categoryLabel((item as unknown as { category?: string }).category || "other");
-            const st = statusLabel((item as unknown as { status?: string }).status || "open");
-            const pri = priorityMeta((item as unknown as { priority?: string }).priority || "medium");
+            const stColor = statusColor((item.status as string) || "open");
+            const cat = categoryLabel((item.category as string) || "other");
+            const st = statusLabel((item.status as string) || "open");
+            const pri = priorityMeta((item.priority as string) || "medium");
             return (
               <div key={item.thread_id} className={`developer-feedback-row ${isActive ? "active" : ""}`}>
                 <button type="button" className="developer-feedback-row-main" onClick={() => onSelect(item.thread_id)} aria-label={`查看 ${name} 的反馈`}>
@@ -365,7 +388,7 @@ export function Feedback({
       </div>
       <div className="developer-feedback-detail">
         {activeError && <div className="developer-feedback-error"><p>读取失败：{activeError}</p><button type="button" onClick={() => setDetailRetryNonce((nonce) => nonce + 1)}>重试读取反馈</button></div>}
-        {selected && activeThread ? <>
+        {detailLoading && selected && !activeThread && !activeError ? <div className="developer-feedback-detail-empty"><RefreshCw className="spin" /><strong>正在读取反馈…</strong><p>正在加载对话详情</p></div> : selected && activeThread ? <>
           <div className="developer-feedback-detail-head">
             <div className="developer-feedback-detail-identity">
               <span className="developer-feedback-avatar large" aria-hidden>{getInitial(activeThread.display_name || selected.username)}</span>
@@ -380,13 +403,13 @@ export function Feedback({
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <select value={activeThread.status} onChange={(e) => void handlePatch({ status: e.target.value })} disabled={patching} aria-label="修改状态" className="developer-feedback-select small">
+              <select value={activeThread.status} onChange={(e) => void handlePatch({ status: e.target.value as FeedbackStatus })} disabled={patching} aria-label="修改状态" className="developer-feedback-select small">
                 {FEEDBACK_STATUS_OPTIONS.filter((o) => o.value).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
-              <select value={activeThread.priority} onChange={(e) => void handlePatch({ priority: e.target.value })} disabled={patching} aria-label="修改优先级" className="developer-feedback-select small">
+              <select value={activeThread.priority} onChange={(e) => void handlePatch({ priority: e.target.value as FeedbackPriority })} disabled={patching} aria-label="修改优先级" className="developer-feedback-select small">
                 {FEEDBACK_PRIORITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}优先</option>)}
               </select>
-              <select value={activeThread.category} onChange={(e) => void handlePatch({ category: e.target.value })} disabled={patching} aria-label="修改分类" className="developer-feedback-select small">
+              <select value={activeThread.category} onChange={(e) => void handlePatch({ category: e.target.value as FeedbackCategory })} disabled={patching} aria-label="修改分类" className="developer-feedback-select small">
                 {FEEDBACK_CATEGORY_OPTIONS.filter((o) => o.value).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
               {onDelete && <button type="button" className="danger" disabled={deletingId === selected.thread_id} onClick={() => void handleDelete(selected.thread_id)}>
@@ -543,11 +566,29 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const updateFeedbackThreads = useCallback((items: FeedbackThreadSummary[]) => {
     setFeedbackThreads(items);
   }, []);
+  const feedbackListSeqRef = useRef(0);
+  const feedbackListAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { feedbackListAbortRef.current?.abort(); }, []);
   const fetchFeedback = useCallback(async (nextOffset: number, nextSearch: string, nextStatus: string, nextCategory: string, nextPriority: string, nextSort: string) => {
+    const seq = ++feedbackListSeqRef.current;
+    feedbackListAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    feedbackListAbortRef.current = ctrl;
     setFeedbackLoading(true);
-    setFeedbackThreads([]);
     try {
-      const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: nextOffset, q: nextSearch || undefined, status: (nextStatus || undefined) as never, category: (nextCategory || undefined) as never, priority: (nextPriority || undefined) as never, sort: nextSort || undefined });
+      const result = await api.listFeedback(
+        {
+          limit: FEEDBACK_PAGE_SIZE,
+          offset: nextOffset,
+          q: nextSearch || undefined,
+          status: (nextStatus ? (nextStatus as FeedbackStatus) : undefined),
+          category: (nextCategory ? (nextCategory as FeedbackCategory) : undefined),
+          priority: (nextPriority ? (nextPriority as FeedbackPriority) : undefined),
+          sort: nextSort || undefined,
+        },
+        { signal: ctrl.signal },
+      );
+      if (seq !== feedbackListSeqRef.current || ctrl.signal.aborted) return;
       updateFeedbackThreads(result.items);
       setFeedbackTotal(result.total);
       setFeedbackLoadError("");
@@ -563,9 +604,11 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
       if (result.total === 0 && nextOffset !== 0) setFeedbackOffset(0);
     }
     catch (reason) {
+      if (isAbortError(reason)) return;
+      if (seq !== feedbackListSeqRef.current) return;
       setFeedbackLoadError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setFeedbackLoading(false);
+      if (seq === feedbackListSeqRef.current) setFeedbackLoading(false);
     }
   }, [updateFeedbackThreads]);
   const refreshFeedback = useCallback(async () => {
@@ -590,9 +633,17 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     const nextSort = feedbackSortRef.current;
     const nextOffset = feedbackOffsetRef.current;
     // Fetch with current paging; fetchFeedback will auto-correct offset if page became empty
-    const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: nextOffset, q: nextSearch || undefined, status: (nextStatus || undefined) as never, category: (nextCategory || undefined) as never, priority: (nextPriority || undefined) as never, sort: nextSort || undefined }).catch((reason) => {
-      throw reason;
-    });
+    const result = await api.listFeedback(
+      {
+        limit: FEEDBACK_PAGE_SIZE,
+        offset: nextOffset,
+        q: nextSearch || undefined,
+        status: (nextStatus ? (nextStatus as FeedbackStatus) : undefined),
+        category: (nextCategory ? (nextCategory as FeedbackCategory) : undefined),
+        priority: (nextPriority ? (nextPriority as FeedbackPriority) : undefined),
+        sort: nextSort || undefined,
+      },
+    );
     // Handle empty-page after delete: if we deleted the last item on this page, go back one page
     if (result.items.length === 0 && result.total > 0 && nextOffset > 0) {
       const corrected = Math.max(0, nextOffset - FEEDBACK_PAGE_SIZE);

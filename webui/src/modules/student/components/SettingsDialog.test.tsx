@@ -6,7 +6,10 @@ import { APP_VERSION } from "@/shared/version";
 import type { UserSettings } from "@/shared/types";
 
 const { listPublishedReleaseNotesMock, submitFeedbackMock, getFeedbackDailyStateMock, getOwnFeedbackMock } = vi.hoisted(() => ({ listPublishedReleaseNotesMock: vi.fn(), submitFeedbackMock: vi.fn(), getFeedbackDailyStateMock: vi.fn(), getOwnFeedbackMock: vi.fn() }));
-vi.mock("@/platform/http/api", () => ({ api: { listPublishedReleaseNotes: listPublishedReleaseNotesMock, submitFeedback: submitFeedbackMock, getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock } }));
+vi.mock("@/platform/http/api", async (importOriginal) => {
+  const actual = await importOriginal() as typeof import("@/platform/http/api");
+  return { ...actual, api: { ...actual.api, listPublishedReleaseNotes: listPublishedReleaseNotesMock, submitFeedback: submitFeedbackMock, getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock } };
+});
 
 const settings: UserSettings = {
   theme: "system",

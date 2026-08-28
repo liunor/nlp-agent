@@ -146,7 +146,7 @@ describe("Developer feedback list", () => {
     fireEvent.click(screen.getByText("alice"));
     await act(async () => { await Promise.resolve(); });
 
-    expect(getFeedbackMock).toHaveBeenCalledWith("t1");
+    expect(getFeedbackMock.mock.calls[0][0]).toBe("t1");
     expect(screen.getByText("读取失败：boom")).toBeVisible();
   });
 
