@@ -1,7 +1,9 @@
-"""Self-hosted image CAPTCHA generation and verification.
+"""Self-hosted image CAPTCHA generation.
 
 Generates distorted text images to prevent automated registration / SMS abuse.
-Each captcha is identified by a UUID and expires after a short TTL.
+Each captcha is identified by a UUID; the answer is stored in the shared
+``nlp_auth_codes`` table (see :mod:`server.auth.code_store`) so that
+verification works across multiple server instances.
 """
 
 from __future__ import annotations
@@ -9,29 +11,10 @@ from __future__ import annotations
 import base64
 import io
 import random
-import secrets
 import string
-import threading
-import time
 import uuid
 
 from PIL import Image, ImageDraw, ImageFont
-
-# ---------------------------------------------------------------------------
-#  In-memory captcha store
-# ---------------------------------------------------------------------------
-
-_CAPTCHA_TTL_S = 120  # 2 minutes
-_store: dict[str, tuple[str, float]] = {}  # captcha_id -> (code, expires_at)
-_lock = threading.Lock()
-
-
-def _cleanup_expired() -> None:
-    now = time.monotonic()
-    expired = [cid for cid, (_, exp) in _store.items() if exp <= now]
-    for cid in expired:
-        _store.pop(cid, None)
-
 
 # ---------------------------------------------------------------------------
 #  Image generation
@@ -50,19 +33,16 @@ def _random_color(low: int = 30, high: int = 150) -> tuple[int, int, int]:
     return (random.randint(low, high), random.randint(low, high), random.randint(low, high))
 
 
-def generate_captcha_image() -> tuple[str, str]:
-    """Generate a CAPTCHA image and return ``(captcha_id, base64_png)``.
+def generate_captcha_image() -> tuple[str, str, str]:
+    """Generate a CAPTCHA and return ``(captcha_id, base64_png, code)``.
 
-    The correct code is stored in memory and will be checked during
-    verification.
+    The caller is responsible for persisting *code* through
+    :func:`server.auth.code_store.put_code`; verification happens via
+    :func:`server.auth.code_store.consume_code`.  Nothing is kept in
+    process memory.
     """
-    _cleanup_expired()
-
     code = "".join(random.choices(_CHARS, k=4))
     captcha_id = uuid.uuid4().hex
-
-    with _lock:
-        _store[captcha_id] = (code, time.monotonic() + _CAPTCHA_TTL_S)
 
     # -- Render image -------------------------------------------------------
     img = Image.new("RGB", (_IMG_WIDTH, _IMG_HEIGHT), color=(245, 245, 245))
@@ -105,21 +85,4 @@ def generate_captcha_image() -> tuple[str, str]:
     img.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-    return captcha_id, f"data:image/png;base64,{b64}"
-
-
-def verify_captcha(captcha_id: str, code: str) -> bool:
-    """Check *code* against the stored answer for *captcha_id*.
-
-    The captcha is consumed (deleted) regardless of outcome to prevent replay.
-    Returns ``True`` when the code matches (case-insensitive).
-    """
-    with _lock:
-        entry = _store.pop(captcha_id, None)
-
-    if entry is None:
-        return False
-    stored_code, expires_at = entry
-    if time.monotonic() > expires_at:
-        return False
-    return secrets.compare_digest(stored_code.upper(), code.strip().upper())
+    return captcha_id, f"data:image/png;base64,{b64}", code

@@ -13,11 +13,23 @@ Required environment variables:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_phone_for_tencent(phone: str) -> str:
+    """Tencent Cloud requires E.164 numbers (``+8613800138000``).
+
+    Domestic numbers entered without a country code get ``+86`` prepended.
+    """
+    cleaned = "".join(ch for ch in phone.strip() if ch.isdigit() or ch == "+")
+    if cleaned.startswith("+"):
+        return cleaned
+    return f"+86{cleaned}"
 
 
 class TencentSmsProvider:
@@ -74,7 +86,7 @@ class TencentSmsProvider:
         """Send a verification code via Tencent Cloud SMS.
 
         Args:
-            phone: Recipient phone number (with country code, e.g., "+8613800138000")
+            phone: Recipient phone number (e.g., "13800138000" or "+86138...")
             code: Verification code to send
 
         Returns:
@@ -90,9 +102,10 @@ class TencentSmsProvider:
             req.TemplateId = self.template_id
             # Template parameters: [code]
             req.TemplateParamSet = [code]
-            req.PhoneNumberSet = [phone]
+            req.PhoneNumberSet = [normalize_phone_for_tencent(phone)]
 
-            resp = client.SendSms(req)
+            # 腾讯云 SDK 是同步 HTTP 调用，丢到线程池避免阻塞事件循环。
+            resp = await asyncio.to_thread(client.SendSms, req)
             send_status = resp.SendStatusSet[0]
 
             if send_status.Code == "Ok":

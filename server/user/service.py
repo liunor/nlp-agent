@@ -25,6 +25,7 @@ from server.infrastructure.mysql.models import (
     WorkspaceMemberModel,
     OutboxMessageModel,
 )
+from server.auth import code_store
 
 from .schemas import UserCreate, UserRegister, UserUpdate
 
@@ -203,14 +204,6 @@ class UserService:
             select(UserModel).where(
                 UserModel.username_lower == username.casefold(),
                 UserModel.deleted_at.is_(None),
-            )
-        )
-
-    async def get_user_by_username_or_phone(self, identifier: str) -> Optional[UserModel]:
-        """Get user by username or phone number (for login)."""
-        return await self.session.scalar(
-            select(UserModel).where(
-                (UserModel.username == identifier) | (UserModel.phone_number == identifier)
             )
         )
 
@@ -489,9 +482,11 @@ class UserService:
         if existing:
             raise PhoneNumberAlreadyUsedError("This phone number is already registered")
 
-        # 2. Verify SMS code (in-memory store — replace with Redis in production)
-        stored_code = _sms_code_store.pop(data.phone_number, None)
-        if stored_code is None or stored_code != data.sms_code:
+        # 2. Verify SMS code (shared ``nlp_auth_codes`` store; the 120s expiry
+        #    is enforced here at consumption time and the code is single-use).
+        if not await code_store.consume_code(
+            self.session, kind="sms", subject=data.phone_number.strip(), code=data.sms_code
+        ):
             raise InvalidSmsCodeError("Invalid or expired verification code")
 
         # 3. Generate username from phone number (alphanumeric only)
@@ -523,68 +518,20 @@ class UserService:
         await self.session.commit()  # Commit the transaction — without this, the async with block rolls back
         return user
 
-    async def replace_user_roles(
-        self,
-        user_id: str,
-        role_codes: list[str],
-        *,
-        actor_user_id: Optional[str] = None,
-    ) -> None:
-        """Replace all roles for a user with new roles.
-        
-        This is used by admins to upgrade users (e.g., student → teacher).
-        """
-        # Validate user exists
-        user = await self.session.scalar(
-            select(UserModel).where(UserModel.id == user_id)
-        )
-        if not user:
-            raise UserNotFoundError(f"User {user_id} not found")
-        
-        # Get target role IDs
-        roles = await self.session.scalars(
-            select(RoleModel).where(RoleModel.code.in_(role_codes))
-        )
-        role_map = {r.code: r.id for r in roles.all()}
-        
-        if len(role_map) != len(role_codes):
-            missing = set(role_codes) - set(role_map.keys())
-            raise ValueError(f"Unknown roles: {missing}")
-        
-        # Delete existing roles
-        await self.session.execute(
-            delete(UserRoleModel).where(UserRoleModel.user_id == user_id)
-        )
-        
-        # Add new roles
-        for code, role_id in role_map.items():
-            self.session.add(UserRoleModel(user_id=user_id, role_id=role_id))
-        
-        # Bump authorization version to invalidate cached permissions
-        user.authorization_version += 1
-        await self.session.flush()
-
 
 # ---------------------------------------------------------------------------
-# In-memory SMS code store (development only — use Redis in production)
+# SMS code generation
 # ---------------------------------------------------------------------------
-import time as _time  # noqa: E402
-
-_sms_code_store: dict[str, str] = {}
-_sms_code_timestamps: dict[str, float] = {}
-_SMS_CODE_TTL_S = 120  # 2 minutes
 
 
-def generate_sms_code(phone: str) -> str:
-    """Generate and store a 6-digit verification code."""
+def generate_sms_code() -> str:
+    """Generate a 6-digit verification code.
+
+    This is a pure random generator: persistence, the 120s expiry, single-use
+    semantics and server-side send-rate limits all live in
+    :mod:`server.auth.code_store` (shared ``nlp_auth_codes`` table), so codes
+    survive multi-instance deployments.
+    """
     import secrets
-    code = f"{secrets.randbelow(1_000_000):06d}"
-    _sms_code_store[phone] = code
-    _sms_code_timestamps[phone] = _time.monotonic()
-    # Expire old entries
-    now = _time.monotonic()
-    expired = [k for k, t in _sms_code_timestamps.items() if now - t > _SMS_CODE_TTL_S]
-    for k in expired:
-        _sms_code_store.pop(k, None)
-        _sms_code_timestamps.pop(k, None)
-    return code
+
+    return f"{secrets.randbelow(1_000_000):06d}"

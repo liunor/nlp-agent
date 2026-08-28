@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "structlog>=24.0",
+    "tencentcloud-sdk-python>=3.0",
     "uvicorn[standard]>=0.35",
     "beautifulsoup4>=4.12",
     "markdownify>=0.13",

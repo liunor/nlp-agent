@@ -23,6 +23,7 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_role_menus": "角色可见菜单的关联关系。",
     "nlp_workspaces": "租户或工作区的基本信息及状态。",
     "nlp_sessions": "登录会话、令牌摘要、CSRF 摘要及过期/撤销状态。",
+    "nlp_auth_codes": "图形/短信一次性验证码的哈希存储，含过期时间与发送频控记录。",
     "nlp_ws_tickets": "绑定登录会话的一次性 WebSocket 连接票据。",
     "nlp_teaching_goals": "工作区教学目标及其版本号。",
     "nlp_course_catalogs": "工作区课程目录的当前版本指针。",

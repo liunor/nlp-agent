@@ -1005,5 +1005,29 @@ class SandboxArtifactModel(Base):
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
 
 
+class AuthCodeModel(Base):
+    """Shared (DB-backed) store for one-time verification codes.
+
+    Replaces the previous in-process dicts so that captcha / SMS codes
+    survive multi-instance deployments: the instance that generates a code
+    and the instance that verifies it no longer need to be the same process.
+    ``client_ip`` is recorded to enable server-side send-rate limiting.
+    """
+
+    __tablename__ = "nlp_auth_codes"
+    __table_args__ = (
+        Index("ix_nlp_auth_codes_kind_subject", "kind", "subject"),
+        Index("ix_nlp_auth_codes_kind_ip_created", "kind", "client_ip", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    subject: Mapped[str] = mapped_column(String(64), nullable=False)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
 for _table_name, _table_comment in TABLE_COMMENTS.items():
     Base.metadata.tables[_table_name].comment = _table_comment

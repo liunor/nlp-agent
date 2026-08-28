@@ -107,9 +107,11 @@ from server.release_notes.service import (
 from server.web.websocket import WebSocketHub, websocket_endpoint
 from server.web.feedback import get_feedback_thread, list_feedback_threads, mark_feedback_read, submit_feedback
 from server.auth.dependencies import get_db_session
-from server.auth.captcha import generate_captcha_image, verify_captcha
+from server.auth import code_store
+from server.auth.captcha import generate_captcha_image
 from server.user.schemas import SmsCodeRequest, UserCreate, UserRegister
-from server.user.service import UserService, generate_sms_code, _sms_code_store
+from server.user.service import UserService, generate_sms_code
+from server.user.tencent_sms import create_tencent_sms_provider_from_env
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
@@ -175,13 +177,6 @@ def _public_runtime_settings() -> dict[str, Any]:
             "version": "1",
         },
     }
-
-
-def _with_admin_alias(roles: frozenset[str]) -> frozenset[str]:
-    """Developer role implies admin; expose an 'admin' alias for the browser."""
-    if "developer" in roles:
-        return roles | {"admin"}
-    return roles
 
 
 def create_app(
@@ -562,26 +557,72 @@ def create_app(
         )
 
     @app.get("/api/v1/auth/captcha", tags=["auth"])
-    async def get_captcha():
-        """Generate a CAPTCHA image for registration/SMS verification."""
-        captcha_id, image_data = generate_captcha_image()
+    async def get_captcha(db: DbSession):
+        """Generate a CAPTCHA image for registration/SMS verification.
+
+        The answer is persisted in ``nlp_auth_codes`` (shared across all
+        instances) with a short TTL; verification goes through
+        ``code_store.consume_code``.
+        """
+        captcha_id, image_data, code = generate_captcha_image()
+        await code_store.put_code(
+            db,
+            kind="captcha",
+            subject=captcha_id,
+            code=code,
+            ttl_s=code_store.CAPTCHA_TTL_S,
+        )
         return {"captcha_id": captcha_id, "image": image_data}
 
     @app.post("/api/v1/auth/sms/send", status_code=status.HTTP_200_OK, tags=["auth"])
-    async def send_sms_code(body: SmsCodeRequest):
+    async def send_sms_code(body: SmsCodeRequest, db: DbSession, request: Request):
         """Validate the image CAPTCHA, then issue an SMS verification code.
 
-        Development only: the code is stored in-memory (``_sms_code_store``) and
-        printed to the server console.  Production must integrate a real SMS
-        gateway (Aliyun / Tencent Cloud / Twilio) and back the store with Redis.
+        Server-side controls (the frontend 60s countdown is UX only):
+        - the CAPTCHA answer is consumed single-use from ``nlp_auth_codes``;
+        - per-phone cooldown / per-phone hourly / per-IP hourly send limits;
+        - real delivery via Tencent Cloud SMS when ``TENCENT_SMS_*`` env vars
+          are configured, otherwise the code is printed to the server console
+          (development fallback);
+        - the code is stored hashed with a hard 120s expiry enforced at
+          consumption time.
         """
-        if not verify_captcha(body.captcha_id, body.captcha_code):
+        await code_store.purge_expired(db)
+        if not await code_store.consume_code(
+            db, kind="captcha", subject=body.captcha_id, code=body.captcha_code
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired CAPTCHA",
             )
-        code = generate_sms_code(body.phone_number)
-        print(f"[SMS] Verification code for {body.phone_number}: {code}")
+        phone = body.phone_number.strip()
+        client_ip = request.client.host if request.client else None
+        allowed, reason = await code_store.sms_send_allowed(
+            db, phone=phone, client_ip=client_ip
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=reason
+            )
+        code = generate_sms_code()
+        provider = create_tencent_sms_provider_from_env()
+        if provider is not None:
+            if not await provider.send_verification_code(phone, code):
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="SMS gateway failed to deliver the code",
+                )
+        else:
+            # Development fallback: no Tencent Cloud credentials configured.
+            print(f"[SMS] Verification code for {phone}: {code}")
+        await code_store.put_code(
+            db,
+            kind="sms",
+            subject=phone,
+            code=code,
+            ttl_s=code_store.SMS_CODE_TTL_S,
+            client_ip=client_ip,
+        )
         return {"message": "SMS code sent successfully"}
 
     @app.post("/api/v1/auth/login", status_code=status.HTTP_200_OK, tags=["auth"])
@@ -669,15 +710,19 @@ def create_app(
         that ``database_auth.login`` (which matches on ``username_lower``) can
         authenticate the user with their phone number directly.
         """
-        # 1. Validate the image CAPTCHA.
-        if not verify_captcha(body.captcha_id, body.captcha_code):
+        # 1. Validate the image CAPTCHA (single-use, DB-backed, 120s TTL).
+        if not await code_store.consume_code(
+            db, kind="captcha", subject=body.captcha_id, code=body.captcha_code
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired CAPTCHA",
             )
-        # 2. Validate the SMS code issued by /auth/sms/send.
-        stored_code = _sms_code_store.pop(body.phone_number, None)
-        if stored_code is None or stored_code != body.sms_code:
+        # 2. Validate the SMS code issued by /auth/sms/send.  The 120s expiry
+        #    is enforced by code_store at consumption time.
+        if not await code_store.consume_code(
+            db, kind="sms", subject=body.phone_number.strip(), code=body.sms_code
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired SMS code",
@@ -717,83 +762,6 @@ def create_app(
             "user_id": user.id,
             "username": user.username,
             "display_name": user.display_name,
-        }
-
-    @app.post("/api/v1/auth/login/db", status_code=status.HTTP_200_OK, tags=["auth"])
-    async def login_db(body: LoginBody, request: Request, response: Response, db: DbSession):
-        """Multi-user login backed by ``nlp_users.password_hash``.
-
-        The session cookie, HMAC signature, claims shape, rate-limit budgets,
-        and CSRF/same-origin guards are identical to ``/api/v1/auth/login`` —
-        only the credential source differs: ``nlp_users.password_hash``
-        (argon2) instead of the env-var fixed credential.  After the session
-        is minted, ``resolve_principal`` re-loads roles/permissions from
-        MySQL, so every authenticated account behaves like nova.
-        """
-        from server.user.service import UserService  # local import: avoids startup cycle
-        from server.web.auth import AuthenticationError
-
-        auth.require_same_origin(request.headers.get("origin"), request.headers.get("host"))
-
-        username = body.username.strip()
-        client_key = request.client.host if request.client else "unknown"
-
-        # Apply rate-limit budget BEFORE the credential check so failed DB
-        # logins are accounted for identically to the env-credential login.
-        try:
-            auth.check_login_rate_limit(username, client_key)
-        except AuthenticationError:
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many login attempts")
-
-        # Look up the account by username or phone number.
-        user_service = UserService(db)
-        user = await user_service.get_user_by_username_or_phone(username)
-        if user is None or user.status != "active" or not user.password_hash:
-            auth.record_login_failure(username, client_key)
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
-
-        # Verify the supplied password against the stored argon2 hash.
-        if not await user_service.verify_password(user, body.password):
-            auth.record_login_failure(username, client_key)
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
-
-        # Issue a session that is byte-equivalent to the env-credential login.
-        # ``user_id`` is the DB UUID; workspace_ids/roles are intentionally
-        # empty here because ``resolve_principal`` re-populates them from
-        # MySQL on every authenticated request.
-        from core.identity import AuthenticatedPrincipal  # local import: same reason
-        principal = AuthenticatedPrincipal(
-            user_id=user.id,
-            workspace_ids=frozenset(),
-            roles=frozenset(),
-        )
-        token, claims = auth.login_external(
-            principal,
-            client_key=client_key,
-            previous_token=request.cookies.get(auth.cookie_name),
-        )
-        response.set_cookie(
-            auth.cookie_name,
-            token,
-            max_age=auth.ttl_s,
-            httponly=True,
-            secure=auth.secure,
-            samesite="strict",
-            path="/",
-        )
-        # Re-resolve so the response advertises the real DB roles/perms
-        # (incl. admin alias) — same shape as the env-credential login.
-        db_principal = await resolve_principal(request, claims)
-        roles = _with_admin_alias(db_principal.roles)
-        return {
-            "user_id": db_principal.user_id,
-            "workspace_ids": sorted(db_principal.workspace_ids),
-            "classroom_ids": sorted(db_principal.classroom_ids),
-            "roles": sorted(roles),
-            "permissions": sorted(db_principal.permissions),
-            "csrf_token": claims.csrf_token,
-            "expires_at": claims.expires_at,
-            "ephemeral_secret": auth.ephemeral_secret,
         }
 
     @app.post("/api/v1/auth/guest", status_code=status.HTTP_200_OK, tags=["auth"])

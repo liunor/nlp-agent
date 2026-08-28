@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
-from server.rbac.service import rbac_service
+from server.rbac.service import UnknownRoleError, rbac_service
 
 from server.auth.dependencies import Principal, WriteClaims, get_db_session
 
@@ -21,11 +21,10 @@ from .schemas import (
     PasswordChange,
     PasswordReset,
     UserAdminUpdate,
-    UserCreate,
+    UserCreateWithRole,
     UserListResponse,
     UserResponse,
     UserUpdate,
-    UserRoleUpdate,
 )
 from .service import (
     SelfDeleteForbiddenError,
@@ -87,7 +86,7 @@ async def list_users(
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
-    data: UserCreate,
+    data: UserCreateWithRole,
     db: DbSession,
     _write: WriteClaims,
     principal: Principal,
@@ -97,14 +96,31 @@ async def create_user(
     Creates the user together with a personal workspace and assigns the
     creator as the workspace owner. The password is hashed server-side and
     is never returned in the response (review §7.2).
+
+    ``role_codes`` is optional: without it the account keeps the default
+    least-privilege ``guest`` role; when supplied, the roles are assigned
+    through ``rbac_service.replace_user_roles`` so the full safety net
+    (audit trail, Outbox event, session/sandbox invalidation, last-developer
+    protection) applies.
     """
     authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
 
     service = UserService(db)
     try:
         user = await service.create_user(data, actor_user_id=principal.user_id)
+        if data.role_codes:
+            await rbac_service.replace_user_roles(
+                db,
+                user_id=user.id,
+                role_codes=set(data.role_codes),
+                assigned_by_user_id=principal.user_id,
+            )
     except UserAlreadyExistsError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except UnknownRoleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     # 高危账号操作写入审计事件
     await rbac_service.audit(
@@ -117,7 +133,7 @@ async def create_user(
         resource_type="user",
         resource_id=user.id,
     )
-    return UserResponse.model_validate(user)
+    return await _user_response_with_roles(service, user)
 
 
 @router.get("/me", response_model=UserResponse)
@@ -125,11 +141,15 @@ async def get_current_user(
     db: DbSession,
     principal: Principal,
 ):
-    """Get current user's profile."""
+    """Get current user's profile (including the real role codes).
+
+    Roles are loaded from ``nlp_user_roles`` — an empty list here would make
+    the frontend fall back to showing "游客", so it must reflect the DB.
+    """
     service = UserService(db)
     try:
         user = await service.get_user(principal.user_id)
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -296,36 +316,9 @@ async def enable_user(
         raise HTTPException(status_code=404, detail="User not found")
 
 
-@router.put("/{user_id}/roles", response_model=UserResponse)
-async def assign_user_roles(
-    user_id: str,
-    data: UserRoleUpdate,
-    db: DbSession,
-    _write: WriteClaims,
-    principal: Principal,
-):
-    """Assign/replace user roles (admin only).
-    
-    This allows admins to upgrade users from student to teacher,
-    or assign developer roles.
-    """
-    authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
-
-    service = UserService(db)
-    try:
-        # Validate that all role codes exist
-        for code in data.role_codes:
-            if code not in {"guest", "student", "teacher", "developer"}:
-                raise HTTPException(status_code=400, detail=f"Unknown role: {code}")
-        
-        # Replace user's roles
-        await service.replace_user_roles(user_id, data.role_codes, actor_user_id=principal.user_id)
-        
-        # Fetch updated user
-        user = await service.get_user(user_id)
-        return await _user_response_with_roles(service, user)
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
+# 角色分配统一由 ``PUT /api/v1/users/{user_id}/roles``（server/web/app.py 中的
+# rbac_service.replace_user_roles）提供：它包含审计、Outbox 事件、沙箱租约失效、
+# 以及"最后一个 developer"保护。此处不再注册同路径的简化版本，避免两套实现并存。
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

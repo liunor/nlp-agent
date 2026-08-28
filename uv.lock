@@ -1060,6 +1060,7 @@ dependencies = [
     { name = "redis" },
     { name = "sqlalchemy" },
     { name = "structlog" },
+    { name = "tencentcloud-sdk-python" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1100,6 +1101,7 @@ requires-dist = [
     { name = "redis", specifier = ">=5.0" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "structlog", specifier = ">=24.0" },
+    { name = "tencentcloud-sdk-python", specifier = ">=3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35" },
 ]
 
@@ -2450,6 +2452,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
+]
+
+[[package]]
+name = "tencentcloud-sdk-python"
+version = "3.1.166"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/b1/c71ab00ad9c25706aa5f5bb46ac36f8e1651f72f3c64717505c528dc6974/tencentcloud_sdk_python-3.1.166.tar.gz", hash = "sha256:83febb71ad87f85018d7bab17477a18e4865b8bf687fff4c6af2352351b6f99c", size = 16760200, upload-time = "2026-08-27T03:38:21.893Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/df/cfc3bd05fef954bbfa6d06bee0268f836e71639e1af7456ce36ba8bc177d/tencentcloud_sdk_python-3.1.166-py2.py3-none-any.whl", hash = "sha256:f2a1d1ee330ba3352a30a8dbf8bd30f2a5e9dfe1486956e8d9720f623f615131", size = 17686134, upload-time = "2026-08-27T03:38:07.869Z" },
 ]
 
 [[package]]
