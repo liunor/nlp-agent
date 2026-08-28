@@ -1,12 +1,25 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { useAuth } from "@/platform/auth/AuthContext";
 import { api } from "@/platform/http/api";
 
 type Tab = "login" | "register";
 
+function safeReturnPath(value: unknown): string {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return "/";
+  return value;
+}
+
 export function LoginPage() {
+  const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
   const [tab, setTab] = useState<Tab>("login");
+  const from = safeReturnPath((location.state as { from?: unknown } | null)?.from);
+
+  if (!isLoading && isAuthenticated) {
+    return <Navigate to={from} replace />;
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
@@ -19,7 +32,7 @@ export function LoginPage() {
         </div>
 
         {tab === "login" ? (
-          <LoginForm />
+          <LoginForm returnPath={from} />
         ) : (
           <RegisterForm onSuccess={() => setTab("login")} />
         )}
@@ -46,8 +59,9 @@ export function LoginPage() {
 // LoginForm
 // ---------------------------------------------------------------------------
 
-function LoginForm() {
+function LoginForm({ returnPath }: { returnPath: string }) {
   const { login, error, isLoading } = useAuth();
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -57,7 +71,7 @@ function LoginForm() {
     setSubmitting(true);
     try {
       await login(username, password);
-      window.location.href = "/";
+      navigate(returnPath, { replace: true });
     } catch {
       // error is set by AuthContext
     } finally {

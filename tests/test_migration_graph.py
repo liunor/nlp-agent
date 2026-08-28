@@ -11,7 +11,8 @@ from alembic.script import ScriptDirectory
 def test_migration_graph_has_one_head_after_knowledge_book_is_added() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260827_32_book_merge"]
+    assert scripts.get_heads() == ["20260828_33_user_phone"]
+    assert scripts.get_revision("20260828_33_user_phone").down_revision == "20260827_32_book_merge"
     assert scripts.get_revision("20260827_32_book_merge").down_revision == (
         "20260826_29",
         "20260827_31_book_assets",

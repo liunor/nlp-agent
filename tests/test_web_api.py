@@ -191,7 +191,8 @@ def test_guest_session_has_only_guest_capabilities(web_app):
 
         assert response.status_code == 200
         assert response.json()["roles"] == ["guest"]
-        assert client.get("/api/v1/sessions").status_code == 403
+        # guest 现在具备基础智能体能力，可以读写自己的会话。
+        assert client.get("/api/v1/sessions").status_code == 200
         assert client.get("/api/v1/developer/release-notes").status_code == 403
 
 

@@ -31,7 +31,12 @@ def test_guest_can_only_use_public_capabilities() -> None:
     assert authorization.allowed(
         principal("guest"), Permission.LEARNING_CONTENT_READ_PUBLIC
     )
-    assert not authorization.allowed(principal("guest"), Permission.AGENT_TURN_SUBMIT)
+    # guest 是"来试用智能体的人"：允许基础会话/对话能力。
+    assert authorization.allowed(principal("guest"), Permission.AGENT_TURN_SUBMIT)
+    # 但学习增强能力仍仅限 student 及以上。
+    assert not authorization.allowed(
+        principal("guest"), Permission.AGENT_CHECKPOINT_RESTORE
+    )
 
 
 def test_student_capabilities_include_guest_baseline_but_not_teacher_actions() -> None:
