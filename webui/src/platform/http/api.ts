@@ -1,4 +1,4 @@
-import type { AuthSession, AuthorizationAuditRecord, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SettingsRuntime, SystemMenu, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
 import type { FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
@@ -113,7 +113,14 @@ export const api = {
   replaySandboxEvents: (executionId: string, afterEventId?: string) => request<{ execution_id: string; events: Array<{ event_id: string; seq: number | string; type: string; payload: { text?: string } }> }>(`/sandbox/executions/${encodeURIComponent(executionId)}/events${afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : ""}`),
   getSandboxArtifactUrl: (artifactId: string) => request<{ url: string }>(`/sandbox/artifacts/${encodeURIComponent(artifactId)}/access`),
   createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
-  listSessions: () => request<{ items: SessionSummary[] }>("/sessions"),
+  listSessions: (params?: { limit?: number; offset?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.limit != null) query.set("limit", String(params.limit));
+    if (params?.offset != null) query.set("offset", String(params.offset));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return request<SessionListResponse>(`/sessions${suffix}`);
+  },
+  getSessionStats: () => request<AgentSessionStats>("/sessions/stats"),
   createSession: (workspaceId = "default") =>
     request<SessionSummary>("/sessions", {
       method: "POST",
@@ -228,7 +235,17 @@ export const api = {
   replaceRoleMenus: (roleCode: string, menu_ids: string[]) =>
     request<void>(`/system/roles/${encodeURIComponent(roleCode)}/menus`, { method: "PUT", body: JSON.stringify({ menu_ids }) }),
   listRoleMenus: (roleCode: string) => request<{ role_code: string; menu_ids: string[] }>(`/system/roles/${encodeURIComponent(roleCode)}/menus`),
-  listAuthorizationAudit: (limit = 100, actorUserId?: string) => request<{ items: AuthorizationAuditRecord[] }>(`/audit/authorization?limit=${limit}${actorUserId ? `&actor_user_id=${encodeURIComponent(actorUserId)}` : ""}`),
+  listAuthorizationAudit: (params?: { limit?: number; offset?: number; actorUserId?: string; decision?: string; reasonCode?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.limit != null) query.set("limit", String(params.limit));
+    if (params?.offset != null) query.set("offset", String(params.offset));
+    if (params?.actorUserId) query.set("actor_user_id", params.actorUserId);
+    if (params?.decision) query.set("decision", params.decision);
+    if (params?.reasonCode) query.set("reason_code", params.reasonCode);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return request<AuthorizationAuditListResponse>(`/audit/authorization${suffix}`);
+  },
+  getAuthorizationAuditStats: (days = 30) => request<AuthorizationAuditSummary>(`/audit/authorization/stats?days=${days}`),
   listWorkspaces: () => request<{ workspaces: Workspace[]; total: number }>("/workspaces"),
   listWorkspaceMembers: (workspaceId: string) =>
     request<WorkspaceMember[]>(`/workspaces/${encodeURIComponent(workspaceId)}/members`),

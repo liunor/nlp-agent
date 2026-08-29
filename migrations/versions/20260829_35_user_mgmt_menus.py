@@ -12,7 +12,8 @@ user-management entries and the developer workspace hides those pages.
 from alembic import context, op
 import sqlalchemy as sa
 
-from server.rbac.catalog import MENU_CATALOG, menu_id, menu_row, role_id
+from core.rbac import Permission
+from server.rbac.catalog import menu_id, menu_row, role_id
 
 
 revision = "20260829_35_user_mgmt_menus"
@@ -21,17 +22,20 @@ branch_labels = None
 depends_on = None
 
 
-USER_MANAGEMENT_MENU_KEYS = (
-    "developer.users",
-    "developer.roles",
-    "developer.menus",
-    "developer.audit",
-    "developer.sessions",
+USER_MANAGEMENT_MENU_ITEMS = (
+    ("developer.users", "用户管理", "/developer/users", "users", Permission.SYSTEM_USER_MANAGE, 100),
+    ("developer.roles", "角色权限", "/developer/roles", "roles", Permission.SYSTEM_ROLE_MANAGE, 110),
+    ("developer.menus", "菜单管理", "/developer/menus", "menus", Permission.SYSTEM_ROLE_MANAGE, 120),
+    ("developer.audit", "审计日志", "/developer/audit", "audit", Permission.SYSTEM_AUDIT_READ, 130),
+    ("developer.sessions", "Agent 会话", "/developer/sessions", "sessions", Permission.AGENT_SESSION_READ, 140),
 )
 
 
 def _user_management_items() -> list[tuple[str, str, str, str, object, int]]:
-    return [item for item in MENU_CATALOG if item[0] in USER_MANAGEMENT_MENU_KEYS]
+    # Keep this historical projection frozen.  Reading the mutable current
+    # catalog here would make a fresh upgrade depend on whichever menu fields
+    # happen to exist in the application source years later.
+    return list(USER_MANAGEMENT_MENU_ITEMS)
 
 
 def upgrade() -> None:
@@ -80,12 +84,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    developer = role_id("developer")
-    for item in _user_management_items():
-        menu = menu_id(item[0])
-        op.execute(
-            sa.text("DELETE FROM nlp_role_menus WHERE role_id = :role_id AND menu_id = :menu_id").bindparams(
-                role_id=developer, menu_id=menu
-            )
-        )
-        op.execute(sa.text("DELETE FROM nlp_menus WHERE id = :menu_id").bindparams(menu_id=menu))
+    # This is a data backfill, not ownership of the projection rows.  Some of
+    # these rows may have existed before this revision (or may have been
+    # edited by an administrator), so deleting them on downgrade could remove
+    # valid user data and break the developer navigation.  Leaving the
+    # idempotent projection in place is the only safe downgrade behavior.
+    pass

@@ -22,7 +22,7 @@ function AdminOverview() {
           api.listWorkspaces(),
           api.listSessions(),
         ]);
-        setStats({ users: u.total, workspaces: w.workspaces.length, sessions: s.items.length });
+        setStats({ users: u.total, workspaces: w.workspaces.length, sessions: s.total ?? s.items.length });
       } catch (e) {
         setError(e instanceof Error ? e.message : "加载统计失败");
       }
