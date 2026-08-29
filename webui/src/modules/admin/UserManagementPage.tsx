@@ -15,6 +15,7 @@ export function UserManagementPage() {
   const [selected, setSelected] = useState<UserProfile | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [form, setForm] = useState({ username: "", display_name: "", password: "" });
+  const [createRoles, setCreateRoles] = useState<string[]>([]);
   const limit = 20;
 
   const load = useCallback(async () => {
@@ -45,12 +46,14 @@ export function UserManagementPage() {
 
   const create = async () => {
     await run(async () => {
-      await api.createUser(form);
+      await api.createUser({ ...form, role_codes: createRoles });
       setForm({ username: "", display_name: "", password: "" });
+      setCreateRoles([]);
     });
   };
 
   const toggleRole = (code: string) => setSelectedRoles((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
+  const toggleCreateRole = (code: string) => setCreateRoles((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
 
   return (
     <div className="space-y-6">
@@ -61,7 +64,11 @@ export function UserManagementPage() {
           <input className="rounded border px-3 py-2 text-sm" placeholder="用户名" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
           <input className="rounded border px-3 py-2 text-sm" placeholder="显示名称" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
           <input className="rounded border px-3 py-2 text-sm" type="password" placeholder="初始密码（至少 8 位）" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-          <button type="button" onClick={() => void create()} disabled={form.username.length < 3 || form.display_name.length < 1 || form.password.length < 8} className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">创建并赋予游客角色</button>
+          <button type="button" onClick={() => void create()} disabled={form.username.length < 3 || form.display_name.length < 1 || form.password.length < 8} className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{createRoles.length ? "创建并分配所选角色" : "创建并赋予游客角色"}</button>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-3">
+          {roles.map((role) => <label key={role.code} className="flex items-center gap-2 rounded border px-3 py-1.5 text-sm"><input type="checkbox" checked={createRoles.includes(role.code)} onChange={() => toggleCreateRole(role.code)} />{role.name}（{role.code}）</label>)}
+          {!roles.length && <span className="text-xs text-gray-400">未选择角色时默认赋予游客角色</span>}
         </div>
       </section>
       <div className="flex flex-wrap gap-3">

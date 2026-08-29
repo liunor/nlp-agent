@@ -177,7 +177,7 @@ export const api = {
     request<UserListResponse>(
       `/users?offset=${offset}&limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ""}${includeDeleted ? "&include_deleted=true" : ""}`,
     ),
-  createUser: (input: { username: string; display_name: string; password: string }) =>
+  createUser: (input: { username: string; display_name: string; password: string; role_codes?: string[] }) =>
     request<UserListResponse["users"][number]>("/users", { method: "POST", body: JSON.stringify(input) }),
   updateUser: (userId: string, input: { display_name?: string; status?: "active" | "disabled" | "locked" }) =>
     request<UserListResponse["users"][number]>(`/users/${encodeURIComponent(userId)}`, { method: "PATCH", body: JSON.stringify(input) }),
