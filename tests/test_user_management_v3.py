@@ -11,7 +11,8 @@ from server.infrastructure.mysql import DatabaseConfig, create_engine, create_se
 from server.infrastructure.mysql.models import SessionModel, UserModel, WorkspaceMemberModel
 from server.rbac.service import rbac_service
 from core.rbac import Permission
-from server.user.schemas import UserCreate
+from server.user.controller import _user_response_with_roles
+from server.user.schemas import UserCreate, UserCreateWithRole
 from server.user.service import UserService
 from server.web.auth import AuthenticationError, OriginRejectedError
 from server.web.database_auth import DatabaseSessionAuth
@@ -81,6 +82,33 @@ async def test_new_user_is_persisted_with_guest_role(mysql_session_factory) -> N
         )
         await session.commit()
         assert await rbac_service.roles_for(session, user.id) == frozenset({"guest"})
+
+
+@pytest.mark.asyncio
+async def test_admin_create_response_can_serialize_after_role_assignment(
+    mysql_session_factory,
+) -> None:
+    """Role assignment refreshes server-managed user timestamps before serialization."""
+    async with mysql_session_factory() as session:
+        data = UserCreateWithRole(
+            username=f"rolecreate{uuid4().hex[:10]}",
+            display_name="Role-created user",
+            password="InitialPw0rd1",
+            role_codes=["student"],
+        )
+        service = UserService(session)
+        user = await service.create_user(data, actor_user_id=None)
+        await rbac_service.replace_user_roles(
+            session,
+            user_id=user.id,
+            role_codes=set(data.role_codes),
+            assigned_by_user_id=None,
+        )
+
+        response = await _user_response_with_roles(service, user)
+
+        assert response.username == data.username
+        assert response.roles == ["student"]
 
 
 @pytest.mark.asyncio

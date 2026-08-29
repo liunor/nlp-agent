@@ -263,6 +263,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const [feedbackOffset, setFeedbackOffset] = useState(0);
   const [feedbackSearch, setFeedbackSearch] = useState("");
   const [feedbackLoadError, setFeedbackLoadError] = useState("");
+  const [managementRefreshToken, setManagementRefreshToken] = useState(0);
   const updateFeedbackThreads = useCallback((items: FeedbackThreadSummary[]) => {
     setFeedbackThreads(items);
     // Only seed a selection when none exists yet: paging or filtering must not
@@ -313,6 +314,10 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setLoading(false); }
   }, []);
+  const refreshWorkspace = useCallback(async () => {
+    setManagementRefreshToken((current) => current + 1);
+    await load();
+  }, [load]);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => {
     if (page !== "feedback") return undefined;
@@ -339,9 +344,9 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     // Pages that own their data sources render regardless of the snapshot.
     if (page === "release-notes") return <ReleaseNotes />;
     if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} refresh={refreshFeedback} />;
-    if (page === "users") return <UserManagementPage />;
-    if (page === "roles") return <RoleManagementPageV2 />;
-    if (page === "menus") return <MenuManagementPageV2 />;
+    if (page === "users") return <UserManagementPage onShellRefresh={load} refreshToken={managementRefreshToken} />;
+    if (page === "roles") return <RoleManagementPageV2 onShellRefresh={load} refreshToken={managementRefreshToken} />;
+    if (page === "menus") return <MenuManagementPageV2 onShellRefresh={load} refreshToken={managementRefreshToken} />;
     if (page === "audit") return <AuditLogPageV2 />;
     if (page === "sessions") return <AgentSessionListPageV2 />;
     if (!snapshot) return <div className="developer-error"><ShieldCheck /><strong>无法读取运行时快照</strong><p>{snapshotError || "当前身份可能缺少运行时检查权限；其余页面不受影响。"}</p></div>;
@@ -353,7 +358,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
     return <Overview snapshot={snapshot} />;
-  }, [changeFeedbackSearch, feedbackLoadError, feedbackOffset, feedbackSearch, feedbackSelectedId, feedbackThreads, feedbackTotal, page, refreshFeedback, snapshot, snapshotError, load]);
+  }, [changeFeedbackSearch, feedbackLoadError, feedbackOffset, feedbackSearch, feedbackSelectedId, feedbackThreads, feedbackTotal, load, managementRefreshToken, page, refreshFeedback, snapshot, snapshotError]);
   const accessDenied = !loading && visiblePages.size > 0 && !visiblePages.has(page);
-  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void load(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
+  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void refreshWorkspace(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
 }

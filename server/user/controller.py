@@ -42,6 +42,11 @@ async def _user_response_with_roles(
     service: UserService, user
 ) -> UserResponse:
     """Build a ``UserResponse`` including the user's role codes."""
+    # Role replacement increments authorization_version, which also expires
+    # SQLAlchemy's server-managed timestamp attributes. Refresh while we are
+    # still inside the async session so Pydantic serialization never attempts
+    # an implicit lazy load (which raises MissingGreenlet).
+    await service.session.refresh(user)
     roles_map = await service.get_roles_for_users([user.id])
     return UserResponse.model_validate(user).model_copy(
         update={"roles": roles_map.get(user.id, [])}

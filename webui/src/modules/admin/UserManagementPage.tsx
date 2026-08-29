@@ -1,47 +1,107 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, KeyRound, Pencil } from "lucide-react";
 import { api } from "@/platform/http/api";
 import type { RbacRole, UserListResponse, UserProfile } from "@/shared/types";
+import { PasswordResetDialog } from "@/shared/ui/PasswordResetDialog";
+import { TextInputDialog } from "@/shared/ui/TextInputDialog";
 
-export function UserManagementPage() {
+type PageItem = number | "ellipsis";
+
+function getPageItems(currentPage: number, totalPages: number): PageItem[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+  if (currentPage <= 4) return [1, 2, 3, 4, 5, "ellipsis", totalPages];
+  if (currentPage >= totalPages - 3) return [1, "ellipsis", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  return [1, "ellipsis", currentPage - 1, currentPage, currentPage + 1, "ellipsis", totalPages];
+}
+
+export interface UserManagementPageProps {
+  onShellRefresh?: () => Promise<void>;
+  refreshToken?: number;
+}
+
+export function UserManagementPage({ onShellRefresh, refreshToken = 0 }: UserManagementPageProps) {
   const [data, setData] = useState<UserListResponse | null>(null);
   const [roles, setRoles] = useState<RbacRole[]>([]);
   const [loading, setLoading] = useState(true);
+  const [rolesLoading, setRolesLoading] = useState(true);
+  const [actionPending, setActionPending] = useState(false);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(20);
+  const [pageInput, setPageInput] = useState("1");
   const [selected, setSelected] = useState<UserProfile | null>(null);
+  const [displayNameTarget, setDisplayNameTarget] = useState<UserProfile | null>(null);
+  const [passwordTarget, setPasswordTarget] = useState<UserProfile | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
+  const [userRolesLoading, setUserRolesLoading] = useState(false);
   const [form, setForm] = useState({ username: "", display_name: "", password: "" });
   const [createRoles, setCreateRoles] = useState<string[]>([]);
-  const limit = 20;
-
+  const requestVersion = useRef(0);
+  const userRolesRequestVersion = useRef(0);
   const load = useCallback(async () => {
+    const requestId = ++requestVersion.current;
     setLoading(true); setError("");
     try {
-      const [result, roleResult] = await Promise.all([
-        api.listUsers(offset, limit, statusFilter || undefined, search || undefined, includeDeleted),
-        roles.length ? Promise.resolve({ items: roles }) : api.listRoles(),
-      ]);
-      setData(result); if (!roles.length) setRoles(roleResult.items);
-    } catch (err) { setError(err instanceof Error ? err.message : "加载失败"); }
-    finally { setLoading(false); }
-  }, [includeDeleted, offset, roles, search, statusFilter]);
+      const result = await api.listUsers(offset, limit, statusFilter || undefined, search || undefined, includeDeleted);
+      if (requestId !== requestVersion.current) return;
+      setData(result);
+    } catch (err) {
+      if (requestId === requestVersion.current) setError(err instanceof Error ? err.message : "加载失败");
+    } finally {
+      if (requestId === requestVersion.current) setLoading(false);
+    }
+  }, [includeDeleted, limit, offset, search, statusFilter]);
 
-  useEffect(() => { queueMicrotask(() => void load()); }, [load]);
+  const loadRoles = useCallback(async () => {
+    setRolesLoading(true);
+    try {
+      setRoles((await api.listRoles()).items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "角色加载失败");
+    } finally {
+      setRolesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { queueMicrotask(() => void load()); }, [load, refreshToken]);
+  useEffect(() => { queueMicrotask(() => void loadRoles()); }, [loadRoles, refreshToken]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = searchInput.trim();
+      setSearch((current) => current === next ? current : next);
+      setOffset(0);
+      setPageInput("1");
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
 
   const selectUser = async (user: UserProfile) => {
-    setSelected(user); setActionError("");
-    try { setSelectedRoles((await api.getUserRoles(user.id)).role_codes); }
-    catch (err) { setActionError(err instanceof Error ? err.message : "加载角色失败"); }
+    const requestId = ++userRolesRequestVersion.current;
+    setSelected(user); setSelectedRoles([]); setActionError(""); setUserRolesLoading(true);
+    try {
+      const result = await api.getUserRoles(user.id);
+      if (requestId === userRolesRequestVersion.current) setSelectedRoles(result.role_codes);
+    } catch (err) {
+      if (requestId === userRolesRequestVersion.current) setActionError(err instanceof Error ? err.message : "加载角色失败");
+    } finally {
+      if (requestId === userRolesRequestVersion.current) setUserRolesLoading(false);
+    }
   };
 
-  const run = async (action: () => Promise<unknown>) => {
-    setActionError("");
-    try { await action(); await load(); }
-    catch (err) { setActionError(err instanceof Error ? err.message : "操作失败"); }
+  const run = async (action: () => Promise<unknown>, successMessage?: string) => {
+    setActionError(""); setActionMessage(""); setActionPending(true);
+    try {
+      await action();
+      await load();
+      if (successMessage) setActionMessage(successMessage);
+    } catch (err) { setActionError(err instanceof Error ? err.message : "操作失败"); }
+    finally { setActionPending(false); }
   };
 
   const create = async () => {
@@ -49,11 +109,38 @@ export function UserManagementPage() {
       await api.createUser({ ...form, role_codes: createRoles });
       setForm({ username: "", display_name: "", password: "" });
       setCreateRoles([]);
-    });
+    }, "用户已创建");
+  };
+
+  const updateDisplayName = (displayName: string) => {
+    const target = displayNameTarget;
+    setDisplayNameTarget(null);
+    if (!target || displayName === target.display_name) return;
+    void run(() => api.updateUser(target.id, { display_name: displayName }), "显示名已更新");
+  };
+
+  const resetPassword = (password: string) => {
+    const target = passwordTarget;
+    setPasswordTarget(null);
+    if (!target) return;
+    void run(() => api.resetUserPassword(target.id, password), "密码已重置，原有登录会话已失效");
   };
 
   const toggleRole = (code: string) => setSelectedRoles((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
   const toggleCreateRole = (code: string) => setCreateRoles((current) => current.includes(code) ? current.filter((item) => item !== code) : [...current, code]);
+  const totalPages = data ? Math.max(1, Math.ceil(data.total / limit)) : 1;
+  const currentPage = data ? Math.min(totalPages, Math.floor(offset / limit) + 1) : 1;
+  const pageItems = getPageItems(currentPage, totalPages);
+  const jumpToPage = () => {
+    const requestedPage = Number.parseInt(pageInput, 10);
+    if (!Number.isFinite(requestedPage)) {
+      setPageInput(String(currentPage));
+      return;
+    }
+    const targetPage = Math.min(totalPages, Math.max(1, requestedPage));
+    setOffset((targetPage - 1) * limit);
+    setPageInput(String(targetPage));
+  };
 
   return (
     <div className="space-y-6">
@@ -61,31 +148,34 @@ export function UserManagementPage() {
       <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <h2 className="mb-3 text-sm font-semibold text-gray-800">创建用户</h2>
         <div className="grid gap-3 md:grid-cols-4">
-          <input className="rounded border px-3 py-2 text-sm" placeholder="用户名" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-          <input className="rounded border px-3 py-2 text-sm" placeholder="显示名称" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-          <input className="rounded border px-3 py-2 text-sm" type="password" placeholder="初始密码（至少 8 位）" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-          <button type="button" onClick={() => void create()} disabled={form.username.length < 3 || form.display_name.length < 1 || form.password.length < 8} className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{createRoles.length ? "创建并分配所选角色" : "创建并赋予游客角色"}</button>
+          <input className="rounded border px-3 py-2 text-sm" placeholder="用户名" value={form.username} disabled={actionPending} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+          <input className="rounded border px-3 py-2 text-sm" placeholder="显示名称" value={form.display_name} disabled={actionPending} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+          <input className="rounded border px-3 py-2 text-sm" type="password" placeholder="初始密码（至少 8 位）" value={form.password} disabled={actionPending} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          <button type="button" onClick={() => void create()} disabled={actionPending || form.username.trim().length < 3 || form.display_name.trim().length < 1 || form.password.length < 8} className="rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{actionPending ? "处理中…" : createRoles.length ? "创建并分配所选角色" : "创建并赋予游客角色"}</button>
         </div>
         <div className="mt-3 flex flex-wrap gap-3">
-          {roles.map((role) => <label key={role.code} className="flex items-center gap-2 rounded border px-3 py-1.5 text-sm"><input type="checkbox" checked={createRoles.includes(role.code)} onChange={() => toggleCreateRole(role.code)} />{role.name}（{role.code}）</label>)}
-          {!roles.length && <span className="text-xs text-gray-400">未选择角色时默认赋予游客角色</span>}
+          {roles.map((role) => <label key={role.code} className="flex items-center gap-2 rounded border px-3 py-1.5 text-sm"><input type="checkbox" disabled={actionPending || rolesLoading} checked={createRoles.includes(role.code)} onChange={() => toggleCreateRole(role.code)} />{role.name}（{role.code}）</label>)}
+          {!roles.length && <span className="text-xs text-gray-400">{rolesLoading ? "正在加载角色…" : "未选择角色时默认赋予游客角色"}</span>}
         </div>
       </section>
       <div className="flex flex-wrap gap-3">
-        <input className="min-w-64 flex-1 rounded border px-3 py-2 text-sm" placeholder="搜索用户名或显示名称" value={search} onChange={(e) => { setSearch(e.target.value); setOffset(0); }} />
-        <select className="rounded border px-3 py-2 text-sm" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setOffset(0); }}><option value="">全部状态</option><option value="active">活跃</option><option value="disabled">已禁用</option><option value="locked">已锁定</option><option value="deleted">已软删</option></select>
-        <label className="flex items-center gap-2 rounded border px-3 py-2 text-sm"><input type="checkbox" checked={includeDeleted} onChange={(e) => { setIncludeDeleted(e.target.checked); setOffset(0); }} />包含软删</label>
+        <input className="min-w-64 flex-1 rounded border px-3 py-2 text-sm" placeholder="搜索用户名或显示名称" value={searchInput} onChange={(e) => setSearchInput(e.target.value)} />
+        <select className="rounded border px-3 py-2 text-sm" value={statusFilter} disabled={actionPending} onChange={(e) => { setStatusFilter(e.target.value); setOffset(0); setPageInput("1"); }}><option value="">全部状态</option><option value="active">活跃</option><option value="disabled">已禁用</option><option value="locked">已锁定</option><option value="deleted">已软删</option></select>
+        <label className="flex items-center gap-2 rounded border px-3 py-2 text-sm"><input type="checkbox" disabled={actionPending} checked={includeDeleted} onChange={(e) => { setIncludeDeleted(e.target.checked); setOffset(0); setPageInput("1"); }} />包含软删</label>
       </div>
       {error && <div className="rounded bg-red-50 p-4 text-sm text-red-700">{error}</div>}
       {actionError && <div className="rounded bg-red-50 p-3 text-sm text-red-700">{actionError}</div>}
+      {actionMessage && <div className="rounded bg-green-50 p-3 text-sm text-green-700">{actionMessage}</div>}
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-        {loading && !data ? <div className="py-12 text-center text-gray-500">加载中...</div> : <table className="min-w-full divide-y divide-gray-200"><thead className="bg-gray-50"><tr>{["用户名", "显示名称", "状态", "最后登录", "创建时间", "操作"].map((item) => <th key={item} className="px-4 py-3 text-left text-xs font-medium text-gray-500">{item}</th>)}</tr></thead><tbody className="divide-y divide-gray-200">
-          {(data?.users ?? []).map((user) => <tr key={user.id} className="hover:bg-gray-50"><td className="px-4 py-3 text-sm font-medium text-gray-900">{user.username}</td><td className="px-4 py-3 text-sm text-gray-600">{user.display_name}</td><td className="px-4 py-3 text-sm">{user.deleted_at ? "已软删" : user.status}</td><td className="px-4 py-3 text-sm text-gray-500">{user.last_login_at ? new Date(user.last_login_at).toLocaleString("zh-CN") : "从未登录"}</td><td className="px-4 py-3 text-sm text-gray-500">{new Date(user.created_at).toLocaleDateString("zh-CN")}</td><td className="space-x-2 whitespace-nowrap px-4 py-3 text-right text-xs"><button type="button" className="text-blue-700" onClick={() => void selectUser(user)}>角色</button><button type="button" className="text-purple-700" onClick={() => void run(() => api.revokeUserSessions(user.id))}>撤销会话</button>{user.deleted_at ? <button type="button" className="text-green-700" onClick={() => void run(() => api.restoreUser(user.id))}>恢复</button> : <><button type="button" className="text-amber-700" onClick={() => void run(() => user.status === "active" ? api.disableUser(user.id) : api.enableUser(user.id))}>{user.status === "active" ? "禁用" : "启用"}</button><button type="button" className="text-red-700" onClick={() => { if (confirm(`软删用户 ${user.username}？`)) void run(() => api.deleteUser(user.id)); }}>软删</button></>}</td></tr>)}
+        {loading && !data ? <div className="py-12 text-center text-gray-500">加载用户中...</div> : <table aria-busy={loading} className="min-w-full divide-y divide-gray-200"><thead className="bg-gray-50"><tr>{["用户名", "显示名称", "状态", "最后登录", "创建时间", "操作"].map((item) => <th key={item} className="px-4 py-3 text-left text-xs font-medium text-gray-500">{item}</th>)}</tr></thead><tbody className="divide-y divide-gray-200">
+          {(data?.users ?? []).map((user) => <tr key={user.id} className="hover:bg-gray-50"><td className="px-4 py-3 text-sm font-medium text-gray-900">{user.username}</td><td className="px-4 py-3 text-sm text-gray-600">{user.display_name}</td><td className="px-4 py-3 text-sm">{user.deleted_at ? "已软删" : user.status}</td><td className="px-4 py-3 text-sm text-gray-500">{user.last_login_at ? new Date(user.last_login_at).toLocaleString("zh-CN") : "从未登录"}</td><td className="px-4 py-3 text-sm text-gray-500">{new Date(user.created_at).toLocaleDateString("zh-CN")}</td><td className="space-x-2 whitespace-nowrap px-4 py-3 text-right text-xs"><button type="button" disabled={actionPending || userRolesLoading} className="inline-flex items-center gap-1 text-blue-700 disabled:opacity-50" onClick={() => void selectUser(user)}>角色</button>{!user.deleted_at && <><button type="button" disabled={actionPending || userRolesLoading} className="inline-flex items-center gap-1 text-slate-700 disabled:opacity-50" title="编辑显示名" onClick={() => setDisplayNameTarget(user)}><Pencil size={13} />编辑</button><button type="button" disabled={actionPending || userRolesLoading} className="inline-flex items-center gap-1 text-violet-700 disabled:opacity-50" title="重置密码" onClick={() => setPasswordTarget(user)}><KeyRound size={13} />重置密码</button></>}<button type="button" disabled={actionPending || userRolesLoading} className="inline-flex items-center gap-1 text-purple-700 disabled:opacity-50" onClick={() => void run(() => api.revokeUserSessions(user.id), "会话已撤销")}>撤销会话</button>{user.deleted_at ? <button type="button" disabled={actionPending || userRolesLoading} className="text-green-700 disabled:opacity-50" onClick={() => void run(() => api.restoreUser(user.id), "用户已恢复")}>恢复</button> : <><button type="button" disabled={actionPending || userRolesLoading} className="text-amber-700 disabled:opacity-50" onClick={() => void run(() => user.status === "active" ? api.disableUser(user.id) : api.enableUser(user.id), user.status === "active" ? "用户已禁用" : "用户已启用")}>{user.status === "active" ? "禁用" : "启用"}</button><button type="button" disabled={actionPending || userRolesLoading} className="text-red-700 disabled:opacity-50" onClick={() => { if (confirm(`软删用户 ${user.username}？`)) void run(() => api.deleteUser(user.id), "用户已软删"); }}>软删</button></>}</td></tr>)}
           {!data?.users.length && <tr><td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-500">暂无用户</td></tr>}
         </tbody></table>}
       </div>
-      {data && <div className="flex items-center justify-between text-sm text-gray-500"><span>共 {data.total} 个用户</span><div className="space-x-2"><button type="button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))} className="rounded border px-3 py-1 disabled:opacity-50">上一页</button><button type="button" disabled={offset + limit >= data.total} onClick={() => setOffset(offset + limit)} className="rounded border px-3 py-1 disabled:opacity-50">下一页</button></div></div>}
-      {selected && <section className="rounded-lg border border-blue-200 bg-blue-50 p-4"><div className="flex items-center justify-between"><h2 className="font-semibold text-gray-900">{selected.username} 的角色</h2><button type="button" className="text-sm text-gray-500" onClick={() => setSelected(null)}>关闭</button></div><div className="mt-3 flex flex-wrap gap-3">{roles.map((role) => <label key={role.code} className="flex items-center gap-2 rounded bg-white px-3 py-2 text-sm"><input type="checkbox" checked={selectedRoles.includes(role.code)} onChange={() => toggleRole(role.code)} />{role.name}（{role.code}）</label>)}</div><button type="button" className="mt-3 rounded bg-blue-600 px-4 py-2 text-sm text-white" onClick={() => void run(async () => { await api.replaceUserRoles(selected.id, selectedRoles); setSelected(null); })}>保存角色并撤销旧会话</button></section>}
+      {data && <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-gray-500"><span>共 {data.total} 个用户 · 第 {currentPage}/{totalPages} 页</span><div className="flex flex-wrap items-center justify-end gap-2"><label className="flex items-center gap-1.5">每页<select className="rounded border px-2 py-1" value={limit} disabled={actionPending} onChange={(event) => { setLimit(Number(event.target.value)); setOffset(0); setPageInput("1"); }}><option value={20}>20</option><option value={50}>50</option><option value={100}>100</option></select>条</label><button type="button" aria-label="上一页" disabled={currentPage <= 1 || actionPending} onClick={() => { const targetPage = currentPage - 1; setOffset((targetPage - 1) * limit); setPageInput(String(targetPage)); }} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 disabled:opacity-50"><ChevronLeft size={14} />上一页</button>{pageItems.map((item, index) => item === "ellipsis" ? <span key={`ellipsis-${index}`} className="px-1" aria-hidden="true">...</span> : <button key={item} type="button" aria-label={`第 ${item} 页`} aria-current={item === currentPage ? "page" : undefined} disabled={actionPending || item === currentPage} onClick={() => { setOffset((item - 1) * limit); setPageInput(String(item)); }} className={`min-w-8 rounded border px-2.5 py-1 disabled:opacity-100 ${item === currentPage ? "border-blue-600 bg-blue-600 text-white" : "hover:bg-gray-50 disabled:cursor-default"}`}>{item}</button>)}<button type="button" aria-label="下一页" disabled={currentPage >= totalPages || actionPending} onClick={() => { const targetPage = currentPage + 1; setOffset((targetPage - 1) * limit); setPageInput(String(targetPage)); }} className="inline-flex items-center gap-1 rounded border px-2.5 py-1 disabled:opacity-50">下一页<ChevronRight size={14} /></button><form className="flex items-center gap-1.5" onSubmit={(event) => { event.preventDefault(); jumpToPage(); }}><label htmlFor="user-page-jump">跳转</label><input id="user-page-jump" className="w-16 rounded border px-2 py-1 text-center" type="number" min={1} max={totalPages} value={pageInput} disabled={actionPending} onChange={(event) => setPageInput(event.target.value)} /><button type="submit" disabled={actionPending} className="rounded border px-2.5 py-1 hover:bg-gray-50 disabled:opacity-50">确定</button></form></div></div>}
+      {selected && <section className="rounded-lg border border-blue-200 bg-blue-50 p-4"><div className="flex items-center justify-between"><h2 className="font-semibold text-gray-900">{selected.username} 的角色</h2><button type="button" className="text-sm text-gray-500" disabled={actionPending || userRolesLoading} onClick={() => setSelected(null)}>关闭</button></div>{userRolesLoading ? <div className="py-4 text-sm text-gray-500">加载角色中...</div> : <><div className="mt-3 flex flex-wrap gap-3">{roles.map((role) => <label key={role.code} className="flex items-center gap-2 rounded bg-white px-3 py-2 text-sm"><input type="checkbox" disabled={actionPending} checked={selectedRoles.includes(role.code)} onChange={() => toggleRole(role.code)} />{role.name}（{role.code}）</label>)}</div><button type="button" disabled={actionPending} className="mt-3 rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50" onClick={() => void run(async () => { await api.replaceUserRoles(selected.id, selectedRoles); setSelected(null); await onShellRefresh?.(); }, "角色已更新，旧会话已撤销")}>{actionPending ? "保存中…" : "保存角色并撤销旧会话"}</button></>}</section>}
+      <TextInputDialog key={displayNameTarget?.id ?? "display-name-dialog"} open={displayNameTarget !== null} title="编辑显示名" description={`修改 @${displayNameTarget?.username ?? "用户"} 在平台中显示的名称。`} label="显示名称" initialValue={displayNameTarget?.display_name ?? ""} placeholder="请输入显示名称" confirmLabel="保存修改" maxLength={128} onClose={() => setDisplayNameTarget(null)} onConfirm={updateDisplayName} />
+      <PasswordResetDialog key={passwordTarget?.id ?? "password-dialog"} open={passwordTarget !== null} username={passwordTarget?.username ?? "用户"} onClose={() => setPasswordTarget(null)} onConfirm={resetPassword} />
     </div>
   );
 }
