@@ -1,6 +1,6 @@
 import { Maximize2, Minimize2, Moon, PanelRightClose, PanelRightOpen, Sun, Wifi, WifiOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "@/platform/http/api";
+import { api, AUTH_EXPIRED_EVENT } from "@/platform/http/api";
 
 import { Composer } from "@/modules/student/components/Composer";
 import { AccountDialog } from "@/modules/student/components/AccountDialog";
@@ -35,6 +35,19 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [authExpired, setAuthExpired] = useState(false);
+  useEffect(() => {
+  const handleAuthExpired = () => {
+    setLoginOpen(true);
+    setAuthExpired(true);
+  };
+
+  window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+
+  return () => {
+    window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  };
+}, []);
   const [courseTopics, setCourseTopics] = useState<CourseTopic[]>([]);
   const [learningCatalog, setLearningCatalog] = useState<TeacherCatalog | null>(null);
   const [modeNotice, setModeNotice] = useState<"practice" | "review" | null>(null);
@@ -130,10 +143,16 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
         </div>
       </section>
     </main>
-    <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} onAuthenticate={async (username, password) => {
-      await api.login(username, password);
-      workspace.retryAuthentication();
-    }} />
+    <LoginDialog
+  open={loginOpen}
+  expired={authExpired}
+  onClose={() => setLoginOpen(false)}
+  onAuthenticate={async (username, password) => {
+    await workspace.authenticate(username, password);
+    setAuthExpired(false);
+    workspace.retryAuthentication();
+  }}
+/>
   </div>;
 
   const updateContext = (context: typeof workspace.preferences.context) => {
@@ -226,6 +245,16 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
     workspace.deleteCategory(target.id);
   }}
   />
+      <LoginDialog
+      open={loginOpen}
+      expired={authExpired}
+      onClose={() => setLoginOpen(false)}
+      onAuthenticate={async (username, password) => {
+        await workspace.authenticate(username, password);
+        setAuthExpired(false);
+        workspace.retryAuthentication();
+      }}
+    />
 {archived.length > 0 && <span className="sr-only">已归档 {archived.length} 个学习对话</span>}
   </div>;
 }

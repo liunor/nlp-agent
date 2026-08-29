@@ -139,6 +139,13 @@ export function useStudentWorkspace() {
   const activeMeta = activeSessionId ? preferences.sessions[activeSessionId] ?? {} : {};
   const isRunning = messages.some((message) => message.role === "assistant" && ["accepted", "running"].includes(message.status ?? ""));
 
+  const authenticate = useCallback(async (username: string, password: string) => {
+  if (globalAuth) {
+    return globalAuth.login(username, password);
+  }
+
+  return api.login(username, password);
+}, [globalAuth]);
   const retryAuthentication = useCallback(() => {
     setError("");
     setBootStatus("loading");
@@ -196,6 +203,7 @@ export function useStudentWorkspace() {
     patchSettings,
     resetSettings,
     refresh: loadSessions,
+    authenticate,
     retryAuthentication,
     authSession,
     logout,

@@ -6,6 +6,7 @@ import type { AuthSession } from "@/shared/types";
 import { AuthProvider, useAuth } from "@/platform/auth/AuthContext";
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn(),
   api: {
     login: vi.fn(),

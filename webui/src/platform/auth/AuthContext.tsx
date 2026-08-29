@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { api, ensureAuth } from "@/platform/http/api";
+import { api, AUTH_EXPIRED_EVENT, ensureAuth } from "@/platform/http/api";
 import type { AuthSession } from "@/shared/types";
 
 interface AuthContextValue {
@@ -45,6 +45,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+  useEffect(() => {
+  const handleAuthExpired = () => {
+    setError("");
+  };
+
+  window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+
+  return () => {
+    window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  };
+}, []);
 
   const login = useCallback(async (username: string, password: string) => {
     setIsLoading(true);

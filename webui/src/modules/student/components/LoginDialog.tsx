@@ -7,11 +7,12 @@ type Tab = "login" | "register";
 
 interface LoginDialogProps {
   open: boolean;
+  expired?: boolean;
   onClose: () => void;
   onAuthenticate: (username: string, password: string) => Promise<void>;
 }
 
-export function LoginDialog({ open, onClose, onAuthenticate }: LoginDialogProps) {
+export function LoginDialog({ open, expired = false, onClose, onAuthenticate }: LoginDialogProps) {
   const [tab, setTab] = useState<Tab>("login");
 
   const close = useCallback(() => {
@@ -33,6 +34,11 @@ export function LoginDialog({ open, onClose, onAuthenticate }: LoginDialogProps)
               ? "登录后可创建学习会话并使用实时对话功能。"
               : "使用手机号注册新账户，开始您的学习之旅。"}
           </Dialog.Description>
+          {expired && (
+  <p className="login-dialog-error login-dialog-expired-message" role="alert">
+    登录状态已失效，请重新登录后继续使用。
+  </p>
+)}
 
           {tab === "login" ? (
             <LoginForm onAuthenticate={onAuthenticate} onSuccess={close} onSwitchToRegister={() => setTab("register")} />

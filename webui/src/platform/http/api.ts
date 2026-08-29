@@ -2,6 +2,7 @@ import type { AuthSession, AuthorizationAuditRecord, DeveloperSnapshot, Learning
 import type { FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
+export const AUTH_EXPIRED_EVENT = "nova:auth-expired";
 
 export class ApiError extends Error {
   constructor(
@@ -32,6 +33,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: "include",
   });
   if (!response.ok) {
+    if (
+  response.status === 401 &&
+  csrfToken &&
+  path !== "/auth/session" &&
+  path !== "/auth/login"
+) {
+  csrfToken = "";
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
     const problem = await response.json().catch(() => ({})) as { detail?: string; title?: string; code?: string };
     throw new ApiError(problem.detail ?? problem.title ?? `HTTP ${response.status}`, response.status, problem.code);
   }

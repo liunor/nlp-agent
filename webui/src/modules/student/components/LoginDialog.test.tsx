@@ -35,3 +35,17 @@ describe("LoginDialog", () => {
     expect(close).not.toHaveBeenCalled();
   });
 });
+it("shows a session-expired message when reopened after authentication expires", () => {
+  render(
+    <LoginDialog
+      open
+      expired
+      onClose={vi.fn()}
+      onAuthenticate={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "登录状态已失效，请重新登录后继续使用。",
+  );
+});

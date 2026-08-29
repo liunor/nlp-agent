@@ -21,6 +21,7 @@ const { ensureAuthMock, getSettingsMock, createSessionMock, deleteSessionMock, s
 }));
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: ensureAuthMock,
   api: {
     listSessions: vi.fn(async () => ({ items: [] })),

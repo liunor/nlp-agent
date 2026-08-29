@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn().mockResolvedValue({
     roles: ["admin", "teacher"],
     workspace_ids: ["default"],
