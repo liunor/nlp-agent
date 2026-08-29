@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyCookie
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from configs.settings import settings
@@ -1770,17 +1771,30 @@ def create_app(
     app.include_router(uploads_router)
 
     if static_dir is not None and static_dir.is_dir():
-        @app.get("/developer", include_in_schema=False)
-        @app.get("/developer/{developer_path:path}", include_in_schema=False)
-        async def developer_spa(developer_path: str = ""):
-            return FileResponse(static_dir / "index.html")
 
-        @app.get("/teacher", include_in_schema=False)
-        @app.get("/teacher/{teacher_path:path}", include_in_schema=False)
-        async def teacher_spa(teacher_path: str = ""):
-            return FileResponse(static_dir / "index.html")
+        class _SpaStaticFiles(StaticFiles):
+            """StaticFiles that falls back to ``index.html`` for deep links.
 
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="webui")
+            The frontend uses ``BrowserRouter``, so deep links such as
+            ``/profile``, ``/login`` or ``/admin/users`` must serve the SPA
+            shell instead of the raw 404 a plain StaticFiles mount returns.
+            This must live inside the mount: Starlette never tries routes
+            registered after a mounted sub-application.
+            """
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                self._spa_index = Path(kwargs["directory"]) / "index.html"
+
+            async def get_response(self, path: str, scope):
+                try:
+                    return await super().get_response(path, scope)
+                except StarletteHTTPException as error:
+                    if error.status_code == 404 and self._spa_index.is_file():
+                        return await super().get_response("index.html", scope)
+                    raise
+
+        app.mount("/", _SpaStaticFiles(directory=static_dir, html=True), name="webui")
     else:
         @app.get("/", include_in_schema=False)
         async def api_root():
