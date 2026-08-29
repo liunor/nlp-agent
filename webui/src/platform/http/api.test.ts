@@ -52,6 +52,41 @@ describe("FastAPI client", () => {
     fetchMock.mockRestore();
   }
 });
+it("dispatches auth-expired only once when concurrent requests return 401", async () => {
+  const fetchMock = vi.spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(new Response(JSON.stringify({
+      user_id: "local",
+      workspace_ids: ["default"],
+      roles: ["student"],
+      csrf_token: "csrf-token",
+      expires_at: 123,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({
+      detail: "Authentication required",
+    }), { status: 401, headers: { "Content-Type": "application/json" } }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({
+      detail: "Authentication required",
+    }), { status: 401, headers: { "Content-Type": "application/json" } }));
+
+  const onAuthExpired = vi.fn();
+  window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+
+  try {
+    await ensureAuth();
+
+    const results = await Promise.allSettled([
+      api.listSessions(),
+      api.getSettings(),
+    ]);
+
+    expect(results[0].status).toBe("rejected");
+    expect(results[1].status).toBe("rejected");
+    expect(onAuthExpired).toHaveBeenCalledTimes(1);
+  } finally {
+    window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+    fetchMock.mockRestore();
+  }
+});
 
   it("uploads an attachment using FormData without forcing application/json Content-Type", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(

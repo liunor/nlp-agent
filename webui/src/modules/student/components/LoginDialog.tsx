@@ -19,15 +19,26 @@ export function LoginDialog({ open, expired = false, onClose, onAuthenticate }: 
     setTab("login");
     onClose();
   }, [onClose]);
+  const dismiss = useCallback(() => {
+  if (expired) return;
+  close();
+}, [close, expired]);
 
   return (
-    <Dialog.Root open={open} onOpenChange={(nextOpen: boolean) => { if (!nextOpen) close(); }}>
+    <Dialog.Root open={open} onOpenChange={(nextOpen: boolean) => { if (!nextOpen) dismiss(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="login-dialog-overlay" />
         <Dialog.Content className="login-dialog-content" aria-describedby="login-dialog-description">
-          <button className="login-dialog-close" type="button" onClick={close} aria-label="关闭">
-            <X size={18} />
-          </button>
+          {!expired && (
+  <button
+    className="login-dialog-close"
+    type="button"
+    onClick={dismiss}
+    aria-label="关闭"
+  >
+    <X size={18} />
+  </button>
+)}
 
           <Dialog.Description id="login-dialog-description">
             {tab === "login"

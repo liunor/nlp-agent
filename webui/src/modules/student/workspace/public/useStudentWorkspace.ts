@@ -100,14 +100,17 @@ export function useStudentWorkspace() {
 
   useEffect(() => {
     if (bootStatus !== "ready") return;
+
     const socket = new StudentSocket(handleEvent, setSocketStatus);
     socketRef.current = socket;
+    socket.setSession(activeSessionRef.current);
     socket.connect();
+
     return () => {
       socket.close();
       socketRef.current = null;
     };
-  }, [bootStatus, handleEvent]);
+  }, [activeSessionRef, bootStatus, handleEvent]);
 
   useEffect(() => {
     loadGenerationRef.current += 1;
@@ -139,18 +142,22 @@ export function useStudentWorkspace() {
   const activeMeta = activeSessionId ? preferences.sessions[activeSessionId] ?? {} : {};
   const isRunning = messages.some((message) => message.role === "assistant" && ["accepted", "running"].includes(message.status ?? ""));
 
-  const authenticate = useCallback(async (username: string, password: string) => {
-  if (globalAuth) {
-    return globalAuth.login(username, password);
-  }
+const authenticate = useCallback(async (username: string, password: string) => {
+  const result = globalAuth
+    ? await globalAuth.login(username, password)
+    : await api.login(username, password);
 
-  return api.login(username, password);
+  setError("");
+  setRequestError("");
+  return result;
 }, [globalAuth]);
   const retryAuthentication = useCallback(() => {
     setError("");
+    setRequestError("");
     setBootStatus("loading");
     setAuthRevision((current) => current + 1);
   }, []);
+
   const logout = useCallback(async () => {
     try {
       if (globalAuth) await globalAuth.logout();

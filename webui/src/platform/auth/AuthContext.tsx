@@ -8,6 +8,7 @@ interface AuthContextValue {
   roles: string[];
   isAuthenticated: boolean;
   isLoading: boolean;
+  isAuthExpired: boolean;
   login: (username: string, password: string) => Promise<AuthSession>;
   logout: () => Promise<void>;
   error: string;
@@ -24,6 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [isAuthExpired, setIsAuthExpired] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -47,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
   const handleAuthExpired = () => {
+    setIsAuthExpired(true);
     setError("");
   };
 
@@ -63,9 +66,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const session = await api.login(username, password);
       setUser(session);
+      setIsAuthExpired(false);
       return session;
     } catch (reason) {
-      setUser(null);
       setError(reason instanceof Error ? reason.message : "登录失败");
       throw reason;
     } finally {
@@ -93,10 +96,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     roles: user?.roles ?? [],
     isAuthenticated: user !== null,
     isLoading,
+    isAuthExpired,
     login,
     logout,
     error,
-  }), [error, isLoading, login, logout, user]);
+  }), [error, isAuthExpired, isLoading, login, logout, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

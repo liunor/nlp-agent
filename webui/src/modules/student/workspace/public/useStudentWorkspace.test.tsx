@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-
+import type { ServerEvent } from "@/shared/types";
 import { useStudentWorkspace } from "./useStudentWorkspace";
-import { api } from "@/platform/http/api";
+import { api, AUTH_EXPIRED_EVENT } from "@/platform/http/api";
 import { AuthProvider } from "@/platform/auth/AuthContext";
 
 const runtime = {
@@ -12,12 +12,26 @@ const runtime = {
   },
 };
 
-const { ensureAuthMock, getSettingsMock, createSessionMock, deleteSessionMock, sendChatMock } = vi.hoisted(() => ({
+const {
+  ensureAuthMock,
+  getSettingsMock,
+  createSessionMock,
+  deleteSessionMock,
+  sendChatMock,
+  socketConnectMock,
+  socketCloseMock,
+  socketEventHandlerRef,
+} = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
   getSettingsMock: vi.fn(),
   createSessionMock: vi.fn(),
   deleteSessionMock: vi.fn(async () => undefined),
   sendChatMock: vi.fn(),
+  socketConnectMock: vi.fn(),
+  socketCloseMock: vi.fn(),
+  socketEventHandlerRef: {
+  current: undefined as ((event: ServerEvent) => void) | undefined,
+},
 }));
 
 vi.mock("@/platform/http/api", () => ({
@@ -36,8 +50,12 @@ vi.mock("@/platform/http/api", () => ({
 
 vi.mock("@/platform/realtime/client", () => ({
   StudentSocket: class {
-    connect() {}
-    close() {}
+    constructor(handler: (event: ServerEvent) => void) {
+      socketEventHandlerRef.current = handler;
+    }
+
+    connect() { socketConnectMock(); }
+    close() { socketCloseMock(); }
     setSession() {}
     sendChat(...args: unknown[]) { sendChatMock(...args); }
   },
@@ -51,6 +69,9 @@ describe("useStudentWorkspace settings", () => {
     localStorage.clear();
     dark = false;
     onChange = undefined;
+    socketConnectMock.mockReset();
+    socketCloseMock.mockReset();
+    socketEventHandlerRef.current = undefined;
     document.documentElement.classList.remove("dark");
     ensureAuthMock.mockResolvedValue({ csrf_token: "x", workspace_ids: ["default"] });
     getSettingsMock.mockResolvedValue({ preferences: { settings: { theme: "system" } }, runtime });
@@ -271,8 +292,111 @@ describe("useStudentWorkspace settings", () => {
     expect(sendChatMock).toHaveBeenCalledTimes(1);
     expect(sendChatMock.mock.calls[0][0]).toBe("session-fresh");
   });
+  it("preserves the student WebSocket while expired authentication is restored", async () => {
+  ensureAuthMock.mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-1",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_000,
+  });
 
-  it("uses the global auth session and logout boundary when mounted in the application", async () => {
+  vi.mocked(api.login).mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-2",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_100,
+  });
+
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <AuthProvider>{children}</AuthProvider>
+  );
+
+  const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  expect(socketConnectMock).toHaveBeenCalledTimes(1);
+  expect(socketCloseMock).not.toHaveBeenCalled();
+
+  act(() => {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  });
+
+  await act(async () => {
+    await result.current.authenticate("user", "password");
+  });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  expect(socketConnectMock).toHaveBeenCalledTimes(1);
+  expect(socketCloseMock).not.toHaveBeenCalled();
+});
+
+it("clears the previous request error after expired authentication is restored", async () => {
+  ensureAuthMock.mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-1",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_000,
+  });
+
+  vi.mocked(api.login).mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-2",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_100,
+  });
+
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <AuthProvider>{children}</AuthProvider>
+  );
+
+  const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  act(() => {
+socketEventHandlerRef.current?.({
+  v: "1",
+  type: "command.error",
+  timestamp: "2026-08-29T00:00:00Z",
+  payload: {
+    message: "Authentication required",
+  },
+});
+});
+
+  expect(result.current.requestError).toBe("Authentication required");
+
+  act(() => {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  });
+
+  await act(async () => {
+    await result.current.authenticate("user", "password");
+  });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  expect(result.current.requestError).toBe("");
+});
+it("uses the global auth session and logout boundary when mounted in the application", async () => {
     ensureAuthMock.mockResolvedValue({
       user_id: "user-1",
       csrf_token: "csrf-1",
