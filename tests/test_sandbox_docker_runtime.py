@@ -189,3 +189,24 @@ def test_scratch_sends_json_request_to_the_container_stdin() -> None:
     assert communicate_call is not None
     assert communicate_call.kwargs["input"] == b'{"source": "print(1)"}'
     assert "--interactive" in spawn_call.args
+
+
+def test_runtime_usage_returns_only_current_cpu_and_memory_percentages() -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+
+    adapter = DockerRuntimeAdapter(DockerRuntimeConfig(image="registry.example/nova@sha256:" + "5" * 64))
+
+    async def exercise() -> tuple[dict[str, float], tuple[object, ...]]:
+        with patch("server.sandbox.docker_runtime.asyncio.create_subprocess_exec") as spawn:
+            process = AsyncMock()
+            process.returncode = 0
+            process.communicate.return_value = (b"12.50%|3.25%\n", b"")
+            spawn.return_value = process
+            usage = await adapter.usage("container-id")
+            return usage, spawn.call_args.args
+
+    usage, command = asyncio.run(exercise())
+    assert usage == {"cpu_percent": 12.5, "memory_percent": 3.25}
+    assert command == (
+        "docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemPerc}}", "container-id"
+    )

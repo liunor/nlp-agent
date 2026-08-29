@@ -7,6 +7,8 @@ the browser are only capabilities to be verified, never ownership inputs.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .contracts import SandboxScope
@@ -14,6 +16,7 @@ from .inmemory_runtime import InMemoryRuntime
 from .manager import WarmPoolManager
 from .service import sandbox_lifecycle_service
 from .ticket import SandboxTicketClaims, SandboxTicketSigner
+from .runtime_profile import public_runtime_profile
 
 
 class SandboxGateway:
@@ -25,12 +28,14 @@ class SandboxGateway:
         ticket_signer: SandboxTicketSigner,
         manager: WarmPoolManager | None = None,
         inmemory: InMemoryRuntime | None = None,
+        runtime_backend: str = "runsc",
     ) -> None:
         self._mode = mode
         self._session_factory = session_factory
         self._ticket_signer = ticket_signer
         self._manager = manager
         self._inmemory = inmemory or InMemoryRuntime()
+        self._runtime_backend = runtime_backend
 
     async def open(self, session: AsyncSession, scope: SandboxScope) -> dict[str, object]:
         if self._mode == "docker":
@@ -44,14 +49,34 @@ class SandboxGateway:
                 )
         else:
             lease_payload = await sandbox_lifecycle_service.ensure_current_lease(session, scope)
+        environment = lease_payload.get("environment")
+        profile_id = (
+            str(environment.get("profile") or "python-base")
+            if isinstance(environment, dict)
+            else "python-base"
+        )
+        runtime_profile = public_runtime_profile(
+            profile_id, mode=self._mode, backend=self._runtime_backend
+        )
         if self._mode == "inmemory":
-            return {**lease_payload, "runtime_available": True, "runtime": {"kind": "inmemory", "ticket": None}}
+            return {
+                **lease_payload,
+                "runtime_available": True,
+                "runtime": {"kind": "inmemory", "ticket": None},
+                "runtime_profile": runtime_profile,
+            }
         manager = self._require_manager()
         lease = lease_payload["lease"]
         assert isinstance(lease, dict)
         claim = await manager.claim(scope, lease_id=str(lease["id"]))
         if claim is None:
-            return {**lease_payload, "runtime_available": False, "runtime": None, "pool_status": "warming"}
+            return {
+                **lease_payload,
+                "runtime_available": False,
+                "runtime": None,
+                "pool_status": "warming",
+                "runtime_profile": runtime_profile,
+            }
         ticket = self._ticket_signer.issue(
             SandboxTicketClaims(
                 scope.owner_user_id, scope.auth_session_id, str(lease["id"]), claim.runtime.id,
@@ -62,6 +87,7 @@ class SandboxGateway:
             **lease_payload,
             "runtime_available": True,
             "runtime": {"id": claim.runtime.id, "generation": claim.runtime.generation, "ticket": ticket},
+            "runtime_profile": runtime_profile,
         }
 
     async def execute(self, scope: SandboxScope, *, source: str, ticket: str | None) -> dict[str, object]:
@@ -73,6 +99,23 @@ class SandboxGateway:
             generation=claims.generation, nonce=claims.nonce, source=source,
         )
         return {**result, "ticket": self._ticket_signer.issue(claims.without_nonce())}
+
+    async def runtime_usage(self, scope: SandboxScope, *, ticket: str | None) -> dict[str, object]:
+        """Return bounded, user-safe usage samples for the active sandbox."""
+        if self._mode == "inmemory":
+            return {"cpu_percent": None, "memory_percent": None, "sampled_at": None}
+        claims = self._claims(scope, ticket)
+        usage = await self._require_manager().runtime_usage(
+            scope,
+            lease_id=claims.lease_id,
+            runtime_id=claims.runtime_id,
+            generation=claims.generation,
+        )
+        return {
+            "cpu_percent": usage.get("cpu_percent"),
+            "memory_percent": usage.get("memory_percent"),
+            "sampled_at": datetime.now(UTC).isoformat(),
+        }
 
     async def restart(self, scope: SandboxScope, *, ticket: str | None) -> dict[str, object]:
         if self._mode == "inmemory":

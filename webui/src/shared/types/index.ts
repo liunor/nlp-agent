@@ -80,8 +80,9 @@ export interface TeachingGoals {
 }
 
 export type AvailabilityStatus = "enabled" | "disabled";
+export const DEFAULT_QUESTION_TYPES = ["简答", "选择题", "判断题", "填空题", "编程题", "代码阅读题", "计算题", "论述题"] as const;
 export type BlueprintStatus = "draft" | AvailabilityStatus;
-export interface KnowledgePoint { id: string; name: string; markdown: string; status: AvailabilityStatus; sort_order: number }
+export interface KnowledgePoint { id: string; name: string; markdown: string; status: AvailabilityStatus; sort_order: number; question_types?: string[] }
 export interface CourseTopic { id: string; name: string; description: string; status: AvailabilityStatus; knowledge_points: KnowledgePoint[] }
 export interface RubricPoint { id?: string; criterion: string; weight: number }
 export interface ExerciseBlueprint { id: string; name: string; topic_id: string; knowledge_point_id: string; instructions: string; question_type: string; status: BlueprintStatus; rubric: RubricPoint[] }
@@ -217,8 +218,24 @@ export interface SessionSummary {
   user_id: string;
   workspace_id: string;
   channel: string;
-  created_at?: number;
-  last_active?: number;
+  created_at?: string | number;
+  last_active?: string | number;
+}
+
+export interface SessionListResponse {
+  items: SessionSummary[];
+  total?: number;
+  offset?: number;
+  limit?: number;
+  has_more?: boolean;
+}
+
+export interface AgentSessionStats {
+  sessions_total: number;
+  sessions_active: number;
+  turns_total: number | null;
+  turns_last_24h: number | null;
+  last_activity_at: string | number | null;
 }
 
 export interface TurnRecord {
@@ -367,6 +384,8 @@ export interface RbacRole { code: string; name: string; description: string; sta
 export interface RbacPermission { code: string; name: string; description: string; status: string }
 export interface SystemMenu { id: string; parent_id: string | null; type: string; name: string; route_path: string | null; component_key: string | null; permission_id: string | null; client_scope: string | null; sort_order: number; visible: boolean; status: string }
 export interface AuthorizationAuditRecord { id: string; actor_user_id: string | null; target_user_id: string | null; decision: string; reason_code: string; permission_code: string | null; resource_type: string | null; resource_id: string | null; detail: Record<string, unknown>; created_at: string }
+export interface AuthorizationAuditListResponse { items: AuthorizationAuditRecord[]; total: number; offset: number; limit: number; has_more: boolean }
+export interface AuthorizationAuditSummary { period_days: number; since: string; total: number; by_decision: Record<string, number>; top_reasons: Array<{ reason_code: string; count: number }> }
 
 export interface UserListResponse {
   users: UserProfile[];

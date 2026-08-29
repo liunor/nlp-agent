@@ -449,11 +449,20 @@ class MySQLGatewayRepository:
         with self._engine.begin() as c:
             c.execute(text("DELETE FROM nlp_turn_events WHERE turn_id IN (SELECT id FROM nlp_turns WHERE conversation_id=:s)"), {"s": session_id})
             c.execute(text("DELETE FROM nlp_turn_cancellations WHERE turn_id IN (SELECT id FROM nlp_turns WHERE conversation_id=:s)"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_tool_audits WHERE turn_id IN (SELECT id FROM nlp_turns WHERE conversation_id=:s)"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_tool_calls WHERE turn_id IN (SELECT id FROM nlp_turns WHERE conversation_id=:s)"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_conversation_transcripts WHERE session_id=:s"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_agent_checkpoints WHERE session_id=:s"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_memory_archives WHERE session_id=:s"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_langgraph_checkpoints WHERE thread_id=:s"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_langgraph_checkpoint_blobs WHERE thread_id=:s"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_langgraph_checkpoint_writes WHERE thread_id=:s"), {"s": session_id})
+            c.execute(text("DELETE FROM nlp_observability_records WHERE session_id=:s"), {"s": session_id})
             c.execute(text("DELETE FROM nlp_turns WHERE conversation_id=:s"), {"s": session_id})
             c.execute(text("DELETE FROM nlp_conversation_messages WHERE conversation_id=:s"), {"s": session_id})
             c.execute(text("DELETE FROM nlp_guided_sessions WHERE conversation_id=:s"), {"s": session_id})
             c.execute(text("DELETE FROM nlp_exercise_sessions WHERE conversation_id=:s"), {"s": session_id})
-            c.execute(text("DELETE FROM nlp_conversations WHERE id=:s"), {"s": session_id})
+            c.execute(text("UPDATE nlp_conversations SET status='deleted', updated_at=UTC_TIMESTAMP(6) WHERE id=:s"), {"s": session_id})
     def latest_event_sequence(self, turn_id: str) -> int:
         with self._engine.connect() as c: return int(c.execute(text("SELECT COALESCE(MAX(sequence),0) FROM nlp_turn_events WHERE turn_id=:id"), {"id": turn_id}).scalar_one())
     def recover_interrupted(self):

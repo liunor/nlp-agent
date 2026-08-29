@@ -49,9 +49,15 @@ class DeepSeekChatModel(ChatDeepSeek):
     def _create_chat_result(self, response: Any, generation_info: dict | None = None):
         result = super()._create_chat_result(response, generation_info)
         raw = response.model_dump() if hasattr(response, "model_dump") else dict(response)
-        usage = normalize_usage(raw.get("usage") or {})
+        response_id = raw.get("id")
+        raw_usage = raw.get("usage") or {}
+        usage = normalize_usage(raw_usage)
         for generation in result.generations:
+            if response_id:
+                generation.message.response_metadata["provider_response_id"] = response_id
+                generation.message.additional_kwargs["provider_response_id"] = response_id
             generation.message.additional_kwargs["provider_usage"] = usage
+            generation.message.additional_kwargs["provider_usage_raw"] = raw_usage
             if usage["total_tokens"]:
                 generation.message.usage_metadata = {
                     "input_tokens": usage["input_tokens"],
@@ -68,16 +74,23 @@ class DeepSeekChatModel(ChatDeepSeek):
         result = super()._convert_chunk_to_generation_chunk(
             chunk, default_chunk_class, base_generation_info
         )
-        if result is not None and chunk.get("usage"):
-            usage = normalize_usage(chunk["usage"])
-            result.message.additional_kwargs["provider_usage"] = usage
-            result.message.usage_metadata = {
-                "input_tokens": usage["input_tokens"],
-                "output_tokens": usage["output_tokens"],
-                "total_tokens": usage["total_tokens"],
-                "input_token_details": usage["input_token_details"],
-                "output_token_details": usage["output_token_details"],
-            }
+        if result is not None:
+            response_id = chunk.get("id")
+            if response_id:
+                result.message.response_metadata["provider_response_id"] = response_id
+                result.message.additional_kwargs["provider_response_id"] = response_id
+            if chunk.get("usage"):
+                raw_usage = chunk["usage"]
+                usage = normalize_usage(raw_usage)
+                result.message.additional_kwargs["provider_usage"] = usage
+                result.message.additional_kwargs["provider_usage_raw"] = raw_usage
+                result.message.usage_metadata = {
+                    "input_tokens": usage["input_tokens"],
+                    "output_tokens": usage["output_tokens"],
+                    "total_tokens": usage["total_tokens"],
+                    "input_token_details": usage["input_token_details"],
+                    "output_token_details": usage["output_token_details"],
+                }
         return result
 
 

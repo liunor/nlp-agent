@@ -716,6 +716,49 @@ class WarmPoolManager:
             await self.destroy_runtime(runtime_id, reason="execution.timeout")
             raise
 
+    async def runtime_usage(
+        self,
+        scope: SandboxScope,
+        *,
+        lease_id: str,
+        runtime_id: str,
+        generation: int,
+    ) -> dict[str, float | None]:
+        """Return current public usage percentages for the caller's runtime."""
+        async with self._session_factory() as session:
+            runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id)
+            lease = await session.get(SandboxLeaseModel, lease_id)
+            auth_session = None if lease is None else await session.get(SessionModel, lease.auth_session_id)
+            user = None if lease is None else await session.get(UserModel, lease.user_id)
+            if runtime is None:
+                raise LookupError("sandbox runtime does not exist")
+            if lease is None or not runtime_control_allows(
+                scope=scope,
+                lease=lease,
+                runtime=runtime,
+                expected_generation=generation,
+                now=_utc_now(),
+            ) or not auth_lifecycle_allows_execution(
+                lease=lease,
+                auth_session=auth_session,
+                user=user,
+                scope_generation=scope.generation,
+                scope_workspace_id=scope.workspace_id,
+                now=_utc_now(),
+            ):
+                raise PermissionError("sandbox usage is not authorized for this lease")
+            external_id = runtime.external_runtime_id
+        if not external_id:
+            raise LookupError("sandbox runtime has no Docker container")
+        usage_reader = getattr(self._docker, "usage", None)
+        if not callable(usage_reader):
+            return {"cpu_percent": None, "memory_percent": None}
+        usage = await usage_reader(external_id)
+        return {
+            "cpu_percent": float(usage["cpu_percent"]),
+            "memory_percent": float(usage["memory_percent"]),
+        }
+
     async def _retry_draining_runtimes(self) -> None:
         async with self._session_factory() as session:
             runtime_ids = list(

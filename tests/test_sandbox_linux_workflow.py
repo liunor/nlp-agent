@@ -30,6 +30,14 @@ def test_linux_smoke_uses_the_registered_gvisor_runtime() -> None:
     assert "pip install -r requirements.txt" in workflow
 
 
+def test_linux_smoke_executes_the_pinned_cpu_torch_import() -> None:
+    workflow = Path(".github/workflows/sandbox-linux.yml").read_text(encoding="utf-8")
+
+    assert 'docker exec nova-ci python -c "import torch;' in workflow
+    assert "torch.__version__.split('+')[0] == '2.7.1'" in workflow
+    assert "not torch.cuda.is_available()" in workflow
+
+
 def test_matrix_writeback_dispatches_main_ci_for_the_new_branch_head() -> None:
     workflow = Path(".github/workflows/sandbox-linux.yml").read_text(encoding="utf-8")
     persistence = workflow.split("      - name: Persist preload compatibility matrix", 1)[1]

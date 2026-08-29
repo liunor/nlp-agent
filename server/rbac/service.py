@@ -307,14 +307,122 @@ class RbacService:
             await result
 
     async def audit_records(
-        self, session: AsyncSession, *, limit: int = 100, actor_user_id: str | None = None
+        self,
+        session: AsyncSession,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        actor_user_id: str | None = None,
+        decision: str | None = None,
+        reason_code: str | None = None,
     ) -> list[AuthorizationAuditLogModel]:
-        statement = select(AuthorizationAuditLogModel).order_by(
-            AuthorizationAuditLogModel.created_at.desc()
-        ).limit(max(1, min(limit, 500)))
+        statement = self._audit_statement(
+            actor_user_id=actor_user_id,
+            decision=decision,
+            reason_code=reason_code,
+        ).order_by(
+            AuthorizationAuditLogModel.created_at.desc(),
+            AuthorizationAuditLogModel.id.desc(),
+        ).offset(max(0, offset)).limit(max(1, min(limit, 500)))
+        return list((await session.scalars(statement)).all())
+
+    @staticmethod
+    def _audit_statement(
+        *,
+        actor_user_id: str | None = None,
+        decision: str | None = None,
+        reason_code: str | None = None,
+    ):
+        statement = select(AuthorizationAuditLogModel)
         if actor_user_id is not None:
             statement = statement.where(AuthorizationAuditLogModel.actor_user_id == actor_user_id)
-        return list((await session.scalars(statement)).all())
+        if decision is not None:
+            statement = statement.where(AuthorizationAuditLogModel.decision == decision)
+        if reason_code is not None:
+            statement = statement.where(AuthorizationAuditLogModel.reason_code == reason_code)
+        return statement
+
+    async def audit_page(
+        self,
+        session: AsyncSession,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        actor_user_id: str | None = None,
+        decision: str | None = None,
+        reason_code: str | None = None,
+    ) -> tuple[list[AuthorizationAuditLogModel], int]:
+        """Return one deterministic audit page and its total row count."""
+        statement = self._audit_statement(
+            actor_user_id=actor_user_id,
+            decision=decision,
+            reason_code=reason_code,
+        )
+        total = int(
+            await session.scalar(
+                select(func.count()).select_from(statement.order_by(None).subquery())
+            )
+            or 0
+        )
+        rows = list(
+            (
+                await session.scalars(
+                    statement.order_by(
+                        AuthorizationAuditLogModel.created_at.desc(),
+                        AuthorizationAuditLogModel.id.desc(),
+                    )
+                    .offset(max(0, offset))
+                    .limit(max(1, min(limit, 500)))
+                )
+            ).all()
+        )
+        return rows, total
+
+    async def audit_summary(
+        self, session: AsyncSession, *, since: datetime
+    ) -> dict[str, object]:
+        """Aggregate audit volume without loading detail JSON into memory."""
+        base = select(AuthorizationAuditLogModel).where(
+            AuthorizationAuditLogModel.created_at >= since
+        )
+        total = int(
+            await session.scalar(
+                select(func.count()).select_from(base.order_by(None).subquery())
+            )
+            or 0
+        )
+        decision_rows = await session.execute(
+            select(
+                AuthorizationAuditLogModel.decision,
+                func.count().label("count"),
+            )
+            .where(AuthorizationAuditLogModel.created_at >= since)
+            .group_by(AuthorizationAuditLogModel.decision)
+        )
+        reason_rows = await session.execute(
+            select(
+                AuthorizationAuditLogModel.reason_code,
+                func.count().label("count"),
+            )
+            .where(AuthorizationAuditLogModel.created_at >= since)
+            .group_by(AuthorizationAuditLogModel.reason_code)
+            .order_by(func.count().desc(), AuthorizationAuditLogModel.reason_code)
+            .limit(10)
+        )
+        return {
+            "total": total,
+            "by_decision": {
+                str(row._mapping["decision"]): int(row._mapping["count"])
+                for row in decision_rows
+            },
+            "top_reasons": [
+                {
+                    "reason_code": str(row._mapping["reason_code"]),
+                    "count": int(row._mapping["count"]),
+                }
+                for row in reason_rows
+            ],
+        }
 
     async def read_sensitive_checkpoint(
         self,

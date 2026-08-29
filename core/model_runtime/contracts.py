@@ -40,6 +40,7 @@ class ModelCapabilities(FrozenModel):
 class ModelDefinition(FrozenModel):
     provider: str
     model_id: str
+    pricing_key: str | None = None
     context_window_tokens: int = Field(gt=0)
     max_output_tokens: int = Field(gt=0)
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)

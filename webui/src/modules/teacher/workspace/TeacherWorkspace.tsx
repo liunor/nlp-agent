@@ -1,9 +1,10 @@
-import { AlertCircle, AlertTriangle, BarChart3, BookOpen, CheckCircle2, ChevronLeft, FileQuestion, GraduationCap, LayoutDashboard, MessageCircleQuestion, RefreshCw, Save, Sparkles, Target, TrendingUp, Users } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { AlertCircle, AlertTriangle, BarChart3, BookOpen, CheckCircle2, ChevronLeft, FileQuestion, GraduationCap, LayoutDashboard, MessageCircleQuestion, RefreshCw, Sparkles, Target, TrendingUp, Users } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
-import { BlueprintCatalogEditor, GuidedBlueprintCatalogEditor, TopicCatalogEditor } from "@/modules/teacher/workspace/TeacherCatalogManager";
+import { BlueprintCatalogEditor, GuidedBlueprintCatalogEditor, TopicCatalogEditor } from "@/modules/teacher/workspace/TeacherCatalogEditor";
 import { TeacherBookEditor } from "@/modules/teacher/workspace/TeacherBookEditor";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
+import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { api, ensureAuth } from "@/platform/http/api";
 import type { TeacherCatalog, TeacherOverview } from "@/shared/types";
 import { resolveWorkspaceId } from "@/shared/utils/workspace";
@@ -23,7 +24,7 @@ const pageFromPath = (): TeacherPage => {
   return candidate in PAGE_LABELS ? candidate : "overview";
 };
 
-function SaveActions({ saving, message, onSave }: { saving: boolean; message: string; onSave: () => void }) { return <div className="teacher-form-actions"><button type="button" disabled={saving} onClick={onSave}><Save size={16} />{saving ? "正在保存…" : "保存教学目录"}</button>{message && <span role="status">{message}</span>}</div>; }
+type PendingTeacherAction = { kind: "navigate"; page: TeacherPage } | { kind: "reload" } | { kind: "exit" };
 
 function Overview({ data, catalog }: { data: TeacherOverview; catalog: TeacherCatalog }) { return <div className="teacher-stack"><section className="teacher-welcome"><div><span>TEACHER MODE</span><h1>NLP 教师空间</h1><p>在一个教学目录里维护主题、知识点与蓝图。学生端的可选主题和后端动态提示词都会使用这一份数据。</p></div><GraduationCap size={64} /></section><div className="teacher-kpis"><article><BookOpen /><span>教学主题</span><strong>{catalog.topics.length}</strong></article><article><Sparkles /><span>出题蓝图</span><strong>{catalog.exercise_blueprints.length}</strong></article><article><Target /><span>复习蓝图</span><strong>{catalog.review_blueprints.length}</strong></article><article><FileQuestion /><span>学生问题</span><strong>{data.summary.questions}</strong></article></div></div>; }
 
@@ -61,13 +62,118 @@ function ReportsPage({ data }: { data: TeacherOverview }) {
 }
 
 export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: TeacherPage; onNavigate?: (page: TeacherPage) => void }) {
-  const [localPage, setPage] = useState<TeacherPage>(routedPage ?? pageFromPath); const [data, setData] = useState<TeacherOverview | null>(null); const [catalog, setCatalog] = useState<TeacherCatalog | null>(null); const [workspaceId, setWorkspaceId] = useState("default"); const [loading, setLoading] = useState(true); const [saving, setSaving] = useState(false); const [error, setError] = useState(""); const [saveMessage, setSaveMessage] = useState("");
+  const [localPage, setPage] = useState<TeacherPage>(routedPage ?? pageFromPath);
+  const [data, setData] = useState<TeacherOverview | null>(null);
+  const [catalog, setCatalog] = useState<TeacherCatalog | null>(null);
+  const [savedCatalogSnapshot, setSavedCatalogSnapshot] = useState("");
+  const [bookDirty, setBookDirty] = useState(false);
+  const [bookEditorGeneration, setBookEditorGeneration] = useState(0);
+  const [pendingAction, setPendingAction] = useState<PendingTeacherAction | null>(null);
+  const [workspaceId, setWorkspaceId] = useState("default");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saveMessage, setSaveMessage] = useState("");
   const page = routedPage ?? localPage;
-  const load = useCallback(async () => { setLoading(true); setError(""); try { const auth = await ensureAuth(); if (!auth.roles.some((role) => role === "developer" || role === "teacher")) throw new Error("当前账户没有教师权限"); const settings = await api.getSettings(); const selectedWorkspaceId = resolveWorkspaceId(auth, settings.preferences.settings ?? {}); const [overview, catalogResult] = await Promise.all([page === "book" ? Promise.resolve(null) : api.getTeacherOverview(selectedWorkspaceId), api.getTeacherCatalog(selectedWorkspaceId)]); setWorkspaceId(selectedWorkspaceId); setData(overview); setCatalog({ ...catalogResult.catalog, guided_blueprints: catalogResult.catalog.guided_blueprints ?? [] }); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setLoading(false); } }, [page]);
+  const needsOverview = page === "overview" || page === "questions" || page === "reports";
+  const isCatalogEditor = page === "topics" || page === "exercises" || page === "reviews" || page === "guided";
+  const catalogDirty = Boolean(catalog && savedCatalogSnapshot && JSON.stringify(catalog) !== savedCatalogSnapshot);
+  const dirty = catalogDirty || bookDirty;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const auth = await ensureAuth();
+      if (!auth.roles.some((role) => role === "developer" || role === "teacher")) throw new Error("当前账户没有教师权限");
+      const settings = await api.getSettings();
+      const selectedWorkspaceId = resolveWorkspaceId(auth, settings.preferences.settings ?? {});
+      const [overview, catalogResult] = await Promise.all([needsOverview ? api.getTeacherOverview(selectedWorkspaceId) : Promise.resolve(null), api.getTeacherCatalog(selectedWorkspaceId)]);
+      const nextCatalog = { ...catalogResult.catalog, guided_blueprints: catalogResult.catalog.guided_blueprints ?? [] };
+      setWorkspaceId(selectedWorkspaceId);
+      setData(overview);
+      setCatalog(nextCatalog);
+      setSavedCatalogSnapshot(JSON.stringify(nextCatalog));
+      setBookDirty(false);
+      setSaveMessage("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [needsOverview]);
+
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
-  const save = useCallback(async () => { if (!catalog) return; setSaving(true); setSaveMessage(""); try { const result = await api.updateTeacherCatalog(workspaceId, { topics: catalog.topics, exercise_blueprints: catalog.exercise_blueprints, review_blueprints: catalog.review_blueprints, guided_blueprints: catalog.guided_blueprints }); setCatalog(result.catalog); setSaveMessage("已保存并同步到后端。"); } catch (reason) { setSaveMessage(`保存失败：${reason instanceof Error ? reason.message : String(reason)}`); } finally { setSaving(false); } }, [catalog, workspaceId]);
-  const navigate = (next: TeacherPage) => { if (onNavigate) onNavigate(next); else { history.pushState({}, "", next === "overview" ? "/teacher" : `/teacher/${next}`); setPage(next); } };
-  const editable = (children: ReactNode) => <>{children}<SaveActions saving={saving} message={saveMessage} onSave={() => void save()} /></>;
-  const content = page === "book" ? <TeacherBookEditor workspaceId={workspaceId} catalog={catalog ?? undefined} onCatalogChange={setCatalog} /> : !data || !catalog ? null : page === "topics" ? editable(<TopicCatalogEditor topics={catalog.topics} onChange={(topics) => { setCatalog({ ...catalog, topics }); setSaveMessage(""); }} />) : page === "exercises" ? editable(<BlueprintCatalogEditor kind="exercise" topics={catalog.topics} blueprints={catalog.exercise_blueprints} exerciseBlueprints={catalog.exercise_blueprints} onChange={(exercise_blueprints) => { setCatalog({ ...catalog, exercise_blueprints: exercise_blueprints as TeacherCatalog["exercise_blueprints"] }); setSaveMessage(""); }} />) : page === "reviews" ? editable(<BlueprintCatalogEditor kind="review" topics={catalog.topics} blueprints={catalog.review_blueprints} exerciseBlueprints={catalog.exercise_blueprints} onChange={(review_blueprints) => { setCatalog({ ...catalog, review_blueprints: review_blueprints as TeacherCatalog["review_blueprints"] }); setSaveMessage(""); }} />) : page === "guided" ? editable(<GuidedBlueprintCatalogEditor topics={catalog.topics} blueprints={catalog.guided_blueprints} onChange={(guided_blueprints) => { setCatalog({ ...catalog, guided_blueprints }); setSaveMessage(""); }} />) : page === "questions" ? <QuestionsPage data={data} /> : page === "reports" ? <ReportsPage data={data} /> : <Overview data={data} catalog={catalog} />;
-  return <div className="teacher-shell"><aside className="teacher-nav"><div className="teacher-brand"><GraduationCap /><span><strong>NLP 教师空间</strong><small>Teacher workspace</small></span><button type="button" onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />刷新</button></div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className={['teacher-main', page === "book" && "teacher-book-main"].filter(Boolean).join(" ")}><header className="teacher-topbar"><div><h1>{PAGE_LABELS[page]}</h1><span>{workspaceId} workspace · 目录修改需保存后生效</span></div><div className="teacher-topbar-actions"><SchoolLogo /></div></header><div className={`teacher-content ${page === "book" ? "teacher-content-book" : ""}`}>{loading ? <div className="teacher-state"><RefreshCw className="spin" />正在加载教学目录…</div> : error ? <div className="teacher-state error"><AlertCircle /><strong>无法进入教师模式</strong><p>{error}</p></div> : content}</div></main></div>;
+
+  useEffect(() => {
+    if (!dirty) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [dirty]);
+
+  const save = useCallback(async () => {
+    if (!catalog) return;
+    setSaving(true);
+    setSaveMessage("");
+    try {
+      const result = await api.updateTeacherCatalog(workspaceId, { topics: catalog.topics, exercise_blueprints: catalog.exercise_blueprints, review_blueprints: catalog.review_blueprints, guided_blueprints: catalog.guided_blueprints });
+      setCatalog(result.catalog);
+      setSavedCatalogSnapshot(JSON.stringify(result.catalog));
+      setSaveMessage("已保存并同步到后端。");
+    } catch (reason) {
+      setSaveMessage(`保存失败：${reason instanceof Error ? reason.message : String(reason)}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [catalog, workspaceId]);
+
+  const performNavigation = (next: TeacherPage) => {
+    if (onNavigate) onNavigate(next);
+    else {
+      history.pushState({}, "", next === "overview" ? "/teacher" : `/teacher/${next}`);
+      setPage(next);
+    }
+  };
+  const navigate = (next: TeacherPage) => {
+    if (next === page) return;
+    if (dirty) setPendingAction({ kind: "navigate", page: next });
+    else performNavigation(next);
+  };
+  const requestReload = () => { if (dirty) setPendingAction({ kind: "reload" }); else void load(); };
+  const discardDraft = () => {
+    if (savedCatalogSnapshot) {
+      try { setCatalog(JSON.parse(savedCatalogSnapshot) as TeacherCatalog); } catch { /* A server snapshot is always valid JSON. */ }
+    }
+    setBookDirty(false);
+    setSaveMessage("");
+  };
+  const confirmPendingAction = () => {
+    if (!pendingAction) return;
+    const action = pendingAction;
+    setPendingAction(null);
+    discardDraft();
+    if (action.kind === "navigate") performNavigation(action.page);
+    else if (action.kind === "reload") {
+      setBookEditorGeneration((current) => current + 1);
+      void load();
+    }
+    else window.location.assign("/");
+  };
+  const saveProps = { saving, saveMessage, onSave: () => void save() };
+  const updateDraft = (nextCatalog: TeacherCatalog) => { setCatalog(nextCatalog); setSaveMessage(""); };
+  const content = page === "book"
+    ? <TeacherBookEditor key={bookEditorGeneration} workspaceId={workspaceId} catalog={catalog ?? undefined} onCatalogChange={(nextCatalog) => { setCatalog(nextCatalog); setSavedCatalogSnapshot(JSON.stringify(nextCatalog)); }} onDirtyChange={setBookDirty} />
+    : !catalog || (needsOverview && !data) ? null
+      : page === "topics" ? <TopicCatalogEditor topics={catalog.topics} onChange={(topics) => updateDraft({ ...catalog, topics })} saveProps={saveProps} />
+        : page === "exercises" ? <BlueprintCatalogEditor kind="exercise" topics={catalog.topics} blueprints={catalog.exercise_blueprints} onChange={(exercise_blueprints) => updateDraft({ ...catalog, exercise_blueprints: exercise_blueprints as TeacherCatalog["exercise_blueprints"] })} saveProps={saveProps} />
+          : page === "reviews" ? <BlueprintCatalogEditor kind="review" topics={catalog.topics} blueprints={catalog.review_blueprints} onChange={(review_blueprints) => updateDraft({ ...catalog, review_blueprints: review_blueprints as TeacherCatalog["review_blueprints"] })} saveProps={saveProps} />
+            : page === "guided" ? <GuidedBlueprintCatalogEditor topics={catalog.topics} blueprints={catalog.guided_blueprints} onChange={(guided_blueprints) => updateDraft({ ...catalog, guided_blueprints })} saveProps={saveProps} />
+              : page === "questions" ? <QuestionsPage data={data!} />
+                : page === "reports" ? <ReportsPage data={data!} />
+                  : <Overview data={data!} catalog={catalog} />;
+  return <div className="teacher-shell"><aside className="teacher-nav"><div className="teacher-brand"><GraduationCap /><span><strong>NLP 教师空间</strong><small>Teacher workspace</small></span><button type="button" onClick={requestReload} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />刷新</button></div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/" onClick={(event) => { if (!dirty) return; event.preventDefault(); setPendingAction({ kind: "exit" }); }}><ChevronLeft size={16} />返回学生模式</a></aside><main className={['teacher-main', page === "book" && "teacher-book-main", isCatalogEditor && "teacher-catalog-main"].filter(Boolean).join(" ")}><header className="teacher-topbar"><div><h1>{PAGE_LABELS[page]}</h1><span>{workspaceId} workspace · 目录修改需保存后生效</span></div><div className="teacher-topbar-actions"><SchoolLogo /></div></header><div className={`teacher-content ${page === "book" ? "teacher-content-book" : isCatalogEditor ? "teacher-content-catalog" : ""}`}>{loading ? <div className="teacher-state"><RefreshCw className="spin" />正在加载教学目录…</div> : error ? <div className="teacher-state error"><AlertCircle /><strong>无法进入教师模式</strong><p>{error}</p></div> : content}</div></main>{pendingAction && <ConfirmDialog open title="有未保存的修改" description="当前页面存在未保存的内容，继续操作会丢弃这些修改。" confirmLabel="继续离开" cancelLabel="留在当前页面" onClose={() => setPendingAction(null)} onConfirm={confirmPendingAction} />}</div>;
 }

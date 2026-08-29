@@ -41,9 +41,12 @@ class MemoryCurator:
                 archives=archive_text,
             )
         )
-        result = await get_tool_llm().with_structured_output(MemoryCurationResult).ainvoke(
-            [system, prompt]
-        )
+        from core.model_runtime.usage import bind_usage_purpose
+
+        with bind_usage_purpose("memory"):
+            result = await get_tool_llm().with_structured_output(
+                MemoryCurationResult
+            ).ainvoke([system, prompt])
 
         applied = 0
         for operation in result.operations if result else []:

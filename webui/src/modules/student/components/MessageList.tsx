@@ -1,5 +1,5 @@
 import { Check, Copy, GraduationCap, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 
 import { ActivityPanel } from "./ActivityPanel";
 import { MarkdownContent, stripInternalChatMetadata } from "./MarkdownContent";
@@ -39,10 +39,11 @@ export async function copyTextToClipboard(text: string): Promise<void> {
     activeElement?.focus();
   }
 }
-function AssistantMessage({ message, showReasoning, onFollowUp }: {
+const AssistantMessage = memo(function AssistantMessage({ message, showReasoning, streamRenderIntervalMs, onFollowUp }: {
   message: ChatMessage;
 
   showReasoning: boolean;
+  streamRenderIntervalMs: number;
   onFollowUp: (text: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -75,7 +76,7 @@ function AssistantMessage({ message, showReasoning, onFollowUp }: {
         ) : message.status === "cancelled" && !message.content ? (
           <div className="muted-card">已停止生成。</div>
         ) : (
-          <MarkdownContent streaming={streaming}>{message.content}</MarkdownContent>
+          <MarkdownContent streaming={streaming} streamRenderIntervalMs={streamRenderIntervalMs}>{message.content}</MarkdownContent>
         )}
         {!streaming && message.content && (
           <div className="message-actions">
@@ -86,9 +87,9 @@ function AssistantMessage({ message, showReasoning, onFollowUp }: {
       </div>
     </article>
   );
-}
+});
 
-function UserMessage({ message }: { message: ChatMessage }) {
+const UserMessage = memo(function UserMessage({ message }: { message: ChatMessage }) {
   let content = message.content;
   const attachments = [...(message.attachments || [])];
 
@@ -126,12 +127,13 @@ function UserMessage({ message }: { message: ChatMessage }) {
       {content}
     </div>
   );
-}
+});
 
-export function MessageList({ messages, loading, showReasoning, onFollowUp }: {
+export function MessageList({ messages, loading, showReasoning, streamRenderIntervalMs = 30, onFollowUp }: {
   messages: ChatMessage[];
   loading: boolean;
   showReasoning: boolean;
+  streamRenderIntervalMs?: number;
   onFollowUp: (text: string) => void;
 }) {
   if (loading) return <div className="empty-state"><span className="loading-dot" />正在加载学习记录…</div>;
@@ -154,6 +156,7 @@ export function MessageList({ messages, loading, showReasoning, onFollowUp }: {
   key={message.id}
   message={message}
   showReasoning={showReasoning}
+  streamRenderIntervalMs={streamRenderIntervalMs}
   onFollowUp={onFollowUp}
 />
       ))}

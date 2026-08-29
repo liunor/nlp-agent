@@ -8,9 +8,19 @@ export function useSessionScrollRestoration(sessionId: string | null, messages: 
   const positions = useRef(new Map<string, number>());
   const followBottom = useRef(new Map<string, boolean>());
   const pendingRestore = useRef<string | null>(sessionId);
+  const followBottomFrame = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     pendingRestore.current = sessionId;
+  }, [sessionId]);
+
+  useLayoutEffect(() => {
+    return () => {
+      if (followBottomFrame.current !== null) {
+        window.cancelAnimationFrame(followBottomFrame.current);
+        followBottomFrame.current = null;
+      }
+    };
   }, [sessionId]);
 
   useLayoutEffect(() => {
@@ -29,7 +39,14 @@ export function useSessionScrollRestoration(sessionId: string | null, messages: 
       return;
     }
 
-    if (followBottom.current.get(sessionId)) scroll.scrollTop = scroll.scrollHeight;
+    if (!followBottom.current.get(sessionId) || followBottomFrame.current !== null) return;
+    followBottomFrame.current = window.requestAnimationFrame(() => {
+      followBottomFrame.current = null;
+      const currentScroll = scrollRef.current;
+      if (currentScroll && followBottom.current.get(sessionId)) {
+        currentScroll.scrollTop = currentScroll.scrollHeight;
+      }
+    });
   }, [loading, messages, sessionId]);
 
   const onScroll = useCallback(() => {

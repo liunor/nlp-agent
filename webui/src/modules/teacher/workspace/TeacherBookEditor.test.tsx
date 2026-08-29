@@ -113,6 +113,18 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(screen.getByRole("textbox", { name: "教材正文 Markdown" })).toBeVisible();
   });
 
+  it("supports Ctrl+Z and Ctrl+Y source editing history", async () => {
+    render(<TeacherBookEditor workspaceId="workspace-1" />);
+    const editor = await screen.findByRole("textbox", { name: "教材正文 Markdown" }) as HTMLTextAreaElement;
+
+    fireEvent.change(editor, { target: { value: "第一版" } });
+    fireEvent.change(editor, { target: { value: "第二版" } });
+    fireEvent.keyDown(editor, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(editor).toHaveValue("第一版"));
+    fireEvent.keyDown(editor, { key: "y", ctrlKey: true });
+    await waitFor(() => expect(editor).toHaveValue("第二版"));
+  });
+
   it("inserts an image reference at the editor cursor and keeps a local preview", async () => {
     render(<TeacherBookEditor workspaceId="workspace-1" />);
     const editor = await screen.findByRole("textbox", { name: "教材正文 Markdown" }) as HTMLTextAreaElement;
@@ -123,8 +135,11 @@ describe("TeacherBookEditor Markdown authoring", () => {
     fireEvent.change(screen.getByLabelText("附加编辑图片"), { target: { files: [image] } });
 
     await waitFor(() => expect(editor).toHaveValue("图片说明\n![diagram.png](assets/diagram.png)"));
+    expect(screen.getByRole("status")).toHaveTextContent("保存草稿时会自动入库并重写 Markdown 图片地址");
+    expect(screen.queryByText("保存时会写入当前知识点的教材资源")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "预览正文" }));
     expect(screen.getByAltText("diagram.png")).toBeVisible();
+    expect(screen.getByText("diagram.png")).toHaveClass("markdown-image-caption");
   });
 
   it("keeps an attached image preview after the asset is saved to the page", async () => {
@@ -220,14 +235,45 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    expect(screen.getByRole("button", { name: "展开主题 PyTorch 基础" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "张量与形状" })).not.toBeInTheDocument();
     const search = screen.getByRole("searchbox", { name: "搜索教材目录" });
     await user.type(search, "张量");
     expect(screen.getByRole("button", { name: "张量与形状" })).toBeVisible();
     await user.clear(search);
-    await user.click(screen.getByRole("button", { name: "折叠主题 PyTorch 基础" }));
 
     expect(screen.getByRole("button", { name: "展开主题 PyTorch 基础" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "张量与形状" })).not.toBeInTheDocument();
+  });
+
+  it("hides status badges and sorts disabled entries after active entries", async () => {
+    const statusCatalog: TeacherCatalog = {
+      ...catalog,
+      topics: [{
+        ...catalog.topics[0],
+        knowledge_points: [
+          { ...catalog.topics[0].knowledge_points[0], status: "disabled" },
+          { id: "published", name: "已发布知识点", markdown: "", status: "enabled", sort_order: 1 },
+        ],
+      }],
+    };
+    getNavigationMock.mockResolvedValueOnce({
+      workspace_id: "workspace-1",
+      items: [
+        { topic_id: "pytorch", topic_name: "PyTorch 基础", knowledge_point_id: "tensor", title: "张量与形状", sort_order: 0, topic_status: "enabled", knowledge_point_status: "disabled", has_draft: true, has_published: true, revision: 1, published_revision: 1 },
+        { topic_id: "pytorch", topic_name: "PyTorch 基础", knowledge_point_id: "published", title: "已发布知识点", sort_order: 1, topic_status: "enabled", knowledge_point_status: "enabled", has_draft: true, has_published: true, revision: 1, published_revision: 1 },
+      ],
+    });
+    render(<TeacherBookEditor workspaceId="workspace-1" catalog={statusCatalog} onCatalogChange={vi.fn()} />);
+
+    await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    await userEvent.setup().click(screen.getByRole("button", { name: "展开主题 PyTorch 基础" }));
+    expect(screen.queryByText("已停用")).not.toBeInTheDocument();
+    expect(screen.queryByText("已发布")).not.toBeInTheDocument();
+    const pointButtons = [...document.querySelectorAll<HTMLButtonElement>(".teacher-book-tree-point-main")];
+    expect(pointButtons.map((button) => button.textContent?.trim())).toEqual(["已发布知识点", "张量与形状"]);
+    expect(pointButtons[0]?.closest(".teacher-book-tree-point")).not.toHaveClass("is-disabled");
+    expect(pointButtons[1]?.closest(".teacher-book-tree-point")).toHaveClass("is-disabled");
   });
 
   it("persists knowledge point edits from the point options menu", async () => {
@@ -236,6 +282,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    await user.click(screen.getByRole("button", { name: "展开主题 PyTorch 基础" }));
     await user.click(screen.getByLabelText("张量与形状选项"));
     await user.click(screen.getByRole("button", { name: "编辑知识点" }));
     const dialog = screen.getByRole("dialog", { name: "编辑教材知识点" });
@@ -253,6 +300,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    await user.click(screen.getByRole("button", { name: "展开主题 PyTorch 基础" }));
     await user.click(screen.getByLabelText("张量与形状选项"));
     await user.click(screen.getByRole("button", { name: "删除知识点" }));
 

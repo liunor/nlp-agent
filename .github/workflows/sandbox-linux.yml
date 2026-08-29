@@ -66,6 +66,7 @@ jobs:
             fi
             sleep 1
           done
+          docker exec nova-ci python -c "import torch; assert torch.__version__.split('+')[0] == '2.7.1'; assert not torch.cuda.is_available()"
           echo '{"source":"print(42)"}' | docker exec --interactive nova-ci python /opt/nova-runtime/nova_runtime.py execute --timeout-seconds 10 --output-limit-bytes 1024
           docker rm --force nova-ci
       - name: Record Linux image metadata

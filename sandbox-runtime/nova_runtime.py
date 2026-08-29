@@ -21,6 +21,22 @@ KERNEL_CONNECTION_FILE = "/run/nova/kernel.json"
 ARTIFACT_DIRECTORY = Path("/workspace/artifacts")
 MAX_ARTIFACT_FILES = 16
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+EXPECTED_TORCH_VERSION = "2.7.1"
+
+
+def verify_runtime_dependencies() -> None:
+    """Fail readiness when the image does not contain the promised CPU runtime."""
+    try:
+        import torch
+    except ImportError as error:
+        raise RuntimeError("required runtime dependency torch is unavailable") from error
+    installed_version = str(torch.__version__).split("+", 1)[0]
+    if installed_version != EXPECTED_TORCH_VERSION:
+        raise RuntimeError(
+            f"torch version mismatch: expected {EXPECTED_TORCH_VERSION}, got {installed_version}"
+        )
+    if torch.cuda.is_available():
+        raise RuntimeError("CPU-only PyTorch runtime unexpectedly exposes CUDA")
 
 
 class OutputCollector:
@@ -121,6 +137,7 @@ def interrupt() -> None:
 
 def health() -> None:
     """Round-trip kernel_info; a connection file alone is not a readiness signal."""
+    verify_runtime_dependencies()
     from jupyter_client import BlockingKernelClient
 
     client = BlockingKernelClient(connection_file=KERNEL_CONNECTION_FILE)
@@ -233,7 +250,7 @@ def main() -> int:
         result = scratch(request) if arguments.command == "scratch" else execute(request)
         print(json.dumps(result, ensure_ascii=False))
         return 0
-    except (TimeoutError, ValueError, OSError) as error:
+    except (TimeoutError, ValueError, OSError, RuntimeError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         return 1
 

@@ -19,6 +19,9 @@ class FlashExerciseStudentSimulator:
             f"\n学生角色：{profile.role}\n行为规则：{profile.behavior_rules}"
             f"\n学习范围：{blueprint.knowledge_markdown}\n评分点：{blueprint.rubric}"
         ))
-        response = await self.model.ainvoke([system, HumanMessage(content=f"请作答这道题：\n{question}")])
+        from core.model_runtime.usage import system_usage_attribution
+
+        with system_usage_attribution(purpose="evaluation"):
+            response = await self.model.ainvoke([system, HumanMessage(content=f"请作答这道题：\n{question}")])
         content = response.content if isinstance(response.content, str) else ""
         return StudentAnswer(content=content.strip() or "我暂时无法完整作答，但我认为 TF 表示词在文档中的出现频率。")

@@ -180,6 +180,8 @@ async def test_execute_commits_started_execution_before_manager_rpc(monkeypatch)
     )
 
     assert result["status"] == "completed"
+    assert result["execution_metrics"]["output_bytes"] == 3
+    assert isinstance(result["execution_metrics"]["duration_ms"], int)
     assert events.index("commit:started") < events.index("manager:execute")
     assert events.index("commit:finished") > events.index("manager:execute")
 

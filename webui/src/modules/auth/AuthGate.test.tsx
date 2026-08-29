@@ -11,13 +11,13 @@ vi.mock("@/platform/http/api", () => ({
   api: { logout: vi.fn() },
 }));
 
-function renderGate(initialEntry = "/protected") {
+function renderGate(initialEntry = "/protected", allowGuest = false) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<p>登录页</p>} />
-          <Route element={<AuthGate><p>受保护内容</p></AuthGate>}>
+          <Route element={<AuthGate allowGuest={allowGuest}><p>受保护内容</p></AuthGate>}>
             <Route path="/protected" element={<p>受保护内容</p>} />
           </Route>
         </Routes>
@@ -49,5 +49,14 @@ describe("AuthGate", () => {
     renderGate();
 
     await waitFor(() => expect(screen.getByText("受保护内容")).toBeVisible());
+  });
+
+  it("renders the public student shell for an unauthenticated guest route", async () => {
+    vi.mocked(ensureAuth).mockResolvedValue(null as never);
+
+    renderGate("/protected", true);
+
+    expect(await screen.findByText("受保护内容")).toBeVisible();
+    expect(screen.queryByText("登录页")).not.toBeInTheDocument();
   });
 });

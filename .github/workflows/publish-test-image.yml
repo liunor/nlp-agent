@@ -209,3 +209,13 @@ jobs:
             sleep 5
           done
           exit 1
+      - name: Cleanup unused Docker resources
+        if: always()
+        env:
+          COMPOSE_PROJECT_NAME: nova-test
+        run: |
+          set -euo pipefail
+          docker container prune -f --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME"
+          docker image prune -af
+          docker builder prune -af
+          df -h /

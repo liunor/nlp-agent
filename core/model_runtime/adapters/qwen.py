@@ -71,14 +71,20 @@ class QwenChatModel(ChatOpenAI):
     ):
         result = super()._create_chat_result(response, generation_info)
         raw = response if isinstance(response, dict) else response.model_dump()
-        usage = normalize_usage(raw.get("usage") or {})
+        response_id = raw.get("id")
+        raw_usage = raw.get("usage") or {}
+        usage = normalize_usage(raw_usage)
         choices = raw.get("choices") or []
         for index, generation in enumerate(result.generations):
+            if response_id:
+                generation.message.response_metadata["provider_response_id"] = response_id
+                generation.message.additional_kwargs["provider_response_id"] = response_id
             if index < len(choices):
                 reasoning = (choices[index].get("message") or {}).get("reasoning_content")
                 if reasoning:
                     generation.message.additional_kwargs["reasoning_content"] = reasoning
             generation.message.additional_kwargs["provider_usage"] = usage
+            generation.message.additional_kwargs["provider_usage_raw"] = raw_usage
             if usage["total_tokens"] and isinstance(generation.message, AIMessage):
                 generation.message.usage_metadata = self._usage_metadata(raw.get("usage") or {})
         return result
@@ -95,14 +101,20 @@ class QwenChatModel(ChatOpenAI):
         )
         if result is None:
             return None
+        response_id = chunk.get("id") or chunk.get("chunk", {}).get("id")
+        if response_id:
+            result.message.response_metadata["provider_response_id"] = response_id
+            result.message.additional_kwargs["provider_response_id"] = response_id
         choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices") or []
         if choices:
             reasoning = (choices[0].get("delta") or {}).get("reasoning_content")
             if reasoning:
                 result.message.additional_kwargs["reasoning_content"] = reasoning
         if chunk.get("usage"):
-            usage = normalize_usage(chunk["usage"])
+            raw_usage = chunk["usage"]
+            usage = normalize_usage(raw_usage)
             result.message.additional_kwargs["provider_usage"] = usage
+            result.message.additional_kwargs["provider_usage_raw"] = raw_usage
             if isinstance(result.message, AIMessageChunk):
                 result.message.usage_metadata = self._usage_metadata(chunk["usage"])
         return result

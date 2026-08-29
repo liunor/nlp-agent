@@ -85,5 +85,12 @@ describe("sandbox titlebar layout", () => {
     expect(stylesheet).toContain(".knowledge-book-article .code-shell { margin: 28px 0 32px; border: 0 !important;");
     expect(stylesheet).toContain(".knowledge-book-article .code-shell pre { border: 0 !important;");
     expect(stylesheet).toContain(".knowledge-book-article { width: min(100%,1080px);");
+    expect(stylesheet).toContain(".knowledge-book-article .markdown-content > pre,.teacher-book-preview .markdown-content > pre");
+    expect(stylesheet).toContain(".knowledge-book-article .code-shell,.teacher-book-preview .code-shell { overflow: hidden; border: 1px solid #e1e4ea !important;");
+    expect(stylesheet).toContain(".knowledge-book-article .code-toolbar,.teacher-book-preview .code-toolbar { justify-content: flex-end;");
+  });
+
+  it("keeps knowledge-book anchors in normal flow while deferring syntax highlighting", () => {
+    expect(stylesheet).not.toContain(".knowledge-book-article .markdown-image-figure,.knowledge-book-article .code-shell { content-visibility: auto;");
   });
 });

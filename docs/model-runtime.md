@@ -104,3 +104,41 @@ model.stream_interrupted
 ```
 
 未来 Gateway/WebUI 继续通过 `ObservabilityService` 查询，无需理解具体 Provider SDK。
+
+## 计量与 Token 配额交接 (Multi-Provider Metering & Quota Handoff)
+
+模型层为下游计费与配额控制系统提供不可变的标准化用量上报协议。
+
+### 1. 核心数据契约
+
+- **`ModelIdentity`**: 描述模型调用的静态身份，包含 `provider`, `provider_model`, `model_profile`, `preset`, `route`, `pricing_key`, `context_window_tokens`, `max_output_tokens`。
+- **`UsageAttributionContext`**: 溯源归属上下文，包含 `request_id`, `user_id`, `workspace_id`, `conversation_id`, `turn_id`, `reservation_id`, `worker_id`, `parent_operation_id`, `purpose` (`coordinator | worker | compact | memory | vision | evaluation | other`)。
+- **`CanonicalTokenUsage`**: 标准化 Token 用量，包含 `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`, `source` (`provider | estimated | none`), `provider_response_id`。严格保证：
+  - `cached_input_tokens + cache_write_input_tokens <= input_tokens`
+  - `reasoning_output_tokens <= output_tokens`
+  - `total_tokens = input_tokens + output_tokens`
+- **`ModelInvocation`**: 单次 Provider 尝试的事实记录，包含由系统生成的 UUIDv4 `operation_id`、`identity`、`attribution`、`attempt`、`fallback_index` 和带 UTC 时区的 `started_at`。
+- **`InvocationOutcome`**: 尝试结果状态 (`succeeded | failed | interrupted | cancelled`), `finish_reason`, `error_kind`, `completed_at`。
+
+### 2. 用量上报生命周期
+
+- 通过 `configure_global_model_usage_reporter()` 注册全局 Reporter（满足 `ModelUsageReporter` 异步协议）；每个会调用模型的进程都要在启动时注册。
+- 每次 Provider 尝试均生成唯一的 `operation_id`，在尝试结束（成功、失败、可见中断或取消）后严格上报且仅上报一次。
+- `ainvoke` 与 `astream` 共享统一生命周期，Structured Output 内部强制使用 `include_raw=True` 提取原始响应 usage 并上报，对外透明返回解析对象。
+- 若配置了 Reporter 但未绑定归属上下文，在发起 Provider 调用前立即抛出 `MissingUsageAttributionError`。
+- Reporter 写入失败会使模型调用失败，并停止后续 Retry/Fallback；不得静默丢失计量记录。
+
+### 3. 标准化错误分类
+
+`classify_model_error()` 产生规范的 `error_kind`：
+- `upstream_provider_quota_exhausted`: 厂商配额不足/欠费（不可重试）
+- `upstream_rate_limited`: 429 限流（可重试，支持 Retry-After）
+- `upstream_context_length_exceeded`: 上下文超限（不可重试）
+- `upstream_auth_failed`: 401/403 鉴权失败（不可重试）
+- `upstream_model_unavailable`: 404 模型不可用（不可重试）
+- `upstream_invalid_request`: 400/422 非法请求（不可重试）
+- `upstream_timeout`: 超时（可重试）
+- `upstream_connection_error`: 连接重置/网络中断（可重试）
+- `upstream_overloaded`: 408/409/5xx 或厂商过载（可重试）
+- `upstream_empty_response`: 空流或空响应（可重试）
+- `upstream_unknown`: 未知异常（不可重试）

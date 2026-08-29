@@ -60,6 +60,7 @@ describe("useStudentWorkspace settings", () => {
       removeEventListener: vi.fn(),
     })));
     vi.mocked(api.updateSettings).mockReset();
+    vi.mocked(api.logout).mockReset();
     vi.mocked(api.listSessions).mockResolvedValue({ items: [] });
     createSessionMock.mockClear();
     deleteSessionMock.mockClear();
@@ -177,6 +178,33 @@ describe("useStudentWorkspace settings", () => {
     act(() => onChange?.());
 
     expect(document.documentElement).toHaveClass("dark");
+  });
+
+  it("uses the light theme by default instead of inheriting a dark operating-system preference", async () => {
+    dark = true;
+    getSettingsMock.mockResolvedValue({ preferences: { settings: {} }, runtime });
+
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    expect(result.current.settings.theme).toBe("light");
+    expect(document.documentElement).not.toHaveClass("dark");
+  });
+
+  it("resets the workspace to the light theme when leaving an authenticated session", async () => {
+    getSettingsMock.mockResolvedValue({ preferences: { settings: { theme: "dark" } }, runtime });
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => <AuthProvider>{children}</AuthProvider>;
+    const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+    expect(result.current.settings.theme).toBe("dark");
+    expect(document.documentElement).toHaveClass("dark");
+
+    await act(async () => { await result.current.logout(); });
+
+    await waitFor(() => expect(result.current.bootStatus).toBe("unauthenticated"));
+    expect(result.current.settings.theme).toBe("light");
+    expect(document.documentElement).not.toHaveClass("dark");
   });
 
   it("removes browser-side metadata for sessions deleted by a monitor reset", async () => {

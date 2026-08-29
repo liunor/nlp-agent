@@ -207,6 +207,24 @@ class RedisSandboxManagerRpcClient:
             },
         )
 
+    async def runtime_usage(
+        self,
+        scope: SandboxScope,
+        *,
+        lease_id: str,
+        runtime_id: str,
+        generation: int,
+    ) -> dict[str, object]:
+        return await self._request(
+            "runtime_usage",
+            {
+                "scope": _scope_payload(scope),
+                "lease_id": lease_id,
+                "runtime_id": runtime_id,
+                "generation": generation,
+            },
+        )
+
     async def reset_runtime(
         self,
         scope: SandboxScope,
@@ -595,6 +613,13 @@ class RedisSandboxManagerRpcServer:
                 source=str(payload["source"]),
                 trace_id=str(payload["trace_id"]) if payload.get("trace_id") else None,
                 span_id=str(payload["span_id"]) if payload.get("span_id") else None,
+            )
+        if method == "runtime_usage":
+            return await self._manager.runtime_usage(
+                _scope_from_payload(payload["scope"]),
+                lease_id=str(payload["lease_id"]),
+                runtime_id=str(payload["runtime_id"]),
+                generation=int(payload["generation"]),
             )
         if method == "reset_runtime":
             await self._manager.reset_runtime(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from time import perf_counter
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -92,6 +93,7 @@ def _sandbox_gateway(request: Request) -> SandboxGateway:
     gateway = SandboxGateway(
         mode=mode, session_factory=factory, ticket_signer=SandboxTicketSigner(secret),
         manager=manager, inmemory=inmemory_runtime,
+        runtime_backend=settings.NLP_AGENT_SANDBOX_RUNTIME_BACKEND,
     )
     request.app.state.sandbox_execution_gateway = gateway
     return gateway
@@ -287,6 +289,22 @@ async def ensure_sandbox_lease(
     return await _sandbox_gateway(request).open(db, SandboxScope.from_authenticated_request(principal, claims))
 
 
+@router.post("/usage")
+async def sandbox_usage(
+    request: Request,
+    body: RuntimeTicketBody,
+    principal: Principal,
+    claims: DatabaseClaims,
+) -> dict:
+    scope = SandboxScope.from_authenticated_request(principal, claims)
+    try:
+        return await _sandbox_gateway(request).runtime_usage(scope, ticket=body.ticket)
+    except PermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except (LookupError, RuntimeError) as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+
+
 @router.post("/execute")
 async def execute_sandbox(
     request: Request,
@@ -353,7 +371,19 @@ async def execute_sandbox(
             event_type="execution.started",
             payload={},
         )
+        started_at = perf_counter()
         result = await _sandbox_gateway(request).execute(scope, source=body.source, ticket=body.ticket)
+        duration_ms = max(0, round((perf_counter() - started_at) * 1000))
+        output_bytes = sum(
+            len(str(result.get(stream) or "").encode("utf-8")) for stream in ("stdout", "stderr")
+        )
+        result = {
+            **result,
+            "execution_metrics": {
+                "duration_ms": duration_ms,
+                "output_bytes": output_bytes,
+            },
+        }
         persisted_artifacts = await _finish_execution(
             request,
             session_factory,

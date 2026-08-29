@@ -12,6 +12,8 @@ import json
 import re
 from uuid import uuid4
 
+from .runtime_profile import DEFAULT_SANDBOX_RUNTIME_LIMITS
+
 
 DOCKER_COMMAND_TIMEOUT_SECONDS = 15
 PROCESS_REAP_TIMEOUT_SECONDS = 2
@@ -50,12 +52,12 @@ async def _wait(process: asyncio.subprocess.Process) -> None:
 @dataclass(frozen=True)
 class DockerRuntimeConfig:
     image: str
-    memory: str = "768m"
-    cpus: str = "1.0"
-    pids_limit: int = 128
-    workspace_size: str = "256m"
-    tmp_size: str = "256m"
-    shm_size: str = "64m"
+    memory: str = f"{DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb}m"
+    cpus: str = str(DEFAULT_SANDBOX_RUNTIME_LIMITS.cpu_cores)
+    pids_limit: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.pids_limit
+    workspace_size: str = f"{DEFAULT_SANDBOX_RUNTIME_LIMITS.workspace_mb}m"
+    tmp_size: str = f"{DEFAULT_SANDBOX_RUNTIME_LIMITS.tmp_mb}m"
+    shm_size: str = f"{DEFAULT_SANDBOX_RUNTIME_LIMITS.shm_mb}m"
     runtime: str = "runsc"
     allow_local_image_id: bool = False
 
@@ -149,6 +151,27 @@ class DockerRuntimeAdapter:
         stdout, _ = await _communicate(process)
         return process.returncode == 0 and stdout.decode().strip().lower() == "true"
 
+    async def usage(self, external_runtime_id: str) -> dict[str, float]:
+        """Read current usage percentages without returning allocation details."""
+        process = await asyncio.create_subprocess_exec(
+            "docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemPerc}}",
+            external_runtime_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await _communicate(process)
+        if process.returncode != 0:
+            raise RuntimeError(stderr.decode("utf-8", "replace").strip() or "Docker sandbox usage unavailable")
+        try:
+            cpu_raw, memory_raw = stdout.decode("utf-8", "replace").strip().split("|", 1)
+            cpu_percent = float(cpu_raw.rstrip("%"))
+            memory_percent = float(memory_raw.rstrip("%"))
+        except (ValueError, UnicodeDecodeError) as error:
+            raise RuntimeError("Docker sandbox returned invalid usage percentages") from error
+        if cpu_percent < 0 or memory_percent < 0:
+            raise RuntimeError("Docker sandbox returned invalid usage percentages")
+        return {"cpu_percent": cpu_percent, "memory_percent": memory_percent}
+
     async def kernel_ready(self, external_runtime_id: str) -> bool:
         """Probe the actual Kernel protocol without exposing a container port."""
         if not await self.healthy(external_runtime_id):
@@ -174,8 +197,9 @@ class DockerRuntimeAdapter:
         )
 
     async def execute(
-        self, external_runtime_id: str, *, source: str, timeout_seconds: int = 15,
-        output_limit_bytes: int = 1_000_000,
+        self, external_runtime_id: str, *, source: str,
+        timeout_seconds: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.timeout_seconds,
+        output_limit_bytes: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.output_limit_bytes,
     ) -> dict[str, object]:
         """Send code through stdin, never through argv, labels, or Docker metadata."""
         if not 1 <= timeout_seconds <= 60:
@@ -222,7 +246,9 @@ class DockerRuntimeAdapter:
         await _wait(process)
 
     async def run_scratch(
-        self, *, source: str, timeout_seconds: int = 15, output_limit_bytes: int = 1_000_000
+        self, *, source: str,
+        timeout_seconds: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.timeout_seconds,
+        output_limit_bytes: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.output_limit_bytes,
     ) -> dict[str, object]:
         """Run a model experiment in a fresh hardened process, never a user kernel."""
         if not 1 <= timeout_seconds <= 60:

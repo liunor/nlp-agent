@@ -142,6 +142,92 @@ describe("KnowledgeBookPanel", () => {
     expect(new URLSearchParams(window.location.search).get("bookHeading")).toBe("核心概念");
   });
 
+  it("scrolls a selected heading through its dedicated anchor", async () => {
+    const user = userEvent.setup();
+    render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+
+    const heading = await screen.findByRole("heading", { name: "核心概念" });
+    const anchor = document.getElementById(heading.dataset.knowledgeBookHeadingId ?? "");
+    if (!anchor) throw new Error("knowledge-book heading anchor was not rendered");
+    const pageScroll = document.querySelector(".knowledge-book-page-scroll") as HTMLDivElement;
+    const scrollTo = vi.fn();
+    Object.defineProperty(pageScroll, "scrollTop", { configurable: true, value: 100, writable: true });
+    Object.defineProperty(pageScroll, "scrollTo", { configurable: true, value: scrollTo });
+    vi.spyOn(pageScroll, "getBoundingClientRect").mockReturnValue({ top: 200, left: 0, right: 800, bottom: 900, width: 800, height: 700 } as DOMRect);
+    vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue({ top: 600, left: 0, right: 700, bottom: 601, width: 700, height: 1 } as DOMRect);
+
+    await user.click(screen.getByRole("button", { name: "核心概念" }));
+
+    expect(anchor).toHaveAttribute("data-knowledge-book-heading-anchor", "true");
+    expect(scrollTo).toHaveBeenCalledWith({ top: 482, behavior: "smooth" });
+  });
+
+  it("does not mark a heading active before the scroll observer confirms it", async () => {
+    const user = userEvent.setup();
+    render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+
+    await screen.findByRole("heading", { name: "核心概念" });
+    const tocButton = screen.getByRole("button", { name: "核心概念" });
+    const pageScroll = document.querySelector(".knowledge-book-page-scroll") as HTMLDivElement;
+    Object.defineProperty(pageScroll, "scrollTo", { configurable: true, value: vi.fn() });
+
+    await user.click(tocButton);
+
+    expect(tocButton).not.toHaveClass("active");
+  });
+
+  it("maps deep attention headings to their own rendered targets", async () => {
+    const user = userEvent.setup();
+    const headings = [
+      "# 注意力机制",
+      "## 核心概念",
+      "## 10.1 注意力提示",
+      "### 查询、键和值",
+      "### 可视化权重",
+      "## 10.2 注意力汇聚：从核回归到可学习权重",
+      "### 生成一个带噪声的数据集",
+      "### 非参数注意力汇聚",
+      "### 带参数注意力汇聚",
+      "## 10.3 注意力评分函数",
+      "### 掩蔽 softmax",
+      "### 加性注意力",
+      "## 10.4 Bahdanau 注意力",
+      "### 编码器—解码器中的对齐",
+      "## 10.5 多头注意力",
+      "### 为什么需要多个头",
+      "## 10.6 自注意力和位置编码",
+      "### 自注意力与其他序列层的区别",
+    ];
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: headings.join("\n\n") } });
+    render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+    const pageScroll = document.querySelector(".knowledge-book-page-scroll") as HTMLDivElement;
+    const scrollTo = vi.fn();
+    Object.defineProperty(pageScroll, "scrollTop", { configurable: true, value: 0, writable: true });
+    Object.defineProperty(pageScroll, "scrollTo", { configurable: true, value: scrollTo });
+    vi.spyOn(pageScroll, "getBoundingClientRect").mockReturnValue({ top: 100, left: 0, right: 800, bottom: 900, width: 800, height: 800 } as DOMRect);
+
+    for (const text of ["10.3 注意力评分函数", "10.5 多头注意力", "10.6 自注意力和位置编码"]) {
+      const target = await screen.findByRole("heading", { name: text });
+      const anchor = document.getElementById(target.dataset.knowledgeBookHeadingId ?? "");
+      if (!anchor) throw new Error(`knowledge-book heading anchor was not rendered for ${text}`);
+      vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue({ top: 500, left: 0, right: 700, bottom: 501, width: 700, height: 1 } as DOMRect);
+      await user.click(screen.getByRole("button", { name: text }));
+      expect(scrollTo).toHaveBeenLastCalledWith({ top: 382, behavior: "smooth" });
+    }
+  });
+
+  it("reuses a loaded page when returning to a knowledge point", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getLearningBookPage).mockClear();
+    render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+
+    await screen.findByRole("heading", { name: "词法分析" });
+    await user.click(screen.getByRole("button", { name: "句法分析" }));
+    await screen.findByRole("heading", { name: "句法分析" });
+    await user.click(screen.getByRole("button", { name: "词法分析" }));
+    await waitFor(() => expect(api.getLearningBookPage).toHaveBeenCalledTimes(2));
+  });
+
   it("uses catalog sort order for previous and next navigation", async () => {
     const user = userEvent.setup();
     const unsortedNavigation = [

@@ -531,15 +531,18 @@ class TeacherService:
     @staticmethod
     def _validate_blueprint_links(catalog: TeacherCatalog) -> None:
         points = {
-            (topic.id, point.id)
+            (topic.id, point.id): point
             for topic in catalog.topics
             for point in topic.knowledge_points
         }
         exercise_ids = {blueprint.id: blueprint for blueprint in catalog.exercise_blueprints}
         for blueprint in [*catalog.exercise_blueprints, *catalog.review_blueprints, *catalog.guided_blueprints]:
-            if (blueprint.topic_id, blueprint.knowledge_point_id) not in points:
+            point = points.get((blueprint.topic_id, blueprint.knowledge_point_id))
+            if point is None:
                 raise ValueError("蓝图必须关联其所属主题中的一个知识点")
             if blueprint.status == "enabled" and not isinstance(blueprint, GuidedBlueprint):
+                if blueprint.question_type not in point.question_types:
+                    raise ValueError("蓝图题型必须是其知识点已启用的题型")
                 if not blueprint.rubric:
                     raise ValueError("启用蓝图前必须至少配置一个评分标准")
                 for point in blueprint.rubric:

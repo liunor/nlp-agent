@@ -197,6 +197,7 @@ class AuthorizationAuditLogModel(Base):
     __table_args__ = (
         Index("ix_nlp_authorization_audit_actor_created", "actor_user_id", "created_at"),
         Index("ix_nlp_authorization_audit_target_created", "target_user_id", "created_at"),
+        Index("ix_nlp_authorization_audit_created_at", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
@@ -446,6 +447,15 @@ class CourseCatalogVersionModel(Base):
 
 class ConversationModel(TimestampedModel, Base):
     __tablename__ = "nlp_conversations"
+    __table_args__ = (
+        Index(
+            "ix_nlp_conversations_owner_status_activity",
+            "owner_user_id",
+            "status",
+            "last_message_at",
+            "created_at",
+        ),
+    )
     id: Mapped[str] = mapped_column(SESSION_IDENTIFIER, primary_key=True)
     workspace_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False, index=True)
     owner_user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False, index=True)

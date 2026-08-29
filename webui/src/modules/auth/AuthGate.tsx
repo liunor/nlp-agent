@@ -7,7 +7,7 @@ function currentLocation(location: ReturnType<typeof useLocation>): string {
   return `${location.pathname}${location.search}${location.hash}`;
 }
 
-export function AuthGate({ children }: { children: ReactNode }) {
+export function AuthGate({ children, allowGuest = false }: { children: ReactNode; allowGuest?: boolean }) {
   const { isAuthenticated, isLoading } = useAuth();
   const location = useLocation();
 
@@ -21,7 +21,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated && !allowGuest) {
     return <Navigate to="/login" replace state={{ from: currentLocation(location) }} />;
   }
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictTeacherModel(BaseModel):
@@ -26,12 +26,32 @@ class UpdateTeachingGoals(StrictTeacherModel):
     target_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
 
 
+DEFAULT_QUESTION_TYPES = ("简答", "选择题", "判断题", "填空题", "编程题", "代码阅读题", "计算题", "论述题")
+
+
 class KnowledgePoint(StrictTeacherModel):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=120)
     markdown: str = Field(default="", max_length=20_000)
     status: Literal["enabled", "disabled"] = "enabled"
     sort_order: int = Field(default=0, ge=0, le=10_000)
+    question_types: list[str] = Field(default_factory=lambda: list(DEFAULT_QUESTION_TYPES), min_length=1, max_length=20)
+
+    @field_validator("question_types")
+    @classmethod
+    def _normalize_question_types(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for question_type in value:
+            item = question_type.strip()
+            if not item:
+                continue
+            if len(item) > 80:
+                raise ValueError("题型名称不能超过 80 个字符")
+            if item not in normalized:
+                normalized.append(item)
+        if not normalized:
+            raise ValueError("知识点至少需要启用一种题型")
+        return normalized
 
 
 class CourseTopic(StrictTeacherModel):

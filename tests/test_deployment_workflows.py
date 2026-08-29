@@ -97,6 +97,22 @@ def test_deploy_workflows_overlay_published_digests_without_mutating_server_env(
         assert "The deployment directory" in workflow
 
 
+def test_test_deploy_workflow_cleans_stopped_containers_and_unused_docker_data() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "publish-test-image.yml").read_text(
+        encoding="utf-8"
+    )
+    cleanup = workflow.split("      - name: Cleanup unused Docker resources", 1)[1]
+
+    assert "if: always()" in cleanup
+    assert (
+        'docker container prune -f --filter '
+        '"label=com.docker.compose.project=$COMPOSE_PROJECT_NAME"'
+    ) in cleanup
+    assert "docker image prune -af" in cleanup
+    assert "docker builder prune -af" in cleanup
+    assert "df -h /" in cleanup
+
+
 def test_ci_workflow_can_be_dispatched_after_a_skip_ci_metadata_commit() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 

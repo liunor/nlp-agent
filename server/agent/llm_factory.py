@@ -13,7 +13,7 @@ def _selected_profile(requested: str | None = None) -> str | None:
 def get_planner_llm(model_profile: str | None = None) -> ResilientChatModel:
     factory = get_global_model_factory()
     if selected := _selected_profile(model_profile):
-        return factory.build_preset(factory.profile_preset(selected, "coordinator"))
+        return factory.build_profile_role(selected, "coordinator")
     return factory.build_route("coordinator")
 
 
@@ -47,7 +47,7 @@ def get_utility_llm(model_profile: str | None = None) -> ResilientChatModel:
     """Return the selected profile's utility model for compression and curation."""
     factory = get_global_model_factory()
     if selected := _selected_profile(model_profile):
-        return factory.build_preset(factory.profile_preset(selected, "utility"))
+        return factory.build_profile_role(selected, "utility")
     return factory.build_route("utility")
 
 
@@ -58,11 +58,14 @@ def get_worker_llm(
 ) -> ResilientChatModel:
     factory = get_global_model_factory()
     selected = _selected_profile(model_profile)
+    has_explicit_override = bool(settings.NLP_AGENT_WORKER_MODEL) or (
+        tool_specified_model not in (None, "", "inherit")
+    )
+    if selected and not has_explicit_override:
+        return factory.build_profile_role(selected, "worker")
     requested = resolve_worker_model_name(
         agent_name, tool_specified_model, model_profile
     )
-    if selected and requested == factory.profile_preset(selected, "worker"):
-        return factory.build_preset(requested)
     default = settings._config.get("model_routes", {}).get("worker", {}).get("primary")
     if requested == default:
         return factory.build_route("worker")

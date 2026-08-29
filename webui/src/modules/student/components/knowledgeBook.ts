@@ -2,11 +2,13 @@ export interface MarkdownHeading {
   level: number;
   text: string;
   id: string;
+  sourceLine: number;
 }
 
 export interface MarkdownHeadingIndex {
   headings: MarkdownHeading[];
   headingIds: string[];
+  headingIdsByLine: Record<number, string>;
 }
 
 export interface KnowledgeBookUrlState {
@@ -75,10 +77,12 @@ function isFenceClose(line: string, marker: string): boolean {
 export function indexMarkdownHeadings(markdown: string): MarkdownHeadingIndex {
   const headings: MarkdownHeading[] = [];
   const headingIds: string[] = [];
+  const headingIdsByLine: Record<number, string> = {};
   const occurrences = new Map<string, number>();
   let fenceMarker: string | null = null;
 
-  for (const line of markdown.split(/\r?\n/)) {
+  for (const [lineIndex, line] of markdown.split(/\r?\n/).entries()) {
+    const sourceLine = lineIndex + 1;
     if (fenceMarker) {
       if (isFenceClose(line, fenceMarker)) fenceMarker = null;
       continue;
@@ -98,8 +102,9 @@ export function indexMarkdownHeadings(markdown: string): MarkdownHeadingIndex {
     occurrences.set(baseId, occurrence);
     const id = occurrence === 1 ? baseId : `${baseId}-${occurrence}`;
     headingIds.push(id);
-    if (level >= 2) headings.push({ level, text, id });
+    headingIdsByLine[sourceLine] = id;
+    if (level >= 2) headings.push({ level, text, id, sourceLine });
   }
 
-  return { headings, headingIds };
+  return { headings, headingIds, headingIdsByLine };
 }

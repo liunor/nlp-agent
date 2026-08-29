@@ -43,7 +43,10 @@ async def judge_case(model, *, blueprint: dict, outcome: dict) -> dict:
         "agent_feedback": grading_turn.get("agent_reply", ""),
         "architecture_metrics": outcome.get("architecture", {}).get("metrics", {}),
     }
-    response = await model.ainvoke([system, HumanMessage(content=json.dumps(prompt, ensure_ascii=False))])
+    from core.model_runtime.usage import system_usage_attribution
+
+    with system_usage_attribution(purpose="evaluation"):
+        response = await model.ainvoke([system, HumanMessage(content=json.dumps(prompt, ensure_ascii=False))])
     raw = response.content if isinstance(response.content, str) else ""
     try:
         result = _parse_json(raw)
