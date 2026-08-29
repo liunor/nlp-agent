@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     NLP_AGENT_AUTH_MAX_LOGIN_ATTEMPTS: int = 5
     NLP_AGENT_AUTH_RATE_WINDOW_S: int = 300
     NLP_AGENT_AUTH_COOKIE_SECURE: bool | None = None
+    NLP_AGENT_AUDIT_SUCCESSFUL_READS: bool = False
     NLP_AGENT_WEB_HOST: str = ""
     NLP_AGENT_WEB_PORT: int = 0
     NLP_AGENT_WEB_ALLOWED_HOSTS: str = ""
@@ -187,6 +188,7 @@ class Settings(BaseSettings):
         config["auth_idle_timeout_s"] = self.NLP_AGENT_AUTH_IDLE_TIMEOUT_S
         config["auth_max_login_attempts"] = self.NLP_AGENT_AUTH_MAX_LOGIN_ATTEMPTS
         config["auth_rate_window_s"] = self.NLP_AGENT_AUTH_RATE_WINDOW_S
+        config["audit_successful_reads"] = self.NLP_AGENT_AUDIT_SUCCESSFUL_READS
         if self.NLP_AGENT_AUTH_COOKIE_SECURE is not None:
             config["cookie_secure"] = self.NLP_AGENT_AUTH_COOKIE_SECURE
         self._apply_network_overrides(

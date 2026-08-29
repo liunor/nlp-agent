@@ -964,3 +964,27 @@ def test_websocket_hub_enforces_global_and_per_user_limits():
     assert hub.try_add(connection(alice)) is False
     assert hub.try_add(connection(bob)) is True
     assert hub.try_add(connection(AuthenticatedPrincipal(user_id="carol"))) is False
+
+
+def test_session_list_exposes_page_metadata_and_usage_stats(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        headers = write_headers(csrf)
+        for _ in range(2):
+            assert client.post(
+                "/api/v1/sessions",
+                json={"workspace_id": "default"},
+                headers=headers,
+            ).status_code == 201
+
+        page = client.get("/api/v1/sessions?limit=1&offset=1")
+        assert page.status_code == 200
+        assert page.json()["total"] == 2
+        assert page.json()["offset"] == 1
+        assert len(page.json()["items"]) == 1
+        assert page.json()["has_more"] is False
+
+        stats = client.get("/api/v1/sessions/stats")
+        assert stats.status_code == 200
+        assert stats.json()["sessions_total"] == 2

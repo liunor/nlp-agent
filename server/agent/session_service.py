@@ -6,6 +6,7 @@ import asyncio
 import json
 import shutil
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,22 @@ from server.agent.session_storage import (
 )
 from server.agent.node.session_storage import DATA_DIR
 from server.infrastructure.mysql.models import (
+    AgentCheckpointModel,
+    ConversationMessageModel,
     ConversationModel,
     ConversationTranscriptModel,
+    ExerciseSessionModel,
+    GuidedSessionModel,
+    LangGraphCheckpointBlobModel,
+    LangGraphCheckpointModel,
+    LangGraphCheckpointWriteModel,
+    MemoryArchiveModel,
+    ObservabilityRecordModel,
+    ToolAuditModel,
+    ToolCallModel,
+    TurnCancellationModel,
+    TurnEventModel,
+    TurnModel,
 )
 
 
@@ -47,6 +62,28 @@ class DatabaseSessionService:
             workspace_id=row.workspace_id,
             channel=row.channel,
         )
+
+    @staticmethod
+    def _summary(row: ConversationModel) -> dict[str, Any]:
+        return {
+            "session_id": row.id,
+            "created_at": row.created_at,
+            "last_active": row.last_message_at or row.updated_at or row.created_at,
+            "user_id": row.owner_user_id,
+            "workspace_id": row.workspace_id,
+            "channel": row.channel,
+        }
+
+    @staticmethod
+    def _scope(principal: AuthenticatedPrincipal):
+        statement = select(ConversationModel).where(
+            ConversationModel.owner_user_id == principal.user_id
+        )
+        if "*" not in principal.workspace_ids:
+            statement = statement.where(
+                ConversationModel.workspace_id.in_(principal.workspace_ids)
+            )
+        return statement
 
     async def create(
         self,
@@ -96,29 +133,101 @@ class DatabaseSessionService:
         return context
 
     async def list(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
+        return (await self.list_page(principal, limit=200))["items"]
+
+    async def list_page(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
         authorization_service.require(principal, Permission.AGENT_SESSION_READ)
-        statement = select(ConversationModel).where(
-            ConversationModel.owner_user_id == principal.user_id,
-            ConversationModel.status == "active",
-        )
-        if "*" not in principal.workspace_ids:
-            statement = statement.where(
-                ConversationModel.workspace_id.in_(principal.workspace_ids)
-            )
-        statement = statement.order_by(ConversationModel.last_message_at.desc(), ConversationModel.created_at.desc())
+        statement = self._scope(principal).where(ConversationModel.status == "active")
+        page_limit = max(1, min(limit, 200))
+        page_offset = max(0, offset)
         async with self._sessions() as session:
-            rows = list((await session.scalars(statement)).all())
-        return [
-            {
-                "session_id": row.id,
-                "created_at": row.created_at,
-                "last_active": row.last_message_at or row.updated_at or row.created_at,
-                "user_id": row.owner_user_id,
-                "workspace_id": row.workspace_id,
-                "channel": row.channel,
-            }
-            for row in rows
-        ]
+            total = int(
+                await session.scalar(
+                    select(func.count()).select_from(statement.order_by(None).subquery())
+                )
+                or 0
+            )
+            rows = list(
+                (
+                    await session.scalars(
+                        statement.order_by(
+                            ConversationModel.last_message_at.desc(),
+                            ConversationModel.created_at.desc(),
+                            ConversationModel.id.desc(),
+                        )
+                        .offset(page_offset)
+                        .limit(page_limit)
+                    )
+                ).all()
+            )
+        return {
+            "items": [self._summary(row) for row in rows],
+            "total": total,
+            "offset": page_offset,
+            "limit": page_limit,
+            "has_more": page_offset + len(rows) < total,
+        }
+
+    async def stats(self, principal: AuthenticatedPrincipal) -> dict[str, Any]:
+        authorization_service.require(principal, Permission.AGENT_SESSION_READ)
+        scope = self._scope(principal)
+        active = scope.where(ConversationModel.status == "active")
+        scope_ids = scope.with_only_columns(ConversationModel.id).order_by(None)
+        turn_scope = select(TurnModel).where(
+            TurnModel.conversation_id.in_(scope_ids)
+        )
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+        async with self._sessions() as session:
+            sessions_total = int(
+                await session.scalar(
+                    select(func.count()).select_from(scope.order_by(None).subquery())
+                )
+                or 0
+            )
+            sessions_active = int(
+                await session.scalar(
+                    select(func.count()).select_from(active.order_by(None).subquery())
+                )
+                or 0
+            )
+            turns_total = int(
+                await session.scalar(
+                    select(func.count()).select_from(turn_scope.order_by(None).subquery())
+                )
+                or 0
+            )
+            turns_last_24h = int(
+                await session.scalar(
+                    select(func.count()).select_from(
+                        turn_scope.where(TurnModel.created_at >= since)
+                        .order_by(None)
+                        .subquery()
+                    )
+                )
+                or 0
+            )
+            last_activity = await session.scalar(
+                select(func.max(func.coalesce(
+                    ConversationModel.last_message_at,
+                    ConversationModel.updated_at,
+                    ConversationModel.created_at,
+                ))).where(
+                    ConversationModel.id.in_(scope_ids)
+                )
+            )
+        return {
+            "sessions_total": sessions_total,
+            "sessions_active": sessions_active,
+            "turns_total": turns_total,
+            "turns_last_24h": turns_last_24h,
+            "last_activity_at": last_activity,
+        }
 
     async def messages(
         self, principal: AuthenticatedPrincipal, session_id: str
@@ -175,18 +284,50 @@ class DatabaseSessionService:
             principal, Permission.AGENT_SESSION_DELETE, workspace_id=context.workspace_id
         )
         async with self._sessions.begin() as session:
-            await session.execute(
+            turn_ids = select(TurnModel.id).where(TurnModel.conversation_id == session_id)
+            for statement in (
+                delete(ConversationMessageModel).where(
+                    ConversationMessageModel.conversation_id == session_id
+                ),
+                delete(ExerciseSessionModel).where(
+                    ExerciseSessionModel.conversation_id == session_id
+                ),
+                delete(GuidedSessionModel).where(
+                    GuidedSessionModel.conversation_id == session_id
+                ),
                 delete(ConversationTranscriptModel).where(
                     ConversationTranscriptModel.session_id == session_id
-                )
-            )
+                ),
+                delete(AgentCheckpointModel).where(
+                    AgentCheckpointModel.session_id == session_id
+                ),
+                delete(MemoryArchiveModel).where(MemoryArchiveModel.session_id == session_id),
+                delete(LangGraphCheckpointModel).where(
+                    LangGraphCheckpointModel.thread_id == session_id
+                ),
+                delete(LangGraphCheckpointBlobModel).where(
+                    LangGraphCheckpointBlobModel.thread_id == session_id
+                ),
+                delete(LangGraphCheckpointWriteModel).where(
+                    LangGraphCheckpointWriteModel.thread_id == session_id
+                ),
+                delete(ObservabilityRecordModel).where(
+                    ObservabilityRecordModel.session_id == session_id
+                ),
+                delete(ToolAuditModel).where(ToolAuditModel.turn_id.in_(turn_ids)),
+                delete(ToolCallModel).where(ToolCallModel.turn_id.in_(turn_ids)),
+                delete(TurnCancellationModel).where(TurnCancellationModel.turn_id.in_(turn_ids)),
+                delete(TurnEventModel).where(TurnEventModel.turn_id.in_(turn_ids)),
+                delete(TurnModel).where(TurnModel.conversation_id == session_id),
+            ):
+                await session.execute(statement)
             await session.execute(
                 update(ConversationModel)
                 .where(
                     ConversationModel.id == session_id,
                     ConversationModel.owner_user_id == principal.user_id,
                 )
-                .values(status="deleted")
+                .values(status="deleted", updated_at=func.utc_timestamp(6))
             )
         return context
 
@@ -245,6 +386,15 @@ class LocalSessionService:
         return context
 
     async def list(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
+        return (await self.list_page(principal, limit=200))["items"]
+
+    async def list_page(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
         authorization_service.require(principal, Permission.AGENT_SESSION_READ)
         async with self._lock:
             sessions = (await asyncio.to_thread(_load_sessions_index)).get("sessions", {})
@@ -259,7 +409,33 @@ class LocalSessionService:
             if not principal.can_access(context):
                 continue
             output.append({"session_id": session_id, **metadata})
-        return sorted(output, key=lambda item: item.get("last_active", 0), reverse=True)
+        output = sorted(output, key=lambda item: item.get("last_active", 0), reverse=True)
+        page_limit = max(1, min(limit, 200))
+        page_offset = max(0, offset)
+        items = output[page_offset : page_offset + page_limit]
+        return {
+            "items": items,
+            "total": len(output),
+            "offset": page_offset,
+            "limit": page_limit,
+            "has_more": page_offset + len(items) < len(output),
+        }
+
+    async def stats(self, principal: AuthenticatedPrincipal) -> dict[str, Any]:
+        page = await self.list_page(principal, limit=200)
+        active_values = [
+            item.get("last_active")
+            for item in page["items"]
+            if item.get("last_active") is not None
+        ]
+        last_active = max(active_values, default=None)
+        return {
+            "sessions_total": page["total"],
+            "sessions_active": page["total"],
+            "turns_total": None,
+            "turns_last_24h": None,
+            "last_activity_at": last_active,
+        }
 
     async def messages(
         self, principal: AuthenticatedPrincipal, session_id: str
