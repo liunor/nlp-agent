@@ -1,4 +1,19 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+
+vi.mock("@/platform/http/api", () => ({
+  ApiError: class ApiError extends Error {},
+  api: {
+    getCurrentUser: vi.fn().mockResolvedValue({
+      user_id: "user-id",
+      username: "nova",
+      display_name: "Nova 学习者",
+      roles: ["student"],
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+    }),
+  },
+}));
 
 import { AccountDialog } from "./AccountDialog";
 
@@ -13,5 +28,21 @@ describe("AccountDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
 
     await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+  });
+
+  it("opens the profile settings as an in-platform overlay instead of navigating away", async () => {
+    // Mirror production behaviour: clicking 个人设置 closes the account dialog
+    // before the profile overlay opens in the same place.
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      return <AccountDialog open={open} session={{ user_id: "user-id", username: "nova", display_name: "Nova 学习者", workspace_ids: ["default"], roles: ["student"], csrf_token: "csrf", expires_at: 1 }} onClose={() => setOpen(false)} onLogout={vi.fn().mockResolvedValue(undefined)} />;
+    }
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "个人设置" }));
+
+    // The overlay renders in place; no URL navigation happens.
+    expect(await screen.findByRole("heading", { name: "个人设置" })).toBeVisible();
+    expect(window.location.pathname).not.toBe("/profile");
   });
 });

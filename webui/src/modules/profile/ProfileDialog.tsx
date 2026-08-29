@@ -1,14 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/platform/http/api";
-import { ArrowLeft, KeyRound, Settings, ShieldCheck, UserRound } from "lucide-react";
+import { KeyRound, Settings, ShieldCheck, UserRound, X } from "lucide-react";
 import type { UserProfile } from "@/shared/types";
 
 /**
- * 个人设置页面 — 毛玻璃全屏 + 居中卡片，风格与 AccountDialog 一致。
+ * 个人设置弹层 — 毛玻璃全屏 + 居中卡片，风格与 AccountDialog 一致。
+ * 作为当前平台内的覆盖层渲染（不产生页面跳转），由账户管理入口打开。
  */
-export function ProfilePage() {
+export function ProfileDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   // ---------- 昵称 ----------
   const [displayName, setDisplayName] = useState("");
@@ -27,19 +28,23 @@ export function ProfilePage() {
   // ---------- active section ----------
   const [activeSection, setActiveSection] = useState<"info" | "name" | "password">("info");
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const u = await api.getCurrentUser();
-        setUser(u);
-        setDisplayName(u.display_name);
-      } catch {
-        // AuthGate handles unauthenticated
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const u = await api.getCurrentUser();
+      setUser(u);
+      setDisplayName(u.display_name);
+    } catch {
+      // AuthGate handles unauthenticated
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    queueMicrotask(() => void load());
+  }, [open, load]);
 
   const handleNameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,6 +85,8 @@ export function ProfilePage() {
     }
   };
 
+  if (!open) return null;
+
   if (loading) {
     return (
       <div className="profile-page-backdrop" role="status">
@@ -102,9 +109,9 @@ export function ProfilePage() {
   return (
     <div className="profile-page-backdrop">
       <div className="profile-page-card">
-        {/* 返回按钮 */}
-        <button className="profile-back" type="button" onClick={() => { window.location.href = "/"; }}>
-          <ArrowLeft size={18} />
+        {/* 关闭按钮 */}
+        <button className="profile-back" type="button" onClick={onClose} aria-label="关闭个人设置">
+          <X size={18} />
         </button>
 
         {/* 头像 */}
