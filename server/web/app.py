@@ -6,6 +6,7 @@ import logging
 import secrets
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyCookie
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from configs.settings import settings
@@ -117,6 +119,45 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 
 GatewayFactory = Callable[[], BackendGateway]
+
+
+class SpaStaticFiles(StaticFiles):
+    """Serve the SPA shell only for browser navigations.
+
+    A blanket fallback turns missing API responses and broken JavaScript
+    assets into an HTML ``200`` response.  Browsers then report a misleading
+    JSON/parse error and operational probes can no longer distinguish a real
+    404.  Restricting the fallback to HTML GET/HEAD navigations keeps the
+    BrowserRouter deep-link fix while preserving normal HTTP semantics.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        directory = kwargs.get("directory")
+        if directory is None and args:
+            directory = args[0]
+        self._spa_index = Path(directory) / "index.html"
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as error:
+            headers = {
+                key.lower(): value
+                for key, value in scope.get("headers", [])
+            }
+            accept = headers.get(b"accept", b"").decode("latin-1")
+            normalized_path = str(scope.get("path", path)).lstrip("/").lower()
+            is_navigation = (
+                scope.get("method") in {"GET", "HEAD"}
+                and "text/html" in accept.lower()
+                and normalized_path not in {"api", "ws"}
+                and not normalized_path.startswith("api/")
+                and not normalized_path.startswith("ws/")
+            )
+            if error.status_code == 404 and is_navigation and self._spa_index.is_file():
+                return await super().get_response("index.html", scope)
+            raise
 
 
 def _problem(
@@ -339,11 +380,23 @@ def create_app(
         finally:
             end_authorization_audit(audit_token)
         session_factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        audit_successful_reads = bool(web_config.get("audit_successful_reads", False))
         if session_factory is not None and decisions and response.status_code != 401:
             try:
                 async with session_factory() as session:
                     async with session.begin():
                         for decision in decisions:
+                            # Denials and state-changing requests are always
+                            # retained.  Successful GET/HEAD authorization
+                            # checks are high-volume telemetry; keep them
+                            # opt-in because the endpoint-specific audit
+                            # events still record sensitive reads and writes.
+                            if (
+                                decision.decision == "allow"
+                                and request.method in {"GET", "HEAD"}
+                                and not audit_successful_reads
+                            ):
+                                continue
                             await rbac_service.audit(
                                 session, actor_user_id=decision.actor_user_id, target_user_id=None,
                                 decision=decision.decision, reason_code="authorization_required",
@@ -965,24 +1018,55 @@ def create_app(
     async def list_authorization_audit(
         request: Request,
         principal: Principal,
-        limit: int = Query(default=100, ge=1, le=500),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
         actor_user_id: str | None = None,
+        decision: str | None = Query(default=None, pattern="^(allow|deny)$"),
+        reason_code: str | None = Query(default=None, min_length=1, max_length=64),
     ):
         authorization_service.require(principal, Permission.SYSTEM_AUDIT_READ)
         async with authorization_session_factory(request)() as session:
-            rows = await rbac_service.audit_records(
-                session, limit=limit, actor_user_id=actor_user_id
+            rows, total = await rbac_service.audit_page(
+                session,
+                limit=limit,
+                offset=offset,
+                actor_user_id=actor_user_id,
+                decision=decision,
+                reason_code=reason_code,
             )
-        return {"items": [
-            {
-                "id": row.id, "actor_user_id": row.actor_user_id,
-                "target_user_id": row.target_user_id, "decision": row.decision,
-                "reason_code": row.reason_code, "permission_code": row.permission_code,
-                "resource_type": row.resource_type, "resource_id": row.resource_id,
-                "detail": row.detail_json, "created_at": row.created_at,
-            }
-            for row in rows
-        ]}
+        return {
+            "items": [
+                {
+                    "id": row.id,
+                    "actor_user_id": row.actor_user_id,
+                    "target_user_id": row.target_user_id,
+                    "decision": row.decision,
+                    "reason_code": row.reason_code,
+                    "permission_code": row.permission_code,
+                    "resource_type": row.resource_type,
+                    "resource_id": row.resource_id,
+                    "detail": row.detail_json,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(rows) < total,
+        }
+
+    @app.get("/api/v1/audit/authorization/stats", tags=["rbac"])
+    async def authorization_audit_stats(
+        request: Request,
+        principal: Principal,
+        days: int = Query(default=30, ge=1, le=3650),
+    ):
+        authorization_service.require(principal, Permission.SYSTEM_AUDIT_READ)
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+        async with authorization_session_factory(request)() as session:
+            summary = await rbac_service.audit_summary(session, since=since)
+        return {"period_days": days, "since": since, **summary}
 
     @app.get("/api/v1/system/sessions/{session_id}/checkpoints/{checkpoint_id}", tags=["rbac"])
     async def read_sensitive_checkpoint(session_id: str, checkpoint_id: str, request: Request, principal: Principal):
@@ -1058,9 +1142,42 @@ def create_app(
             response.delete_cookie(auth.cookie_name, path="/", secure=cookie_secure, samesite="lax")
 
     @app.get("/api/v1/sessions", tags=["sessions"])
-    async def list_sessions(request: Request, principal: Principal):
+    async def list_sessions(
+        request: Request,
+        principal: Principal,
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+    ):
         authorization_service.require(principal, Permission.AGENT_SESSION_READ)
-        return {"items": await request.app.state.gateway.sessions.list(principal)}
+        service = request.app.state.gateway.sessions
+        list_page = getattr(service, "list_page", None)
+        if list_page is not None:
+            return await list_page(principal, limit=limit, offset=offset)
+        items = await service.list(principal)
+        page = items[offset : offset + limit]
+        return {
+            "items": page,
+            "total": len(items),
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(page) < len(items),
+        }
+
+    @app.get("/api/v1/sessions/stats", tags=["sessions"])
+    async def session_stats(request: Request, principal: Principal):
+        authorization_service.require(principal, Permission.AGENT_SESSION_READ)
+        service = request.app.state.gateway.sessions
+        stats = getattr(service, "stats", None)
+        if stats is not None:
+            return await stats(principal)
+        items = await service.list(principal)
+        return {
+            "sessions_total": len(items),
+            "sessions_active": len(items),
+            "turns_total": None,
+            "turns_last_24h": None,
+            "last_activity_at": None,
+        }
 
     @app.post("/api/v1/sessions", status_code=status.HTTP_201_CREATED, tags=["sessions"])
     async def create_session(
@@ -1770,17 +1887,7 @@ def create_app(
     app.include_router(uploads_router)
 
     if static_dir is not None and static_dir.is_dir():
-        @app.get("/developer", include_in_schema=False)
-        @app.get("/developer/{developer_path:path}", include_in_schema=False)
-        async def developer_spa(developer_path: str = ""):
-            return FileResponse(static_dir / "index.html")
-
-        @app.get("/teacher", include_in_schema=False)
-        @app.get("/teacher/{teacher_path:path}", include_in_schema=False)
-        async def teacher_spa(teacher_path: str = ""):
-            return FileResponse(static_dir / "index.html")
-
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="webui")
+        app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="webui")
     else:
         @app.get("/", include_in_schema=False)
         async def api_root():

@@ -96,6 +96,7 @@ models:
   deepseek-v4-flash:
     provider: deepseek
     model_id: deepseek-v4-flash
+    pricing_key: deepseek/deepseek-v4-flash
     context_window_tokens: 1000000
     max_output_tokens: 384000
     capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true}
@@ -103,6 +104,7 @@ models:
   deepseek-v4-pro:
     provider: deepseek
     model_id: deepseek-v4-pro
+    pricing_key: deepseek/deepseek-v4-pro
     context_window_tokens: 1000000
     max_output_tokens: 384000
     capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true}
@@ -110,6 +112,7 @@ models:
   qwen3.8-max:
     provider: qwen
     model_id: qwen3.8-max
+    pricing_key: qwen/qwen3.8-max
     context_window_tokens: 32000
     max_output_tokens: 8192
     capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: false, json_mode: true}
@@ -117,6 +120,7 @@ models:
   qwen3.7-plus:
     provider: qwen
     model_id: qwen3.7-plus
+    pricing_key: qwen/qwen3.7-plus
     context_window_tokens: 128000
     max_output_tokens: 8192
     capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: false, json_mode: true}
@@ -124,6 +128,7 @@ models:
   qwen3-vl-plus:
     provider: qwen
     model_id: qwen3-vl-plus
+    pricing_key: qwen/qwen3-vl-plus
     context_window_tokens: 262144
     max_output_tokens: 32768
     capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true, vision: true, structured_output: true}

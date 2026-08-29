@@ -9,13 +9,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import uuid
 import asyncio
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from server.agent.compression.auto_compact import autocompact_if_needed, AUTOCOMPACT_THRESHOLD, _consecutive_failures
+from server.agent.compression.auto_compact import (
+    AUTOCOMPACT_THRESHOLD,
+    autocompact_if_needed,
+)
 
-# Mock LLM for summary generation to avoid actual API calls
 import server.agent.compression.auto_compact as ac_module
+
+
 async def mock_generate_global_summary(msgs):
     return "This is a mock global summary."
-ac_module._generate_global_summary = mock_generate_global_summary
 
 def make_human(content: str):
     return HumanMessage(content=content, id=str(uuid.uuid4()))
@@ -31,7 +34,14 @@ def make_tool_ai(file_path: str):
     return AIMessage(content="I read a file", tool_calls=[tc], id=str(uuid.uuid4()))
 
 @pytest.mark.asyncio
-async def test_auto_compact_flow():
+async def test_auto_compact_flow(monkeypatch):
+    # Keep module-level mocks and circuit state isolated from the rest of the
+    # test session. The complete CI suite imports this file before unit tests.
+    monkeypatch.setattr(
+        ac_module, "_generate_global_summary", mock_generate_global_summary
+    )
+    monkeypatch.setattr(ac_module, "_consecutive_failures", {})
+
     # 构造一批消息，刚好超过 167K tokens
     msgs = [make_system("Sys prompt")]
     for i in range(16):
@@ -57,7 +67,7 @@ async def test_auto_compact_flow():
     # 模拟失败熔断
     async def failing_summary(msgs):
         raise Exception("Mock failure")
-    ac_module._generate_global_summary = failing_summary
+    monkeypatch.setattr(ac_module, "_generate_global_summary", failing_summary)
     
     for _ in range(3):
         res = await autocompact_if_needed(msgs)

@@ -61,7 +61,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 }, []);
 
   const login = useCallback(async (username: string, password: string) => {
-    setIsLoading(true);
     setError("");
     try {
       const session = await api.login(username, password);
@@ -71,8 +70,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "登录失败");
       throw reason;
-    } finally {
-      setIsLoading(false);
     }
   }, []);
 

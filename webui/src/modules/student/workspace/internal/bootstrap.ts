@@ -36,6 +36,7 @@ export function useWorkspaceBootstrap({
     void (async () => {
       try {
         if (authProviderPresent && !initialSession) {
+          initializeSettings(DEFAULT_SETTINGS);
           setAuthSession(null);
           setBootStatus("unauthenticated");
           return;

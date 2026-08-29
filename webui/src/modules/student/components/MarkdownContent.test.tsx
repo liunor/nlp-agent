@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
@@ -49,7 +50,7 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(container.querySelector("code")).toHaveTextContent(String.raw`\(x^2\)`);
   });
 
-  it("hides guided-session protocol metadata, including an incomplete streaming marker", () => {
+  it("hides guided-session protocol metadata, including an incomplete streaming marker", async () => {
     const complete = "请先判断哪一类词更重要。\n<!-- guided-result: {\"status\":\"continue\",\"known_concepts\":[],\"misconceptions\":[]} -->";
     const { rerender } = render(<MarkdownContent>{complete}</MarkdownContent>);
 
@@ -58,7 +59,7 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(stripInternalChatMetadata(complete)).toBe("请先判断哪一类词更重要。");
 
     rerender(<MarkdownContent streaming>{"继续思考。<!-- guided-result: {\"status\":"}</MarkdownContent>);
-    expect(screen.getByText("继续思考。")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("继续思考。")).toBeInTheDocument());
     expect(screen.queryByText(/guided-result/)).not.toBeInTheDocument();
   });
 
@@ -115,7 +116,7 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(screen.getByRole("button", { name: "复制 python 代码" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "复制 python 代码" }));
     expect(await screen.findByRole("button", { name: "已复制 python 代码" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "问 Nova" }));
+    await user.click(screen.getByRole("button", { name: "询问 Nova" }));
     expect(askNova).toHaveBeenCalledWith("print('hello')", "python");
     await user.click(screen.getByRole("button", { name: "在沙箱中打开" }));
     expect(openInSandbox).toHaveBeenCalledWith("print('hello')", "python");
@@ -125,6 +126,94 @@ describe("MarkdownContent LaTeX delimiters", () => {
     render(<MarkdownContent codeActions={{ }}>{"```python\nprint('hello')\n```"}</MarkdownContent>);
 
     expect(screen.getByRole("button", { name: "复制 python 代码" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "问 Nova" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "询问 Nova" })).not.toBeInTheDocument();
+  });
+
+  it("shows a copy action for fenced code on the main page", () => {
+    render(<MarkdownContent>{"```javascript\nconsole.log('hello');\n```"}</MarkdownContent>);
+
+    expect(screen.getByRole("button", { name: "复制 javascript 代码" })).toBeInTheDocument();
+  });
+
+  it("uses the same roomy code card for fenced code without a language", () => {
+    const { container } = render(<MarkdownContent>{"```\nplain text\n```"}</MarkdownContent>);
+
+    expect(container.querySelector(".code-shell")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制 text 代码" })).toBeInTheDocument();
+  });
+
+  it("renders Markdown incrementally during streaming", async () => {
+    const { container, rerender } = render(<MarkdownContent streaming streamRenderIntervalMs={0}>{"## 流式标题"}</MarkdownContent>);
+
+    expect(screen.getByRole("heading", { name: "流式标题" })).toBeVisible();
+
+    rerender(<MarkdownContent streaming streamRenderIntervalMs={0}>{"## 流式标题\n\n```python\nprint('streaming')\n"}</MarkdownContent>);
+
+    await waitFor(() => expect(container.querySelector(".code-shell")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "复制 python 代码" })).toBeVisible();
+  });
+
+  it("keeps refreshing throttled streaming Markdown under StrictMode", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(
+        <StrictMode>
+          <MarkdownContent streaming streamRenderIntervalMs={30}>第一段</MarkdownContent>
+        </StrictMode>,
+      );
+
+      rerender(
+        <StrictMode>
+          <MarkdownContent streaming streamRenderIntervalMs={30}>第一段第二段</MarkdownContent>
+        </StrictMode>,
+      );
+
+      act(() => vi.advanceTimersByTime(31));
+
+      expect(document.querySelector(".markdown-streaming-preview")).toHaveTextContent("第一段第二段");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders a completed Markdown table while streaming", () => {
+    const source = "| 名称 | 说明 |\n| --- | --- |\n| `message` | \\(x^2\\) |";
+    const { container } = render(<MarkdownContent streaming streamRenderIntervalMs={0}>{source}</MarkdownContent>);
+
+    expect(container.querySelector("table")).toBeInTheDocument();
+    expect(container.querySelector("thead")).toHaveTextContent("名称");
+    expect(container.querySelector("tbody")).toHaveTextContent("message");
+    expect(container.querySelector("tbody .katex")).toBeInTheDocument();
+  });
+
+  it("renders inline code while streaming", () => {
+    const { container } = render(<MarkdownContent streaming streamRenderIntervalMs={0}>请使用 `message` 变量。</MarkdownContent>);
+
+    expect(container.querySelector("code")).toHaveTextContent("message");
+  });
+
+  it("renders LaTeX formulas while streaming", () => {
+    const { container } = render(<MarkdownContent streaming streamRenderIntervalMs={0}>{String.raw`公式：\(x^2 + y^2\)`}</MarkdownContent>);
+
+    expect(container.querySelector(".katex")).toBeInTheDocument();
+  });
+
+  it("decodes HTML character references while streaming", () => {
+    const source = "前&#x20;后";
+    const { container } = render(<MarkdownContent streaming streamRenderIntervalMs={0}>{source}</MarkdownContent>);
+
+    expect(container.textContent).toContain("前 后");
+    expect(container.textContent).not.toContain("&#x20;");
+  });
+
+  it("keeps LaTeX formulas rendered before and after streaming completes", () => {
+    const source = String.raw`推理过程：\(x^2 + y^2\)`;
+    const { container, rerender } = render(<MarkdownContent streaming streamRenderIntervalMs={0}>{source}</MarkdownContent>);
+
+    expect(container.querySelector(".katex")).toBeInTheDocument();
+
+    rerender(<MarkdownContent>{source}</MarkdownContent>);
+
+    expect(container.querySelector(".katex")).toBeInTheDocument();
   });
 });

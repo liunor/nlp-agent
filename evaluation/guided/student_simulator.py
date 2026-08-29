@@ -35,7 +35,10 @@ class FlashStudentSimulator:
             f"\n当前蓝图目标：{blueprint.guidance}"
         ))
         history = "\n".join(f"{item['role']}: {item['content']}" for item in transcript[-12:])
-        response = await self.model.ainvoke([system, HumanMessage(content=f"当前对话：\n{history}")])
+        from core.model_runtime.usage import system_usage_attribution
+
+        with system_usage_attribution(purpose="evaluation"):
+            response = await self.model.ainvoke([system, HumanMessage(content=f"当前对话：\n{history}")])
         content = response.content if isinstance(response.content, str) else ""
         candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
         start, end = candidate.find("{"), candidate.rfind("}")

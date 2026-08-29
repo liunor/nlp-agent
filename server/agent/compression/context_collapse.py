@@ -252,7 +252,10 @@ async def _generate_span_summary(span_messages: List[BaseMessage]) -> str:
     prompt = global_prompt_runtime.render(
         "compression.collapse_summary", conversation=conversation
     )
-    resp = await llm.ainvoke([HumanMessage(content=prompt)])
+    from core.model_runtime.usage import bind_usage_purpose
+
+    with bind_usage_purpose("compact"):
+        resp = await llm.ainvoke([HumanMessage(content=prompt)])
     return resp.content
 
 

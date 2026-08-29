@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 import pytest
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel
 
 from core.model_runtime.contracts import ModelRuntimeConfig
 from core.model_runtime.factory import ModelFactory
@@ -14,7 +15,7 @@ from server.tools import worker_tool
 
 class RecordingFactory:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, ...]] = []
 
     @staticmethod
     def profile_preset(profile: str, role: str) -> str:
@@ -24,17 +25,22 @@ class RecordingFactory:
             "qwen": "worker-qwen-plus",
         }[profile]
 
-    def build_preset(self, name: str):
+    def build_preset(self, name: str, *, model_profile: str | None = None):
         self.calls.append(("preset", name))
         return ("preset", name)
 
-    def build_route(self, name: str):
-        self.calls.append(("route", name))
+    def build_profile_role(self, profile: str, role: str):
+        preset = self.profile_preset(profile, role)
+        self.calls.append(("profile_role", profile, role, preset))
+        return ("preset", preset)
+
+    def build_route(self, name: str, *, model_profile: str | None = None):
+        self.calls.append(("route", name, model_profile))
         return ("route", name)
 
-    def build_override(self, name: str, *, base_route: str):
+    def build_override(self, name: str, *, base_route: str = "worker", model_profile: str | None = None):
         assert base_route == "worker"
-        self.calls.append(("override", name))
+        self.calls.append(("override", name, model_profile))
         return ("override", name)
 
 
@@ -56,7 +62,7 @@ def test_explicit_worker_preset_wins_over_turn_model_profile(monkeypatch):
             "worker-qwen-web",
         )
 
-    assert factory.calls == [("override", "worker-qwen-web")]
+    assert factory.calls == [("override", "worker-qwen-web", None)]
 
 
 def test_turn_model_profile_is_used_when_worker_has_no_override(monkeypatch):
@@ -68,7 +74,7 @@ def test_turn_model_profile_is_used_when_worker_has_no_override(monkeypatch):
         assert llm_factory.resolve_worker_model_name() == "worker-qwen-plus"
         assert llm_factory.get_worker_llm() == ("preset", "worker-qwen-plus")
 
-    assert factory.calls == [("preset", "worker-qwen-plus")]
+    assert factory.calls == [("profile_role", "qwen", "worker", "worker-qwen-plus")]
 
 
 def test_real_factory_builds_the_dedicated_qwen_web_preset(monkeypatch):
@@ -178,3 +184,62 @@ def test_global_worker_override_remains_highest_priority(monkeypatch):
             )
             == "worker-pro"
         )
+
+
+def test_model_factory_profile_identity_and_estimation(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    raw = yaml.safe_load(
+        (root / "configs" / "agent_config.yaml").read_text(encoding="utf-8")
+    )
+    config = ModelRuntimeConfig.model_validate(
+        {
+            "providers": raw["providers"],
+            "models": raw["models"],
+            "model_presets": raw["model_presets"],
+            "model_routes": raw["model_routes"],
+            "model_profiles": raw["model_profiles"],
+            "default_model_profile": raw["defaults"]["model_profile"],
+        }
+    )
+    factory = ModelFactory(config)
+    monkeypatch.setattr(factory, "_api_key", lambda _env_name: "test")
+
+    # 1. Profile identity checks
+    deepseek_id = factory.profile_identity("deepseek", "coordinator")
+    assert deepseek_id.provider == "deepseek"
+    assert deepseek_id.provider_model == "deepseek-v4-pro"
+    assert deepseek_id.model_profile == "deepseek"
+    assert deepseek_id.pricing_key == "deepseek/deepseek-v4-pro"
+
+    qwen_id = factory.profile_identity("qwen", "coordinator")
+    assert qwen_id.provider == "qwen"
+    assert qwen_id.provider_model == "qwen3.8-max"
+    assert qwen_id.model_profile == "qwen"
+    assert qwen_id.pricing_key == "qwen/qwen3.8-max"
+
+    # 2. Token estimation check
+    est = factory.estimate_input_tokens("deepseek", [HumanMessage(content="test message")])
+    assert est is not None
+    assert est > 0
+    with pytest.raises(KeyError, match="Unknown model profile"):
+        factory.estimate_input_tokens("missing", [HumanMessage(content="test message")])
+
+    # 3. ModelProfile is preserved on runtime and wrappers
+    model = factory.build_profile_role("deepseek", "coordinator")
+    assert model.model_profile == "deepseek"
+    assert model.reporter_slot is factory.reporter_slot
+
+    bound = model.bind_tools([])
+    assert bound.model_profile == "deepseek"
+    assert bound.reporter_slot is factory.reporter_slot
+
+    class SampleSchema(BaseModel):
+        name: str
+
+    structured = model.with_structured_output(SampleSchema)
+    assert structured.model_profile == "deepseek"
+    assert structured.reporter_slot is factory.reporter_slot
+
+    vision_route = factory.build_route("vision-worker")
+    assert vision_route.model_profile is None
+    assert vision_route.route == "vision-worker"

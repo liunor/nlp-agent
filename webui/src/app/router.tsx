@@ -20,35 +20,37 @@ export function AppRouter() {
         {/* Public route: standalone login page */}
         <Route path="/login" element={<LoginPage />} />
 
+        {/* The student home is previewable as a guest; protected actions open the login dialog. */}
+        <Route element={<AuthGate allowGuest><AppShell /></AuthGate>}>
+          <Route index element={<StudentRoutes />} />
+        </Route>
+
         {/* Protected routes: require authentication via AuthGate */}
         <Route element={<AuthGate><AppShell /></AuthGate>}>
           {/* Student routes: accessible to all authenticated users */}
-          <Route index element={<StudentRoutes />} />
-
           {/* Profile / self-service settings — all authenticated users */}
           <Route path="profile" element={<ProfilePage />} />
-          
+
           {/* Teacher routes: require teacher or developer role */}
           <Route path="teacher/*" element={
             <RouteGuard allowedRoles={["teacher", "developer", "admin"]}>
               <TeacherRoutes />
             </RouteGuard>
           } />
-          
+
           {/* Developer routes: require developer role */}
           <Route path="developer/*" element={
             <RouteGuard allowedRoles={["developer", "admin"]}>
               <DeveloperRoutes />
             </RouteGuard>
           } />
-          
+
           {/* Admin routes: require developer role */}
           <Route path="admin/*" element={
             <RouteGuard allowedRoles={["developer", "admin"]}>
               <AdminRoutes />
             </RouteGuard>
           } />
-          
           <Route path="*" element={<NotFoundPage />} />
         </Route>
 

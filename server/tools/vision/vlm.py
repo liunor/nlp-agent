@@ -109,8 +109,11 @@ class ModelRuntimeVLMProvider:
             language=language,
             ocr_context=ocr_context,
         )
+        from core.model_runtime.usage import bind_usage_purpose
+
         try:
-            response = await structured_model.ainvoke(messages)
+            with bind_usage_purpose("vision"):
+                response = await structured_model.ainvoke(messages)
         except asyncio.CancelledError:
             raise
         except Exception:

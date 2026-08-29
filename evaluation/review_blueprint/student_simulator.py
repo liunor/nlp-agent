@@ -19,6 +19,9 @@ class FlashReviewStudentSimulator:
             f"\n学生角色：{profile.role}\n行为规则：{profile.behavior_rules}"
             f"\n复习范围：{blueprint.knowledge_markdown}\n评分点：{blueprint.rubric}"
         ))
-        response = await self.model.ainvoke([system, HumanMessage(content=f"请完成这道复习题：\n{question}")])
+        from core.model_runtime.usage import system_usage_attribution
+
+        with system_usage_attribution(purpose="evaluation"):
+            response = await self.model.ainvoke([system, HumanMessage(content=f"请完成这道复习题：\n{question}")])
         content = response.content if isinstance(response.content, str) else ""
         return StudentReviewAnswer(content=content.strip() or "TF 是单篇文档中的词频，IDF 衡量词在文档集合中的稀有度。")

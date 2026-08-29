@@ -245,7 +245,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(screen.queryByRole("button", { name: "张量与形状" })).not.toBeInTheDocument();
   });
 
-  it("uses distinct visual badges for disabled and published entries", async () => {
+  it("hides status badges and sorts disabled entries after active entries", async () => {
     const statusCatalog: TeacherCatalog = {
       ...catalog,
       topics: [{
@@ -266,8 +266,12 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={statusCatalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
-    expect(screen.getByText("已停用")).toHaveClass("is-disabled");
-    expect(screen.getByText("已发布")).toHaveClass("is-published");
+    expect(screen.queryByText("已停用")).not.toBeInTheDocument();
+    expect(screen.queryByText("已发布")).not.toBeInTheDocument();
+    const pointButtons = [...document.querySelectorAll<HTMLButtonElement>(".teacher-book-tree-point-main")];
+    expect(pointButtons.map((button) => button.textContent?.trim())).toEqual(["已发布知识点", "张量与形状"]);
+    expect(pointButtons[0]?.closest(".teacher-book-tree-point")).not.toHaveClass("is-disabled");
+    expect(pointButtons[1]?.closest(".teacher-book-tree-point")).toHaveClass("is-disabled");
   });
 
   it("persists knowledge point edits from the point options menu", async () => {

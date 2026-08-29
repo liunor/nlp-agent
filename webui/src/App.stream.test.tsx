@@ -470,8 +470,8 @@ describe("student stream rendering", () => {
     expect(menu.closest(".tool-dock-tab-strip")).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "打开浏览器工具" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "打开终端工具" })).not.toBeInTheDocument();
-    expect(menu.querySelectorAll(".tool-dock-item-ornament")).toHaveLength(4);
-    expect(menu).not.toHaveTextContent("Ctrl+");
+    expect(menu.querySelectorAll("kbd")).toHaveLength(4);
+    expect(menu).toHaveTextContent("Ctrl+Alt+F");
     expect(screen.getByRole("tab", { name: "文件" })).toBeVisible();
     expect(screen.getByRole("button", { name: "显示工具列表" }).parentElement).toContainElement(menu);
 
@@ -581,5 +581,31 @@ describe("student stream rendering", () => {
     expect(await screen.findByText("工具调用完成")).toBeVisible();
     expect(screen.getByText("search")).toBeVisible();
     expect(screen.queryByText("页面未能正常显示")).not.toBeInTheDocument();
+  });
+
+  it("renders each text delta before the terminal event arrives", async () => {
+    render(<App />);
+    const input = await screen.findByRole("textbox", { name: "学习问题" });
+    fireEvent.change(input, { target: { value: "逐段输出" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getAllByText("逐段输出").some((node) => node.classList.contains("user-message"))).toBe(true));
+
+    act(() => {
+      stream.emit(event("command.ack", { accepted: true }));
+      stream.emit(event("chat.started"));
+      stream.emit(event("chat.delta", { delta: "第一段" }));
+    });
+    expect(await screen.findByText("第一段")).toBeVisible();
+    expect(screen.queryByText("第二段")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 40));
+    });
+    act(() => stream.emit(event("chat.delta", { delta: "第二段" })));
+    expect(await screen.findByText("第一段第二段")).toBeVisible();
+    expect(screen.queryByText("已复制")).not.toBeInTheDocument();
+
+    act(() => stream.emit(event("chat.completed", { content: "第一段第二段" })));
+    expect(await screen.findByText("第一段第二段")).toBeVisible();
   });
 });

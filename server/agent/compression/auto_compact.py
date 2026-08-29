@@ -124,7 +124,10 @@ async def _generate_global_summary(messages: List[BaseMessage]) -> str:
         conversation += f"[{m.type}]: {text}\n"
         
     prompt = global_prompt_runtime.render("compression.auto_summary", conversation=conversation)
-    resp = await llm.ainvoke([HumanMessage(content=prompt)])
+    from core.model_runtime.usage import bind_usage_purpose
+
+    with bind_usage_purpose("compact"):
+        resp = await llm.ainvoke([HumanMessage(content=prompt)])
     return resp.content
 
 
