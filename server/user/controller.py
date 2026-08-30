@@ -167,7 +167,7 @@ async def update_current_user(
     service = UserService(db)
     try:
         user = await service.update_user(principal.user_id, data)
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
     except UserAlreadyExistsError as e:

@@ -128,6 +128,14 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
     const auth = await api.login(integrationUsername, integrationPassword);
     expect(auth.roles).toContain("developer");
     expect((await ensureAuth()).user_id).toBeTruthy();
+
+    // /users/me must expose the real roles (empty roles would make the
+    // profile dialog fall back to showing 游客 for developers/teachers).
+    const me = await api.getCurrentUser();
+    expect(me.roles ?? []).toContain("developer");
+    const meAfterPatch = await api.updateProfile({ display_name: me.display_name });
+    expect(meAfterPatch.roles ?? []).toContain("developer");
+
     const workspaceId = auth.workspace_ids[0];
     if (!workspaceId) throw new Error("integration user has no authorized workspace");
 

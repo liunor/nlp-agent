@@ -41,6 +41,14 @@ export function AccountDialog({
       </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
-    <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} />
+    {/* Mounted only while open: closing unmounts the dialog, which resets
+        its tab / inputs / messages for the next open. */}
+    {profileOpen && (
+      <ProfileDialog
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        sessionRoles={session?.roles}
+      />
+    )}
   </>;
 }

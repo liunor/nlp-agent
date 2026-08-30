@@ -626,11 +626,10 @@ button { color: inherit; }
   @keyframes learning-context-options-in { from { opacity:0; transform:translateX(-8px); } to { opacity:1; transform:translateX(0); } }
   @media (max-width:640px) { .learning-context-menu-trigger { width:32px; justify-content:center; padding:0; }.learning-context-menu-trigger svg:last-child { display:none; }.learning-context-menu-panel { right:-36px; width:min(236px,calc(100vw - 24px)); }.learning-context-menu-panel.has-options { width:min(424px,calc(100vw - 24px)); grid-template-columns:minmax(154px,1fr) minmax(136px,1fr); }.learning-context-menu-options { max-height:190px; } }
 
-/* Profile page — frosted glass backdrop + centered card (AccountDialog aesthetic) */
-.profile-page-backdrop { position:fixed; z-index:80; inset:0; display:grid; place-items:center; padding:24px; background:rgb(26 33 44 / 28%); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); overflow-y:auto; }
-.profile-page-card { position:relative; width:min(94vw,520px); max-height:calc(100vh - 48px); overflow-y:auto; padding:32px; border:1px solid var(--border); border-radius:22px; background:color-mix(in srgb, var(--bg) 92%, transparent); color:var(--fg); box-shadow:0 28px 80px rgb(20 29 45 / 22%); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); }
-.profile-back { position:absolute; top:16px; left:16px; display:grid; width:34px; height:34px; place-items:center; border:0; border-radius:10px; background:transparent; color:var(--muted); cursor:pointer; }
-.profile-back:hover { background:var(--muted-bg); color:var(--fg); }
+/* Profile dialog — Radix Dialog with the same frosted glass aesthetic as the
+   account dialog: overlay blur + centered card, Esc / overlay click to close. */
+.profile-dialog-overlay { position: fixed; z-index: 90; inset: 0; background: rgb(26 33 44 / 28%); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.profile-dialog-content { position: fixed; z-index: 91; top: 50%; left: 50%; width: min(94vw, 520px); max-height: calc(100vh - 48px); overflow-y: auto; padding: 32px; border: 1px solid var(--border); border-radius: 22px; outline: none; background: color-mix(in srgb, var(--bg) 92%, transparent); color: var(--fg); box-shadow: 0 28px 80px rgb(20 29 45 / 22%); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); transform: translate(-50%, -50%); }
 .profile-avatar { display:grid; width:58px; height:58px; place-items:center; margin:0 auto 14px; border-radius:18px; background:var(--accent-soft); color:var(--accent); }
 .profile-title { margin:0; font-size:22px; letter-spacing:-.025em; text-align:center; }
 .profile-subtitle { margin:6px auto 22px; color:var(--muted); font-size:13px; line-height:1.6; text-align:center; }
@@ -654,7 +653,7 @@ button { color: inherit; }
 .profile-btn-primary { display:flex; min-height:42px; align-items:center; justify-content:center; gap:7px; margin-top:6px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:13px; font-weight:650; cursor:pointer; }
 .profile-btn-primary:hover:not(:disabled) { filter:brightness(.93); }
 .profile-btn-primary:disabled { opacity:.5; cursor:not-allowed; }
-@media (max-width:640px) { .profile-page-card { padding:24px 18px; border-radius:18px; }.profile-nav { flex-direction:column; gap:2px; }.profile-title { font-size:19px; } }
+@media (max-width:640px) { .profile-dialog-content { padding:24px 18px; border-radius:18px; }.profile-nav { flex-direction:column; gap:2px; }.profile-title { font-size:19px; } }
 
 /* Stable composer placement and detached option submenu. */
   .composer-toolbar > span { margin-right:auto; }

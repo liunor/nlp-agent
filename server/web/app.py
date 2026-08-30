@@ -120,6 +120,10 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
 GatewayFactory = Callable[[], BackendGateway]
 
+# Strong references to in-flight authorization-audit flush tasks so the
+# deferred writes survive garbage collection until they finish.
+_pending_audit_tasks: set[asyncio.Task] = set()
+
 
 class SpaStaticFiles(StaticFiles):
     """Serve the SPA shell only for browser navigations.
@@ -399,31 +403,50 @@ def create_app(
         session_factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
         audit_successful_reads = bool(web_config.get("audit_successful_reads", False))
         if session_factory is not None and decisions and response.status_code != 401:
-            try:
-                async with session_factory() as session:
-                    async with session.begin():
-                        for decision in decisions:
-                            # Denials and state-changing requests are always
-                            # retained.  Successful GET/HEAD authorization
-                            # checks are high-volume telemetry; keep them
-                            # opt-in because the endpoint-specific audit
-                            # events still record sensitive reads and writes.
-                            if (
-                                decision.decision == "allow"
-                                and request.method in {"GET", "HEAD"}
-                                and not audit_successful_reads
-                            ):
-                                continue
-                            await rbac_service.audit(
-                                session, actor_user_id=decision.actor_user_id, target_user_id=None,
-                                decision=decision.decision, reason_code="authorization_required",
-                                permission_code=decision.permission_code, resource_type=decision.resource_type,
-                                resource_id=decision.resource_id,
-                                detail={"workspace_id": decision.workspace_id, "request_id": request.state.request_id},
-                            )
-            except Exception as audit_exc:
-                import logging
-                logging.getLogger("audit").warning("authorization audit flush failed: %s", audit_exc)
+            retained = [
+                decision
+                for decision in decisions
+                # Denials and state-changing requests are always retained.
+                # Successful GET/HEAD authorization checks are high-volume
+                # telemetry; keep them opt-in because the endpoint-specific
+                # audit events still record sensitive reads and writes.
+                if not (
+                    decision.decision == "allow"
+                    and request.method in {"GET", "HEAD"}
+                    and not audit_successful_reads
+                )
+            ]
+            if retained:
+                request_id = request.state.request_id
+
+                async def flush_authorization_audit(
+                    factory=session_factory,
+                    decisions_to_write=retained,
+                    rid=request_id,
+                ) -> None:
+                    try:
+                        async with factory() as session:
+                            async with session.begin():
+                                for decision in decisions_to_write:
+                                    await rbac_service.audit(
+                                        session, actor_user_id=decision.actor_user_id, target_user_id=None,
+                                        decision=decision.decision, reason_code="authorization_required",
+                                        permission_code=decision.permission_code, resource_type=decision.resource_type,
+                                        resource_id=decision.resource_id,
+                                        detail={"workspace_id": decision.workspace_id, "request_id": rid},
+                                    )
+                    except Exception as audit_exc:
+                        logging.getLogger("audit").warning("authorization audit flush failed: %s", audit_exc)
+
+                # Defer the flush until after the request-scoped transaction
+                # commits.  The audit INSERT takes a foreign-key S-lock on the
+                # actor's ``nlp_users`` row, which the still-open write
+                # transaction holds exclusively until dependency teardown
+                # commits it — flushing synchronously here deadlocks (the
+                # response cannot be sent, so the commit never runs).
+                audit_task = asyncio.get_running_loop().create_task(flush_authorization_audit())
+                _pending_audit_tasks.add(audit_task)
+                audit_task.add_done_callback(_pending_audit_tasks.discard)
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
