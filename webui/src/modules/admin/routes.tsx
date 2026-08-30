@@ -65,7 +65,6 @@ export function AdminRoutes() {
         <Route path="classrooms" element={<ClassroomManagementPage />} />
         <Route path="users" element={<Navigate to="/developer/users" replace />} />
         <Route path="roles" element={<Navigate to="/developer/roles" replace />} />
-        <Route path="menus" element={<Navigate to="/developer/menus" replace />} />
         <Route path="audit" element={<Navigate to="/developer/audit" replace />} />
         <Route path="sessions" element={<Navigate to="/developer/sessions" replace />} />
         <Route path="*" element={<NotFoundPage />} />

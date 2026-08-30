@@ -49,7 +49,6 @@ from server.web.contracts import (
     LoginBody,
     ReplaceUserRolesBody,
     ReplaceRolePermissionsBody,
-    ReplaceRoleMenusBody,
     CreateRoleBody,
     UpdateRoleStatusBody,
     CreateClassroomBody,
@@ -111,8 +110,15 @@ from server.web.feedback import get_feedback_thread, list_feedback_threads, mark
 from server.auth.dependencies import get_db_session
 from server.auth import code_store
 from server.auth.captcha import generate_captcha_image
-from server.user.schemas import SmsCodeRequest, UserCreate, UserRegister
-from server.user.service import UserService, generate_sms_code
+from server.user.schemas import SmsCodeRequest, UserRegister
+from server.user.service import (
+    InvalidCaptchaError,
+    InvalidSmsCodeError,
+    PhoneNumberAlreadyUsedError,
+    UserAlreadyExistsError,
+    UserService,
+    generate_sms_code,
+)
 from server.user.tencent_sms import create_tencent_sms_provider_from_env
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
@@ -154,6 +160,34 @@ class SpaStaticFiles(StaticFiles):
                 and normalized_path not in {"api", "ws"}
                 and not normalized_path.startswith("api/")
                 and not normalized_path.startswith("ws/")
+                and not normalized_path.startswith("assets/")
+                and not normalized_path.startswith("static/")
+                and Path(normalized_path).suffix.lower()
+                not in {
+                    ".7z",
+                    ".avif",
+                    ".css",
+                    ".csv",
+                    ".gif",
+                    ".gz",
+                    ".ico",
+                    ".jpeg",
+                    ".jpg",
+                    ".js",
+                    ".json",
+                    ".map",
+                    ".pdf",
+                    ".png",
+                    ".svg",
+                    ".txt",
+                    ".wasm",
+                    ".webmanifest",
+                    ".webp",
+                    ".woff",
+                    ".woff2",
+                    ".xml",
+                    ".zip",
+                }
             )
             if error.status_code == 404 and is_navigation and self._spa_index.is_file():
                 return await super().get_response("index.html", scope)
@@ -774,59 +808,22 @@ def create_app(
 
     @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED, tags=["auth"])
     async def register_user(body: UserRegister, db: DbSession):
-        """Register a new account via phone number (image CAPTCHA + SMS code).
-
-        The account's ``username`` is set to the digits of the phone number so
-        that ``database_auth.login`` (which matches on ``username_lower``) can
-        authenticate the user with their phone number directly.
-        """
-        # 1. Validate the image CAPTCHA (single-use, DB-backed, 120s TTL).
-        if not await code_store.consume_code(
-            db, kind="captcha", subject=body.captcha_id, code=body.captcha_code
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired CAPTCHA",
-            )
-        # 2. Validate the SMS code issued by /auth/sms/send.  The 120s expiry
-        #    is enforced by code_store at consumption time.
-        if not await code_store.consume_code(
-            db, kind="sms", subject=body.phone_number.strip(), code=body.sms_code
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired SMS code",
-            )
-        # 3. Reject duplicate phones (username == phone digits).
-        phone = body.phone_number.strip()
-        username = "".join(ch for ch in phone if ch.isdigit()) or phone
-        existing = await db.scalar(
-            select(UserModel).where(
-                (UserModel.username_lower == username.casefold())
-                | (UserModel.phone_number == phone)
-            )
-        )
-        if existing is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This phone number is already registered",
-            )
-        # 4. Create the account.  ``create_user`` provisions a personal workspace
-        #    and assigns the default least-privilege ``guest`` (游客) role, which is
-        #    the correct self-registration identity: a curious outsider who just
-        #    wants to try the agent.  Admins promote accounts to student/teacher/
-        #    developer later through the user-management roles API.
+        """Register a phone account through the unified user service."""
         service = UserService(db)
-        user = await service.create_user(
-            UserCreate(
-                username=username,
-                display_name=(body.display_name or "").strip() or username,
-                password=body.password,
-            )
-        )
-        user.phone_number = phone
-        user.registration_source = "phone"
-        await db.flush()
+        try:
+            user = await service.register_user(body)
+        except InvalidCaptchaError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        except InvalidSmsCodeError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        except (PhoneNumberAlreadyUsedError, UserAlreadyExistsError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(error)
+            ) from error
         return {
             "message": "User registered successfully",
             "user_id": user.id,
@@ -989,20 +986,6 @@ def create_app(
         await hub.close_user(user_id)
         return {"classroom_id": classroom_id, "user_id": user_id, "member_role": body.member_role, "status": body.status}
 
-    @app.get("/api/v1/system/menus", tags=["rbac"])
-    async def get_menus(request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
-        async with authorization_session_factory(request)() as session:
-            menus = await rbac_service.menus(session)
-        return {"items": [
-            {"id": item.id, "parent_id": item.parent_id, "type": item.menu_type,
-             "name": item.name, "route_path": item.route_path,
-             "component_key": item.component_key, "permission_id": item.permission_id,
-             "client_scope": item.client_scope, "sort_order": item.sort_order,
-             "visible": item.visible, "status": item.status}
-            for item in menus
-        ]}
-
     @app.get("/api/v1/system/menus/visible", tags=["rbac"])
     async def get_visible_menus(request: Request, principal: Principal):
         async with authorization_session_factory(request)() as session:
@@ -1015,21 +998,6 @@ def create_app(
              "visible": item.visible, "status": item.status}
             for item in menus
         ]}
-
-    @app.put("/api/v1/system/roles/{role_code}/menus", tags=["rbac"])
-    async def put_role_menus(role_code: str, body: ReplaceRoleMenusBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                await rbac_service.replace_role_menus(session, role_code=role_code, menu_ids=body.menu_ids, actor_user_id=principal.user_id)
-        return {"role_code": role_code, "menu_ids": sorted(body.menu_ids)}
-
-    @app.get("/api/v1/system/roles/{role_code}/menus", tags=["rbac"])
-    async def get_role_menus(role_code: str, request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
-        async with authorization_session_factory(request)() as session:
-            menu_ids = await rbac_service.role_menu_ids(session, role_code)
-        return {"role_code": role_code, "menu_ids": sorted(menu_ids)}
 
     @app.get("/api/v1/audit/authorization", tags=["rbac"])
     async def list_authorization_audit(
@@ -1899,29 +1867,7 @@ def create_app(
     app.include_router(uploads_router)
 
     if static_dir is not None and static_dir.is_dir():
-        class _SpaStaticFiles(StaticFiles):
-            """StaticFiles that falls back to ``index.html`` for deep links.
-
-            The frontend uses ``BrowserRouter``, so deep links such as
-            ``/profile``, ``/login`` or ``/admin/users`` must serve the SPA
-            shell instead of the raw 404 a plain StaticFiles mount returns.
-            This must live inside the mount: Starlette never tries routes
-            registered after a mounted sub-application.
-            """
-
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                super().__init__(*args, **kwargs)
-                self._spa_index = Path(kwargs["directory"]) / "index.html"
-
-            async def get_response(self, path: str, scope):
-                try:
-                    return await super().get_response(path, scope)
-                except StarletteHTTPException as error:
-                    if error.status_code == 404 and self._spa_index.is_file():
-                        return await super().get_response("index.html", scope)
-                    raise
-
-        app.mount("/", _SpaStaticFiles(directory=static_dir, html=True), name="webui")
+        app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="webui")
     else:
         @app.get("/", include_in_schema=False)
         async def api_root():

@@ -29,6 +29,7 @@ from server.infrastructure.mysql.models import (
     RoleMenuModel,
 )
 from server.sandbox.service import sandbox_lifecycle_service
+from server.rbac.catalog import ROLE_NAMES
 
 
 class UnknownRoleError(ValueError):
@@ -37,17 +38,12 @@ class UnknownRoleError(ValueError):
 
 class RbacService:
     async def create_role(self, session: AsyncSession, *, code: str, name: str, description: str, actor_user_id: str) -> RoleModel:
-        if await session.scalar(select(RoleModel.id).where(RoleModel.code == code)):
-            raise ValueError("role code already exists")
-        role = RoleModel(id=str(uuid.uuid4()), code=code, name=name, description=description, status="active", is_builtin=False)
-        session.add(role)
-        await self.audit(session, actor_user_id=actor_user_id, target_user_id=None, decision="allow", reason_code="role_created", permission_code="system:role:manage", resource_type="role", resource_id=code)
-        return role
+        raise PermissionError("系统仅支持游客、学生、教师、开发者四个固定角色")
 
     async def update_role_status(self, session: AsyncSession, *, role_code: str, status: str, actor_user_id: str) -> set[str]:
         role = await session.scalar(select(RoleModel).where(RoleModel.code == role_code).with_for_update())
-        if role is None or role.is_builtin:
-            raise PermissionError("built-in or unknown roles cannot be disabled through the API")
+        if role is None or role.code not in ROLE_NAMES or role.is_builtin:
+            raise PermissionError("固定角色状态不可修改")
         role.status = status
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=None, decision="allow", reason_code="role_status_changed", permission_code="system:role:manage", resource_type="role", resource_id=role_code, detail={"status": status})
         return await self.invalidate_role_users(session, role.id, reason="role_status_changed")
@@ -76,6 +72,7 @@ class RbacService:
                     .where(
                         UserRoleModel.user_id == user.id,
                         RoleModel.status == "active",
+                        RoleModel.code.in_(ROLE_NAMES),
                         PermissionModel.status == "active",
                         (UserRoleModel.expires_at.is_(None)) | (UserRoleModel.expires_at > now),
                     )
@@ -87,7 +84,7 @@ class RbacService:
             .join(RolePermissionScopeModel, RolePermissionScopeModel.permission_id == PermissionModel.id)
             .join(UserRoleModel, UserRoleModel.role_id == RolePermissionScopeModel.role_id)
             .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
-            .where(UserRoleModel.user_id == user.id, RoleModel.status == "active", PermissionModel.status == "active", (UserRoleModel.expires_at.is_(None)) | (UserRoleModel.expires_at > now))
+            .where(UserRoleModel.user_id == user.id, RoleModel.status == "active", RoleModel.code.in_(ROLE_NAMES), PermissionModel.status == "active", (UserRoleModel.expires_at.is_(None)) | (UserRoleModel.expires_at > now))
         )
         permission_scopes: dict[str, frozenset[str]] = {}
         for code, scope in scope_rows:
@@ -134,7 +131,7 @@ class RbacService:
         return await self.principal_for_user_id(session, user.id)
 
     async def role_catalog(self, session: AsyncSession) -> list[RoleModel]:
-        return list((await session.scalars(select(RoleModel).order_by(RoleModel.code))).all())
+        return list((await session.scalars(select(RoleModel).where(RoleModel.code.in_(ROLE_NAMES)).order_by(RoleModel.code))).all())
 
     async def permission_catalog(self, session: AsyncSession) -> list[PermissionModel]:
         return list((await session.scalars(select(PermissionModel).order_by(PermissionModel.code))).all())
@@ -145,7 +142,7 @@ class RbacService:
             .join(RolePermissionModel, RolePermissionModel.permission_id == PermissionModel.id)
             .outerjoin(RolePermissionScopeModel, (RolePermissionScopeModel.role_id == RolePermissionModel.role_id) & (RolePermissionScopeModel.permission_id == RolePermissionModel.permission_id))
             .join(RoleModel, RoleModel.id == RolePermissionModel.role_id)
-            .where(RoleModel.code == role_code)
+            .where(RoleModel.code == role_code, RoleModel.code.in_(ROLE_NAMES), RoleModel.is_builtin.is_(True))
         )
         result: dict[str, frozenset[str]] = {}
         for code, scope in rows:
@@ -154,8 +151,8 @@ class RbacService:
 
     async def replace_role_permissions(self, session: AsyncSession, *, role_code: str, permission_codes: set[str], scopes: dict[str, set[str]], actor_user_id: str) -> set[str]:
         role = await session.scalar(select(RoleModel).where(RoleModel.code == role_code).with_for_update())
-        if role is None or role.is_builtin:
-            raise PermissionError("built-in or unknown roles cannot be modified through the API")
+        if role is None or role.code not in ROLE_NAMES or not role.is_builtin:
+            raise PermissionError("仅支持修改四个固定角色的权限")
         permissions = list((await session.scalars(select(PermissionModel).where(PermissionModel.code.in_(permission_codes), PermissionModel.status == "active"))).all())
         if {item.code for item in permissions} != permission_codes:
             raise UnknownRoleError("unknown permission code")
@@ -173,9 +170,6 @@ class RbacService:
                 session.add(RolePermissionScopeModel(role_id=role.id, permission_id=item.id, scope_type=scope))
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=None, decision="allow", reason_code="role_permissions_replaced", permission_code="system:role:manage", resource_type="role", resource_id=role_code)
         return await self.invalidate_role_users(session, role.id, reason="role_permissions_changed")
-
-    async def menus(self, session: AsyncSession) -> list[MenuModel]:
-        return list((await session.scalars(select(MenuModel).where(MenuModel.status == "active").order_by(MenuModel.sort_order))).all())
 
     async def visible_menus(
         self, session: AsyncSession, principal: AuthenticatedPrincipal
@@ -263,23 +257,6 @@ class RbacService:
         )
         session.add(OutboxMessageModel(id=str(uuid.uuid4()), topic="authorization.changed", payload_json={"user_id": user_id, "reason": "classroom_membership_changed"}))
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=user_id, decision="allow", reason_code="classroom_member_replaced", permission_code="classroom:member:manage", resource_type="classroom", resource_id=classroom_id, detail={"member_role": member_role, "status": status})
-
-    async def replace_role_menus(self, session: AsyncSession, *, role_code: str, menu_ids: set[str], actor_user_id: str) -> None:
-        role = await session.scalar(select(RoleModel).where(RoleModel.code == role_code).with_for_update())
-        if role is None or role.is_builtin:
-            raise KeyError(role_code)
-        menus = list((await session.scalars(select(MenuModel).where(MenuModel.id.in_(menu_ids), MenuModel.status == "active"))).all()) if menu_ids else []
-        if {item.id for item in menus} != menu_ids:
-            raise ValueError("unknown or disabled menu")
-        await session.execute(delete(RoleMenuModel).where(RoleMenuModel.role_id == role.id))
-        session.add_all([RoleMenuModel(role_id=role.id, menu_id=item.id) for item in menus])
-        await self.audit(session, actor_user_id=actor_user_id, target_user_id=None, decision="allow", reason_code="role_menus_replaced", permission_code="system:role:manage", resource_type="role", resource_id=role_code)
-
-    async def role_menu_ids(self, session: AsyncSession, role_code: str) -> set[str]:
-        role = await session.scalar(select(RoleModel.id).where(RoleModel.code == role_code))
-        if role is None:
-            raise KeyError(role_code)
-        return set((await session.scalars(select(RoleMenuModel.menu_id).where(RoleMenuModel.role_id == role))).all())
 
     async def audit(
         self,
@@ -461,6 +438,7 @@ class RbacService:
             .where(
                 UserRoleModel.user_id == user_id,
                 RoleModel.status == "active",
+                RoleModel.code.in_(ROLE_NAMES),
                 (UserRoleModel.expires_at.is_(None)) | (UserRoleModel.expires_at > now),
             )
         )
@@ -483,7 +461,7 @@ class RbacService:
             (
                 await session.scalars(
                     select(RoleModel).where(
-                        RoleModel.code.in_(role_codes), RoleModel.status == "active"
+                        RoleModel.code.in_(role_codes), RoleModel.code.in_(ROLE_NAMES), RoleModel.status == "active", RoleModel.is_builtin.is_(True)
                     )
                 )
             ).all()

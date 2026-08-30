@@ -14,6 +14,43 @@ ROLE_NAMES = {
     "developer": "开发者",
 }
 
+# Stable Chinese labels shown in the administration UI. Codes remain the
+# machine-facing identifiers returned alongside these labels.
+PERMISSION_LABELS: dict[Permission, tuple[str, str]] = {
+    Permission.IDENTITY_PROFILE_READ_SELF: ("查看个人资料", "查看自己的个人资料"),
+    Permission.IDENTITY_PROFILE_UPDATE_SELF: ("编辑个人资料", "修改自己的个人资料"),
+    Permission.LEARNING_CONTENT_READ_PUBLIC: ("查看公开学习内容", "查看公开的课程和知识内容"),
+    Permission.LEARNING_CONTENT_READ_WORKSPACE: ("查看工作区学习内容", "查看所属工作区的学习内容"),
+    Permission.LEARNING_EXERCISE_SUBMIT: ("提交练习", "提交学习练习并查看提交结果"),
+    Permission.LEARNING_PROGRESS_READ_SELF: ("查看个人学习进度", "查看自己的学习进度"),
+    Permission.LEARNING_CONTENT_MANAGE: ("管理学习内容", "创建、编辑和发布学习内容"),
+    Permission.LEARNING_PROGRESS_READ_CLASSROOM: ("查看班级学习进度", "查看班级成员的学习进度"),
+    Permission.LEARNING_FEEDBACK_SUBMIT: ("提交学习反馈", "提交对课程和学习体验的反馈"),
+    Permission.LEARNING_FEEDBACK_READ: ("查看学习反馈", "查看平台收到的学习反馈"),
+    Permission.LEARNING_FEEDBACK_CREATE: ("处理学习反馈", "创建和处理反馈回复"),
+    Permission.CLASSROOM_CREATE: ("创建班级", "创建和管理自己负责的班级"),
+    Permission.CLASSROOM_MEMBER_MANAGE: ("管理班级成员", "添加、移除或调整班级成员"),
+    Permission.AGENT_SESSION_CREATE: ("创建智能体会话", "创建新的 Agent 会话"),
+    Permission.AGENT_SESSION_READ: ("查看智能体会话", "查看可访问的 Agent 会话"),
+    Permission.AGENT_SESSION_UPDATE: ("编辑智能体会话", "更新可访问的 Agent 会话"),
+    Permission.AGENT_SESSION_DELETE: ("删除智能体会话", "删除可访问的 Agent 会话"),
+    Permission.AGENT_TURN_SUBMIT: ("提交智能体消息", "向 Agent 会话提交消息"),
+    Permission.AGENT_TURN_CANCEL: ("取消智能体任务", "取消正在执行的 Agent 任务"),
+    Permission.AGENT_EVENT_REPLAY: ("回放智能体事件", "查看和回放 Agent 会话事件"),
+    Permission.AGENT_CHECKPOINT_RESTORE: ("恢复会话检查点", "从检查点恢复 Agent 会话"),
+    Permission.SYSTEM_MODEL_PROFILE_MANAGE: ("管理模型配置", "管理模型和 Provider 配置"),
+    Permission.SYSTEM_PROMPT_TEMPLATE_MANAGE: ("管理提示词模板", "管理系统提示词模板"),
+    Permission.SYSTEM_TOOL_CONFIG_MANAGE: ("管理工具配置", "管理工具和 MCP 配置"),
+    Permission.SYSTEM_RUNTIME_MONITOR: ("监控运行状态", "查看运行时和服务状态"),
+    Permission.SYSTEM_RUNTIME_INSPECT: ("查看运行时详情", "查看运行时诊断信息"),
+    Permission.SYSTEM_USER_MANAGE: ("管理用户", "创建、编辑、禁用和恢复用户"),
+    Permission.SYSTEM_ROLE_MANAGE: ("管理角色权限", "为固定角色分配权限和作用域"),
+    Permission.SYSTEM_RELEASE_NOTES_MANAGE: ("管理发布说明", "创建和维护发布说明"),
+    Permission.SYSTEM_PERMISSION_READ: ("查看权限目录", "查看系统权限定义"),
+    Permission.SYSTEM_AUDIT_READ: ("查看审计日志", "查看授权和安全审计记录"),
+    Permission.SYSTEM_SENSITIVE_DATA_READ: ("查看敏感数据", "查看受保护的敏感数据"),
+}
+
 
 # The developer control plane is also represented in the database menu
 # projection.  The React shell may keep route components statically bundled,
@@ -32,7 +69,6 @@ MENU_CATALOG = (
     ("developer.settings", "运行时设置", "/developer/settings", "settings", Permission.SYSTEM_RUNTIME_INSPECT, 90),
     ("developer.users", "用户管理", "/developer/users", "users", Permission.SYSTEM_USER_MANAGE, 100),
     ("developer.roles", "角色权限", "/developer/roles", "roles", Permission.SYSTEM_ROLE_MANAGE, 110),
-    ("developer.menus", "菜单管理", "/developer/menus", "menus", Permission.SYSTEM_ROLE_MANAGE, 120),
     ("developer.audit", "审计日志", "/developer/audit", "audit", Permission.SYSTEM_AUDIT_READ, 130),
     ("developer.sessions", "Agent 会话", "/developer/sessions", "sessions", Permission.AGENT_SESSION_READ, 140),
 )
@@ -75,14 +111,15 @@ def permission_scope(permission: Permission) -> str:
 
 def permission_row(permission: Permission) -> dict[str, str | bool]:
     domain_name, resource_name, action_name = permission.value.split(":", 2)
+    name, description = PERMISSION_LABELS.get(permission, (permission.value, ""))
     return {
         "id": permission_id(permission),
         "code": permission.value,
         "domain_name": domain_name,
         "resource_name": resource_name,
         "action_name": action_name,
-        "name": permission.value,
-        "description": "",
+        "name": name,
+        "description": description,
         "status": "active",
         "is_builtin": True,
     }

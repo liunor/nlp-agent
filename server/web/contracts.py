@@ -49,10 +49,6 @@ class ReplaceRolePermissionsBody(StrictModel):
     scopes: dict[str, set[Literal["public", "own", "classroom", "workspace", "system"]]] = Field(default_factory=dict)
 
 
-class ReplaceRoleMenusBody(StrictModel):
-    menu_ids: set[str] = Field(max_length=256)
-
-
 class CreateRoleBody(StrictModel):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{1,62}$")
     name: str = Field(min_length=1, max_length=64)

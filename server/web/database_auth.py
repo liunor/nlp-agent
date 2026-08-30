@@ -8,6 +8,7 @@ effect immediately across processes.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import secrets
@@ -206,8 +207,12 @@ class DatabaseSessionAuth:
                 )
                 .with_for_update()
             )
-            valid = user is not None and user.status == "active" and self._verify_password(
-                user.password_hash, password, self._hasher
+            valid = (
+                user is not None
+                and user.status == "active"
+                and await asyncio.to_thread(
+                    self._verify_password, user.password_hash, password, self._hasher
+                )
             )
             if not valid:
                 self._username_rate_limiter.record_failure(normalized)

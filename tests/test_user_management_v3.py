@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from server.auth import code_store
 from server.infrastructure.mysql import DatabaseConfig, create_engine, create_session_factory
 
 from server.infrastructure.mysql.models import SessionModel, UserModel, WorkspaceMemberModel
 from server.rbac.service import rbac_service
 from core.rbac import Permission
 from server.user.controller import _user_response_with_roles
-from server.user.schemas import UserCreate, UserCreateWithRole
+from server.user.schemas import UserCreate, UserCreateWithRole, UserRegister
 from server.user.service import UserService
 from server.web.auth import AuthenticationError, OriginRejectedError
 from server.web.database_auth import DatabaseSessionAuth
@@ -82,6 +84,37 @@ async def test_new_user_is_persisted_with_guest_role(mysql_session_factory) -> N
         )
         await session.commit()
         assert await rbac_service.roles_for(session, user.id) == frozenset({"guest"})
+
+
+@pytest.mark.asyncio
+async def test_phone_registration_uses_unified_service_transaction(
+    mysql_session_factory, monkeypatch
+) -> None:
+    consume_code = AsyncMock(side_effect=[True, True])
+    monkeypatch.setattr(code_store, "consume_code", consume_code)
+    phone = f"+86139{uuid4().int % 10**8:08d}"
+    data = UserRegister(
+        phone_number=phone,
+        sms_code="123456",
+        password="InitialPw0rd1",
+        display_name="Phone user",
+        captcha_id="captcha-test",
+        captcha_code="ABCD",
+    )
+
+    async with mysql_session_factory() as session:
+        async with session.begin():
+            user = await UserService(session).register_user(data)
+            assert user.username == "".join(ch for ch in phone if ch.isdigit())
+            assert user.phone_number == phone
+            assert user.registration_source == "phone"
+            assert await rbac_service.roles_for(session, user.id) == frozenset({"guest"})
+
+    assert consume_code.await_count == 2
+    assert [call.kwargs["kind"] for call in consume_code.await_args_list] == [
+        "captcha",
+        "sms",
+    ]
 
 
 @pytest.mark.asyncio

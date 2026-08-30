@@ -193,4 +193,6 @@ def test_builtin_catalog_has_stable_ids_and_complete_role_permission_rows() -> N
         Permission.AGENT_TURN_SUBMIT
     )
     assert permission_row(Permission.AGENT_TURN_SUBMIT)["code"] == "agent:turn:submit"
+    assert permission_row(Permission.AGENT_TURN_SUBMIT)["name"] == "提交智能体消息"
+    assert permission_row(Permission.AGENT_TURN_SUBMIT)["description"]
     assert len(role_permission_rows()) == len(role_permission_scope_rows())

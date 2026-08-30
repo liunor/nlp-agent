@@ -50,6 +50,10 @@ class InvalidSmsCodeError(UserServiceError):
     """Raised when an SMS verification code is invalid or expired."""
 
 
+class InvalidCaptchaError(UserServiceError):
+    """Raised when an image CAPTCHA is invalid or expired."""
+
+
 class SelfDeleteForbiddenError(UserServiceError):
     """Raised when an actor attempts to delete their own account."""
 
@@ -111,7 +115,7 @@ class UserService:
             )
 
         # Hash password
-        password_hash = self.hasher.hash(data.password)
+        password_hash = await asyncio.to_thread(self.hasher.hash, data.password)
 
         # Create user
         user = UserModel(
@@ -474,48 +478,51 @@ class UserService:
         self,
         data: UserRegister,
     ) -> UserModel:
-        """Register a new user via phone number with SMS verification."""
-        # 1. Check if phone number is already registered
+        """Register a phone account within the caller's transaction.
+
+        This is the sole registration entry point.  The web controller only
+        maps service errors to HTTP responses; all verification, identity
+        normalization, account provisioning, and default-role policy live
+        here.
+        """
+        phone = data.phone_number.strip()
+        username = "".join(ch for ch in phone if ch.isdigit()) or phone
+
+        # Consume both one-time credentials in the same request transaction.
+        if not await code_store.consume_code(
+            self.session,
+            kind="captcha",
+            subject=data.captcha_id,
+            code=data.captcha_code,
+        ):
+            raise InvalidCaptchaError("Invalid or expired CAPTCHA")
+        if not await code_store.consume_code(
+            self.session, kind="sms", subject=phone, code=data.sms_code
+        ):
+            raise InvalidSmsCodeError("Invalid or expired verification code")
+
+        # Phone-format variants map to one username, while the phone column
+        # check preserves the exact value for compatibility with existing rows.
         existing = await self.session.scalar(
-            select(UserModel.id).where(UserModel.phone_number == data.phone_number)
+            select(UserModel.id).where(
+                (UserModel.phone_number == phone)
+                | (UserModel.username_lower == username.casefold())
+            )
         )
         if existing:
             raise PhoneNumberAlreadyUsedError("This phone number is already registered")
 
-        # 2. Verify SMS code (shared ``nlp_auth_codes`` store; the 120s expiry
-        #    is enforced here at consumption time and the code is single-use).
-        if not await code_store.consume_code(
-            self.session, kind="sms", subject=data.phone_number.strip(), code=data.sms_code
-        ):
-            raise InvalidSmsCodeError("Invalid or expired verification code")
-
-        # 3. Generate username from phone number (alphanumeric only)
-        phone_clean = data.phone_number.replace(" ", "").replace("-", "").lstrip("+")
-        # Use pure alphanumeric: user + last 8 digits of phone + first 4 chars of uuid hex
-        username = f"user{phone_clean[-8:]}{uuid.uuid4().hex[:4]}"
-        display_name = data.display_name or f"User {phone_clean[-4:]}"
-
-        # 4. Create user
-        user_create = UserCreate(username=username, display_name=display_name, password=data.password)
+        display_name = (data.display_name or "").strip() or username
+        user_create = UserCreate(
+            username=username,
+            display_name=display_name,
+            password=data.password,
+        )
         user = await self.create_user(user_create)
-        user.phone_number = data.phone_number
+        user.phone_number = phone
         user.registration_source = "phone"
         await self.session.flush()
-
-        # 5. Assign student role (not guest — students need AGENT_SESSION_* permissions)
-        student_role = await self.session.scalar(
-            select(RoleModel).where(RoleModel.code == "student")
-        )
-        if student_role:
-            self.session.add(
-                UserRoleModel(user_id=user.id, role_id=student_role.id)
-            )
-            await self.session.flush()
-
-        # Refresh user from DB to load server-default fields (created_at, updated_at)
-        # session.get() returns cached identity-map object; refresh() forces a SELECT
         await self.session.refresh(user)
-        await self.session.commit()  # Commit the transaction — without this, the async with block rolls back
         return user
 
 

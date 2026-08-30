@@ -31,7 +31,7 @@ const menu = (routePath: string | null) => ({
   status: "active",
 });
 
-const ALL_ROUTES = ["/developer", "/developer/agents", "/developer/tools", "/developer/models", "/developer/mcp", "/developer/skills", "/developer/release-notes", "/developer/automations", "/developer/feedback", "/developer/settings", "/developer/users", "/developer/roles", "/developer/menus", "/developer/audit", "/developer/sessions"];
+const ALL_ROUTES = ["/developer", "/developer/agents", "/developer/tools", "/developer/models", "/developer/mcp", "/developer/skills", "/developer/release-notes", "/developer/automations", "/developer/feedback", "/developer/settings", "/developer/users", "/developer/roles", "/developer/audit", "/developer/sessions"];
 
 const snapshot = {
   runtime: { status: "ok", active_turns: 0, durable_events: 0 },

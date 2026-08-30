@@ -2,7 +2,7 @@ import {
   Activity, AppWindow, Bot, Box, ChevronLeft, Clock3, Code2, Database,
   ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Mail, Newspaper, PlugZap,
   RefreshCw, Settings2, ShieldCheck, Sparkles, TerminalSquare, Wrench,
-  Users, LayoutList, ScrollText, MessageSquare,
+  Users, ScrollText, MessageSquare,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -10,12 +10,11 @@ import { api, ensureAuth } from "@/platform/http/api";
 import type { DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
 import { UserManagementPage } from "@/modules/admin/UserManagementPage";
 import { RoleManagementPageV2 } from "@/modules/admin/RoleManagementPageV2";
-import { MenuManagementPageV2 } from "@/modules/admin/MenuManagementPageV2";
 import { AuditLogPageV2 } from "@/modules/admin/AuditLogPageV2";
 import { AgentSessionListPageV2 } from "@/modules/admin/AgentSessionListPageV2";
 import { monitorUrl } from "@/monitor/monitor-helpers";
 
-export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "menus" | "audit" | "sessions";
+export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "audit" | "sessions";
 
 const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "overview", label: "工作台", icon: Gauge },
@@ -30,7 +29,6 @@ const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "settings", label: "运行时设置", icon: Settings2 },
   { page: "users", label: "用户管理", icon: Users },
   { page: "roles", label: "角色权限", icon: ShieldCheck },
-  { page: "menus", label: "菜单管理", icon: LayoutList },
   { page: "audit", label: "审计日志", icon: ScrollText },
   { page: "sessions", label: "Agent 会话", icon: MessageSquare },
 ];
@@ -346,7 +344,6 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} refresh={refreshFeedback} />;
     if (page === "users") return <UserManagementPage onShellRefresh={load} refreshToken={managementRefreshToken} />;
     if (page === "roles") return <RoleManagementPageV2 onShellRefresh={load} refreshToken={managementRefreshToken} />;
-    if (page === "menus") return <MenuManagementPageV2 onShellRefresh={load} refreshToken={managementRefreshToken} />;
     if (page === "audit") return <AuditLogPageV2 />;
     if (page === "sessions") return <AgentSessionListPageV2 />;
     if (!snapshot) return <div className="developer-error"><ShieldCheck /><strong>无法读取运行时快照</strong><p>{snapshotError || "当前身份可能缺少运行时检查权限；其余页面不受影响。"}</p></div>;

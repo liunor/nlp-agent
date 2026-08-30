@@ -335,7 +335,7 @@ DEVELOPER (最高权限)
    → 创建 nlp_users 记录（username = 随机生成）
    → 创建 nlp_workspaces 记录（个人工作空间）
    → 创建 nlp_workspace_members 记录（user as owner）
-   → 创建 nlp_user_roles 记录（role = student）
+   → 创建 nlp_user_roles 记录（role = guest）
    
 2. POST /api/v1/auth/login
    → 查询 nlp_users（通过 username_lower 或 phone_number）
