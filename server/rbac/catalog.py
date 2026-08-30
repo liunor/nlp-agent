@@ -125,6 +125,26 @@ def permission_row(permission: Permission) -> dict[str, str | bool]:
     }
 
 
+def permission_display(
+    permission_code: str,
+    *,
+    fallback_name: str = "",
+    fallback_description: str = "",
+) -> tuple[str, str]:
+    """Return the stable display labels for a permission code.
+
+    Permission codes are the durable contract.  Older databases may contain
+    an empty, stale, or incorrectly decoded display value, so known built-in
+    permissions must use the catalog labels instead of trusting persisted text.
+    Unknown codes retain their database values for forward compatibility.
+    """
+    try:
+        permission = Permission(permission_code)
+    except ValueError:
+        return fallback_name, fallback_description
+    return PERMISSION_LABELS.get(permission, (fallback_name, fallback_description))
+
+
 def role_row(code: str) -> dict[str, str | bool]:
     return {
         "id": role_id(code),

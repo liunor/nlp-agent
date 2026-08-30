@@ -9,6 +9,7 @@ from core.rbac import required_permission_for_high_risk_tool
 from server.rbac.catalog import (
     ROLE_NAMES,
     permission_id,
+    permission_display,
     permission_row,
     permission_scope,
     role_id,
@@ -196,3 +197,12 @@ def test_builtin_catalog_has_stable_ids_and_complete_role_permission_rows() -> N
     assert permission_row(Permission.AGENT_TURN_SUBMIT)["name"] == "提交智能体消息"
     assert permission_row(Permission.AGENT_TURN_SUBMIT)["description"]
     assert len(role_permission_rows()) == len(role_permission_scope_rows())
+
+
+def test_permission_display_uses_catalog_labels_for_stale_database_values() -> None:
+    assert permission_display(
+        Permission.AGENT_TURN_SUBMIT.value,
+        fallback_name="旧名称",
+        fallback_description="旧说明",
+    ) == ("提交智能体消息", "向 Agent 会话提交消息")
+    assert permission_display("future:permission", fallback_name="保留名称") == ("保留名称", "")

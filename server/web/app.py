@@ -43,6 +43,7 @@ from server.web.auth import (
     SessionClaims,
 )
 from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
+from server.rbac.catalog import permission_display
 from server.agent.session_service import DatabaseSessionService, local_session_service
 from server.web.contracts import (
     CreateSessionBody,
@@ -913,11 +914,22 @@ def create_app(
         authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
         async with authorization_session_factory(request)() as session:
             permissions = await rbac_service.permission_catalog(session)
-        return {"items": [
-            {"code": row.code, "name": row.name, "description": row.description,
-             "status": row.status}
-            for row in permissions
-        ]}
+        items = []
+        for row in permissions:
+            name, description = permission_display(
+                row.code,
+                fallback_name=row.name,
+                fallback_description=row.description,
+            )
+            items.append(
+                {
+                    "code": row.code,
+                    "name": name,
+                    "description": description,
+                    "status": row.status,
+                }
+            )
+        return {"items": items}
 
     @app.get("/api/v1/users/{user_id}/roles", tags=["rbac"])
     async def get_user_roles(user_id: str, request: Request, principal: Principal):
