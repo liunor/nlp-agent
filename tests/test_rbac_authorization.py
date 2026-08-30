@@ -12,6 +12,7 @@ from server.rbac.catalog import (
     permission_display,
     permission_row,
     permission_scope,
+    role_display,
     role_id,
     role_permission_rows,
     role_permission_scope_rows,
@@ -204,5 +205,13 @@ def test_permission_display_uses_catalog_labels_for_stale_database_values() -> N
         Permission.AGENT_TURN_SUBMIT.value,
         fallback_name="旧名称",
         fallback_description="旧说明",
-    ) == ("提交智能体消息", "向 Agent 会话提交消息")
+    ) == ("提交智能体消息", "向可访问的 Agent 会话发送消息并创建一次模型处理任务。")
     assert permission_display("future:permission", fallback_name="保留名称") == ("保留名称", "")
+
+
+def test_fixed_role_display_explains_capability_boundaries() -> None:
+    name, description = role_display("developer", fallback_description="旧说明")
+    assert name == "开发者"
+    assert "用户" in description
+    assert "固定角色" in description
+    assert role_display("future-role", fallback_name="兼容角色", fallback_description="兼容说明") == ("兼容角色", "兼容说明")
