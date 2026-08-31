@@ -43,8 +43,10 @@ from server.teacher.models import (
     TeacherBookNavigationItem,
     TeacherBookPage,
     TeacherCatalog,
+    TeacherAnalysisAnnotations,
     TeacherAIAnalysisRequest,
     TeachingGoals,
+    UpdateTeacherAnalysisAnnotations,
     UpdateTeacherBookPage,
     UpdateTeacherCatalog,
     UpdateTeachingGoals,
@@ -79,6 +81,23 @@ class TeacherService:
         goals = TeachingGoals(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
         result = await gateway.update_user_settings(principal, {f"teacher_goals:{workspace_id}": goals})
         return {"goals": goals, "revision": result["revision"], "updated_at": result["updated_at"]}
+
+    @staticmethod
+    def _default_annotations(workspace_id: str) -> dict[str, Any]:
+        return TeacherAnalysisAnnotations(workspace_id=workspace_id).model_dump(mode="json")
+
+    async def analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        settings = await gateway.get_user_settings(principal)
+        key = f"teacher_analysis_annotations:{workspace_id}"
+        value = settings["settings"].get(key) or self._default_annotations(workspace_id)
+        return {"annotations": value, "revision": settings["revision"], "updated_at": settings["updated_at"]}
+
+    async def update_analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, body: UpdateTeacherAnalysisAnnotations) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        annotations = TeacherAnalysisAnnotations(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
+        result = await gateway.update_user_settings(principal, {f"teacher_analysis_annotations:{workspace_id}": annotations})
+        return {"annotations": annotations, "revision": result["revision"], "updated_at": result["updated_at"]}
 
     async def catalog(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
         self.require_teacher(

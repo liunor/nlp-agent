@@ -95,7 +95,7 @@ function ProblemDistributionChart({ items }: { items: TeacherLearningAnalysis["p
   </svg></div>;
 }
 
-function DiagnosisDetail({ item, focused, expanded, onToggle, onFocus, onIgnore, note, onNote }: { item: LearningAnalysisDiagnosis; focused: boolean; expanded: boolean; onToggle: () => void; onFocus: () => void; onIgnore: () => void; note: string; onNote: (value: string) => void }) {
+function DiagnosisDetail({ item, focused, expanded, onToggle, onFocus, onIgnore, note, onNote, onNoteCommit }: { item: LearningAnalysisDiagnosis; focused: boolean; expanded: boolean; onToggle: () => void; onFocus: () => void; onIgnore: () => void; note: string; onNote: (value: string) => void; onNoteCommit: () => void }) {
   const [noteOpen, setNoteOpen] = useState(false);
   return <article className={`teacher-analysis-diagnosis ${focused ? "focused" : ""}`}>
     <div className="teacher-analysis-diagnosis-main">
@@ -110,7 +110,7 @@ function DiagnosisDetail({ item, focused, expanded, onToggle, onFocus, onIgnore,
       {item.weak_criteria.length > 0 && <div className="teacher-analysis-criteria"><span>重复错误评分点</span>{item.weak_criteria.map((criterion) => <em key={criterion.criterion}>{criterion.criterion} · 错误率 {criterion.error_rate}%</em>)}</div>}
       {item.question_examples?.length ? <div className="teacher-analysis-question-examples"><span>题目示例</span>{item.question_examples.map((example) => <p key={example.question_id}>{example.question}</p>)}</div> : null}
       <div className="teacher-analysis-actions"><button type="button" onClick={onFocus}>{focused ? <><Check size={14} />已标记关注</> : <><Flag size={14} />标记已关注</>} {item.knowledge_point_name}</button><button type="button" onClick={onIgnore}><Eye size={14} />忽略 {item.knowledge_point_name}</button><button type="button" onClick={() => setNoteOpen((value) => !value)}><MessageSquare size={14} />添加备注 {item.knowledge_point_name}</button></div>
-      {noteOpen && <textarea aria-label={`${item.knowledge_point_name}备注`} value={note} onChange={(event) => onNote(event.target.value)} placeholder="记录课堂观察或后续跟进计划…" />}
+      {noteOpen && <textarea aria-label={`${item.knowledge_point_name}备注`} value={note} onChange={(event) => onNote(event.target.value)} onBlur={onNoteCommit} placeholder="记录课堂观察或后续跟进计划…" />}
     </div>}
   </article>;
 }
@@ -187,9 +187,9 @@ function AIAnalysisPanel({ state, result, error, onGenerate, analysis, ignored, 
 
 export function LearningAnalysisPage({ data, workspaceId = "default", onPeriodChange }: { data: TeacherOverview; workspaceId?: string; onPeriodChange?: (days: number) => void }) {
   const analysis = data.learning_analysis ?? EMPTY_ANALYSIS;
-  const [focused, setFocused] = useState<Set<string>>(new Set());
-  const [ignored, setIgnored] = useState<Set<string>>(new Set());
-  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [focused, setFocused] = useState<Set<string>>(() => new Set(data.annotations?.focused ?? []));
+  const [ignored, setIgnored] = useState<Set<string>>(() => new Set(data.annotations?.ignored ?? []));
+  const [notes, setNotes] = useState<Record<string, string>>(() => data.annotations?.notes ?? {});
   const [expandedDiagnosis, setExpandedDiagnosis] = useState<string | null>(null);
   const [selectedCourse, setSelectedCourse] = useState("all");
   const [selectedPoint, setSelectedPoint] = useState("all");
@@ -204,8 +204,21 @@ export function LearningAnalysisPage({ data, workspaceId = "default", onPeriodCh
   const evidenceDiagnoses = scopedAnalysis.diagnoses.filter((item) => item.data_sufficiency === "sufficient");
   const insufficientDiagnoses = scopedAnalysis.diagnoses.filter((item) => item.data_sufficiency !== "sufficient");
   const expireAI = () => setAIState((current) => current === "not-generated" ? current : "expired");
-  const focus = (id: string) => setFocused((current) => new Set(current).add(id));
-  const ignore = (id: string) => setIgnored((current) => new Set(current).add(id));
+  const persistAnnotations = (nextFocused: string[], nextIgnored: string[], nextNotes: Record<string, string>) => {
+    void api.updateTeacherAnalysisAnnotations(workspaceId, { focused: nextFocused, ignored: nextIgnored, notes: nextNotes }).catch(() => {});
+  };
+  const focus = (id: string) => {
+    const next = focused.has(id) ? focused : new Set(focused).add(id);
+    setFocused(next);
+    persistAnnotations([...next], [...ignored], notes);
+  };
+  const ignore = (id: string) => {
+    const next = new Set(ignored).add(id);
+    setIgnored(next);
+    persistAnnotations([...focused], [...next], notes);
+  };
+  const handleNote = (id: string, value: string) => setNotes((current) => ({ ...current, [id]: value }));
+  const commitNotes = () => persistAnnotations([...focused], [...ignored], notes);
   const viewDiagnosis = (id: string) => { setSelectedCourse("all"); setSelectedPoint("all"); setExpandedDiagnosis(id); window.requestAnimationFrame(() => document.getElementById(`teacher-analysis-diagnosis-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })); };
   const generate = async () => {
     setAIState("loading");
@@ -224,7 +237,7 @@ export function LearningAnalysisPage({ data, workspaceId = "default", onPeriodCh
     <section className="teacher-analysis-filters" aria-label="学习分析筛选条件"><label>教材/课程<select aria-label="教材/课程" value={selectedCourse} onChange={(event) => { setSelectedCourse(event.target.value); expireAI(); }}><option key="all" value="all">全部教材内容</option>{courseOptions.map((option) => <option key={`course-${option}`} value={option}>{option}</option>)}</select></label><label>内容范围<select aria-label="内容范围" value={selectedPoint} onChange={(event) => { setSelectedPoint(event.target.value); expireAI(); }}><option key="all" value="all">全部主题与知识点</option>{pointOptions.map((option) => <option key={`point-${option}`} value={option}>{option}</option>)}</select></label><label>时间范围<select aria-label="时间范围" value={String(analysis.scope.period_days)} onChange={(event) => { expireAI(); onPeriodChange?.(Number(event.target.value)); }}><option key="30" value="30">近 30 天</option><option key="60" value="60">近 60 天</option><option key="90" value="90">近 90 天</option></select></label><div className="teacher-analysis-fixed-role"><span>学生角色</span><strong>学生</strong></div><div className="teacher-analysis-sample"><CircleHelp size={15} /><span>当前分析范围：{analysis.scope.period_label} · {selectedCourse === "all" ? "全部教材内容" : selectedCourse} · 学生角色 · {analysis.scope.student_count} 名学生 · {analysis.scope.attempt_count} 次作答</span></div></section>
     <AIAnalysisPanel state={aiState} result={aiResult} error={aiError} onGenerate={() => void generate()} analysis={scopedAnalysis} ignored={ignored} focused={focused} onFocus={focus} onIgnore={ignore} />
     <section className="teacher-analysis-conclusions" aria-label="内容分析结论"><ConclusionCard label="重点薄弱内容" item={scopedAnalysis.conclusions.weak} tone="weak" onView={viewDiagnosis} /><ConclusionCard label="近期下降内容" item={scopedAnalysis.conclusions.declining} tone="declining" onView={viewDiagnosis} /><ConclusionCard label="掌握较好内容" item={scopedAnalysis.conclusions.good} tone="good" onView={viewDiagnosis} /></section>
-    <section className="teacher-analysis-panel teacher-analysis-diagnosis-panel"><header><div><h2>知识点诊断</h2><p>优先展示有练习证据的知识点；数据不足的目录项收纳在下方，不参与判断。</p></div><span className="teacher-analysis-count">{evidenceDiagnoses.length} 个有证据知识点{insufficientDiagnoses.length ? ` · ${insufficientDiagnoses.length} 个数据不足` : ""}</span></header>{evidenceDiagnoses.length ? <><div className="teacher-analysis-diagnosis-head"><span>内容 / 知识点</span><span>掌握情况</span><span>变化趋势</span><span>问题类型 / 样本</span><span>操作</span></div><div className="teacher-analysis-diagnosis-list">{evidenceDiagnoses.map((item) => <div id={`teacher-analysis-diagnosis-${item.knowledge_point_id}`} key={item.knowledge_point_id}><DiagnosisDetail item={item} focused={focused.has(item.knowledge_point_id)} expanded={expandedDiagnosis === item.knowledge_point_id} onToggle={() => setExpandedDiagnosis((current) => current === item.knowledge_point_id ? null : item.knowledge_point_id)} onFocus={() => focus(item.knowledge_point_id)} onIgnore={() => ignore(item.knowledge_point_id)} note={notes[item.knowledge_point_id] ?? ""} onNote={(value) => setNotes((current) => ({ ...current, [item.knowledge_point_id]: value }))} /></div>)}</div></> : <div className="teacher-analysis-empty"><AlertCircle size={18} />暂无足够的学生练习证据生成诊断。</div>}{insufficientDiagnoses.length > 0 && <div className="teacher-analysis-insufficient"><button type="button" aria-expanded={showInsufficient} onClick={() => setShowInsufficient((value) => !value)}>{showInsufficient ? "收起" : "展开"} {insufficientDiagnoses.length} 个数据不足知识点<ChevronDown size={14} /></button>{showInsufficient && <div className="teacher-analysis-insufficient-list">{insufficientDiagnoses.map((item) => <div className="teacher-analysis-insufficient-item" key={item.knowledge_point_id}><div><small>{item.content_name}</small><strong>{item.knowledge_point_name}</strong></div><span>暂无练习证据 · 补充作答后再判断</span></div>)}</div>}</div>}</section>
+    <section className="teacher-analysis-panel teacher-analysis-diagnosis-panel"><header><div><h2>知识点诊断</h2><p>优先展示有练习证据的知识点；数据不足的目录项收纳在下方，不参与判断。</p></div><span className="teacher-analysis-count">{evidenceDiagnoses.length} 个有证据知识点{insufficientDiagnoses.length ? ` · ${insufficientDiagnoses.length} 个数据不足` : ""}</span></header>{evidenceDiagnoses.length ? <><div className="teacher-analysis-diagnosis-head"><span>内容 / 知识点</span><span>掌握情况</span><span>变化趋势</span><span>问题类型 / 样本</span><span>操作</span></div><div className="teacher-analysis-diagnosis-list">{evidenceDiagnoses.map((item) => <div id={`teacher-analysis-diagnosis-${item.knowledge_point_id}`} key={item.knowledge_point_id}><DiagnosisDetail item={item} focused={focused.has(item.knowledge_point_id)} expanded={expandedDiagnosis === item.knowledge_point_id} onToggle={() => setExpandedDiagnosis((current) => current === item.knowledge_point_id ? null : item.knowledge_point_id)} onFocus={() => focus(item.knowledge_point_id)} onIgnore={() => ignore(item.knowledge_point_id)} note={notes[item.knowledge_point_id] ?? ""} onNote={(value) => handleNote(item.knowledge_point_id, value)} onNoteCommit={commitNotes} /></div>)}</div></> : <div className="teacher-analysis-empty"><AlertCircle size={18} />暂无足够的学生练习证据生成诊断。</div>}{insufficientDiagnoses.length > 0 && <div className="teacher-analysis-insufficient"><button type="button" aria-expanded={showInsufficient} onClick={() => setShowInsufficient((value) => !value)}>{showInsufficient ? "收起" : "展开"} {insufficientDiagnoses.length} 个数据不足知识点<ChevronDown size={14} /></button>{showInsufficient && <div className="teacher-analysis-insufficient-list">{insufficientDiagnoses.map((item) => <div className="teacher-analysis-insufficient-item" key={item.knowledge_point_id}><div><small>{item.content_name}</small><strong>{item.knowledge_point_name}</strong></div><span>暂无练习证据 · 补充作答后再判断</span></div>)}</div>}</div>}</section>
     <section className="teacher-analysis-chart-grid"><article className="teacher-analysis-panel"><header><div><h2>内容掌握趋势</h2><p>默认展示最需要关注的 5 个知识点，悬浮查看每月掌握率。</p></div></header><MasteryTrendChart analysis={scopedAnalysis} /></article><article className="teacher-analysis-panel"><header><div><h2>内容问题分布</h2><p>按问题类型比较诊断数量，数据不足不会被强行归类。</p></div></header><ProblemDistributionChart items={scopedAnalysis.problem_distribution} /></article></section>
     <section className="teacher-analysis-note"><CircleHelp size={16} /><span>本页只统计 RBAC 角色为“学生”的学习记录；判断权留给教师，页面不会自动调整课程或发布练习。</span></section>
   </div>;
