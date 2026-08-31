@@ -13,6 +13,17 @@ const TeacherRoutes = lazy(() => import("@/modules/teacher").then(({ TeacherRout
 const DeveloperRoutes = lazy(() => import("@/modules/developer").then(({ DeveloperRoutes: route }) => ({ default: route })));
 const AdminRoutes = lazy(() => import("@/modules/admin").then(({ AdminRoutes: route }) => ({ default: route })));
 
+function ProfileRoute() {
+  return (
+    <>
+      <div aria-hidden="true">
+        <StudentRoutes />
+      </div>
+      <ProfilePage />
+    </>
+  );
+}
+
 export function AppRouter() {
   return (
     <BrowserRouter>
@@ -29,7 +40,7 @@ export function AppRouter() {
         <Route element={<AuthGate><AppShell /></AuthGate>}>
           {/* Student routes: accessible to all authenticated users */}
           {/* Profile / self-service settings — all authenticated users */}
-          <Route path="profile" element={<ProfilePage />} />
+          <Route path="profile" element={<ProfileRoute />} />
 
           {/* Teacher routes: require teacher or developer role */}
           <Route path="teacher/*" element={
