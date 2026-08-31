@@ -55,7 +55,7 @@ class FakeRepository:
     def list_student_user_ids(self):
         return {"student-1"}
 
-    def list_question_turns(self, *, workspace_id, since):
+    def list_question_turns(self, *, workspace_id, since, timezone_name="UTC"):
         return [
             {
                 "session_id": "s1",
