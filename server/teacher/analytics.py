@@ -1,11 +1,16 @@
 """Deterministic, evidence-based aggregation for teacher analytics.
 
-The teacher "student questions" module reports aggregates only; it never
-returns raw question text.  All inputs are structured rows produced by the
-MySQL read model (``gateway.mysql_repository``) plus the teacher catalogue for
-name resolution.  No keyword-based topic/type classification happens here:
-topic, level and mode come from the structured learning context already stored
-on each turn.
+All inputs are structured rows produced by the MySQL read model
+(``gateway.mysql_repository``) plus the teacher catalogue for name resolution.
+No keyword-based topic/type classification happens here: topic, level and mode
+come from the structured learning context already stored on each turn.
+
+Student *question* text never reaches this module: ``list_question_turns``
+deliberately omits ``input_text``, so the "student questions" view reports
+aggregates only.  The exercise *question examples* surfaced by
+``exercise_evidence_stats`` are distinct: they are teacher-authored practice
+items, and their text is intentionally retained (bounded to three per knowledge
+point) so teachers can recognize which exercise a diagnosis refers to.
 """
 
 from __future__ import annotations
@@ -31,6 +36,23 @@ LEARNING_ANALYSIS_PROBLEM_TYPES = (
 )
 _DEFAULT_LEVEL = "beginner"
 _DEFAULT_MODE = "explain"
+
+# Diagnostic thresholds.  Grouped as named constants so boundary behaviour is
+# testable, and the policy behind "risk", "trend" and "problem_type" is visible
+# in one place instead of scattered as inline magic numbers.
+_RISK_HIGH_PASS_RATE = 60
+_RISK_MEDIUM_PASS_RATE = 80
+_RISK_HIGH_MISCONCEPTIONS = 3
+_RISK_MEDIUM_ERRORS = 2
+_RISK_UNMEASURED_QUESTION_FLOOR = 5
+_TREND_DELTA_PERCENT = 10
+_DIAGNOSIS_MIN_ATTEMPTS = 4
+_DIAGNOSIS_MIN_STUDENTS = 2
+_COVERAGE_ATTEMPT_FLOOR = 5
+_CONCEPT_MASTERY_LOW = 60
+_METHOD_MASTERY_LOW = 80
+_CONCERN_TREND_DOWN_PENALTY = 20
+_CONCERN_PROBLEM_PENALTY = 10
 
 
 def _percent(numerator: int, denominator: int) -> float:
@@ -80,19 +102,33 @@ def _criterion_key(match: dict[str, Any]) -> str:
 
 
 def _risk(questions: int, exercises: int, pass_rate: float | None, misconceptions: int, errors: int) -> str:
-    if (pass_rate is not None and pass_rate < 60) or misconceptions >= 3:
+    if (pass_rate is not None and pass_rate < _RISK_HIGH_PASS_RATE) or misconceptions >= _RISK_HIGH_MISCONCEPTIONS:
         return "high"
-    if (pass_rate is not None and pass_rate < 80) or errors >= 2:
+    if (pass_rate is not None and pass_rate < _RISK_MEDIUM_PASS_RATE) or errors >= _RISK_MEDIUM_ERRORS:
         return "medium"
     # A topic students ask about a lot but never practice is unmeasured, not
     # "low risk": it deserves attention instead of being silently cleared.
-    if exercises == 0 and questions >= 5:
+    if exercises == 0 and questions >= _RISK_UNMEASURED_QUESTION_FLOOR:
         return "medium"
     return "low"
 
 
 def _average_score(score_sum: int, count: int) -> float | None:
     return round(score_sum / count, 2) if count else None
+
+
+def _concern_score(mastery_rate: float | None, trend: str, problem_type: str) -> float:
+    """Ranking heuristic only — not a field-grade metric.
+
+    Combines the complement of mastery on a 0-100 scale with fixed penalties for
+    a declining trend and an actionable problem type.  The magnitude has no
+    standalone meaning; it only orders the diagnoses list.
+    """
+    return (
+        (100 - (mastery_rate or 0))
+        + (_CONCERN_TREND_DOWN_PENALTY if trend == "down" else 0)
+        + (_CONCERN_PROBLEM_PENALTY if problem_type not in {"—", "数据不足，暂不判断"} else 0)
+    )
 
 
 def _role_codes(value: Any) -> list[str]:
@@ -329,9 +365,9 @@ def build_learning_analysis(
         )
         if previous_rate is None or mastery_rate is None:
             trend = "stable"
-        elif mastery_rate - previous_rate <= -10:
+        elif mastery_rate - previous_rate <= -_TREND_DELTA_PERCENT:
             trend = "down"
-        elif mastery_rate - previous_rate >= 10:
+        elif mastery_rate - previous_rate >= _TREND_DELTA_PERCENT:
             trend = "up"
         else:
             trend = "stable"
@@ -348,16 +384,16 @@ def build_learning_analysis(
             and criterion_stats[weak_criteria[0]["criterion"]][1] > 2
             and weak_criteria[0]["error_rate"] >= 50
         )
-        sufficient = attempts >= 4 and students >= 2
+        sufficient = attempts >= _DIAGNOSIS_MIN_ATTEMPTS and students >= _DIAGNOSIS_MIN_STUDENTS
         if not sufficient:
             problem_type = "数据不足，暂不判断"
         elif concentrated:
             problem_type = "易错点集中"
-        elif mastery_rate is not None and mastery_rate < 60:
+        elif mastery_rate is not None and mastery_rate < _CONCEPT_MASTERY_LOW:
             problem_type = "概念掌握不足"
-        elif mastery_rate is not None and mastery_rate < 80:
+        elif mastery_rate is not None and mastery_rate < _METHOD_MASTERY_LOW:
             problem_type = "解题方法不熟"
-        elif attempts < max(5, students * 2):
+        elif attempts < max(_COVERAGE_ATTEMPT_FLOOR, students * 2):
             problem_type = "练习覆盖不足"
         else:
             problem_type = "—"
@@ -368,7 +404,7 @@ def build_learning_analysis(
         question_count = len(current["question_ids"]) or attempts
         error_criterion = weak_criteria[0]["criterion"] if weak_criteria else None
         conclusion, action = _analysis_recommendation(problem_type, point_name, mastery_rate, error_criterion)
-        concern = (100 - (mastery_rate or 0)) + (20 if trend == "down" else 0) + (10 if problem_type not in {"—", "数据不足，暂不判断"} else 0)
+        concern = _concern_score(mastery_rate, trend, problem_type)
         diagnoses.append(
             {
                 "content_id": str(topic_id or "unrecognized"),
@@ -401,12 +437,12 @@ def build_learning_analysis(
         (
             item
             for item in diagnoses
-            if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] < 60
+            if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] < _CONCEPT_MASTERY_LOW
         ),
         None,
     )
     declining = next((item for item in diagnoses if item["trend"] == "down"), None)
-    good = next((item for item in reversed(diagnoses) if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] >= 80 and item["trend"] != "down"), None)
+    good = next((item for item in reversed(diagnoses) if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] >= _METHOD_MASTERY_LOW and item["trend"] != "down"), None)
 
     problem_counts = Counter(item["problem_type"] for item in diagnoses if item["problem_type"] != "—")
     problem_total = sum(problem_counts.values())
