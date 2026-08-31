@@ -657,7 +657,8 @@ class GatewayRepository:
         since: str,
         until: str | None = None,
         limit: int = 10_000,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
+        cap = min(max(1, limit), 10_000)
         with self._lock:
             rows = self._conn.execute(
                 """SELECT e.normalized_score,e.passed,e.knowledge_point_ids_json,e.blueprint_snapshot_json,q.id AS question_id,q.question,s.user_id,s.topic_id,s.mode,s.completed_at
@@ -666,8 +667,10 @@ class GatewayRepository:
                    JOIN gateway_exercise_sessions s ON s.id=e.exercise_session_id
                    WHERE s.workspace_id=? AND s.completed_at>=? AND (? IS NULL OR s.completed_at<?)
                    ORDER BY s.completed_at DESC LIMIT ?""",
-                (workspace_id, since, until, until, min(max(1, limit), 10_000)),
+                (workspace_id, since, until, until, cap + 1),
             ).fetchall()
+        truncated = len(rows) > cap
+        rows = rows[:cap]
         result: list[dict[str, Any]] = []
         for row in rows:
             kp_ids = json.loads(row["knowledge_point_ids_json"] or "[]") if row["knowledge_point_ids_json"] else []
@@ -687,7 +690,7 @@ class GatewayRepository:
                     "completed_at": row["completed_at"],
                 }
             )
-        return result
+        return result, truncated
 
     def exercise_criterion_stats(
         self,
@@ -696,7 +699,8 @@ class GatewayRepository:
         since: str,
         until: str | None = None,
         limit: int = 20_000,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
+        cap = min(max(1, limit), 50_000)
         with self._lock:
             rows = self._conn.execute(
                 """SELECT a.rubric_matches_json,s.user_id,s.topic_id,s.blueprint_snapshot_json,s.completed_at
@@ -705,8 +709,10 @@ class GatewayRepository:
                    JOIN gateway_exercise_sessions s ON s.id=q.exercise_session_id
                    WHERE s.workspace_id=? AND s.completed_at>=? AND (? IS NULL OR s.completed_at<?)
                    ORDER BY s.completed_at DESC LIMIT ?""",
-                (workspace_id, since, until, until, min(max(1, limit), 50_000)),
+                (workspace_id, since, until, until, cap + 1),
             ).fetchall()
+        truncated = len(rows) > cap
+        rows = rows[:cap]
         result: list[dict[str, Any]] = []
         for row in rows:
             blueprint = json.loads(row["blueprint_snapshot_json"] or "{}") if row["blueprint_snapshot_json"] else {}
@@ -720,7 +726,7 @@ class GatewayRepository:
                     "completed_at": row["completed_at"],
                 }
             )
-        return result
+        return result, truncated
 
     def guided_session_stats(
         self,
