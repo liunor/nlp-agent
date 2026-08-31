@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     NLP_AGENT_DB_POOL_RECYCLE_S: int = 1800
     NLP_AGENT_DB_CONNECT_TIMEOUT_S: int = 5
     NLP_AGENT_DB_STATEMENT_TIMEOUT_S: int = 30
+    # Timezone used to bucket teacher-analytics hour/weekday and peak-hour
+    # distributions.  Fixed offset only (no DST); see gateway.analytics_time.
+    NLP_AGENT_ANALYTICS_TIMEZONE: str = "Asia/Shanghai"
     # In-process execution is deliberately opt-in.  It exists solely for
     # Phase 1 local Workbench development and is unsafe for untrusted code.
     NLP_AGENT_SANDBOX_RUNTIME_MODE: str = "disabled"

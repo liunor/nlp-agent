@@ -24,6 +24,7 @@ from gateway.contracts import (
     TurnStatus,
 )
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
+from gateway.analytics_time import localize_turn_time
 
 
 def _now() -> str:
@@ -602,6 +603,7 @@ class GatewayRepository:
         *,
         workspace_id: str,
         since: str,
+        timezone_name: str = "UTC",
     ) -> list[dict[str, Any]]:
         """Teacher read model: structured question rows (no question text).
 
@@ -622,6 +624,10 @@ class GatewayRepository:
                 created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
             except ValueError:
                 created_at = None
+            if created_at is None:
+                day, hour, weekday = created[:10], None, None
+            else:
+                day, hour, weekday = localize_turn_time(created_at, timezone_name)
             result.append(
                 {
                     "session_id": row["session_id"],
@@ -633,9 +639,9 @@ class GatewayRepository:
                     "topic_id": context.get("topic_id"),
                     "level": context.get("level"),
                     "mode": context.get("mode"),
-                    "day": created[:10],
-                    "hour": created_at.hour if created_at else None,
-                    "weekday": created_at.weekday() if created_at else None,
+                    "day": day,
+                    "hour": hour,
+                    "weekday": weekday,
                 }
             )
         return result
