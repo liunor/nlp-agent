@@ -198,6 +198,17 @@ def _analysis_period_rows(rows: list[dict[str, Any]], start: date, end: date) ->
     return [row for row in rows if _analysis_in_window(row, start, end)]
 
 
+def filter_period_rows(rows: list[dict[str, Any]], start: date, end: date) -> list[dict[str, Any]]:
+    """Return rows whose completion day falls within ``[start, end]`` inclusive.
+
+    Rows without a usable day are kept (they are treated as in-window), matching
+    ``build_learning_analysis``.  Exposed so ``TeacherService.analytics`` can
+    derive the period-scoped overview rows from a single broad evidence/criterion
+    fetch instead of issuing a second, narrower query.
+    """
+    return _analysis_period_rows(rows, start, end)
+
+
 def _analysis_evidence_aggregate(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = defaultdict(
         lambda: {

@@ -25,7 +25,7 @@ from server.teacher.ai_analysis import (
     generate_ai_analysis,
     learning_analysis_ai_cache,
 )
-from server.teacher.analytics import build_analytics, build_learning_analysis, build_monthly_analytics
+from server.teacher.analytics import build_analytics, build_learning_analysis, build_monthly_analytics, filter_period_rows
 from server.teacher.models import (
     ExerciseBlueprint,
     GuidedBlueprint,
@@ -642,22 +642,27 @@ class TeacherService:
             row for row in monthly_question_rows
             if row.get("day") and period_start.isoformat() <= str(row["day"])[:10] <= period_end.isoformat()
         ]
-        evidence_rows = await asyncio.to_thread(gateway.repository.exercise_evidence_stats, workspace_id=workspace_id, since=since)
-        criterion_rows = await asyncio.to_thread(gateway.repository.exercise_criterion_stats, workspace_id=workspace_id, since=since)
         guided_rows = await asyncio.to_thread(gateway.repository.guided_session_stats, workspace_id=workspace_id, since=since)
         analysis_until = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
-        analysis_evidence_rows = await asyncio.to_thread(
+        # One broad evidence/criterion fetch feeds both the overview (sliced to
+        # the period just below) and the learning-analysis diagnostics (which
+        # also need the preceding window and month-trend history).  This halves
+        # the read-model queries for the page.  Each returns (rows, truncated)
+        # so a silently dropped tail of old rows can be surfaced.
+        analysis_evidence_rows, evidence_truncated = await asyncio.to_thread(
             gateway.repository.exercise_evidence_stats,
             workspace_id=workspace_id,
             since=monthly_since,
             until=analysis_until,
         )
-        analysis_criterion_rows = await asyncio.to_thread(
+        analysis_criterion_rows, criterion_truncated = await asyncio.to_thread(
             gateway.repository.exercise_criterion_stats,
             workspace_id=workspace_id,
             since=monthly_since,
             until=analysis_until,
         )
+        evidence_rows = filter_period_rows(analysis_evidence_rows, period_start, period_end)
+        criterion_rows = filter_period_rows(analysis_criterion_rows, period_start, period_end)
         result = build_analytics(
             question_rows, evidence_rows, criterion_rows, guided_rows, catalog,
             period_days=period_days,
@@ -680,7 +685,14 @@ class TeacherService:
             period_end=period_end,
             student_user_ids=student_user_ids,
         )
-        return {"workspace_id": workspace_id, "period_days": period_days, "monthly_statistics": monthly_statistics, "learning_analysis": learning_analysis, **result}
+        return {
+            "workspace_id": workspace_id,
+            "period_days": period_days,
+            "monthly_statistics": monthly_statistics,
+            "learning_analysis": learning_analysis,
+            "truncated": evidence_truncated or criterion_truncated,
+            **result,
+        }
 
     async def ai_analysis(
         self,
