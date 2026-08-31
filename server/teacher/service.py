@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
+from configs.settings import settings
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
 from server.teacher.archive import (
@@ -636,7 +637,7 @@ class TeacherService:
         since = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         catalog = (await asyncio.to_thread(gateway.repository.get_teaching_catalog, workspace_id))["catalog"]
         student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
-        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since)
+        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE)
         question_rows = [
             row for row in monthly_question_rows
             if row.get("day") and period_start.isoformat() <= str(row["day"])[:10] <= period_end.isoformat()

@@ -17,6 +17,7 @@ from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Connection
 
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
+from gateway.analytics_time import localize_turn_time
 from gateway.contracts import (
     GatewayEvent,
     GatewayEventType,
@@ -190,7 +191,7 @@ class MySQLGatewayRepository:
             rows = c.execute(text("SELECT * FROM nlp_turns WHERE conversation_id=:s ORDER BY created_at DESC LIMIT :limit"), {"s": session_id, "limit": min(max(1, limit), 500)}).mappings().all()
         return [self._record(dict(r)) for r in rows]
 
-    def list_question_turns(self, *, workspace_id: str, since: str) -> list[dict[str, Any]]:
+    def list_question_turns(self, *, workspace_id: str, since: str, timezone_name: str = "UTC") -> list[dict[str, Any]]:
         """Teacher read model: structured question rows for analytics.
 
         Deliberately omits ``input_text`` so teacher analytics can only report
@@ -237,7 +238,7 @@ class MySQLGatewayRepository:
         for row in rows:
             context = (self._json(row["learning_state_json"] or {}) or {}).get("context") or {}
             created = row["created_at"]
-            day = created.strftime("%Y-%m-%d") if hasattr(created, "strftime") else str(created)[:10]
+            day, hour, weekday = localize_turn_time(created, timezone_name)
             profile = profiles.get(str(row["user_id"]), {})
             result.append(
                 {
@@ -251,8 +252,8 @@ class MySQLGatewayRepository:
                     "level": context.get("level"),
                     "mode": context.get("mode"),
                     "day": day,
-                    "hour": created.hour if hasattr(created, "hour") else None,
-                    "weekday": created.weekday() if hasattr(created, "weekday") else None,
+                    "hour": hour,
+                    "weekday": weekday,
                 }
             )
         return result
