@@ -60,6 +60,7 @@ def upgrade() -> None:
             sa.Column("client_ip", sa.String(64), nullable=True),
             sa.Column("outcome", sa.String(16), nullable=False, server_default="sent"),
             sa.Column("created_at", DATETIME(fsp=6), nullable=False, server_default=sa.text("utc_timestamp(6)")),
+            comment="短信发送审计记录，独立于可消费的一次性验证码保存，用于可靠频控。",
             mysql_charset="utf8mb4",
         )
         op.create_index("ix_nlp_sms_send_audits_phone_created", "nlp_sms_send_audits", ["phone_number", "created_at"])
