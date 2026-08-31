@@ -256,6 +256,8 @@ export interface LearningAnalysisDiagnosis {
   attempt_count: number;
   correct_count: number;
   mastery_rate: number | null;
+  /** Granularity of mastery_rate/average_score: currently exercise-level (整题级). */
+  mastery_basis?: "exercise";
   previous_mastery_rate: number | null;
   trend: LearningAnalysisTrend;
   problem_type: LearningAnalysisProblemType;

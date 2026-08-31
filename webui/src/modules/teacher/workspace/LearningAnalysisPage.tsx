@@ -100,7 +100,7 @@ function DiagnosisDetail({ item, focused, expanded, onToggle, onFocus, onIgnore,
   return <article className={`teacher-analysis-diagnosis ${focused ? "focused" : ""}`}>
     <div className="teacher-analysis-diagnosis-main">
       <div className="teacher-analysis-diagnosis-content"><small>{item.content_name}</small><strong>{item.knowledge_point_name}</strong></div>
-      <div className="teacher-analysis-diagnosis-rate"><b>{rateText(item.mastery_rate)}</b><span>{item.student_count} 人 · 问题 {item.question_count}</span><small>作答 {item.attempt_count} · 正确 {item.correct_count} · 上期 {rateText(item.previous_mastery_rate)}</small></div>
+      <div className="teacher-analysis-diagnosis-rate"><b>{rateText(item.mastery_rate)}</b>{item.mastery_basis === "exercise" && <em className="teacher-analysis-basis" title="掌握率为整题级归因，非评分点粒度的评价">整题级</em>}<span>{item.student_count} 人 · 问题 {item.question_count}</span><small>作答 {item.attempt_count} · 正确 {item.correct_count} · 上期 {rateText(item.previous_mastery_rate)}</small></div>
       <TrendBadge item={item} />
       <div className="teacher-analysis-problem-cell"><span className={`teacher-analysis-problem ${item.problem_type === "—" ? "none" : ""}`}>{item.problem_type}</span><small className={`teacher-analysis-sufficiency ${item.data_sufficiency}`}>{item.data_sufficiency === "sufficient" ? "样本充足" : "样本不足"}</small></div>
       <button className="teacher-analysis-view" type="button" aria-expanded={expanded} aria-label={`${expanded ? "收起建议" : "查看建议"} ${item.knowledge_point_name}`} onClick={onToggle}>{expanded ? "收起" : "查看建议"}<ChevronDown size={14} /></button>
