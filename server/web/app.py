@@ -98,7 +98,9 @@ from server.teacher.models import (
     ReviewBlueprint,
     TeacherBookImportApplyRequest,
     TeacherBookImportPreviewRequest,
+    TeacherAnalysisAnnotations,
     TeacherAIAnalysisRequest,
+    UpdateTeacherAnalysisAnnotations,
     UpdateTeacherBookPage,
     UpdateTeacherCatalog,
     UpdateTeachingGoals,
@@ -1779,7 +1781,10 @@ def create_app(
         goals = await teacher_service.goals(
             principal, request.app.state.gateway, workspace_id
         )
-        return {**analytics, **goals}
+        annotations = await teacher_service.analysis_annotations(
+            principal, request.app.state.gateway, workspace_id
+        )
+        return {**analytics, **goals, **annotations}
 
     @app.post("/api/v1/teacher/reports/ai-analysis", tags=["teacher"])
     async def teacher_ai_analysis(
@@ -1808,6 +1813,24 @@ def create_app(
         _claims: WriteClaims,
     ):
         return await teacher_service.update_goals(
+            principal, request.app.state.gateway, workspace_id, body
+        )
+
+    @app.get("/api/v1/teacher/analysis-annotations/{workspace_id}", tags=["teacher"])
+    async def get_teacher_analysis_annotations(workspace_id: str, request: Request, principal: Principal):
+        return await teacher_service.analysis_annotations(
+            principal, request.app.state.gateway, workspace_id
+        )
+
+    @app.put("/api/v1/teacher/analysis-annotations/{workspace_id}", tags=["teacher"])
+    async def put_teacher_analysis_annotations(
+        workspace_id: str,
+        body: UpdateTeacherAnalysisAnnotations,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        return await teacher_service.update_analysis_annotations(
             principal, request.app.state.gateway, workspace_id, body
         )
 

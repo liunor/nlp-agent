@@ -102,6 +102,13 @@ export interface TeachingGoals {
   target_level: "beginner" | "intermediate" | "advanced";
 }
 
+export interface TeacherAnalysisAnnotations {
+  workspace_id: string;
+  focused: string[];
+  ignored: string[];
+  notes: Record<string, string>;
+}
+
 export type AvailabilityStatus = "enabled" | "disabled";
 export const DEFAULT_QUESTION_TYPES = ["简答", "选择题", "判断题", "填空题", "编程题", "代码阅读题", "计算题", "论述题"] as const;
 export type BlueprintStatus = "draft" | AvailabilityStatus;
@@ -326,6 +333,7 @@ export interface TeacherOverview {
   workspace_id: string;
   period_days: number;
   goals: TeachingGoals;
+  annotations: TeacherAnalysisAnnotations;
   revision: number;
   updated_at: string | null;
   summary: {

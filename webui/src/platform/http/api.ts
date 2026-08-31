@@ -1,4 +1,4 @@
-import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
 import type { FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
@@ -202,6 +202,11 @@ export const api = {
     request<{ goals: TeachingGoals; revision: number; updated_at: string }>(`/teacher/goals/${encodeURIComponent(workspaceId)}`, {
       method: "PUT",
       body: JSON.stringify(goals),
+    }),
+  updateTeacherAnalysisAnnotations: (workspaceId: string, annotations: Omit<TeacherAnalysisAnnotations, "workspace_id">) =>
+    request<{ annotations: TeacherAnalysisAnnotations; revision: number; updated_at: string }>(`/teacher/analysis-annotations/${encodeURIComponent(workspaceId)}`, {
+      method: "PUT",
+      body: JSON.stringify(annotations),
     }),
   getTeacherCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}`),
   updateTeacherCatalog: (workspaceId: string, catalog: Omit<TeacherCatalog, "workspace_id">) => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}`, { method: "PUT", body: JSON.stringify(catalog) }),

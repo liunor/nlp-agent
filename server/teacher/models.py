@@ -27,6 +27,21 @@ class UpdateTeachingGoals(StrictTeacherModel):
     target_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
 
 
+class TeacherAnalysisAnnotations(StrictTeacherModel):
+    """Per-workspace teacher bookmarks on the learning-analysis view."""
+
+    workspace_id: str = Field(min_length=1, max_length=128)
+    focused: list[str] = Field(default_factory=list, max_length=200)
+    ignored: list[str] = Field(default_factory=list, max_length=200)
+    notes: dict[str, str] = Field(default_factory=dict)
+
+
+class UpdateTeacherAnalysisAnnotations(StrictTeacherModel):
+    focused: list[str] = Field(default_factory=list, max_length=200)
+    ignored: list[str] = Field(default_factory=list, max_length=200)
+    notes: dict[str, str] = Field(default_factory=dict)
+
+
 class TeacherAIAnalysisRequest(StrictTeacherModel):
     workspace_id: str = Field(default="default", min_length=1, max_length=128)
     course_id: str = Field(default="all", min_length=1, max_length=128)
