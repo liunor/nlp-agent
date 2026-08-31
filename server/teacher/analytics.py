@@ -278,6 +278,11 @@ def build_learning_analysis(
     previous_end = period_start - timedelta(days=1)
     previous_start = previous_end - timedelta(days=period_days - 1)
     current_evidence = _analysis_period_rows(evidence, period_start, period_end)
+    # The diagnosis trend compares against the immediately preceding windows of
+    # the same length (not calendar months).  ``mastery_trend`` below uses
+    # calendar months, so the two series can disagree on short windows; that is
+    # intentional — "trend" is a quick before/after delta, "mastery_trend" is
+    # the longer month-over-month history.
     previous_evidence = _analysis_period_rows(evidence, previous_start, previous_end)
     current_criteria = _analysis_period_rows(criteria, period_start, period_end)
     current_by_kp = _analysis_evidence_aggregate(current_evidence)
@@ -320,6 +325,10 @@ def build_learning_analysis(
     for knowledge_point_id, current in current_by_kp.items():
         attempts = current["attempt_count"]
         students = len(current["student_ids"])
+        # Per-point mastery is the exercise-level pass rate of every exercise
+        # touching this point (整题级).  A "passed" exercise credits all of its
+        # knowledge points, so this is attribution granularity, not per-rubric
+        # criterion evaluation.
         mastery_rate = _percent(current["correct_count"], attempts) if attempts else None
         previous = previous_by_kp.get(knowledge_point_id)
         previous_rate = (
@@ -384,6 +393,9 @@ def build_learning_analysis(
                     count >= 2 for count in current["failed_student_attempts"].values()
                 ),
                 "mastery_rate": mastery_rate,
+                # Signals that ``mastery_rate``/``average_score`` are exercise-
+                # level attributions, not rubric-criterion evaluations.
+                "mastery_basis": "exercise",
                 "previous_mastery_rate": previous_rate,
                 "trend": trend,
                 "problem_type": problem_type,
@@ -442,7 +454,9 @@ def build_learning_analysis(
             "period_label": f"近 {period_days} 天",
             "role_label": "学生",
             "student_count": len(current_students),
-            "attempt_count": sum(item["attempt_count"] for item in diagnoses),
+            # Unique evidence rows in the period, not the per-point sum: an
+            # exercise touching several knowledge points must count once here.
+            "attempt_count": len(current_evidence),
         },
         "conclusions": {"weak": weak, "declining": declining, "good": good},
         "diagnoses": diagnoses,
