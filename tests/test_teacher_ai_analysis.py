@@ -4,6 +4,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from server.teacher.ai_analysis import (
+    LearningAnalysisAICache,
     build_ai_analysis_material,
     generate_ai_analysis,
     learning_analysis_ai_cache,
@@ -301,3 +302,54 @@ async def test_service_ai_analysis_uses_the_selected_period_days(monkeypatch):
     )
 
     assert captured["days"] == 60
+
+
+def test_error_type_vocabulary_maps_only_semantic_correspondences():
+    material = build_ai_analysis_material(
+        {
+            "learning_analysis": {
+                "scope": {"period_label": "近 30 天"},
+                "diagnoses": [
+                    diagnosis(problem_type="概念掌握不足", knowledge_point_id="concept"),
+                    diagnosis(problem_type="解题方法不熟", knowledge_point_id="method"),
+                    diagnosis(problem_type="易错点集中", knowledge_point_id="concentrated"),
+                    diagnosis(problem_type="练习覆盖不足", knowledge_point_id="coverage"),
+                    diagnosis(problem_type="学习参与不足", knowledge_point_id="participation"),
+                ],
+            }
+        }
+    )
+
+    by_id = {item["knowledge_point_id"]: item for item in material["contents"]}
+    assert by_id["concept"]["error_type"] == "概念理解不足"
+    assert by_id["method"]["error_type"] == "方法不熟"
+    # 错误／覆盖／参与模式不等于认知原因，规则侧不得臆测为“计算错误/前置知识不足”。
+    assert by_id["concentrated"]["error_type"] == "易错点集中"
+    assert by_id["coverage"]["error_type"] == "练习覆盖不足"
+    assert by_id["participation"]["error_type"] == "学习参与不足"
+
+
+def test_rule_fallback_text_uses_analytics_recommendation_as_single_source():
+    material = build_ai_analysis_material(
+        {
+            "learning_analysis": {
+                "scope": {"period_label": "近 30 天"},
+                "diagnoses": [diagnosis(recommendation={"conclusion": "单一来源结论", "action": "单一来源建议"})],
+            }
+        }
+    )
+
+    content = material["contents"][0]
+    assert content["rule_problem"] == "单一来源结论"
+    assert content["rule_suggestion"] == "单一来源建议"
+
+
+def test_ai_cache_evicts_oldest_entry_once_bounded():
+    cache = LearningAnalysisAICache(ttl_seconds=60, max_items=2)
+    cache.set("a", {"n": 1})
+    cache.set("b", {"n": 2})
+    cache.set("c", {"n": 3})
+
+    assert cache.get("a") is None
+    assert cache.get("b") == {"n": 2}
+    assert cache.get("c") == {"n": 3}
