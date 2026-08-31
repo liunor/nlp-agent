@@ -98,6 +98,21 @@ def test_events_after_decodes_mysql_json_payloads() -> None:
     assert events[0].payload == {"delta": "hello"}
 
 
+def test_guided_session_stats_qualifies_created_at_after_user_join() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    connection = MagicMock()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = []
+    connection.execute.return_value = result
+    repository._engine = MagicMock()
+    repository._engine.connect.return_value.__enter__.return_value = connection
+
+    assert repository.guided_session_stats(workspace_id="workspace-1", since="2026-08-01") == []
+
+    statement = str(connection.execute.call_args.args[0])
+    assert "ORDER BY s.created_at DESC" in statement
+
+
 def test_ensure_conversation_creates_and_verifies_the_parent_record() -> None:
     connection = MagicMock()
     empty = MagicMock()

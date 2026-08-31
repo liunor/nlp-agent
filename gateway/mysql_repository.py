@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Connection
 
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
@@ -206,64 +206,128 @@ class MySQLGatewayRepository:
                 ),
                 {"w": workspace_id, "since": since},
             ).mappings().all()
+            user_ids = sorted({str(row["user_id"]) for row in rows if row["user_id"]})
+            profiles: dict[str, dict[str, Any]] = {}
+            if user_ids:
+                profile_rows = c.execute(
+                    text(
+                        "SELECT u.id AS user_id,u.username,u.display_name,r.code AS role_code "
+                        "FROM nlp_users u "
+                        "LEFT JOIN nlp_user_roles ur ON ur.user_id=u.id "
+                        "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP()) "
+                        "LEFT JOIN nlp_roles r ON r.id=ur.role_id AND r.status='active' "
+                        "WHERE u.id IN :user_ids AND u.status='active' AND u.deleted_at IS NULL"
+                    ).bindparams(bindparam("user_ids", expanding=True)),
+                    {"user_ids": user_ids},
+                ).mappings().all()
+                for profile in profile_rows:
+                    item = profiles.setdefault(
+                        str(profile["user_id"]),
+                        {
+                            "display_name": profile["display_name"],
+                            "username": profile["username"],
+                            "role_codes": [],
+                        },
+                    )
+                    if profile["role_code"]:
+                        item["role_codes"].append(str(profile["role_code"]))
+                for item in profiles.values():
+                    item["role_codes"] = sorted(set(item["role_codes"]))
         result: list[dict[str, Any]] = []
         for row in rows:
             context = (self._json(row["learning_state_json"] or {}) or {}).get("context") or {}
             created = row["created_at"]
             day = created.strftime("%Y-%m-%d") if hasattr(created, "strftime") else str(created)[:10]
+            profile = profiles.get(str(row["user_id"]), {})
             result.append(
                 {
                     "session_id": row["conversation_id"],
                     "user_id": row["user_id"],
+                    "display_name": profile.get("display_name"),
+                    "username": profile.get("username"),
+                    "role_codes": profile.get("role_codes", []),
                     "has_error": bool(row["error_kind"]),
                     "topic_id": context.get("topic_id"),
                     "level": context.get("level"),
                     "mode": context.get("mode"),
                     "day": day,
+                    "hour": created.hour if hasattr(created, "hour") else None,
+                    "weekday": created.weekday() if hasattr(created, "weekday") else None,
                 }
             )
         return result
 
-    def exercise_evidence_stats(self, *, workspace_id: str, since: str, limit: int = 10_000) -> list[dict[str, Any]]:
+    def list_student_user_ids(self) -> set[str]:
+        """Return active users with a currently effective student role."""
+        with self._engine.connect() as c:
+            rows = c.execute(
+                text(
+                    "SELECT DISTINCT u.id "
+                    "FROM nlp_users u "
+                    "JOIN nlp_user_roles ur ON ur.user_id=u.id "
+                    "JOIN nlp_roles r ON r.id=ur.role_id "
+                    "WHERE u.status='active' AND u.deleted_at IS NULL "
+                    "AND r.code='student' AND r.status='active' "
+                    "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())"
+                )
+            ).all()
+        return {str(row[0]) for row in rows}
+
+    def exercise_evidence_stats(self, *, workspace_id: str, since: str, until: str | None = None, limit: int = 10_000) -> list[dict[str, Any]]:
         """Teacher read model: one row per graded exercise item with topic/knowledge-point refs."""
         with self._engine.connect() as c:
             rows = c.execute(
                 text(
-                    "SELECT e.normalized_score,e.passed,e.blueprint_snapshot_json,s.topic_id,s.mode "
+                    "SELECT e.normalized_score,e.passed,e.blueprint_snapshot_json,q.id AS question_id,q.question,s.user_id,s.topic_id,s.mode,s.completed_at "
                     "FROM nlp_learning_evidence e "
+                    "JOIN nlp_exercise_questions q ON q.id=e.exercise_question_id "
                     "JOIN nlp_exercise_sessions s ON s.id=e.exercise_session_id "
-                    "WHERE s.workspace_id=:w AND s.completed_at>=:since "
+                    "JOIN nlp_users u ON u.id=s.user_id AND u.status='active' AND u.deleted_at IS NULL "
+                    "WHERE s.workspace_id=:w AND s.completed_at>=:since AND (:until IS NULL OR s.completed_at<:until) "
+                    "AND EXISTS (SELECT 1 FROM nlp_user_roles ur "
+                    "JOIN nlp_roles r ON r.id=ur.role_id "
+                    "WHERE ur.user_id=s.user_id AND r.code='student' AND r.status='active' "
+                    "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())) "
                     "ORDER BY s.completed_at DESC LIMIT :limit"
                 ),
-                {"w": workspace_id, "since": since, "limit": min(max(1, limit), 10_000)},
+                {"w": workspace_id, "since": since, "until": until, "limit": min(max(1, limit), 10_000)},
             ).mappings().all()
         result: list[dict[str, Any]] = []
         for row in rows:
             blueprint = self._json(row["blueprint_snapshot_json"] or {})
             result.append(
                 {
+                    "user_id": row["user_id"],
                     "topic_id": row["topic_id"],
                     "mode": row["mode"],
+                    "question_id": row["question_id"],
+                    "question": row["question"],
                     "knowledge_point_ids": knowledge_point_ids(blueprint),
                     "score": int(row["normalized_score"]),
                     "passed": bool(row["passed"]),
+                    "completed_at": row["completed_at"],
                 }
             )
         return result
 
-    def exercise_criterion_stats(self, *, workspace_id: str, since: str, limit: int = 20_000) -> list[dict[str, Any]]:
+    def exercise_criterion_stats(self, *, workspace_id: str, since: str, until: str | None = None, limit: int = 20_000) -> list[dict[str, Any]]:
         """Teacher read model: per-attempt rubric matches for criterion hit-rate aggregation."""
         with self._engine.connect() as c:
             rows = c.execute(
                 text(
-                    "SELECT a.rubric_matches_json,s.topic_id,s.blueprint_snapshot_json "
+                    "SELECT a.rubric_matches_json,s.user_id,s.topic_id,s.blueprint_snapshot_json,s.completed_at "
                     "FROM nlp_exercise_attempts a "
                     "JOIN nlp_exercise_questions q ON q.id=a.exercise_question_id "
                     "JOIN nlp_exercise_sessions s ON s.id=q.exercise_session_id "
-                    "WHERE s.workspace_id=:w AND s.completed_at>=:since "
+                    "JOIN nlp_users u ON u.id=s.user_id AND u.status='active' AND u.deleted_at IS NULL "
+                    "WHERE s.workspace_id=:w AND s.completed_at>=:since AND (:until IS NULL OR s.completed_at<:until) "
+                    "AND EXISTS (SELECT 1 FROM nlp_user_roles ur "
+                    "JOIN nlp_roles r ON r.id=ur.role_id "
+                    "WHERE ur.user_id=s.user_id AND r.code='student' AND r.status='active' "
+                    "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())) "
                     "ORDER BY s.completed_at DESC LIMIT :limit"
                 ),
-                {"w": workspace_id, "since": since, "limit": min(max(1, limit), 50_000)},
+                {"w": workspace_id, "since": since, "until": until, "limit": min(max(1, limit), 50_000)},
             ).mappings().all()
         result: list[dict[str, Any]] = []
         for row in rows:
@@ -271,9 +335,11 @@ class MySQLGatewayRepository:
             matches = self._json(row["rubric_matches_json"] or {})
             result.append(
                 {
+                    "user_id": row["user_id"],
                     "topic_id": row["topic_id"],
                     "knowledge_point_ids": knowledge_point_ids(blueprint),
                     "matches": [m for m in matches if isinstance(m, dict)],
+                    "completed_at": row["completed_at"],
                 }
             )
         return result
@@ -283,9 +349,14 @@ class MySQLGatewayRepository:
         with self._engine.connect() as c:
             rows = c.execute(
                 text(
-                    "SELECT topic_id,state_json FROM nlp_guided_sessions "
+                    "SELECT user_id,topic_id,state_json FROM nlp_guided_sessions s "
+                    "JOIN nlp_users u ON u.id=s.user_id AND u.status='active' AND u.deleted_at IS NULL "
                     "WHERE workspace_id=:w AND (completed_at>=:since OR completed_at IS NULL) "
-                    "ORDER BY created_at DESC LIMIT :limit"
+                    "AND EXISTS (SELECT 1 FROM nlp_user_roles ur "
+                    "JOIN nlp_roles r ON r.id=ur.role_id "
+                    "WHERE ur.user_id=s.user_id AND r.code='student' AND r.status='active' "
+                    "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())) "
+                    "ORDER BY s.created_at DESC LIMIT :limit"
                 ),
                 {"w": workspace_id, "since": since, "limit": min(max(1, limit), 10_000)},
             ).mappings().all()
@@ -295,6 +366,7 @@ class MySQLGatewayRepository:
             misconceptions = state.get("misconceptions") or []
             result.append(
                 {
+                    "user_id": row["user_id"],
                     "topic_id": row["topic_id"],
                     "misconception_count": len(misconceptions) if isinstance(misconceptions, list) else 0,
                 }

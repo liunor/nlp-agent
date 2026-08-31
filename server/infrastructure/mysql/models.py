@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Computed,
     ForeignKey,
@@ -124,11 +125,29 @@ class FeedbackThreadModel(TimestampedModel, Base):
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_nlp_feedback_threads_user_id"),
         Index("ix_nlp_feedback_threads_updated_at", "updated_at"),
+        Index("ix_nlp_feedback_threads_status", "status"),
+        Index("ix_nlp_feedback_threads_category", "category"),
+        CheckConstraint(
+            "status IN ('open','under_review','planned','in_progress','complete','closed')",
+            name="status",
+        ),
+        CheckConstraint(
+            "category IN ('feature','ux','bug','other')",
+            name="category",
+        ),
+        CheckConstraint(
+            "priority IN ('low','medium','high')",
+            name="priority",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False)
     developer_read_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    student_read_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="open")
+    category: Mapped[str] = mapped_column(String(16), nullable=False, server_default="other")
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, server_default="medium")
 
 
 class FeedbackMessageModel(TimestampedModel, Base):
@@ -466,6 +485,21 @@ class ConversationModel(TimestampedModel, Base):
     channel: Mapped[str] = mapped_column(String(32), nullable=False, server_default="web")
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     last_message_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # Basis of the last LLM-generated title: the newest completed turn's
+    # ``completed_at``.  NULL until the first summary is written.  The
+    # conditional UPDATE keys on this to reject out-of-order overwrites.
+    title_updated_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # True once the user manually renames the session; the summarizer never
+    # overwrites a manual title.
+    title_is_manual: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
+    # Short-lived lease taken by the background summarizer before it pays for an
+    # LLM call; prevents two workers from generating the same title concurrently.
+    # On LLM failure the lease is extended (exponential backoff) instead of
+    # cleared, so a dead model service does not trigger a retry storm.
+    summary_lease_expires_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # How many LLM calls have been attempted for the first summary.  Capped by
+    # ``MAX_SUMMARY_ATTEMPTS`` in the sweep query; reset to 0 on success.
+    summary_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
 class TurnModel(TimestampedModel, Base):

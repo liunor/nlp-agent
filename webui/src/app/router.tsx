@@ -6,23 +6,11 @@ import { NotFoundPage } from "./NotFoundPage";
 import { AuthGate } from "@/modules/auth/AuthGate";
 import { RouteGuard } from "./RouteGuard";
 import { LoginPage } from "@/modules/auth/LoginPage";
-import { ProfilePage } from "@/modules/profile/ProfilePage";
 
 const StudentRoutes = lazy(() => import("@/modules/student").then(({ StudentRoutes: route }) => ({ default: route })));
 const TeacherRoutes = lazy(() => import("@/modules/teacher").then(({ TeacherRoutes: route }) => ({ default: route })));
 const DeveloperRoutes = lazy(() => import("@/modules/developer").then(({ DeveloperRoutes: route }) => ({ default: route })));
 const AdminRoutes = lazy(() => import("@/modules/admin").then(({ AdminRoutes: route }) => ({ default: route })));
-
-function ProfileRoute() {
-  return (
-    <>
-      <div aria-hidden="true">
-        <StudentRoutes />
-      </div>
-      <ProfilePage />
-    </>
-  );
-}
 
 export function AppRouter() {
   return (
@@ -38,10 +26,6 @@ export function AppRouter() {
 
         {/* Protected routes: require authentication via AuthGate */}
         <Route element={<AuthGate><AppShell /></AuthGate>}>
-          {/* Student routes: accessible to all authenticated users */}
-          {/* Profile / self-service settings — all authenticated users */}
-          <Route path="profile" element={<ProfileRoute />} />
-
           {/* Teacher routes: require teacher or developer role */}
           <Route path="teacher/*" element={
             <RouteGuard allowedRoles={["teacher", "developer", "admin"]}>

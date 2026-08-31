@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -24,6 +25,24 @@ class UpdateTeachingGoals(StrictTeacherModel):
     objectives: list[str] = Field(default_factory=list, max_length=20)
     focus_topics: list[str] = Field(default_factory=list, max_length=30)
     target_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
+
+
+class TeacherAIAnalysisRequest(StrictTeacherModel):
+    workspace_id: str = Field(default="default", min_length=1, max_length=128)
+    course_id: str = Field(default="all", min_length=1, max_length=128)
+    content_scope: str = Field(default="all", min_length=1, max_length=160)
+    start_date: date | None = None
+    end_date: date | None = None
+    period_days: int | None = Field(default=None, ge=1, le=365)
+    force_refresh: bool = False
+
+    @model_validator(mode="after")
+    def _validate_period(self) -> "TeacherAIAnalysisRequest":
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValueError("start_date 和 end_date 必须同时提供")
+        if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
+            raise ValueError("start_date 不能晚于 end_date")
+        return self
 
 
 DEFAULT_QUESTION_TYPES = ("简答", "选择题", "判断题", "填空题", "编程题", "代码阅读题", "计算题", "论述题")

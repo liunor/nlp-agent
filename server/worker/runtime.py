@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from functools import partial
 
 from configs.settings import settings
 from gateway.contracts import GatewayEventType, TurnStatus
@@ -17,6 +18,7 @@ from gateway.state_factory import build_turn_execution_state
 from gateway.turn_execution import InProcessTurnExecutor
 from server.application.turn_reliability import OutboxRelay, TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.session.summary import schedule_summary, summary_sweep_loop
 from server.worker.fencing import FencedTurnExecutor
 from server.sandbox.manager_rpc import create_sandbox_manager_rpc_client
 from server.sandbox.model_tools import configure_model_sandbox_service
@@ -113,6 +115,11 @@ async def run_worker() -> None:
                     },
                 ),
             )
+            # The turn is already durable as completed, but the original worker
+            # may have died after the DB write and before on_turn_completed
+            # re-armed the summarizer.  schedule_summary is idempotent, so
+            # re-arm it here on the retry path instead of losing the title.
+            schedule_summary(database_runtime.session_factory, task.context.session_id)
         elif turn.status == TurnStatus.CANCELLED:
             terminal_events = ((
                 GatewayEventType.TURN_CANCELLED,
@@ -141,7 +148,14 @@ async def run_worker() -> None:
         return True
 
     await engine.start(emit)
-    executor = InProcessTurnExecutor(engine, repository, emit)
+    executor = InProcessTurnExecutor(
+        engine,
+        repository,
+        emit,
+        on_turn_completed=partial(
+            schedule_summary, database_runtime.session_factory
+        ),
+    )
     fenced_executor = FencedTurnExecutor(
         database_runtime.uow,
         reliability,
@@ -170,11 +184,16 @@ async def run_worker() -> None:
             await asyncio.sleep(0.5)
 
     relay_task = asyncio.create_task(relay_forever(), name="mysql-outbox-relay")
+    summary_sweep_task = asyncio.create_task(
+        summary_sweep_loop(database_runtime.session_factory),
+        name="session-summary-sweep",
+    )
     try:
         await worker.run_forever()
     finally:
         relay_task.cancel()
-        await asyncio.gather(relay_task, return_exceptions=True)
+        summary_sweep_task.cancel()
+        await asyncio.gather(relay_task, summary_sweep_task, return_exceptions=True)
         await worker.close()
         await engine.close()
         await sandbox_model_service.close()

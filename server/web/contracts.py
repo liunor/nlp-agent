@@ -21,6 +21,10 @@ class CreateSessionBody(StrictModel):
     workspace_id: str = Field(default="default", min_length=1, max_length=128)
 
 
+class RenameSessionBody(StrictModel):
+    title: str = Field(min_length=1, max_length=255)
+
+
 class LoginBody(StrictModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=512)
@@ -29,15 +33,60 @@ class LoginBody(StrictModel):
 
 class FeedbackBody(StrictModel):
     body: str = Field(min_length=1, max_length=2_000)
+    category: Literal["feature", "ux", "bug", "other"] | None = None
 
     @field_validator("body", mode="before")
     @classmethod
     def strip_body(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_category(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or None
+        return value
+
 
 class FeedbackReadBody(StrictModel):
     read_through_message_id: str = Field(min_length=1, max_length=128)
+
+
+class FeedbackBulkBody(StrictModel):
+    thread_ids: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]] = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+
+FeedbackCategoryValue = Literal["feature", "ux", "bug", "other"]
+FeedbackStatusValue = Literal["open", "under_review", "planned", "in_progress", "complete", "closed"]
+FeedbackPriorityValue = Literal["low", "medium", "high"]
+FeedbackSortValue = Literal["latest", "oldest", "unread"]
+
+
+class FeedbackUpdateBody(StrictModel):
+    status: FeedbackStatusValue | None = None
+    category: FeedbackCategoryValue | None = None
+    priority: FeedbackPriorityValue | None = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "FeedbackUpdateBody":
+        if self.status is None and self.category is None and self.priority is None:
+            raise ValueError("至少提供一个反馈字段")
+        return self
+
+
+class FeedbackReplyBody(StrictModel):
+    body: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def strip_body(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class ReplaceUserRolesBody(StrictModel):

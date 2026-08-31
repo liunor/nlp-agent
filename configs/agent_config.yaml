@@ -49,11 +49,6 @@ web:
   host: 127.0.0.1
   port: 8765
   cookie_name: nlp_session
-  cookie_ttl_s: 1800
-  cookie_secure: false
-  auth_idle_timeout_s: 900
-  auth_max_login_attempts: 5
-  auth_rate_window_s: 300
   allowed_hosts: [127.0.0.1, localhost, testserver]
   allowed_origins: [http://127.0.0.1:8765, http://localhost:8765, http://127.0.0.1:5173]
   max_ws_message_bytes: 1048576
@@ -71,8 +66,6 @@ monitor:
   host: 127.0.0.1
   port: 8766
   cookie_name: nlp_monitor_session
-  cookie_ttl_s: 28800
-  cookie_secure: false
   allowed_hosts: [127.0.0.1, localhost, testserver]
   allowed_origins: [http://127.0.0.1:8766, http://localhost:8766, http://127.0.0.1:5174]
   static_dir: webui/monitor-dist

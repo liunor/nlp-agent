@@ -291,3 +291,32 @@ async def test_websocket_ticket_is_origin_bound_and_single_use(mysql_session_fac
             origin="https://evil.example",
             host="testserver",
         )
+
+
+@pytest.mark.asyncio
+async def test_touch_extends_database_session_expiry(mysql_session_factory) -> None:
+    auth = DatabaseSessionAuth(allowed_origins=["http://testserver"], ttl_s=300)
+    async with mysql_session_factory() as session:
+        user = await UserService(session).create_user(
+            data=UserCreate(
+                username=f"slide{uuid4().hex[:10]}",
+                display_name="Sliding user",
+                password="InitialPw0rd1",
+            )
+        )
+        await session.commit()
+
+    token, claims = await auth.login(
+        mysql_session_factory,
+        user.username,
+        "InitialPw0rd1",
+        client_key="test-slide",
+    )
+    original_expiry = claims.expires_at
+
+    # Simulate a TTL increase after the session was already issued: the next
+    # authenticated request should extend the absolute expiry accordingly.
+    auth.ttl_s = 900
+    refreshed = await auth.authenticate(mysql_session_factory, token)
+
+    assert refreshed.expires_at >= original_expiry + timedelta(seconds=600)

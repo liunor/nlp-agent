@@ -8,6 +8,7 @@ import json
 import re
 import uuid
 from collections import defaultdict
+from functools import partial
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ from gateway.redis_transport import TurnTaskCodec
 from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.session.summary import schedule_summary
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
@@ -171,7 +173,14 @@ class BackendGateway:
             )
         else:
             executor = InProcessTurnExecutor(
-                self.engine, self.repository, self._emit_from_engine
+                self.engine,
+                self.repository,
+                self._emit_from_engine,
+                on_turn_completed=(
+                    partial(schedule_summary, self._database_runtime.session_factory)
+                    if self._database_runtime is not None
+                    else None
+                ),
             )
             self.dispatcher = dispatcher or InProcessTurnDispatcher(executor.run)
         self._session_turn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)

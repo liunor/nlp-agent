@@ -27,6 +27,7 @@ class Permission(StrEnum):
     LEARNING_PROGRESS_READ_CLASSROOM = "learning:progress:read_classroom"
     LEARNING_FEEDBACK_SUBMIT = "learning:feedback:submit"
     LEARNING_FEEDBACK_READ = "learning:feedback:read"
+    LEARNING_FEEDBACK_WRITE = "learning:feedback:write"
     LEARNING_FEEDBACK_CREATE = "learning:feedback:create"
     CLASSROOM_CREATE = "classroom:classroom:create"
     CLASSROOM_MEMBER_MANAGE = "classroom:member:manage"
@@ -119,6 +120,7 @@ _TEACHER: Final[frozenset[Permission]] = _STUDENT | {
 }
 _DEVELOPER: Final[frozenset[Permission]] = _TEACHER | {
     Permission.LEARNING_FEEDBACK_READ,
+    Permission.LEARNING_FEEDBACK_WRITE,
     Permission.SYSTEM_MODEL_PROFILE_MANAGE,
     Permission.SYSTEM_PROMPT_TEMPLATE_MANAGE,
     Permission.SYSTEM_TOOL_CONFIG_MANAGE,
@@ -223,7 +225,10 @@ class AuthorizationService:
             scopes = (
                 frozenset({"system"})
                 if required.value.startswith("system:")
-                or required is Permission.LEARNING_FEEDBACK_READ
+                or required in {
+                    Permission.LEARNING_FEEDBACK_READ,
+                    Permission.LEARNING_FEEDBACK_WRITE,
+                }
                 else frozenset({"own"})
             )
         return ResourcePolicy().allows(principal, frozenset(scopes), resource)

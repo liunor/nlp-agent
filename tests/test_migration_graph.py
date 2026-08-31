@@ -11,12 +11,23 @@ from alembic.script import ScriptDirectory
 def test_migration_graph_has_one_head_after_knowledge_book_is_added() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260831_41_phone_sms_hardening"]
-    assert (
-        scripts.get_revision("20260831_41_phone_sms_hardening").down_revision
-        == "20260830_40_role_descriptions"
+    assert scripts.get_heads() == ["20260831_42_merge_heads"]
+    assert scripts.get_revision("20260831_42_merge_heads").down_revision == (
+        "20260831_41_phone_sms_hardening",
+        "20260831_40_summary_merge",
     )
+    assert scripts.get_revision("20260831_41_phone_sms_hardening").down_revision == "20260830_40_role_descriptions"
     assert scripts.get_revision("20260830_40_role_descriptions").down_revision == "20260830_39_fix_perm_labels"
+    assert scripts.get_revision("20260831_40_summary_merge").down_revision == (
+        "20260831_39_feedback_student",
+        "20260831_39_summary_backoff",
+    )
+    assert scripts.get_revision("20260831_39_feedback_student").down_revision == "20260831_38_feedback_write"
+    assert scripts.get_revision("20260831_38_feedback_write").down_revision == "20260831_37_feedback_meta"
+    assert scripts.get_revision("20260831_37_feedback_meta").down_revision == "20260829_36_usage_indexes"
+    assert scripts.get_revision("20260831_39_summary_backoff").down_revision == "20260830_38_session_title_manual"
+    assert scripts.get_revision("20260830_38_session_title_manual").down_revision == "20260829_37_session_summary"
+    assert scripts.get_revision("20260829_37_session_summary").down_revision == "20260829_36_usage_indexes"
     assert scripts.get_revision("20260829_36_usage_indexes").down_revision == "20260829_35_user_mgmt_menus"
     assert scripts.get_revision("20260829_35_user_mgmt_menus").down_revision == "20260828_34_auth_codes"
     assert scripts.get_revision("20260828_34_auth_codes").down_revision == "20260828_33_user_phone"

@@ -92,7 +92,13 @@ def permission_id(permission: Permission | str) -> str:
 def permission_scope(permission: Permission) -> str:
     if permission is Permission.LEARNING_CONTENT_READ_PUBLIC:
         return "public"
-    if permission.name.startswith("SYSTEM_") or permission is Permission.LEARNING_FEEDBACK_READ:
+    if (
+        permission.name.startswith("SYSTEM_")
+        or permission in {
+            Permission.LEARNING_FEEDBACK_READ,
+            Permission.LEARNING_FEEDBACK_WRITE,
+        }
+    ):
         return "system"
     if permission in {
         Permission.LEARNING_FEEDBACK_SUBMIT,

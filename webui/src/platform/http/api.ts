@@ -1,5 +1,5 @@
-import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
-import type { FeedbackThread, FeedbackThreadList } from "@/shared/types";
+import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
 
@@ -128,6 +128,11 @@ export const api = {
     }),
   deleteSession: (sessionId: string) =>
     request<void>(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
+  renameSession: (sessionId: string, title: string) =>
+    request<{ session_id: string; title: string }>(`/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
   listTurns: (sessionId: string) =>
     request<{ items: TurnRecord[] }>(`/sessions/${encodeURIComponent(sessionId)}/turns?limit=500`),
   cancelTurn: (turnId: string) =>
@@ -138,17 +143,41 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(settings),
     }),
-  submitFeedback: (body: string) => request<{ thread_id: string }>("/feedback", { method: "POST", body: JSON.stringify({ body }) }),
-  listFeedback: (params?: { limit?: number; offset?: number; q?: string }) => {
+  submitFeedback: (body: string, category?: FeedbackCategory) => request<{ thread_id: string; remaining: number; daily_limit: number }>("/feedback", { method: "POST", body: JSON.stringify({ body, category }) }),
+  getFeedbackDailyState: () => request<FeedbackDailyState>("/feedback/daily-state"),
+  markOwnFeedbackRead: () => request<{ ok: boolean; updated: boolean }>("/feedback/read", { method: "POST" }),
+  getOwnFeedback: (params?: { limit?: number; offset?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.limit != null) query.set("limit", String(params.limit));
+    if (params?.offset != null) query.set("offset", String(params.offset));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return request<FeedbackThread & { thread_id: string | null }>(`/feedback${suffix}`);
+  },
+  listFeedback: (params?: { limit?: number; offset?: number; q?: string; status?: FeedbackStatus; category?: FeedbackCategory; priority?: FeedbackPriority; sort?: "latest" | "oldest" | "unread" }) => {
     const query = new URLSearchParams();
     if (params?.limit != null) query.set("limit", String(params.limit));
     if (params?.offset != null) query.set("offset", String(params.offset));
     if (params?.q) query.set("q", params.q);
+    if (params?.status) query.set("status", params.status);
+    if (params?.category) query.set("category", params.category);
+    if (params?.priority) query.set("priority", params.priority);
+    if (params?.sort) query.set("sort", params.sort);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     return request<FeedbackThreadList>(`/developer/feedback${suffix}`);
   },
-  getFeedback: (threadId: string) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`),
+  getFeedback: (threadId: string, params?: { limit?: number; offset?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.limit != null) query.set("limit", String(params.limit));
+    if (params?.offset != null) query.set("offset", String(params.offset));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}${suffix}`);
+  },
   markFeedbackRead: (threadId: string, messageId: string) => request<{ ok: boolean }>(`/developer/feedback/${encodeURIComponent(threadId)}/read`, { method: "POST", body: JSON.stringify({ read_through_message_id: messageId }) }),
+  markFeedbackThreadsRead: (threadIds: string[]) => request<{ ok: boolean; updated: number }>("/developer/feedback/bulk-read", { method: "POST", body: JSON.stringify({ thread_ids: threadIds }) }),
+  updateFeedback: (threadId: string, patch: { status?: FeedbackStatus; category?: FeedbackCategory; priority?: FeedbackPriority }) => request<FeedbackThread>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  replyFeedback: (threadId: string, body: string) => request<{ thread_id: string; message: FeedbackThread["messages"][number] }>(`/developer/feedback/${encodeURIComponent(threadId)}/reply`, { method: "POST", body: JSON.stringify({ body }) }),
+  deleteFeedback: (threadId: string) => request<void>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "DELETE" }),
+  deleteFeedbackThreads: (threadIds: string[]) => request<{ ok: boolean; deleted: number }>("/developer/feedback/bulk-delete", { method: "POST", body: JSON.stringify({ thread_ids: threadIds }) }),
   getDeveloperSnapshot: () => request<DeveloperSnapshot>("/developer/snapshot"),
   updateToolPolicies: (policies: Record<string, unknown>) =>
     request<Record<string, unknown>>("/developer/tools/policies", { method: "PUT", body: JSON.stringify({ policies }) }),
@@ -172,6 +201,8 @@ export const api = {
   listPublishedReleaseNotes: () => request<{ items: ReleaseNoteEntry[] }>("/learning/release-notes"),
   getTeacherOverview: (workspaceId = "default", days = 30) =>
     request<TeacherOverview>(`/teacher/overview?workspace_id=${encodeURIComponent(workspaceId)}&days=${days}`),
+  generateTeacherAIAnalysis: (workspaceId: string, body: { course_id: string; content_scope: string; start_date?: string; end_date?: string; period_days?: number; force_refresh?: boolean }) =>
+    request<TeacherAIAnalysisResult>("/teacher/reports/ai-analysis", { method: "POST", body: JSON.stringify({ workspace_id: workspaceId, ...body }) }),
   updateTeachingGoals: (workspaceId: string, goals: Omit<TeachingGoals, "workspace_id">) =>
     request<{ goals: TeachingGoals; revision: number; updated_at: string }>(`/teacher/goals/${encodeURIComponent(workspaceId)}`, {
       method: "PUT",

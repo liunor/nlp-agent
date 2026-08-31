@@ -81,6 +81,66 @@ describe("sandbox titlebar layout", () => {
     expect(bookContentRule).toContain("min-height: 0");
   });
 
+  it("lets student questions use the full teacher viewport while keeping the report scrollable", () => {
+    const teacherMainRule = stylesheet.match(/\.teacher-main\.teacher-questions-main\s*\{([^}]*)\}/)?.[1] ?? "";
+    const questionsContentRule = stylesheet.match(/\.teacher-content-questions\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(teacherMainRule).toContain("display: grid");
+    expect(teacherMainRule).toContain("height: 100vh");
+    expect(teacherMainRule).toContain("grid-template-rows: 58px minmax(0, 1fr)");
+    expect(questionsContentRule).toContain("width: 100%");
+    expect(questionsContentRule).toContain("max-width: none");
+    expect(questionsContentRule).toContain("height: 100%");
+    expect(questionsContentRule).toContain("overflow: auto");
+  });
+
+  it("lets learning analysis use the same full teacher viewport as student questions", () => {
+    const teacherMainRule = stylesheet.match(/\.teacher-main\.teacher-analysis-main\s*\{([^}]*)\}/)?.[1] ?? "";
+    const analysisContentRule = stylesheet.match(/\.teacher-content-analysis\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(teacherMainRule).toContain("display:grid");
+    expect(teacherMainRule).toContain("height:100vh");
+    expect(teacherMainRule).toContain("grid-template-rows:58px minmax(0,1fr)");
+    expect(analysisContentRule).toContain("width:100%");
+    expect(analysisContentRule).toContain("max-width:none");
+    expect(analysisContentRule).toContain("height:100%");
+    expect(analysisContentRule).toContain("overflow:auto");
+  });
+
+  it("allows question distribution panels to size themselves from their data", () => {
+    const gridRule = stylesheet.match(/\.teacher-question-grid\s*\{([^}]*)\}/)?.[1] ?? "";
+    const panelRule = stylesheet.match(/\.teacher-question-panel\s*\{([^}]*)\}/)?.[1] ?? "";
+    const dailyScrollRule = stylesheet.match(/\.teacher-question-chart-scroll\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(gridRule).toContain("align-items: start");
+    expect(panelRule).toContain("align-self: start");
+    expect(dailyScrollRule).toContain("overflow-x: auto");
+  });
+
+  it("keeps five-row distribution cards equal and lets long topic names scroll", () => {
+    const distributionRule = stylesheet.match(/\.teacher-question-distribution\s*\{([^}]*)\}/)?.[1] ?? "";
+    const topicNameRule = stylesheet.match(/\.teacher-question-distribution-name\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(distributionRule).toContain("grid-template-rows: repeat(5");
+    expect(topicNameRule).toContain("overflow-x: auto");
+    expect(stylesheet).toContain(".teacher-question-month-tabs");
+  });
+
+  it("provides compact visual affordances for chart hover and pie callouts", () => {
+    expect(stylesheet).toContain(".teacher-question-line-tooltip");
+    expect(stylesheet).toContain(".teacher-question-line-hover-target");
+    expect(stylesheet).toContain(".teacher-question-pie-callout");
+    expect(stylesheet).toContain(".teacher-question-pie-label");
+  });
+
+  it("gives each trend chart a full-width row with enough horizontal detail", () => {
+    const trendRule = stylesheet.match(/\.teacher-question-grid-trend\s*\{([^}]*)\}/)?.[1] ?? "";
+    const lineChartRule = stylesheet.match(/\.teacher-question-line-chart\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(trendRule).toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(lineChartRule).toContain("min-width: 960px");
+  });
+
   it("uses a light, borderless D2L-style code surface and a wider reading column", () => {
     expect(stylesheet).toContain(".knowledge-book-article .code-shell { margin: 28px 0 32px; border: 0 !important;");
     expect(stylesheet).toContain(".knowledge-book-article .code-shell pre { border: 0 !important;");
@@ -92,5 +152,11 @@ describe("sandbox titlebar layout", () => {
 
   it("keeps knowledge-book anchors in normal flow while deferring syntax highlighting", () => {
     expect(stylesheet).not.toContain(".knowledge-book-article .markdown-image-figure,.knowledge-book-article .code-shell { content-visibility: auto;");
+  });
+
+  it("keeps feedback bubbles packed at the top instead of stretching grid rows", () => {
+    const feedbackMessagesRule = [...stylesheet.matchAll(/\.developer-feedback-messages\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";
+
+    expect(feedbackMessagesRule).toContain("align-content: start");
   });
 });

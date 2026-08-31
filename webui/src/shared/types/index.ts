@@ -47,6 +47,10 @@ export interface FeedbackMessage {
   created_at: string;
 }
 
+export type FeedbackStatus = "open" | "under_review" | "planned" | "in_progress" | "complete" | "closed";
+export type FeedbackCategory = "feature" | "ux" | "bug" | "other";
+export type FeedbackPriority = "low" | "medium" | "high";
+
 export interface FeedbackThreadSummary {
   thread_id: string;
   user_id: string;
@@ -54,6 +58,9 @@ export interface FeedbackThreadSummary {
   display_name: string;
   unread_count: number;
   updated_at: string;
+  status: FeedbackStatus;
+  category: FeedbackCategory;
+  priority: FeedbackPriority;
   latest: FeedbackMessage | null;
 }
 
@@ -67,7 +74,23 @@ export interface FeedbackThread {
   user_id: string;
   username: string;
   display_name: string;
+  status: FeedbackStatus;
+  category: FeedbackCategory;
+  priority: FeedbackPriority;
+  updated_at: string | null;
+  student_unread_count?: number;
   messages: FeedbackMessage[];
+  message_total?: number;
+  message_offset?: number;
+  message_limit?: number;
+  message_has_more?: boolean;
+}
+
+export interface FeedbackDailyState {
+  used: number;
+  remaining: number;
+  limit: number;
+  today_start_utc: string;
 }
 
 export interface TeachingGoals {
@@ -168,6 +191,31 @@ export interface TeacherBookArchiveImportPreview {
 
 export interface TeacherDistribution { name: string; count: number; percentage: number }
 
+export interface TeacherMonthlyQuestionStatistics {
+  month: string;
+  label: string;
+  question_count: number;
+  topic_distribution: TeacherDistribution[];
+  difficulty_distribution: TeacherDistribution[];
+  mode_distribution: TeacherDistribution[];
+  daily_questions: Array<{ day: number; date: string; count: number }>;
+  hourly_questions: Array<{ hour: number; label: string; count: number; percentage: number }>;
+}
+
+export interface TeacherStudentActivity {
+  user_id: string;
+  display_name: string;
+  username: string | null;
+  questions: number;
+  sessions: number;
+  active_days: number;
+  error_questions: number;
+  error_rate: number;
+  questions_per_session: number;
+  last_active: string | null;
+  top_topic: string;
+}
+
 export interface WeakTopic {
   topic_id: string;
   topic: string;
@@ -190,6 +238,90 @@ export interface KnowledgePointStat {
   weak_criteria: Array<{ criterion: string; hit_rate: number }>;
 }
 
+export type LearningAnalysisTrend = "up" | "down" | "stable";
+export type LearningAnalysisProblemType = "概念掌握不足" | "解题方法不熟" | "易错点集中" | "练习覆盖不足" | "学习参与不足" | "数据不足，暂不判断" | "—";
+
+export interface LearningAnalysisRecommendation {
+  conclusion: string;
+  action: string;
+}
+
+export interface LearningAnalysisDiagnosis {
+  content_id: string;
+  content_name: string;
+  knowledge_point_id: string;
+  knowledge_point_name: string;
+  question_count: number;
+  student_count: number;
+  attempt_count: number;
+  correct_count: number;
+  mastery_rate: number | null;
+  previous_mastery_rate: number | null;
+  trend: LearningAnalysisTrend;
+  problem_type: LearningAnalysisProblemType;
+  data_sufficiency: "sufficient" | "insufficient";
+  average_score: number | null;
+  weak_criteria: Array<{ criterion: string; error_rate: number }>;
+  concern_score: number;
+  error_count: number;
+  repeated_error_student_count: number;
+  question_examples: Array<{ question_id: string; question: string; score: number | null; passed: boolean }>;
+  recommendation: LearningAnalysisRecommendation;
+}
+
+export interface TeacherLearningAnalysis {
+  scope: {
+    period_days: number;
+    period_label: string;
+    role_label: "学生";
+    student_count: number;
+    attempt_count: number;
+  };
+  conclusions: {
+    weak: LearningAnalysisDiagnosis | null;
+    declining: LearningAnalysisDiagnosis | null;
+    good: LearningAnalysisDiagnosis | null;
+  };
+  diagnoses: LearningAnalysisDiagnosis[];
+  problem_distribution: TeacherDistribution[];
+  mastery_trend: {
+    months: Array<{ month: string; label: string }>;
+    series: Array<{ knowledge_point_id: string; name: string; values: Array<number | null> }>;
+  };
+}
+
+export interface TeacherAIDiagnosis {
+  knowledge_point_id: string;
+  knowledge_point_name: string;
+  level: "high" | "medium" | "low";
+  problem: string;
+  cause: string;
+  evidence: string[];
+  suggestions: string[];
+  confidence: "high" | "medium" | "low";
+  data_gaps: string[];
+  error_type: string;
+  question_examples: Array<{ question_id: string; question: string; score: number | null; passed: boolean }>;
+}
+
+export interface TeacherAIAnalysisResult {
+  status: "completed" | "failed";
+  source: "deepseek" | "rules";
+  message: string;
+  summary: string;
+  diagnoses: TeacherAIDiagnosis[];
+  generated_at: string;
+  model: string;
+  model_id: string | null;
+  cache_hit: boolean;
+  scope?: TeacherLearningAnalysis["scope"];
+  course_id?: string;
+  content_scope?: string;
+  start_date?: string;
+  end_date?: string;
+  data_version?: string;
+}
+
 export interface TeacherOverview {
   workspace_id: string;
   period_days: number;
@@ -200,7 +332,13 @@ export interface TeacherOverview {
     questions: number;
     sessions: number;
     students: number;
+    active_days: number;
     error_questions: number;
+    error_rate: number;
+    questions_per_student: number;
+    questions_per_session: number;
+    contextualized_questions: number;
+    context_coverage_rate: number;
     exercises: number;
     exercise_pass_rate: number;
     guided_sessions: number;
@@ -209,8 +347,15 @@ export interface TeacherOverview {
   difficulty_distribution: TeacherDistribution[];
   mode_distribution: TeacherDistribution[];
   daily_questions: Array<{ date: string; count: number }>;
+  hourly_questions: Array<{ hour: number; label: string; count: number; percentage: number }>;
+  weekday_questions: Array<{ weekday: number; label: string; count: number; percentage: number }>;
+  peak_day: { date: string; count: number } | null;
+  peak_hour: { hour: number; label: string; count: number } | null;
+  monthly_statistics?: TeacherMonthlyQuestionStatistics[];
+  student_activity: TeacherStudentActivity[];
   weak_topics: WeakTopic[];
   knowledge_point_stats: KnowledgePointStat[];
+  learning_analysis?: TeacherLearningAnalysis;
 }
 
 export interface SessionSummary {
@@ -220,6 +365,8 @@ export interface SessionSummary {
   channel: string;
   created_at?: string | number;
   last_active?: string | number;
+  title?: string;
+  title_is_manual?: boolean;
 }
 
 export interface SessionListResponse {

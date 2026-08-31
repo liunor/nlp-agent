@@ -113,6 +113,12 @@ export function createRealtimeEventHandler({
         summary: event.payload.content.replace(/[#*_`]/g, "").slice(0, 180),
         concepts: extractConcepts(event.payload.content),
       });
+      // Refresh the sidebar so the backend-generated title is picked up. The
+      // summary is generated asynchronously after turn completion, so the
+      // immediate refresh races it; a delayed refresh surfaces the title once
+      // the background write has landed.
+      void loadSessions();
+      window.setTimeout(() => void loadSessions(), 2500);
     }
     setMessages((current) => {
       const next = [...current];

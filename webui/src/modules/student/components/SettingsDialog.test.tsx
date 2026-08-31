@@ -5,8 +5,8 @@ import { loadFeedback } from "@/shared/utils/feedback";
 import { APP_VERSION } from "@/shared/version";
 import type { UserSettings } from "@/shared/types";
 
-const { listPublishedReleaseNotesMock, submitFeedbackMock } = vi.hoisted(() => ({ listPublishedReleaseNotesMock: vi.fn(), submitFeedbackMock: vi.fn() }));
-vi.mock("@/platform/http/api", () => ({ api: { listPublishedReleaseNotes: listPublishedReleaseNotesMock, submitFeedback: submitFeedbackMock } }));
+const { getFeedbackDailyStateMock, getOwnFeedbackMock, listPublishedReleaseNotesMock, markOwnFeedbackReadMock, submitFeedbackMock } = vi.hoisted(() => ({ getFeedbackDailyStateMock: vi.fn(), getOwnFeedbackMock: vi.fn(), listPublishedReleaseNotesMock: vi.fn(), markOwnFeedbackReadMock: vi.fn(), submitFeedbackMock: vi.fn() }));
+vi.mock("@/platform/http/api", () => ({ api: { getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock, listPublishedReleaseNotes: listPublishedReleaseNotesMock, markOwnFeedbackRead: markOwnFeedbackReadMock, submitFeedback: submitFeedbackMock } }));
 
 const settings: UserSettings = {
   theme: "system",
@@ -37,8 +37,14 @@ describe("SettingsDialog", () => {
     localStorage.clear();
     listPublishedReleaseNotesMock.mockReset();
     listPublishedReleaseNotesMock.mockResolvedValue({ items: [] });
+    getFeedbackDailyStateMock.mockReset();
+    getFeedbackDailyStateMock.mockResolvedValue({ used: 0, remaining: 3, limit: 3, today_start_utc: "2026-08-31T00:00:00+00:00" });
+    getOwnFeedbackMock.mockReset();
+    getOwnFeedbackMock.mockResolvedValue({ thread_id: null, user_id: "u1", username: "student", display_name: "Student", status: "open", category: "other", priority: "medium", updated_at: null, messages: [] });
+    markOwnFeedbackReadMock.mockReset();
+    markOwnFeedbackReadMock.mockResolvedValue({ ok: true, updated: true });
     submitFeedbackMock.mockReset();
-    submitFeedbackMock.mockResolvedValue({ thread_id: "thread-1" });
+    submitFeedbackMock.mockResolvedValue({ thread_id: "thread-1", remaining: 2, daily_limit: 3 });
   });
 
   it("renders the current version from the build-injected constant", () => {
@@ -101,7 +107,7 @@ describe("SettingsDialog", () => {
 
     await waitFor(() => expect(loadFeedback().map((item) => item.content)).toEqual(["请增加错题计划"]));
     expect(screen.getByText("意见已发送到开发者工作台。")).toBeVisible();
-    expect(submitFeedbackMock).toHaveBeenCalledWith("请增加错题计划");
+    expect(submitFeedbackMock).toHaveBeenCalledWith("请增加错题计划", "other");
   });
 
   it("shows an error card and keeps the draft when submission fails", async () => {
@@ -116,7 +122,49 @@ describe("SettingsDialog", () => {
     expect(screen.getByPlaceholderText(/我希望/)).toHaveValue("会失败的意见");
     expect(screen.getByRole("button", { name: "发布意见" })).toBeEnabled();
     expect(loadFeedback()).toEqual([]);
-    expect(submitFeedbackMock).toHaveBeenCalledWith("会失败的意见");
+    expect(submitFeedbackMock).toHaveBeenCalledWith("会失败的意见", "other");
+  });
+
+  it("loads older feedback history on demand", async () => {
+    const baseThread = {
+      thread_id: "thread-1",
+      user_id: "u1",
+      username: "student",
+      display_name: "Student",
+      status: "open" as const,
+      category: "other" as const,
+      priority: "medium" as const,
+      updated_at: "2026-08-31T00:00:00+00:00",
+    };
+    getOwnFeedbackMock
+      .mockResolvedValueOnce({
+        ...baseThread,
+        messages: [
+          { id: "m2", sender_type: "developer", body: "回复", created_at: "2026-08-31T00:01:00+00:00" },
+          { id: "m3", sender_type: "student", body: "追问", created_at: "2026-08-31T00:02:00+00:00" },
+        ],
+        message_total: 3,
+        message_has_more: true,
+        student_unread_count: 1,
+      })
+      .mockResolvedValueOnce({
+        ...baseThread,
+        messages: [{ id: "m1", sender_type: "student", body: "最初意见", created_at: "2026-08-31T00:00:00+00:00" }],
+        message_total: 3,
+        message_has_more: false,
+    });
+    render(<SettingsDialog {...baseProps} />);
+    expect(await screen.findByLabelText("未读消息")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /意见反馈/ }));
+
+    expect(await screen.findByRole("button", { name: "展开消息" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "展开消息" }));
+    expect(await screen.findByText("回复")).toBeVisible();
+    await waitFor(() => expect(markOwnFeedbackReadMock).toHaveBeenCalledOnce());
+    expect(screen.queryByText("最初意见")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /加载更早反馈/ }));
+    expect(await screen.findByText("最初意见")).toBeVisible();
+    expect(getOwnFeedbackMock).toHaveBeenLastCalledWith({ limit: 50, offset: 2 });
   });
 
   it("disables the feedback entry for guests instead of rendering a doomed form", () => {
@@ -133,7 +181,7 @@ describe("SettingsDialog", () => {
     fireEvent.change(screen.getByPlaceholderText(/我希望/), { target: { value: "自定义角色也能提交" } });
     fireEvent.click(screen.getByRole("button", { name: "发布意见" }));
 
-    await waitFor(() => expect(submitFeedbackMock).toHaveBeenCalledWith("自定义角色也能提交"));
+    await waitFor(() => expect(submitFeedbackMock).toHaveBeenCalledWith("自定义角色也能提交", "other"));
   });
 
   it("defers to server permissions even when built-in roles suggest otherwise", () => {

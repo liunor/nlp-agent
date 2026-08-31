@@ -1,23 +1,26 @@
 import { useState } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { BlueprintCatalogEditor, GuidedBlueprintCatalogEditor, TopicCatalogEditor } from "./TeacherCatalogEditor";
+import { LearningAnalysisPage } from "./LearningAnalysisPage";
 import { TeacherWorkspace } from "./TeacherWorkspace";
 import { TeacherRoutes } from "../routes";
 import type { CourseTopic } from "@/shared/types";
 
-const { ensureAuthMock, getSettingsMock, getTeacherCatalog, getTeacherOverviewMock, updateTeacherCatalog } = vi.hoisted(() => ({
+const { ensureAuthMock, generateTeacherAIAnalysisMock, getSettingsMock, getTeacherCatalog, getTeacherOverviewMock, updateTeacherCatalog } = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
+  generateTeacherAIAnalysisMock: vi.fn(),
   getSettingsMock: vi.fn(),
   getTeacherCatalog: vi.fn().mockResolvedValue({ catalog: { workspace_id: "default", topics: [{ id: "transformer", name: "Transformer", description: "", status: "enabled", knowledge_points: [{ id: "attention", name: "注意力", markdown: "# Attention", status: "enabled", sort_order: 0 }] }], exercise_blueprints: [], review_blueprints: [], guided_blueprints: [] } }),
-  getTeacherOverviewMock: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 2, error_questions: 0, exercises: 3, exercise_pass_rate: 66.67, guided_sessions: 1 }, weak_topics: [{ topic_id: "transformer", topic: "Transformer", questions: 2, errors: 0, exercises: 3, average_score: 70, pass_rate: 66.67, misconceptions: 1, risk: "medium" }], topic_distribution: [{ name: "Transformer", count: 2, percentage: 100 }], difficulty_distribution: [{ name: "入门", count: 2, percentage: 100 }], mode_distribution: [{ name: "讲解", count: 2, percentage: 100 }], daily_questions: [{ date: "2026-07-19", count: 2 }], knowledge_point_stats: [{ knowledge_point_id: "attention", name: "注意力", topic: "Transformer", exercises: 3, average_score: 70, pass_rate: 66.67, weak_criteria: [{ criterion: "概念准确", hit_rate: 100 }, { criterion: "步骤完整", hit_rate: 33.33 }] }],
+  getTeacherOverviewMock: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 9, active_days: 2, error_questions: 0, error_rate: 0, questions_per_student: 1, questions_per_session: 1, contextualized_questions: 2, context_coverage_rate: 100, exercises: 3, exercise_pass_rate: 66.67, guided_sessions: 1 }, student_activity: Array.from({ length: 9 }, (_, index) => ({ user_id: `u${index + 1}`, display_name: index === 0 ? "张三" : `学生${index + 1}`, username: `student${index + 1}`, questions: index === 0 ? 2 : 1, sessions: 1, active_days: 1, error_questions: 0, error_rate: 0, questions_per_session: index === 0 ? 2 : 1, last_active: "2026-07-19", top_topic: "Transformer" })), hourly_questions: [{ hour: 9, label: "09:00", count: 2, percentage: 100 }], weekday_questions: [{ weekday: 0, label: "星期一", count: 2, percentage: 100 }], peak_day: { date: "2026-07-19", count: 2 }, peak_hour: { hour: 9, label: "09:00", count: 2 }, weak_topics: [{ topic_id: "transformer", topic: "Transformer", questions: 2, errors: 0, exercises: 3, average_score: 70, pass_rate: 66.67, misconceptions: 1, risk: "medium" }], topic_distribution: [{ name: "Transformer", count: 2, percentage: 100 }], difficulty_distribution: [{ name: "入门", count: 2, percentage: 100 }], mode_distribution: [{ name: "讲解", count: 2, percentage: 100 }], daily_questions: [{ date: "2026-07-19", count: 2 }], knowledge_point_stats: [{ knowledge_point_id: "attention", name: "注意力", topic: "Transformer", exercises: 3, average_score: 70, pass_rate: 66.67, weak_criteria: [{ criterion: "概念准确", hit_rate: 100 }, { criterion: "步骤完整", hit_rate: 33.33 }] }], learning_analysis: { scope: { period_days: 30, period_label: "近 30 天", role_label: "学生", student_count: 9, attempt_count: 8 }, conclusions: { weak: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [{ criterion: "定义域判断", error_rate: 75 }], concern_score: 70, recommendation: { conclusion: "注意力当前掌握率为 50%", action: "补充概念示例和变式练习" } }, declining: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [], concern_score: 70, recommendation: { conclusion: "注意力近期下降", action: "安排复习" } }, good: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "位置编码", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 4, mastery_rate: 100, previous_mastery_rate: 88, trend: "up", problem_type: "—", data_sufficiency: "sufficient", average_score: 90, weak_criteria: [], concern_score: 0, recommendation: { conclusion: "位置编码掌握较好", action: "继续观察" } } }, diagnoses: [{ content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [{ criterion: "定义域判断", error_rate: 75 }], concern_score: 70, recommendation: { conclusion: "注意力当前掌握率为 50%", action: "补充概念示例和变式练习" } }, { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "位置编码", knowledge_point_name: "位置编码", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 4, mastery_rate: 100, previous_mastery_rate: 88, trend: "up", problem_type: "—", data_sufficiency: "sufficient", average_score: 90, weak_criteria: [], concern_score: 0, recommendation: { conclusion: "位置编码掌握较好", action: "继续观察" } }], problem_distribution: [{ name: "概念掌握不足", count: 1, percentage: 50 }, { name: "解题方法不熟", count: 0, percentage: 0 }, { name: "易错点集中", count: 0, percentage: 0 }, { name: "练习覆盖不足", count: 0, percentage: 0 }, { name: "学习参与不足", count: 0, percentage: 0 }, { name: "数据不足，暂不判断", count: 0, percentage: 0 }], mastery_trend: { months: [{ month: "2026-04", label: "2026年04月" }, { month: "2026-05", label: "2026年05月" }, { month: "2026-06", label: "2026年06月" }, { month: "2026-07", label: "2026年07月" }, { month: "2026-08", label: "2026年08月" }], series: [{ knowledge_point_id: "attention", name: "注意力", values: [62, 65, 72, 68, 50] }, { knowledge_point_id: "posenc", name: "位置编码", values: [74, 79, 84, 88, 100] }] } },
   }),
   updateTeacherCatalog: vi.fn().mockImplementation(async (_workspaceId, next) => ({ catalog: { workspace_id: "default", ...next } })),
 }));
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: ensureAuthMock,
-  api: { getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog },
+  api: { getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog, generateTeacherAIAnalysis: generateTeacherAIAnalysisMock },
 }));
 
 describe("TeacherWorkspace catalog CRUD", () => {
@@ -25,6 +28,7 @@ describe("TeacherWorkspace catalog CRUD", () => {
     updateTeacherCatalog.mockClear();
     getTeacherCatalog.mockClear();
     getTeacherOverviewMock.mockClear();
+    generateTeacherAIAnalysisMock.mockClear();
     ensureAuthMock.mockResolvedValue({ roles: ["teacher"], workspace_ids: ["default"] });
     getSettingsMock.mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } });
   });
@@ -112,10 +116,13 @@ describe("TeacherWorkspace catalog CRUD", () => {
     history.replaceState({}, "", "/teacher/topics"); render(<TeacherWorkspace />);
     await screen.findByRole("heading", { name: "主题与知识点", level: 2 });
 
-    const menu = screen.getByRole("button", { name: "Transformer目录选项" }).closest("details") as HTMLDetailsElement;
-    menu.open = true;
-    fireEvent.pointerDown(document.body);
-    expect(menu.open).toBe(false);
+    const user = userEvent.setup();
+    const summary = screen.getByRole("button", { name: "Transformer目录选项" });
+    const menu = summary.closest("details") as HTMLDetailsElement;
+    await user.click(summary);
+    expect(menu.open).toBe(true);
+    await user.click(document.body);
+    await waitFor(() => expect(menu.open).toBe(false));
 
     fireEvent.click(screen.getByRole("button", { name: "收起主题与知识点目录" }));
     const expandButton = screen.getByRole("button", { name: "展开主题与知识点目录" });
@@ -293,19 +300,184 @@ describe("TeacherWorkspace catalog CRUD", () => {
 
   it("renders question statistics without raw question text", async () => {
     history.replaceState({}, "", "/teacher/questions"); render(<TeacherWorkspace />);
-    expect(await screen.findByText("从提问统计发现教学线索")).toBeVisible();
+    expect(await screen.findByText("学生问题全景")).toBeVisible();
     expect(screen.getByText("主题分布")).toBeVisible();
     expect(screen.getByText("模式分布")).toBeVisible();
+    expect(screen.queryByText("RBAC 角色分布")).not.toBeInTheDocument();
+    expect(screen.getByText(/仅统计 RBAC=学生的账号/)).toBeVisible();
+    expect(screen.getByText("学生参与度")).toBeVisible();
+    expect(screen.getByText("张三")).toBeVisible();
+    expect(screen.getByText("小时分布")).toBeVisible();
+    expect(screen.getByText("星期分布")).toBeVisible();
     expect(screen.queryByText("BLEU 的长度惩罚怎么计算？")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("搜索学生问题")).not.toBeInTheDocument();
   });
 
-  it("renders evidence-based risk and knowledge-point stats", async () => {
+  it("paginates the student activity table instead of forcing every account into one view", async () => {
+    history.replaceState({}, "", "/teacher/questions"); render(<TeacherWorkspace />);
+
+    expect(await screen.findByText("显示 1–8 / 共 9 名学生")).toBeVisible();
+    expect(screen.getByText("学生8")).toBeVisible();
+    expect(screen.queryByText("学生9")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+
+    expect(screen.getByText("显示 9–9 / 共 9 名学生")).toBeVisible();
+    expect(screen.getByText("学生9")).toBeVisible();
+    expect(screen.queryByText("学生8")).not.toBeInTheDocument();
+  });
+
+  it("enables a local demo dataset through the explicit demo query flag", async () => {
+    history.replaceState({}, "", "/teacher/questions?demo=1"); render(<TeacherWorkspace />);
+
+    expect(await screen.findByText("本地演示数据 · 仅用于布局验收")).toBeVisible();
+    expect(screen.getByText("显示 1–8 / 共 18 名学生")).toBeVisible();
+  });
+
+  it("previews five monthly distributions and renders both trends as line charts", async () => {
+    history.replaceState({}, "", "/teacher/questions?demo=1"); render(<TeacherWorkspace />);
+
+    expect(await screen.findByText("月度统计 · 近 5 个月")).toBeVisible();
+    expect(screen.getAllByRole("tab")).toHaveLength(5);
+    expect(screen.getByRole("img", { name: "问题量趋势折线图" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "小时提问趋势折线图" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "星期问题分布饼图" })).toBeVisible();
+    expect(screen.getAllByText("显示前 5 类")).toHaveLength(3);
+    expect(document.querySelectorAll(".teacher-question-distribution article")).toHaveLength(15);
+  });
+
+  it("keeps line charts readable with dynamic axis bounds and hover details", async () => {
+    history.replaceState({}, "", "/teacher/questions?demo=1"); render(<TeacherWorkspace />);
+
+    const chart = await screen.findByRole("img", { name: "问题量趋势折线图" });
+    expect(chart).toHaveAttribute("data-raw-max");
+    expect(chart).toHaveAttribute("data-axis-max");
+    expect(Number(chart.getAttribute("data-axis-max"))).toBeGreaterThan(Number(chart.getAttribute("data-raw-max")));
+    expect(chart.querySelectorAll(".teacher-question-line-point")).toHaveLength(0);
+
+    const hoverTarget = chart.querySelector(".teacher-question-line-hover-target");
+    expect(hoverTarget).not.toBeNull();
+    fireEvent.mouseEnter(hoverTarget as Element);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("第 1 天");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("2026");
+    fireEvent.mouseLeave(hoverTarget as Element);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
+  it("shows more x-axis detail when each trend chart has its own row", async () => {
+    history.replaceState({}, "", "/teacher/questions?demo=1"); render(<TeacherWorkspace />);
+
+    const dailyChart = await screen.findByRole("img", { name: "问题量趋势折线图" });
+    const hourlyChart = screen.getByRole("img", { name: "小时提问趋势折线图" });
+    expect(dailyChart).toHaveAttribute("data-label-step", "5");
+    expect(hourlyChart).toHaveAttribute("data-label-step", "2");
+    expect(hourlyChart.querySelectorAll(".teacher-question-line-x-label")).toHaveLength(12);
+  });
+
+  it("places weekday labels on pie callouts beside the chart", async () => {
+    history.replaceState({}, "", "/teacher/questions?demo=1"); render(<TeacherWorkspace />);
+
+    await screen.findByRole("img", { name: "星期问题分布饼图" });
+    expect(document.querySelectorAll(".teacher-question-pie-callout")).toHaveLength(7);
+    expect(document.querySelectorAll(".teacher-question-pie-label")).toHaveLength(7);
+    expect(document.querySelector(".teacher-question-pie-legend")).toBeNull();
+  });
+
+  it("renders a content diagnosis report with student-only scope", async () => {
     history.replaceState({}, "", "/teacher/reports"); render(<TeacherWorkspace />);
-    expect(await screen.findByText("从练习证据发现薄弱项")).toBeVisible();
-    expect(screen.getByText("主题健康度")).toBeVisible();
-    expect(screen.getByText("知识点掌握情况")).toBeVisible();
-    expect(screen.getByText("注意力")).toBeVisible();
+    expect(await screen.findByText("基于学生学习表现，定位需要重点关注的教学内容")).toBeVisible();
+    expect(screen.queryByText("AI CONTENT REPORT")).not.toBeInTheDocument();
+    expect(screen.queryByText("CONTENT DIAGNOSIS")).not.toBeInTheDocument();
+    expect(screen.queryByText("TEACHER MODE")).not.toBeInTheDocument();
+    expect(screen.queryByText("Teacher workspace")).not.toBeInTheDocument();
+    expect(screen.getByText("学生角色")).toBeVisible();
+    expect(screen.getByText("当前分析范围：近 30 天 · 全部教材内容 · 学生角色 · 9 名学生 · 8 次作答")).toBeVisible();
+    expect(screen.getByText("重点薄弱内容")).toBeVisible();
+    expect(screen.getByText("近期下降内容")).toBeVisible();
+    expect(screen.getByText("掌握较好内容")).toBeVisible();
+    expect(screen.getByText("尚未生成 AI 内容分析")).toBeVisible();
+    expect(screen.getByRole("button", { name: "生成 AI 内容分析" })).toBeVisible();
+    expect(screen.getByText("知识点诊断")).toBeVisible();
+    expect(screen.getAllByText("概念掌握不足").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("作答 4 · 正确 2 · 上期 68%")).toBeVisible();
+    expect(screen.getAllByText("样本充足").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole("img", { name: "内容掌握趋势折线图" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "内容问题类型分布横向条形图" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "查看详情 注意力" })).toHaveLength(2);
+    fireEvent.change(screen.getByRole("combobox", { name: "时间范围" }), { target: { value: "60" } });
+    await waitFor(() => expect(getTeacherOverviewMock).toHaveBeenCalledWith("default", 60));
+  });
+
+  it("keeps data-insufficient diagnoses collapsed instead of mixing them into the evidence list", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    const source = data.learning_analysis.diagnoses[0];
+    data.learning_analysis.diagnoses = [
+      ...data.learning_analysis.diagnoses,
+      ...Array.from({ length: 7 }, (_, index) => ({
+        ...source,
+        knowledge_point_id: `insufficient-${index + 1}`,
+        knowledge_point_name: `待补充知识点 ${index + 1}`,
+        question_count: 0,
+        student_count: 0,
+        attempt_count: 0,
+        correct_count: 0,
+        mastery_rate: null,
+        previous_mastery_rate: null,
+        problem_type: "数据不足，暂不判断",
+        data_sufficiency: "insufficient",
+      })),
+    ];
+
+    render(<LearningAnalysisPage data={data} />);
+
+    expect(screen.getByText("2 个有证据知识点 · 7 个数据不足")).toBeVisible();
+    expect(document.querySelector(".teacher-analysis-insufficient-list")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "展开 7 个数据不足知识点" }));
+    expect(document.querySelector(".teacher-analysis-insufficient-list")).toHaveTextContent("待补充知识点 1");
+  });
+
+  it("generates AI analysis only after a teacher action and expires it when filters change", async () => {
+    generateTeacherAIAnalysisMock.mockResolvedValue({
+      status: "completed",
+      source: "deepseek",
+      generated_at: "2026-08-30T10:00:00+08:00",
+      model: "DeepSeek",
+      model_id: "deepseek-v4-flash",
+      summary: "本周期重点关注函数单调性，建议先复习定义域判断。",
+      diagnoses: [{ knowledge_point_id: "attention", knowledge_point_name: "注意力", level: "high", problem: "定义域判断存在共性混淆。", evidence: ["掌握率 50%"], suggestions: ["回顾定义域与单调区间的关系"], confidence: "high", data_gaps: [] }],
+    });
+    history.replaceState({}, "", "/teacher/reports"); render(<TeacherWorkspace />);
+
+    expect(generateTeacherAIAnalysisMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "生成 AI 内容分析" }));
+    await waitFor(() => expect(generateTeacherAIAnalysisMock).toHaveBeenCalledWith("default", expect.objectContaining({ course_id: "all", content_scope: "all", period_days: 30, force_refresh: false })));
+    expect(await screen.findByText("本周期重点关注函数单调性，建议先复习定义域判断。")).toBeVisible();
+    expect(screen.getByText("模型：DeepSeek")).toBeVisible();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "内容范围" }), { target: { value: "注意力" } });
+    expect(screen.getByText("当前筛选条件已变化，请重新生成分析")).toBeVisible();
+  });
+
+  it("keeps conclusions and charts within the selected content range", async () => {
+    history.replaceState({}, "", "/teacher/reports"); render(<TeacherWorkspace />);
+
+    await screen.findByRole("img", { name: "内容掌握趋势折线图" });
+    fireEvent.change(screen.getByRole("combobox", { name: "内容范围" }), { target: { value: "位置编码" } });
+
+    expect(document.querySelector(".teacher-analysis-line-legend")).toHaveTextContent("位置编码");
+    expect(document.querySelector(".teacher-analysis-line-legend")).not.toHaveTextContent("注意力");
+  });
+
+  it("expands a diagnosis into evidence and teacher-controlled actions", async () => {
+    history.replaceState({}, "", "/teacher/reports"); render(<TeacherWorkspace />);
+    await screen.findByText("知识点诊断");
+
+    fireEvent.click(screen.getByRole("button", { name: "查看建议 注意力" }));
+    expect(screen.getByText("补充概念示例和变式练习")).toBeVisible();
+    expect(screen.getByText("定义域判断 · 错误率 75%")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "标记已关注 注意力" }));
+    expect(screen.getByRole("button", { name: "已标记关注 注意力" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "添加备注 注意力" }));
+    expect(screen.getByRole("textbox", { name: "注意力备注" })).toBeVisible();
   });
 
   it("updates the visible page when a nested teacher route changes without a full reload", async () => {
@@ -320,6 +492,6 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(await screen.findByRole("button", { name: "主题与知识点" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "学生问题" }));
 
-    expect(await screen.findByText("从提问统计发现教学线索")).toBeVisible();
+    expect(await screen.findByText("学生问题全景")).toBeVisible();
   });
 });

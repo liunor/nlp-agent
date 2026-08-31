@@ -36,10 +36,17 @@ def _extract_result(pattern: re.Pattern[str], text: str) -> tuple[str, dict[str,
 class InProcessTurnExecutor:
     """Runs and finalizes turn work for the memory dispatcher."""
 
-    def __init__(self, engine: AgentEngine, repository: TurnExecutionState, emit: EventSink) -> None:
+    def __init__(
+        self,
+        engine: AgentEngine,
+        repository: TurnExecutionState,
+        emit: EventSink,
+        on_turn_completed: Callable[[str], None] | None = None,
+    ) -> None:
         self._engine = engine
         self._repository = repository
         self._emit = emit
+        self._on_turn_completed = on_turn_completed
         parameters = inspect.signature(engine.run_turn).parameters
         parameter_count = len(parameters)
         self._accepts_learning = parameter_count >= 6
@@ -74,6 +81,8 @@ class InProcessTurnExecutor:
             return
         await self._emit(task.turn_id, task.context.session_id, GatewayEventType.MESSAGE_COMPLETED, {"content": final_text})
         await self._emit(task.turn_id, task.context.session_id, GatewayEventType.TURN_COMPLETED, {"status": TurnStatus.COMPLETED.value, "content": final_text})
+        if self._on_turn_completed is not None:
+            self._on_turn_completed(task.context.session_id)
 
     async def _run_engine(self, task: TurnTask) -> str:
         kwargs: dict[str, Any] = {}

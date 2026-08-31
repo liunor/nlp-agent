@@ -1,18 +1,19 @@
 import {
-  Activity, AppWindow, Bot, Box, ChevronLeft, Clock3, Code2, Database,
-  ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Mail, Newspaper, PlugZap,
-  RefreshCw, Settings2, ShieldCheck, Sparkles, TerminalSquare, Wrench,
+  Activity, AppWindow, Bot, Box, ChevronLeft, ChevronRight, Clock3, Code2, Database,
+  ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Mail, MailOpen, Newspaper, PlugZap,
+  Inbox, MessageCircle, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TerminalSquare, Trash2, User, Wrench,
   Users, ScrollText, MessageSquare,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, ensureAuth } from "@/platform/http/api";
-import type { DeveloperSnapshot, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
+import type { DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
 import { UserManagementPage } from "@/modules/admin/UserManagementPage";
 import { RoleManagementPageV2 } from "@/modules/admin/RoleManagementPageV2";
 import { AuditLogPageV2 } from "@/modules/admin/AuditLogPageV2";
 import { AgentSessionListPageV2 } from "@/modules/admin/AgentSessionListPageV2";
 import { monitorUrl } from "@/monitor/monitor-helpers";
+import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 
 export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "audit" | "sessions";
 
@@ -52,8 +53,8 @@ function StatusPill({ ok, children }: { ok: boolean; children: React.ReactNode }
   return <span className={`developer-status ${ok ? "ok" : "idle"}`}>{children}</span>;
 }
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return <section className="developer-section"><header><div><h2>{title}</h2>{hint && <p>{hint}</p>}</div></header>{children}</section>;
+function Section({ title, hint, className = "", children }: { title: string; hint?: string; className?: string; children: React.ReactNode }) {
+  return <section className={`developer-section ${className}`.trim()}><header><div><h2>{title}</h2>{hint && <p>{hint}</p>}</div></header>{children}</section>;
 }
 
 export function JsonEditor({ value, onSave, label = "保存" }: { value: unknown; onSave: (value: Record<string, unknown>) => Promise<void>; label?: string }) {
@@ -119,6 +120,32 @@ function Automations({ snapshot }: { snapshot: DeveloperSnapshot }) {
 }
 
 const FEEDBACK_PAGE_SIZE = 20;
+const FEEDBACK_STATUS_OPTIONS: Array<{ value: FeedbackStatus | ""; label: string; color: string }> = [
+  { value: "", label: "全部状态", color: "#6b7280" },
+  { value: "open", label: "待处理", color: "#f59e0b" },
+  { value: "under_review", label: "审视中", color: "#3b82f6" },
+  { value: "planned", label: "已规划", color: "#8b5cf6" },
+  { value: "in_progress", label: "进行中", color: "#06b6d4" },
+  { value: "complete", label: "已完成", color: "#10b981" },
+  { value: "closed", label: "已关闭", color: "#9ca3af" },
+];
+const FEEDBACK_CATEGORY_OPTIONS: Array<{ value: FeedbackCategory | ""; label: string }> = [
+  { value: "", label: "全部分类" },
+  { value: "feature", label: "功能建议" },
+  { value: "ux", label: "体验问题" },
+  { value: "bug", label: "Bug" },
+  { value: "other", label: "其他" },
+];
+const FEEDBACK_PRIORITY_OPTIONS: Array<{ value: FeedbackPriority; label: string; color: string }> = [
+  { value: "low", label: "低", color: "#10b981" },
+  { value: "medium", label: "中", color: "#f59e0b" },
+  { value: "high", label: "高", color: "#ef4444" },
+];
+const FEEDBACK_SORT_OPTIONS: Array<{ value: "latest" | "oldest" | "unread"; label: string }> = [
+  { value: "latest", label: "最新" },
+  { value: "unread", label: "未读优先" },
+  { value: "oldest", label: "最早" },
+];
 // Pages whose content is derived from the runtime snapshot; every other page
 // fetches its own data and must render without it.
 const SNAPSHOT_PAGES: DeveloperPage[] = ["overview", "agents", "tools", "models", "mcp", "skills", "automations", "settings"];
@@ -130,11 +157,24 @@ export function Feedback({
   offset,
   search,
   loadError,
+  loading = false,
   selectedId,
   onSelect,
   onSearchChange,
   onOffsetChange,
+  onDelete,
+  onMarkRead,
+  onBulkMarkRead,
+  onBulkDelete,
   refresh,
+  statusFilter = "",
+  categoryFilter = "",
+  priorityFilter = "",
+  sort = "latest",
+  onStatusFilterChange,
+  onCategoryFilterChange,
+  onPriorityFilterChange,
+  onSortChange,
 }: {
   threads: FeedbackThreadSummary[];
   total: number;
@@ -142,16 +182,43 @@ export function Feedback({
   offset: number;
   search: string;
   loadError: string;
+  loading?: boolean;
   selectedId: string | null;
   onSelect: (threadId: string) => void;
   onSearchChange: (value: string) => void;
   onOffsetChange: (offset: number) => void;
+  onDelete?: (threadId: string) => Promise<void>;
+  onMarkRead?: (threadId: string) => Promise<void>;
+  onBulkMarkRead?: (threadIds: string[]) => Promise<void>;
+  onBulkDelete?: (threadIds: string[]) => Promise<void>;
   refresh: () => Promise<void>;
+  statusFilter?: FeedbackStatus | "";
+  categoryFilter?: FeedbackCategory | "";
+  priorityFilter?: FeedbackPriority | "";
+  sort?: "latest" | "oldest" | "unread";
+  onStatusFilterChange?: (value: FeedbackStatus | "") => void;
+  onCategoryFilterChange?: (value: FeedbackCategory | "") => void;
+  onPriorityFilterChange?: (value: FeedbackPriority | "") => void;
+  onSortChange?: (value: "latest" | "oldest" | "unread") => void;
 }) {
   const [detail, setDetail] = useState<{ threadId: string; thread: FeedbackThread } | null>(null);
   const [error, setError] = useState<{ threadId: string; message: string } | null>(null);
   const [detailRetryNonce, setDetailRetryNonce] = useState(0);
+  const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
   const [searchInput, setSearchInput] = useState(search);
+  const [deleteError, setDeleteError] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ threadIds: string[]; label: string; bulk: boolean } | null>(null);
+  const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(new Set());
+  const [bulkWorking, setBulkWorking] = useState<"read" | "delete" | null>(null);
+  const [readError, setReadError] = useState("");
+  const [replyText, setReplyText] = useState("");
+  const [replyError, setReplyError] = useState("");
+  const [replySending, setReplySending] = useState(false);
+  const [patchError, setPatchError] = useState("");
+  const [patching, setPatching] = useState(false);
+
+  useEffect(() => { queueMicrotask(() => setSearchInput(search)); }, [search]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const trimmed = searchInput.trim();
@@ -166,6 +233,9 @@ export function Feedback({
       if (!active) return;
       setError((current) => current?.threadId === selectedId ? null : current);
       setDetail({ threadId: selectedId, thread: value });
+      setReplyText("");
+      setReplyError("");
+      setPatchError("");
       const lastMessage = value.messages[value.messages.length - 1];
       if (!lastMessage) return;
       try {
@@ -179,17 +249,181 @@ export function Feedback({
     });
     return () => { active = false; };
   }, [detailRetryNonce, refresh, selectedId]);
+
   const selected = threads.find((item) => item.thread_id === selectedId);
+  const visibleSelectedThreadIds = useMemo(() => new Set([...selectedThreadIds].filter((threadId) => threads.some((item) => item.thread_id === threadId))), [selectedThreadIds, threads]);
+  const visibleThreadIds = useMemo(() => threads.map((item) => item.thread_id), [threads]);
+  const allVisibleSelected = visibleThreadIds.length > 0 && visibleThreadIds.every((threadId) => visibleSelectedThreadIds.has(threadId));
+  const someVisibleSelected = visibleThreadIds.some((threadId) => visibleSelectedThreadIds.has(threadId));
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
+  }, [allVisibleSelected, someVisibleSelected]);
   const activeThread = detail?.threadId === selectedId ? detail.thread : null;
   const activeError = error?.threadId === selectedId ? error.message : "";
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const pageIndex = Math.floor(offset / pageSize) + 1;
-  return <Section title="学生意见反馈" hint="按账号查看反馈；读取和标记已读均由后端权限控制。">
-    <div className="developer-inline-form developer-feedback-toolbar">
-      <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="搜索用户名或昵称" aria-label="搜索反馈用户" />
+  const statusColor = (value: FeedbackStatus) => FEEDBACK_STATUS_OPTIONS.find((item) => item.value === value)?.color ?? "#6b7280";
+  const statusLabel = (value: FeedbackStatus) => FEEDBACK_STATUS_OPTIONS.find((item) => item.value === value)?.label ?? value;
+  const categoryLabel = (value: FeedbackCategory) => FEEDBACK_CATEGORY_OPTIONS.find((item) => item.value === value)?.label ?? value;
+  const priorityMeta = (value: FeedbackPriority) => FEEDBACK_PRIORITY_OPTIONS.find((item) => item.value === value) ?? FEEDBACK_PRIORITY_OPTIONS[1];
+  const formatTime = (value: string | null) => value ? new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+  const loadOlderMessages = async () => {
+    if (!activeThread?.message_has_more || olderMessagesLoading) return;
+    setOlderMessagesLoading(true);
+    setError(null);
+    try {
+      const page = await api.getFeedback(activeThread.thread_id, { limit: activeThread.message_limit ?? 50, offset: activeThread.messages.length });
+      setDetail((current) => current && current.threadId === page.thread_id ? {
+        ...current,
+        thread: {
+          ...current.thread,
+          ...page,
+          messages: [...page.messages, ...current.thread.messages],
+          message_offset: 0,
+        },
+      } : current);
+    } catch (reason) {
+      setError({ threadId: activeThread.thread_id, message: reason instanceof Error ? reason.message : String(reason) });
+    } finally {
+      setOlderMessagesLoading(false);
+    }
+  };
+
+  const requestDelete = (threadId: string) => {
+    if (!onDelete) return;
+    const target = threads.find((item) => item.thread_id === threadId) ?? (detail?.threadId === threadId ? { display_name: detail.thread.display_name, username: detail.thread.username } : undefined);
+    setDeleteError("");
+    setDeleteTarget({ threadIds: [threadId], label: target?.display_name || target?.username || threadId, bulk: false });
+  };
+  const requestBulkDelete = () => {
+    if (!onBulkDelete || visibleSelectedThreadIds.size === 0) return;
+    setDeleteError("");
+    setDeleteTarget({ threadIds: [...visibleSelectedThreadIds], label: `已选 ${visibleSelectedThreadIds.size} 条反馈`, bulk: true });
+  };
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteError("");
+    if (deleteTarget.bulk) {
+      if (!onBulkDelete) return;
+      setBulkWorking("delete");
+      try { await onBulkDelete(deleteTarget.threadIds); setSelectedThreadIds(new Set()); setDeleteTarget(null); }
+      catch (reason) { setDeleteError(reason instanceof Error ? reason.message : String(reason)); }
+      finally { setBulkWorking(null); }
+      return;
+    }
+    if (!onDelete) return;
+    const threadId = deleteTarget.threadIds[0];
+    setDeletingId(threadId);
+    try { await onDelete(threadId); setDeleteTarget(null); }
+    catch (reason) { setDeleteError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setDeletingId(null); }
+  };
+  const toggleThreadSelection = (threadId: string) => {
+    setSelectedThreadIds((current) => {
+      const next = new Set([...current].filter((id) => threads.some((item) => item.thread_id === id)));
+      if (next.has(threadId)) next.delete(threadId);
+      else next.add(threadId);
+      return next;
+    });
+  };
+  const toggleAllVisible = () => {
+    setSelectedThreadIds((current) => {
+      const next = new Set([...current].filter((id) => threads.some((item) => item.thread_id === id)));
+      if (allVisibleSelected) visibleThreadIds.forEach((threadId) => next.delete(threadId));
+      else visibleThreadIds.forEach((threadId) => next.add(threadId));
+      return next;
+    });
+  };
+  const markThreadRead = async (item: FeedbackThreadSummary) => {
+    if (!onMarkRead || item.unread_count === 0 || !item.latest) return;
+    setReadError("");
+    try { await onMarkRead(item.thread_id); }
+    catch (reason) { setReadError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+  const markSelectedRead = async () => {
+    if (!onBulkMarkRead || visibleSelectedThreadIds.size === 0) return;
+    setReadError("");
+    setBulkWorking("read");
+    try { await onBulkMarkRead([...visibleSelectedThreadIds]); setSelectedThreadIds(new Set()); }
+    catch (reason) { setReadError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBulkWorking(null); }
+  };
+  const handleReply = async () => {
+    if (!activeThread || !replyText.trim()) return;
+    setReplySending(true); setReplyError("");
+    try {
+      await api.replyFeedback(activeThread.thread_id, replyText.trim());
+      const fresh = await api.getFeedback(activeThread.thread_id);
+      setDetail({ threadId: fresh.thread_id, thread: fresh });
+      setReplyText("");
+      await refresh();
+    } catch (reason) { setReplyError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setReplySending(false); }
+  };
+  const handlePatch = async (patch: { status?: FeedbackStatus; category?: FeedbackCategory; priority?: FeedbackPriority }) => {
+    if (!activeThread) return;
+    setPatching(true); setPatchError("");
+    try {
+      const updated = await api.updateFeedback(activeThread.thread_id, patch);
+      setDetail({ threadId: updated.thread_id, thread: updated });
+      await refresh();
+    } catch (reason) { setPatchError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setPatching(false); }
+  };
+
+  return <Section className="developer-feedback-section" title="学生意见反馈" hint="按状态、分类和优先级管理反馈；支持回复、标记已读与状态流转。">
+    <div className="developer-feedback-toolbar">
+      <label className="developer-feedback-search"><Search size={14} /><input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="搜索用户名或昵称" aria-label="搜索反馈用户" autoComplete="off" /></label>
+      <div className="developer-feedback-filters">
+        <select value={statusFilter} onChange={(event) => onStatusFilterChange?.(event.target.value as FeedbackStatus | "")} aria-label="按状态筛选" className="developer-feedback-select">{FEEDBACK_STATUS_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+        <select value={categoryFilter} onChange={(event) => onCategoryFilterChange?.(event.target.value as FeedbackCategory | "")} aria-label="按分类筛选" className="developer-feedback-select">{FEEDBACK_CATEGORY_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+        <select value={priorityFilter} onChange={(event) => onPriorityFilterChange?.(event.target.value as FeedbackPriority | "")} aria-label="按优先级筛选" className="developer-feedback-select"><option value="">全部优先级</option>{FEEDBACK_PRIORITY_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}优先</option>)}</select>
+        <select value={sort} onChange={(event) => onSortChange?.(event.target.value as "latest" | "oldest" | "unread")} aria-label="排序" className="developer-feedback-select">{FEEDBACK_SORT_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+      </div>
+      <span className="developer-feedback-count"><Inbox size={12} />共 {total} 条</span>
+      {threads.length > 0 && <div className="developer-feedback-bulk-actions" aria-label="批量操作">
+        <label className="developer-feedback-select-all"><input ref={selectAllRef} type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label="全选当前页" /><span>全选本页</span></label>
+        {visibleSelectedThreadIds.size > 0 && <>
+          <span>已选 {visibleSelectedThreadIds.size} 条</span>
+          {onBulkMarkRead && <button type="button" className="developer-feedback-page-btn" disabled={bulkWorking !== null} onClick={() => void markSelectedRead()}><MailOpen size={13} />{bulkWorking === "read" ? "处理中…" : "批量已读"}</button>}
+          {onBulkDelete && <button type="button" className="developer-feedback-page-btn danger" disabled={bulkWorking !== null} onClick={requestBulkDelete}><Trash2 size={13} />批量删除</button>}
+        </>}
+      </div>}
     </div>
-    <div className="developer-feedback"><div className="developer-feedback-list">{threads.length === 0 && loadError ? <div className="developer-feedback-failed"><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <p>{search ? "没有匹配的反馈" : "暂无反馈"}</p> : <>{loadError && <p className="developer-feedback-stale">刷新失败：{loadError}，正在显示上次结果</p>}{threads.map((item) => <button type="button" key={item.thread_id} className={item.thread_id === selectedId ? "active" : ""} onClick={() => onSelect(item.thread_id)}><strong>{item.display_name || item.username}</strong><small>@{item.username} · {item.latest?.body ?? "暂无内容"}</small>{item.unread_count > 0 && <b>{item.unread_count}</b>}</button>)}</>}</div><div className="developer-feedback-detail">{activeError && <div className="developer-feedback-error"><p>读取失败：{activeError}</p><button type="button" onClick={() => setDetailRetryNonce((nonce) => nonce + 1)}>重试读取反馈</button></div>}{selected && activeThread ? <><h3>{activeThread.display_name || selected.username}</h3><p>@{activeThread.username}</p>{activeThread.messages.map((message) => <article key={message.id}><strong>{message.sender_type === "student" ? (activeThread.display_name || selected.username) : "开发者"}</strong><time>{new Date(message.created_at).toLocaleString("zh-CN")}</time><p>{message.body}</p></article>)}</> : !activeError && <p>{selected ? "正在读取反馈…" : "选择一个账号查看反馈。"}</p>}</div></div>
-    {total > 0 && <div className="developer-feedback-pagination"><span>共 {total} 条 · 第 {pageIndex}/{pageCount} 页</span><button type="button" disabled={offset <= 0} onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}>上一页</button><button type="button" disabled={offset + pageSize >= total} onClick={() => onOffsetChange(offset + pageSize)}>下一页</button></div>}
+    {deleteError && <p className="developer-feedback-error" role="alert">删除失败：{deleteError}</p>}
+    {readError && <p className="developer-feedback-error" role="alert">标记已读失败：{readError}</p>}
+    {patchError && <p className="developer-feedback-error" role="alert">更新失败：{patchError}</p>}
+    <div className="developer-feedback">
+      <div className="developer-feedback-list">
+        {loading && threads.length === 0 ? <div className="developer-feedback-empty"><RefreshCw className="spin" /><strong>正在加载反馈…</strong></div> : threads.length === 0 && loadError ? <div className="developer-feedback-failed"><Inbox size={20} /><strong>加载反馈失败</strong><p>{loadError}</p><button type="button" onClick={() => void refresh()}>重试</button></div> : threads.length === 0 ? <div className="developer-feedback-empty"><Inbox size={22} /><strong>{search || statusFilter || categoryFilter || priorityFilter ? "没有匹配的反馈" : "暂无反馈"}</strong><p>{search || statusFilter || categoryFilter || priorityFilter ? "调整筛选条件或搜索" : "学生提交的反馈会出现在这里"}</p></div> : <>
+          {loadError && <p className="developer-feedback-stale">刷新失败：{loadError}，正在显示上次结果</p>}
+          {threads.map((item) => <div key={item.thread_id} className={`developer-feedback-row ${item.thread_id === selectedId ? "active" : ""}`}>
+            <input className="developer-feedback-selection" type="checkbox" checked={visibleSelectedThreadIds.has(item.thread_id)} onChange={() => toggleThreadSelection(item.thread_id)} aria-label={`选择 ${item.display_name || item.username} 的反馈`} />
+            <button type="button" className="developer-feedback-row-main" onClick={() => onSelect(item.thread_id)} aria-label={`查看 ${item.display_name || item.username} 的反馈`}><span className="developer-feedback-row-text"><span className="developer-feedback-row-name"><strong>{item.display_name || item.username}</strong>{item.unread_count > 0 && <b className="developer-feedback-unread">{item.unread_count > 99 ? "99+" : item.unread_count}</b>}</span><small><span className="developer-feedback-username">@{item.username}</span><span className="developer-feedback-dot">·</span><span className="developer-feedback-time">{formatTime(item.updated_at)}</span></small></span></button>
+            {onMarkRead && item.unread_count > 0 && <button type="button" className="developer-feedback-row-read" aria-label={`标记 ${item.display_name || item.username} 已读`} disabled={bulkWorking !== null} onClick={(event) => { event.stopPropagation(); void markThreadRead(item); }}><MailOpen size={13} /></button>}
+          </div>)}
+        </>}
+      </div>
+      <div className="developer-feedback-detail">
+        {activeError && <div className="developer-feedback-error"><p>读取失败：{activeError}</p><button type="button" onClick={() => setDetailRetryNonce((nonce) => nonce + 1)}>重试读取反馈</button></div>}
+        {selected && activeThread ? <>
+          <div className="developer-feedback-detail-head"><div className="developer-feedback-detail-identity"><div><h3>{activeThread.display_name || selected.username}</h3><p><User size={11} />@{activeThread.username} · {activeThread.messages.length} 条消息</p><p className="developer-feedback-detail-meta"><span className="developer-feedback-status large" style={{ background: statusColor(activeThread.status) }}>{statusLabel(activeThread.status)}</span><span className="developer-feedback-category large">{categoryLabel(activeThread.category)}</span><span className="developer-feedback-priority large" style={{ borderColor: priorityMeta(activeThread.priority).color, color: priorityMeta(activeThread.priority).color }}>{priorityMeta(activeThread.priority).label}优先级</span></p></div></div><div className="developer-feedback-detail-actions">{onMarkRead && selected.unread_count > 0 && <button type="button" className="developer-feedback-page-btn" onClick={() => void markThreadRead(selected)}><MailOpen size={13} />标记已读</button>}<select value={activeThread.status} onChange={(event) => void handlePatch({ status: event.target.value as FeedbackStatus })} disabled={patching} aria-label="修改状态" className="developer-feedback-select small">{FEEDBACK_STATUS_OPTIONS.filter((item) => item.value).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={activeThread.priority} onChange={(event) => void handlePatch({ priority: event.target.value as FeedbackPriority })} disabled={patching} aria-label="修改优先级" className="developer-feedback-select small">{FEEDBACK_PRIORITY_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}优先</option>)}</select><select value={activeThread.category} onChange={(event) => void handlePatch({ category: event.target.value as FeedbackCategory })} disabled={patching} aria-label="修改分类" className="developer-feedback-select small">{FEEDBACK_CATEGORY_OPTIONS.filter((item) => item.value).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>{onDelete && <button type="button" className="danger" aria-label="删除当前反馈" disabled={deletingId === selected.thread_id} onClick={() => requestDelete(selected.thread_id)}><Trash2 size={14} />删除</button>}</div></div>
+          <div className="developer-feedback-messages">{activeThread.message_has_more && <button type="button" className="developer-feedback-load-more" disabled={olderMessagesLoading} onClick={() => void loadOlderMessages()}>{olderMessagesLoading ? "正在加载更早消息…" : "加载更早消息"}</button>}{activeThread.messages.map((message) => { const isStudent = message.sender_type === "student"; return <article key={message.id} className={`developer-feedback-message ${isStudent ? "student" : "developer"}`}><div className="developer-feedback-bubble"><header><strong>{isStudent ? (activeThread.display_name || selected.username) : "开发者"}</strong><time><Clock3 size={10} />{formatTime(message.created_at)}</time></header><p>{message.body}</p></div></article>; })}</div>
+          <div className="developer-feedback-reply"><textarea value={replyText} onChange={(event) => setReplyText(event.target.value)} placeholder="以开发者身份回复…（学生可在“我的反馈”中看到）" rows={3} maxLength={2000} /><div className="developer-feedback-reply-actions"><small>{replyText.length}/2000</small><button type="button" className="developer-feedback-page-btn primary" disabled={!replyText.trim() || replySending} onClick={() => void handleReply()}>{replySending ? "发送中…" : "回复"}</button></div>{replyError && <p className="developer-feedback-error" role="alert">回复失败：{replyError}</p>}</div>
+        </> : !activeError && <div className="developer-feedback-detail-empty"><MessageCircle size={20} /><strong>{selected ? "正在读取反馈…" : "选择一位学生查看反馈"}</strong><p>{selected ? "正在加载完整意见与回复记录" : "从左侧选择学生，查看完整意见与处理记录。"}</p></div>}
+      </div>
+    </div>
+    {total > 0 && <div className="developer-feedback-pagination"><span>共 {total} 条 · 第 {pageIndex}/{pageCount} 页</span><button type="button" className="developer-feedback-page-btn" disabled={offset <= 0} onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}><ChevronLeft size={13} />上一页</button><button type="button" className="developer-feedback-page-btn primary" disabled={offset + pageSize >= total} onClick={() => onOffsetChange(offset + pageSize)}>下一页<ChevronRight size={13} /></button></div>}
+    <ConfirmDialog
+      open={deleteTarget !== null}
+      title={deleteTarget?.bulk ? "删除选中的反馈？" : "删除这条反馈？"}
+      description={`${deleteTarget?.label ?? "该用户"} 的反馈及对话记录将被永久删除，此操作无法撤销。`}
+      confirmLabel={deleteTarget?.bulk ? (bulkWorking === "delete" ? "正在删除…" : "删除选中反馈") : (deletingId === deleteTarget?.threadIds[0] ? "正在删除…" : "确认删除")}
+      cancelLabel="取消"
+      onClose={() => { if (!deletingId && !bulkWorking) setDeleteTarget(null); }}
+      onConfirm={() => void confirmDelete()}
+    />
   </Section>;
 }
 
@@ -260,18 +494,32 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const [feedbackTotal, setFeedbackTotal] = useState(0);
   const [feedbackOffset, setFeedbackOffset] = useState(0);
   const [feedbackSearch, setFeedbackSearch] = useState("");
+  const [feedbackStatus, setFeedbackStatus] = useState<FeedbackStatus | "">("");
+  const [feedbackCategory, setFeedbackCategory] = useState<FeedbackCategory | "">("");
+  const [feedbackPriority, setFeedbackPriority] = useState<FeedbackPriority | "">("");
+  const [feedbackSort, setFeedbackSort] = useState<"latest" | "oldest" | "unread">("latest");
   const [feedbackLoadError, setFeedbackLoadError] = useState("");
   const [managementRefreshToken, setManagementRefreshToken] = useState(0);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const feedbackQueryRef = useRef({ offset: 0, search: "", status: "" as FeedbackStatus | "", category: "" as FeedbackCategory | "", priority: "" as FeedbackPriority | "", sort: "latest" as "latest" | "oldest" | "unread" });
+  useEffect(() => {
+    feedbackQueryRef.current = { offset: feedbackOffset, search: feedbackSearch, status: feedbackStatus, category: feedbackCategory, priority: feedbackPriority, sort: feedbackSort };
+  }, [feedbackOffset, feedbackSearch, feedbackStatus, feedbackCategory, feedbackPriority, feedbackSort]);
   const updateFeedbackThreads = useCallback((items: FeedbackThreadSummary[]) => {
     setFeedbackThreads(items);
-    // Only seed a selection when none exists yet: paging or filtering must not
-    // silently reselect (and thereby auto-mark-read) whatever thread tops the
-    // new page.
-    setFeedbackSelectedId((current) => current ?? items[0]?.thread_id ?? null);
+    // Keep the reading pane closed until the developer explicitly chooses a
+    // person, like an email inbox. A refresh keeps the current message open
+    // only while that thread remains in the current result set.
+    setFeedbackSelectedId((current) => current && items.some((item) => item.thread_id === current) ? current : null);
   }, []);
-  const refreshFeedback = useCallback(async () => {
+  const fetchFeedback = useCallback(async (query = feedbackQueryRef.current) => {
+    setFeedbackLoading(true);
     try {
-      const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: feedbackOffset, q: feedbackSearch || undefined });
+      const result = await api.listFeedback({ limit: FEEDBACK_PAGE_SIZE, offset: query.offset, q: query.search || undefined, status: query.status || undefined, category: query.category || undefined, priority: query.priority || undefined, sort: query.sort });
+      if (result.items.length === 0 && result.total > 0 && query.offset >= result.total) {
+        setFeedbackOffset(Math.floor((result.total - 1) / FEEDBACK_PAGE_SIZE) * FEEDBACK_PAGE_SIZE);
+        return;
+      }
       updateFeedbackThreads(result.items);
       setFeedbackTotal(result.total);
       setFeedbackLoadError("");
@@ -281,11 +529,37 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
       // letting a 403/500 read as "no feedback yet".
       setFeedbackLoadError(reason instanceof Error ? reason.message : String(reason));
     }
-  }, [updateFeedbackThreads, feedbackOffset, feedbackSearch]);
+    finally { setFeedbackLoading(false); }
+  }, [updateFeedbackThreads]);
+  const refreshFeedback = useCallback(async () => { await fetchFeedback(); }, [fetchFeedback]);
   const changeFeedbackSearch = useCallback((value: string) => {
     setFeedbackSearch(value);
     setFeedbackOffset(0);
   }, []);
+  const changeFeedbackStatus = useCallback((value: FeedbackStatus | "") => { setFeedbackStatus(value); setFeedbackOffset(0); }, []);
+  const changeFeedbackCategory = useCallback((value: FeedbackCategory | "") => { setFeedbackCategory(value); setFeedbackOffset(0); }, []);
+  const changeFeedbackPriority = useCallback((value: FeedbackPriority | "") => { setFeedbackPriority(value); setFeedbackOffset(0); }, []);
+  const changeFeedbackSort = useCallback((value: "latest" | "oldest" | "unread") => { setFeedbackSort(value); setFeedbackOffset(0); }, []);
+  const deleteFeedback = useCallback(async (threadId: string) => {
+    await api.deleteFeedback(threadId);
+    setFeedbackSelectedId((current) => current === threadId ? null : current);
+    await refreshFeedback();
+  }, [refreshFeedback]);
+  const markFeedbackRead = useCallback(async (threadId: string) => {
+    const thread = feedbackThreads.find((item) => item.thread_id === threadId);
+    if (!thread?.latest) return;
+    await api.markFeedbackRead(threadId, thread.latest.id);
+    await refreshFeedback();
+  }, [feedbackThreads, refreshFeedback]);
+  const markFeedbackThreadsRead = useCallback(async (threadIds: string[]) => {
+    await api.markFeedbackThreadsRead(threadIds);
+    await refreshFeedback();
+  }, [refreshFeedback]);
+  const deleteFeedbackThreads = useCallback(async (threadIds: string[]) => {
+    await api.deleteFeedbackThreads(threadIds);
+    setFeedbackSelectedId((current) => current && threadIds.includes(current) ? null : current);
+    await refreshFeedback();
+  }, [refreshFeedback]);
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
@@ -318,6 +592,10 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   }, [load]);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => {
+    if (page !== "feedback") return;
+    queueMicrotask(() => void refreshFeedback());
+  }, [page, feedbackOffset, feedbackSearch, feedbackStatus, feedbackCategory, feedbackPriority, feedbackSort, refreshFeedback]);
+  useEffect(() => {
     if (page !== "feedback") return undefined;
     let timer: number | undefined;
     const startTimer = () => {
@@ -332,7 +610,6 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
       if (document.visibilityState === "visible") { void refreshFeedback(); startTimer(); }
       else stopTimer();
     };
-    queueMicrotask(() => void refreshFeedback());
     startTimer();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => { document.removeEventListener("visibilitychange", onVisibilityChange); stopTimer(); };
@@ -341,7 +618,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const content = useMemo(() => {
     // Pages that own their data sources render regardless of the snapshot.
     if (page === "release-notes") return <ReleaseNotes />;
-    if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} refresh={refreshFeedback} />;
+    if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} loading={feedbackLoading} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} onDelete={deleteFeedback} onMarkRead={markFeedbackRead} onBulkMarkRead={markFeedbackThreadsRead} onBulkDelete={deleteFeedbackThreads} refresh={refreshFeedback} statusFilter={feedbackStatus} categoryFilter={feedbackCategory} priorityFilter={feedbackPriority} sort={feedbackSort} onStatusFilterChange={changeFeedbackStatus} onCategoryFilterChange={changeFeedbackCategory} onPriorityFilterChange={changeFeedbackPriority} onSortChange={changeFeedbackSort} />;
     if (page === "users") return <UserManagementPage onShellRefresh={load} refreshToken={managementRefreshToken} />;
     if (page === "roles") return <RoleManagementPageV2 onShellRefresh={load} refreshToken={managementRefreshToken} />;
     if (page === "audit") return <AuditLogPageV2 />;
@@ -355,7 +632,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
     return <Overview snapshot={snapshot} />;
-  }, [changeFeedbackSearch, feedbackLoadError, feedbackOffset, feedbackSearch, feedbackSelectedId, feedbackThreads, feedbackTotal, load, managementRefreshToken, page, refreshFeedback, snapshot, snapshotError]);
+  }, [changeFeedbackCategory, changeFeedbackPriority, changeFeedbackSearch, changeFeedbackSort, changeFeedbackStatus, deleteFeedback, deleteFeedbackThreads, feedbackCategory, feedbackLoadError, feedbackLoading, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, markFeedbackRead, markFeedbackThreadsRead, load, managementRefreshToken, page, refreshFeedback, snapshot, snapshotError]);
   const accessDenied = !loading && visiblePages.size > 0 && !visiblePages.has(page);
   return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void refreshWorkspace(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
 }

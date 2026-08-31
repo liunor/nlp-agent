@@ -23,6 +23,7 @@ from server.agent.session_storage import (
     get_session_transcript_path,
 )
 from server.agent.node.session_storage import DATA_DIR
+from server.session.title_text import clean_title
 from server.infrastructure.mysql.models import (
     AgentCheckpointModel,
     ConversationMessageModel,
@@ -41,6 +42,48 @@ from server.infrastructure.mysql.models import (
     TurnEventModel,
     TurnModel,
 )
+
+# Short sidebar fallback title derived from a session's first user question.
+# The LLM summarizer writes the authoritative topic on the conversation row;
+# until that lands (or when it fails), the sidebar shows the original question
+# instead of the generic "new conversation" label.  This is derived from the
+# turn text already stored on the session, so nothing is persisted separately.
+def _first_question_title(input_text: str | None) -> str:
+    if not input_text:
+        return ""
+    return clean_title(input_text, ellipsis=True)
+
+
+async def _first_question_titles(
+    session: AsyncSession, conversation_ids: list[str]
+) -> dict[str, str]:
+    """Map conversation id -> derived first-question title (earliest turn).
+
+    Only the earliest turn per conversation is fetched (a window function),
+    rather than streaming every turn for every untitled session into Python.
+    """
+    row_number = func.row_number().over(
+        partition_by=TurnModel.conversation_id,
+        order_by=(TurnModel.created_at, TurnModel.id),
+    ).label("rn")
+    earliest = (
+        select(TurnModel.conversation_id, TurnModel.input_text, row_number)
+        .where(TurnModel.conversation_id.in_(conversation_ids))
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(earliest.c.conversation_id, earliest.c.input_text).where(
+                earliest.c.rn == 1
+            )
+        )
+    ).all()
+    titles: dict[str, str] = {}
+    for conversation_id, input_text in rows:
+        title = _first_question_title(input_text)
+        if title:
+            titles[conversation_id] = title
+    return titles
 
 
 class DatabaseSessionService:
@@ -72,6 +115,7 @@ class DatabaseSessionService:
             "user_id": row.owner_user_id,
             "workspace_id": row.workspace_id,
             "channel": row.channel,
+            "title_is_manual": bool(row.title_is_manual),
         }
 
     @staticmethod
@@ -166,8 +210,17 @@ class DatabaseSessionService:
                     )
                 ).all()
             )
+            empty_ids = [row.id for row in rows if not row.title]
+            first_titles = (
+                await _first_question_titles(session, empty_ids) if empty_ids else {}
+            )
+        items = []
+        for row in rows:
+            item = self._summary(row)
+            item["title"] = row.title or first_titles.get(row.id, "")
+            items.append(item)
         return {
-            "items": [self._summary(row) for row in rows],
+            "items": items,
             "total": total,
             "offset": page_offset,
             "limit": page_limit,
@@ -275,6 +328,27 @@ class DatabaseSessionService:
                 .values(last_message_at=func.utc_timestamp(6))
             )
         return context
+
+    async def rename(
+        self, principal: AuthenticatedPrincipal, session_id: str, title: str
+    ) -> dict[str, str]:
+        context = await self.resolve(principal, session_id)
+        authorization_service.require(
+            principal, Permission.AGENT_SESSION_UPDATE, workspace_id=context.workspace_id
+        )
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("title must not be empty")
+        async with self._sessions.begin() as session:
+            await session.execute(
+                update(ConversationModel)
+                .where(
+                    ConversationModel.id == session_id,
+                    ConversationModel.owner_user_id == principal.user_id,
+                )
+                .values(title=title[:255], title_is_manual=True)
+            )
+        return {"session_id": session_id, "title": title[:255]}
 
     async def delete(
         self, principal: AuthenticatedPrincipal, session_id: str
@@ -472,6 +546,25 @@ class LocalSessionService:
                 metadata["last_active"] = time.time()
                 await asyncio.to_thread(_save_sessions_index, index)
         return context
+
+    async def rename(
+        self, principal: AuthenticatedPrincipal, session_id: str, title: str
+    ) -> dict[str, str]:
+        context = await self.resolve(principal, session_id)
+        authorization_service.require(
+            principal, Permission.AGENT_SESSION_UPDATE, workspace_id=context.workspace_id
+        )
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("title must not be empty")
+        async with self._lock:
+            index = await asyncio.to_thread(_load_sessions_index)
+            metadata = index.get("sessions", {}).get(session_id)
+            if metadata is None:
+                raise FileNotFoundError(session_id)
+            metadata["title"] = title[:255]
+            await asyncio.to_thread(_save_sessions_index, index)
+        return {"session_id": session_id, "title": title[:255]}
 
     async def delete(
         self, principal: AuthenticatedPrincipal, session_id: str
