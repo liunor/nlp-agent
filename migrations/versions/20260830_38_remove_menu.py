@@ -7,7 +7,7 @@ only the unused management page and its menu entry are removed.
 from alembic import op
 import sqlalchemy as sa
 
-from server.rbac.catalog import menu_id
+from migrations.rbac_seed_data import menu_id
 
 
 revision = "20260830_38_remove_menu"

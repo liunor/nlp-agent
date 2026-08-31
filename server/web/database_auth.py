@@ -32,6 +32,7 @@ from server.infrastructure.mysql.models import (
     WsTicketModel,
 )
 from server.user.service import PasswordHasherSingleton
+from server.user.phone import InvalidPhoneNumberError, normalize_phone_number
 from server.sandbox.service import sandbox_lifecycle_service
 from server.web.auth import AuthenticationError, CsrfRejectedError, OriginRejectedError
 
@@ -43,22 +44,14 @@ def _utc_now() -> datetime:
 def _phone_variants(identifier: str) -> list[str]:
     """Plausible stored forms of *identifier* when it looks like a phone number.
 
-    Registration stores the phone exactly as submitted (after ``strip()``), so
-    we match the raw input, its bare digits, and the ``+86`` national-prefix
-    variants.  Returns ``[]`` for inputs that are not phone-shaped.
+    Registration stores one canonical E.164 value, so login uses the same
+    identity regardless of spacing, punctuation or domestic ``+86`` prefix.
+    Returns ``[]`` for inputs that are not phone-shaped.
     """
-    cleaned = identifier.strip()
-    digits = "".join(ch for ch in cleaned if ch.isdigit())
-    if not (7 <= len(digits) <= 15):
+    try:
+        return [normalize_phone_number(identifier)]
+    except InvalidPhoneNumberError:
         return []
-    variants = {cleaned, digits}
-    if len(digits) == 13 and digits.startswith("86"):
-        variants.add(digits[2:])
-        variants.add(f"+{digits}")
-    else:
-        variants.add(f"86{digits}")
-        variants.add(f"+86{digits}")
-    return sorted(variants)
 
 
 @dataclass(frozen=True)
@@ -193,12 +186,12 @@ class DatabaseSessionAuth:
             raise AuthenticationError("too many login attempts")
 
         async with factory.begin() as session:
-            # 主登录入口同时接受用户名与手机号：用户名走 ``username_lower``
-            # 精确匹配，手机号按常见存储形态（含 +86 变体）匹配。
+            # 主登录入口同时接受用户名与规范化手机号。手机号命中唯一的
+            # ``phone_number_normalized`` 索引，避免多种原始格式产生歧义。
             identity_criteria = UserModel.username_lower == normalized
             phone_variants = _phone_variants(username)
             if phone_variants:
-                identity_criteria = identity_criteria | UserModel.phone_number.in_(phone_variants)
+                identity_criteria = identity_criteria | UserModel.phone_number_normalized.in_(phone_variants)
             user = await session.scalar(
                 select(UserModel)
                 .where(

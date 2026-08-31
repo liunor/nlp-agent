@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.infrastructure.mysql.models import AuthCodeModel
+from server.infrastructure.mysql.models import AuthCodeModel, SmsSendAuditModel
 
 # ---------------------------------------------------------------------------
 #  Policy constants
@@ -111,18 +111,17 @@ async def sms_send_allowed(
     cooldown_floor = now - timedelta(seconds=SMS_RESEND_COOLDOWN_S)
 
     last_send_at = await session.scalar(
-        select(func.max(AuthCodeModel.created_at)).where(
-            AuthCodeModel.kind == "sms", AuthCodeModel.subject == phone
+        select(func.max(SmsSendAuditModel.created_at)).where(
+            SmsSendAuditModel.phone_number == phone
         )
     )
     if last_send_at is not None and last_send_at > cooldown_floor:
         return False, "sms_send_too_frequent"
 
     phone_count = await session.scalar(
-        select(func.count(AuthCodeModel.id)).where(
-            AuthCodeModel.kind == "sms",
-            AuthCodeModel.subject == phone,
-            AuthCodeModel.created_at > hour_ago,
+        select(func.count(SmsSendAuditModel.id)).where(
+            SmsSendAuditModel.phone_number == phone,
+            SmsSendAuditModel.created_at > hour_ago,
         )
     )
     if int(phone_count or 0) >= SMS_MAX_PER_PHONE_HOUR:
@@ -130,10 +129,9 @@ async def sms_send_allowed(
 
     if client_ip:
         ip_count = await session.scalar(
-            select(func.count(AuthCodeModel.id)).where(
-                AuthCodeModel.kind == "sms",
-                AuthCodeModel.client_ip == client_ip,
-                AuthCodeModel.created_at > hour_ago,
+            select(func.count(SmsSendAuditModel.id)).where(
+                SmsSendAuditModel.client_ip == client_ip,
+                SmsSendAuditModel.created_at > hour_ago,
             )
         )
         if int(ip_count or 0) >= SMS_MAX_PER_IP_HOUR:
@@ -145,12 +143,29 @@ async def sms_send_allowed(
 async def purge_expired(session: AsyncSession) -> None:
     """Best-effort cleanup of stale rows (called opportunistically).
 
-    Rows are kept for a full hour after creation so the hourly send-rate
-    counters (per phone / per IP) stay accurate; only rows that are both
-    expired and older than the rate-limit window are removed.
+    Verification rows and SMS audit rows are kept for a full hour after
+    creation so the hourly send-rate counters stay accurate.
     """
     cutoff = _utc_now() - timedelta(hours=1)
-    await session.execute(
-        delete(AuthCodeModel).where(AuthCodeModel.created_at < cutoff)
-    )
+    await session.execute(delete(AuthCodeModel).where(AuthCodeModel.created_at < cutoff))
+    await session.execute(delete(SmsSendAuditModel).where(SmsSendAuditModel.created_at < cutoff))
     await session.flush()
+
+
+async def record_sms_send(
+    session: AsyncSession,
+    *,
+    phone: str,
+    client_ip: str | None,
+    outcome: str = "sent",
+) -> str:
+    """Record an SMS attempt independently from the consumable code row."""
+    row = SmsSendAuditModel(
+        id=str(uuid.uuid4()),
+        phone_number=phone,
+        client_ip=client_ip,
+        outcome=outcome,
+    )
+    session.add(row)
+    await session.flush()
+    return row.id

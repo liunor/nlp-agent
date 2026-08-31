@@ -28,6 +28,7 @@ from server.infrastructure.mysql.models import (
 from server.auth import code_store
 
 from .schemas import UserCreate, UserRegister, UserUpdate
+from .phone import normalize_phone_number
 
 
 class UserServiceError(Exception):
@@ -485,8 +486,8 @@ class UserService:
         normalization, account provisioning, and default-role policy live
         here.
         """
-        phone = data.phone_number.strip()
-        username = "".join(ch for ch in phone if ch.isdigit()) or phone
+        phone = normalize_phone_number(data.phone_number)
+        username = phone[1:]
 
         # Consume both one-time credentials in the same request transaction.
         if not await code_store.consume_code(
@@ -501,11 +502,11 @@ class UserService:
         ):
             raise InvalidSmsCodeError("Invalid or expired verification code")
 
-        # Phone-format variants map to one username, while the phone column
-        # check preserves the exact value for compatibility with existing rows.
+        # The normalized phone column is the durable identity key. The numeric
+        # username keeps compatibility with the original phone-registration API.
         existing = await self.session.scalar(
             select(UserModel.id).where(
-                (UserModel.phone_number == phone)
+                (UserModel.phone_number_normalized == phone)
                 | (UserModel.username_lower == username.casefold())
             )
         )
@@ -520,6 +521,7 @@ class UserService:
         )
         user = await self.create_user(user_create)
         user.phone_number = phone
+        user.phone_number_normalized = phone
         user.registration_source = "phone"
         await self.session.flush()
         await self.session.refresh(user)

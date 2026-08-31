@@ -120,7 +120,8 @@ from server.user.service import (
     UserService,
     generate_sms_code,
 )
-from server.user.tencent_sms import create_tencent_sms_provider_from_env
+from server.user.tencent_sms import SmsConfigurationError, create_tencent_sms_provider_from_env
+from server.user.phone import InvalidPhoneNumberError, normalize_phone_number
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
@@ -685,10 +686,10 @@ def create_app(
 
         Server-side controls (the frontend 60s countdown is UX only):
         - the CAPTCHA answer is consumed single-use from ``nlp_auth_codes``;
-        - per-phone cooldown / per-phone hourly / per-IP hourly send limits;
-        - real delivery via Tencent Cloud SMS when ``TENCENT_SMS_*`` env vars
-          are configured, otherwise the code is printed to the server console
-          (development fallback);
+          - per-phone cooldown / per-phone hourly / per-IP hourly send limits;
+          - real delivery via Tencent Cloud SMS when ``TENCENT_SMS_*`` env vars
+            are configured; missing production configuration returns 503 and
+            never prints the verification code;
         - the code is stored hashed with a hard 120s expiry enforced at
           consumption time.
         """
@@ -700,7 +701,10 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired CAPTCHA",
             )
-        phone = body.phone_number.strip()
+        try:
+            phone = normalize_phone_number(body.phone_number)
+        except InvalidPhoneNumberError as error:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
         client_ip = request.client.host if request.client else None
         allowed, reason = await code_store.sms_send_allowed(
             db, phone=phone, client_ip=client_ip
@@ -710,16 +714,21 @@ def create_app(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=reason
             )
         code = generate_sms_code()
-        provider = create_tencent_sms_provider_from_env()
-        if provider is not None:
-            if not await provider.send_verification_code(phone, code):
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="SMS gateway failed to deliver the code",
-                )
-        else:
-            # Development fallback: no Tencent Cloud credentials configured.
-            print(f"[SMS] Verification code for {phone}: {code}")
+        try:
+            provider = create_tencent_sms_provider_from_env()
+            if provider is not None:
+                if not await provider.send_verification_code(phone, code):
+                    await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="failed")
+                    return JSONResponse(
+                        {"detail": "SMS gateway failed to deliver the code"},
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                    )
+            else:
+                # Development-only fallback. Production never logs verification codes.
+                print(f"[SMS] Verification code for {phone}: {code}")
+            await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="sent")
+        except SmsConfigurationError as error:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
         await code_store.put_code(
             db,
             kind="sms",
@@ -825,6 +834,8 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(error)
             ) from error
+        except InvalidPhoneNumberError as error:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
         return {
             "message": "User registered successfully",
             "user_id": user.id,

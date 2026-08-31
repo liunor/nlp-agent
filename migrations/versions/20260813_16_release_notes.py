@@ -9,8 +9,8 @@ from alembic import context, op
 import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
-from core.rbac import Permission
-from server.rbac.catalog import permission_id, permission_row, permission_scope, role_id
+from migrations.rbac_seed_data import Permission
+from migrations.rbac_seed_data import permission_id, permission_row, permission_scope, role_id
 
 
 revision = "20260813_16"

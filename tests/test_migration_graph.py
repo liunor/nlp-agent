@@ -11,7 +11,11 @@ from alembic.script import ScriptDirectory
 def test_migration_graph_has_one_head_after_knowledge_book_is_added() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260830_40_role_descriptions"]
+    assert scripts.get_heads() == ["20260831_41_phone_sms_hardening"]
+    assert (
+        scripts.get_revision("20260831_41_phone_sms_hardening").down_revision
+        == "20260830_40_role_descriptions"
+    )
     assert scripts.get_revision("20260830_40_role_descriptions").down_revision == "20260830_39_fix_perm_labels"
     assert scripts.get_revision("20260829_36_usage_indexes").down_revision == "20260829_35_user_mgmt_menus"
     assert scripts.get_revision("20260829_35_user_mgmt_menus").down_revision == "20260828_34_auth_codes"

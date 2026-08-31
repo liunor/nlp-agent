@@ -129,7 +129,14 @@ class BackendGateway:
             raise RuntimeError("runtime persistence must be mysql; SQLite is migration-CLI only")
         self.sessions = sessions
         self.events = GatewayEventBroker()
-        self._remote_execution = dispatcher is not None or gateway_config.get("transport") == "redis"
+        # Explicit repositories and dispatchers are used by tests and local
+        # integrations; only the fully automatic runtime path should create
+        # the production Redis/MySQL dispatcher.
+        self._remote_execution = (
+            dispatcher is None
+            and repository is None
+            and gateway_config.get("transport") == "redis"
+        )
         self._event_bridge = None
         if dispatcher is None and self._remote_execution:
             redis_config = RedisTransportConfig(

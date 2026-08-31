@@ -3,8 +3,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-from core.rbac import Permission
-from server.rbac.catalog import permission_id, role_id
+from migrations.rbac_seed_data import Permission
+from migrations.rbac_seed_data import permission_id, role_id
 
 
 revision = "20260820_24"

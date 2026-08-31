@@ -7,8 +7,8 @@ backfills the display name and description for rows created by older seeds.
 from alembic import op
 import sqlalchemy as sa
 
-from core.rbac import Permission
-from server.rbac.catalog import PERMISSION_LABELS
+from migrations.rbac_seed_data import Permission
+from migrations.rbac_seed_data import PERMISSION_LABELS
 
 
 revision = "20260830_37_rbac_fixed_roles"

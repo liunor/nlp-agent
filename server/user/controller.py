@@ -172,7 +172,7 @@ async def update_current_user(
     service = UserService(db)
     try:
         user = await service.update_user(principal.user_id, data)
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
     except UserAlreadyExistsError as e:
@@ -250,13 +250,32 @@ async def update_user(
         # Apply admin updates
         if data.display_name is not None:
             user.display_name = data.display_name
+        previous_status = user.status
         if data.status is not None:
             await service.update_user_status(
                 user_id, data.status, actor_user_id=principal.user_id
             )
 
+            if data.status != previous_status:
+                reason_code = {
+                    "disabled": "user_account_disabled",
+                    "active": "user_account_enabled",
+                    "locked": "user_account_locked",
+                }[data.status]
+                await rbac_service.audit(
+                    db,
+                    actor_user_id=principal.user_id,
+                    target_user_id=user_id,
+                    decision="allow",
+                    reason_code=reason_code,
+                    permission_code="system:user:manage",
+                    resource_type="user",
+                    resource_id=user_id,
+                    detail={"before": previous_status, "after": data.status},
+                )
+
         await db.flush()
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
 

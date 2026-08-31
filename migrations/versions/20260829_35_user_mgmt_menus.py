@@ -12,8 +12,8 @@ user-management entries and the developer workspace hides those pages.
 from alembic import context, op
 import sqlalchemy as sa
 
-from core.rbac import Permission
-from server.rbac.catalog import menu_id, menu_row, role_id
+from migrations.rbac_seed_data import Permission
+from migrations.rbac_seed_data import menu_id, menu_row, role_id
 
 
 revision = "20260829_35_user_mgmt_menus"

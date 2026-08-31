@@ -62,7 +62,7 @@ export function RoleManagementPageV2({ onShellRefresh, refreshToken = 0 }: RoleM
       return;
     }
     setGrants((current) => [...current, code]);
-    setScopes((previous) => ({ ...previous, [code]: previous[code]?.length ? previous[code] : [code.startsWith("system:") ? "system" : "own"] }));
+    setScopes((previous) => ({ ...previous, [code]: previous[code]?.length ? previous[code] : [code === "learning:feedback:read" || code.startsWith("system:") ? "system" : "own"] }));
   };
 
   const updateScope = (code: string, scope: string) => {

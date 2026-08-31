@@ -3,7 +3,7 @@
 from alembic import op
 import sqlalchemy as sa
 
-from server.rbac.catalog import ROLE_DESCRIPTIONS
+from migrations.rbac_seed_data import ROLE_DESCRIPTIONS
 
 
 revision = "20260830_40_role_descriptions"
