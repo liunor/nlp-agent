@@ -1,6 +1,7 @@
 import pytest
+from pydantic import ValidationError
 
-from server.teacher.models import UpdateTeacherAnalysisAnnotations
+from server.teacher.models import TeacherAnalysisAnnotations, UpdateTeacherAnalysisAnnotations
 from server.teacher.service import TeacherService
 
 
@@ -97,3 +98,21 @@ async def test_update_does_not_clobber_unrelated_settings():
 
     assert gateway.settings["teacher_goals:workspace-1"]["course_title"] == "NLP 基础"
     assert gateway.settings["teacher_analysis_annotations:workspace-1"]["focused"] == ["kp-1"]
+
+
+def test_analysis_annotations_reject_overlong_note():
+    with pytest.raises(ValidationError):
+        UpdateTeacherAnalysisAnnotations(focused=[], ignored=[], notes={"kp-1": "x" * 2001})
+
+
+def test_analysis_annotations_accept_note_at_limit():
+    body = UpdateTeacherAnalysisAnnotations(focused=[], ignored=[], notes={"kp-1": "x" * 2000})
+    assert body.notes["kp-1"] == "x" * 2000
+
+
+def test_analysis_annotations_reject_too_many_notes():
+    with pytest.raises(ValidationError):
+        TeacherAnalysisAnnotations(
+            workspace_id="workspace-1",
+            notes={f"kp-{index}": "跟进" for index in range(201)},
+        )

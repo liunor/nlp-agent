@@ -109,6 +109,13 @@ export interface TeacherAnalysisAnnotations {
   notes: Record<string, string>;
 }
 
+export interface TeacherDataCompleteness {
+  complete: boolean;
+  evidence_truncated: boolean;
+  criterion_truncated: boolean;
+  message: string | null;
+}
+
 export type AvailabilityStatus = "enabled" | "disabled";
 export const DEFAULT_QUESTION_TYPES = ["简答", "选择题", "判断题", "填空题", "编程题", "代码阅读题", "计算题", "论述题"] as const;
 export type BlueprintStatus = "draft" | AvailabilityStatus;
@@ -366,6 +373,8 @@ export interface TeacherOverview {
   weak_topics: WeakTopic[];
   knowledge_point_stats: KnowledgePointStat[];
   learning_analysis?: TeacherLearningAnalysis;
+  truncated?: boolean;
+  data_completeness?: TeacherDataCompleteness;
 }
 
 export interface SessionSummary {

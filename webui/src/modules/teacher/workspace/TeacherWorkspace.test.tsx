@@ -471,8 +471,8 @@ describe("TeacherWorkspace catalog CRUD", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看建议 注意力" }));
     expect(screen.getByText("补充概念示例和变式练习")).toBeVisible();
     expect(screen.getByText("定义域判断 · 错误率 75%")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "标记已关注 注意力" }));
-    expect(screen.getByRole("button", { name: "已标记关注 注意力" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "标记关注 注意力" }));
+    expect(screen.getByRole("button", { name: "取消关注 注意力" })).toBeVisible();
     await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: ["attention"], ignored: [], notes: {} }));
     fireEvent.click(screen.getByRole("button", { name: "添加备注 注意力" }));
     expect(screen.getByRole("textbox", { name: "注意力备注" })).toBeVisible();
@@ -491,5 +491,76 @@ describe("TeacherWorkspace catalog CRUD", () => {
     fireEvent.click(screen.getByRole("button", { name: "学生问题" }));
 
     expect(await screen.findByText("学生问题全景")).toBeVisible();
+  });
+});
+
+describe("LearningAnalysisPage teacher annotations", () => {
+  beforeEach(() => {
+    updateTeacherAnalysisAnnotationsMock.mockReset();
+    updateTeacherAnalysisAnnotationsMock.mockResolvedValue({ annotations: { workspace_id: "default", focused: [], ignored: [], notes: {} }, revision: 1, updated_at: "2026-08-31T00:00:00Z" });
+  });
+
+  it("toggles follow on and off for a diagnosis", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "标记关注 注意力" }));
+    expect(await screen.findByRole("button", { name: "取消关注 注意力" })).toBeVisible();
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: ["attention"], ignored: [], notes: {} }));
+
+    fireEvent.click(screen.getByRole("button", { name: "取消关注 注意力" }));
+    expect(await screen.findByRole("button", { name: "标记关注 注意力" })).toBeVisible();
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: [], ignored: [], notes: {} }));
+  });
+
+  it("ignores a diagnosis and restores it from the ignored list", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "忽略 注意力" }));
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: [], ignored: ["attention"], notes: {} }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "展开 1 个已忽略知识点" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复" }));
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: [], ignored: [], notes: {} }));
+    expect(screen.queryByRole("button", { name: "展开 1 个已忽略知识点" })).not.toBeInTheDocument();
+  });
+
+  it("shows a warning banner when the analysis data was truncated", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    data.truncated = true;
+    data.data_completeness = { complete: false, evidence_truncated: true, criterion_truncated: false, message: "统计达到数据读取上限" };
+    render(<LearningAnalysisPage data={data} />);
+
+    expect(await screen.findByText("分析数据可能不完整")).toBeVisible();
+    expect(screen.getByText("统计达到数据读取上限")).toBeVisible();
+  });
+
+  it("surfaces an alert when annotations fail to save", async () => {
+    updateTeacherAnalysisAnnotationsMock.mockRejectedValue(new Error("网络错误"));
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "标记关注 注意力" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("保存失败");
+    expect(alert).toHaveTextContent("网络错误");
+  });
+
+  it("caps note entry at 2000 characters and shows a counter", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加备注 注意力" }));
+    const textarea = screen.getByRole("textbox", { name: "注意力备注" }) as HTMLTextAreaElement;
+    expect(textarea).toHaveAttribute("maxlength", "2000");
+    expect(screen.getByText("0/2000")).toBeVisible();
+    fireEvent.change(textarea, { target: { value: "跟进课后练习" } });
+    expect(screen.getByText("6/2000")).toBeVisible();
   });
 });

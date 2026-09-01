@@ -710,6 +710,17 @@ class TeacherService:
             "monthly_statistics": monthly_statistics,
             "learning_analysis": learning_analysis,
             "truncated": evidence_truncated or criterion_truncated,
+            "data_completeness": {
+                "complete": not (evidence_truncated or criterion_truncated),
+                "evidence_truncated": evidence_truncated,
+                "criterion_truncated": criterion_truncated,
+                "message": (
+                    "统计达到数据读取上限，更早的历史记录未能全部纳入分析；"
+                    "当前周期的数据完整，但上期对比与历史趋势可能不完整。"
+                    if (evidence_truncated or criterion_truncated)
+                    else None
+                ),
+            },
             **result,
         }
 

@@ -131,6 +131,34 @@ def test_analytics_surfaces_truncated_read_model(monkeypatch):
     assert result["truncated"] is True
 
 
+def test_analytics_reports_structured_data_completeness(monkeypatch):
+    fake = FakeRepository(
+        evidence_rows=[_evidence("2026-08-10T10:00:00", 90, True)],
+        criterion_rows=[],
+        truncated=True,
+    )
+    result = _run_analytics(fake, monkeypatch)
+
+    completeness = result["data_completeness"]
+    assert completeness["complete"] is False
+    assert completeness["evidence_truncated"] is True
+    assert completeness["message"]
+
+
+def test_analytics_reports_complete_data_without_message(monkeypatch):
+    fake = FakeRepository(
+        evidence_rows=[_evidence("2026-08-10T10:00:00", 90, True)],
+        criterion_rows=[],
+        truncated=False,
+    )
+    result = _run_analytics(fake, monkeypatch)
+
+    completeness = result["data_completeness"]
+    assert completeness["complete"] is True
+    assert completeness["evidence_truncated"] is False
+    assert completeness["message"] is None
+
+
 def test_filter_period_rows_keeps_window_rows_and_drops_others():
     rows = [
         {"completed_at": "2026-08-10T00:00:00"},
