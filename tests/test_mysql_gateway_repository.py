@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch, sentinel
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from core.learning import ExerciseState, LearningContext, LearningProgress
 from gateway.contracts import TurnStatus
@@ -193,3 +194,58 @@ def test_create_turn_ensures_the_conversation_before_inserting_the_turn() -> Non
     assert "INSERT INTO nlp_turns" in str(connection.execute.call_args.args[0])
     assert record is sentinel.record
     assert duplicate is False
+
+
+def test_create_turn_retries_the_complete_mysql_transaction_after_deadlock() -> None:
+    class Transaction:
+        def __init__(self, attempt: int, connections: list[MagicMock]) -> None:
+            self.attempt = attempt
+            self.connections = connections
+
+        def __enter__(self):
+            connection = MagicMock(name=f"connection-{self.attempt}")
+            self.connections.append(connection)
+            return connection
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            if self.attempt == 1:
+                raise OperationalError(
+                    "commit",
+                    {},
+                    RuntimeError(1213, "Deadlock found when trying to get lock"),
+                )
+            return False
+
+    class Engine:
+        def __init__(self) -> None:
+            self.begin_count = 0
+            self.connections: list[MagicMock] = []
+
+        def begin(self):
+            self.begin_count += 1
+            return Transaction(self.begin_count, self.connections)
+
+    repository = object.__new__(MySQLGatewayRepository)
+    engine = Engine()
+    repository._engine = engine
+    repository.quota_service = None
+
+    with (
+        patch.object(MySQLGatewayRepository, "_ensure_conversation"),
+        patch.object(MySQLGatewayRepository, "_row", return_value={"id": "turn-1"}),
+        patch.object(MySQLGatewayRepository, "_record", return_value=sentinel.record),
+    ):
+        record, duplicate = repository.create_turn(
+            turn_id="turn-1",
+            session_id="session-retry",
+            workspace_id="default",
+            user_id="user-1",
+            input_text="hello",
+            idempotency_key=None,
+        )
+
+    assert record is sentinel.record
+    assert duplicate is False
+    assert engine.begin_count == 2
+    assert len(engine.connections) == 2
+    assert engine.connections[0] is not engine.connections[1]

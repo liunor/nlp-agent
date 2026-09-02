@@ -22,18 +22,36 @@ class UsageEventConflictError(RuntimeError):
 class ModelUsageReporterSlot:
     """A mutable holder for the active ModelUsageReporter instance."""
 
-    def __init__(self, reporter: ModelUsageReporter | None = None) -> None:
+    def __init__(
+        self,
+        reporter: ModelUsageReporter | None = None,
+        *,
+        required: bool = False,
+    ) -> None:
         self.reporter = reporter
+        self.required = required
 
     def configure(self, reporter: ModelUsageReporter | None) -> None:
         self.reporter = reporter
 
+    def require(self, required: bool = True) -> None:
+        self.required = required
 
-def configure_global_model_usage_reporter(reporter: ModelUsageReporter | None) -> None:
+
+def configure_global_model_usage_reporter(
+    reporter: ModelUsageReporter | None,
+    *,
+    required: bool | None = None,
+) -> None:
     """Configure the active ModelUsageReporter on the global model factory."""
     from core.model_runtime.factory import get_global_model_factory
 
-    get_global_model_factory().reporter_slot.configure(reporter)
+    slot = get_global_model_factory().reporter_slot
+    slot.configure(reporter)
+    if required is not None:
+        slot.require(required)
+    elif reporter is None:
+        slot.require(False)
 
 
 class InMemoryModelUsageReporter:

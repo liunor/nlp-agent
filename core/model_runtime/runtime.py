@@ -32,6 +32,7 @@ from core.model_runtime.usage import (
     InvocationStatus,
     ModelIdentity,
     ModelInvocation,
+    UsageReporterUnavailableError,
     resolve_usage_attribution,
 )
 from core.observability.context import current_telemetry_context
@@ -102,6 +103,45 @@ class ErrorDecision:
     retryable: bool
     kind: str
     retry_after_s: float | None = None
+
+
+def _merge_delta_usage(
+    current: CanonicalTokenUsage | None,
+    incoming: CanonicalTokenUsage,
+) -> CanonicalTokenUsage:
+    """Add provider-reported per-chunk deltas without double-counting them."""
+    if current is None or current.source == "none":
+        return incoming.model_copy(update={"semantics": "delta"})
+    return CanonicalTokenUsage(
+        input_tokens=current.input_tokens + incoming.input_tokens,
+        cached_input_tokens=current.cached_input_tokens + incoming.cached_input_tokens,
+        cache_write_input_tokens=current.cache_write_input_tokens
+        + incoming.cache_write_input_tokens,
+        output_tokens=current.output_tokens + incoming.output_tokens,
+        reasoning_output_tokens=current.reasoning_output_tokens
+        + incoming.reasoning_output_tokens,
+        total_tokens=current.total_tokens + incoming.total_tokens,
+        source="provider",
+        semantics="delta",
+        provider_response_id=incoming.provider_response_id
+        or current.provider_response_id,
+    )
+
+
+def _finalize_stream_usage(
+    latest: CanonicalTokenUsage,
+    delta: CanonicalTokenUsage | None,
+    provider_response_id: str | None,
+    *,
+    complete: bool,
+) -> CanonicalTokenUsage:
+    usage = delta if delta is not None else latest
+    updates: dict[str, Any] = {
+        "semantics": "final" if complete else "partial",
+    }
+    if provider_response_id and usage.provider_response_id is None:
+        updates["provider_response_id"] = provider_response_id
+    return usage.model_copy(update=updates)
 
 
 def classify_model_error(error: BaseException) -> ErrorDecision:
@@ -288,6 +328,12 @@ class ResilientChatModel:
         if invocation is None:
             return
         if self.reporter_slot is None or self.reporter_slot.reporter is None:
+            if self.reporter_slot is not None and getattr(
+                self.reporter_slot, "required", False
+            ):
+                raise UsageReporterUnavailableError(
+                    "This model process requires a configured usage Reporter"
+                )
             return
         outcome = InvocationOutcome(
             status=status,
@@ -316,6 +362,14 @@ class ResilientChatModel:
             self.reporter_slot is not None
             and self.reporter_slot.reporter is not None
         )
+        if (
+            self.reporter_slot is not None
+            and getattr(self.reporter_slot, "required", False)
+            and not has_reporter
+        ):
+            raise UsageReporterUnavailableError(
+                "This model process requires a configured usage Reporter"
+            )
         if has_reporter:
             attribution = resolve_usage_attribution()
         else:
@@ -583,6 +637,7 @@ class ResilientChatModel:
                 latest_usage: CanonicalTokenUsage = CanonicalTokenUsage(
                     source="none"
                 )
+                delta_usage: CanonicalTokenUsage | None = None
                 finish_reason: str | None = None
                 provider_response_id: str | None = None
                 try:
@@ -623,7 +678,12 @@ class ResilientChatModel:
                             )
                             chunk_canon = response_canonical_usage(normalized)
                             if chunk_canon.source != "none":
-                                latest_usage = chunk_canon
+                                if chunk_canon.semantics == "delta":
+                                    delta_usage = _merge_delta_usage(
+                                        delta_usage, chunk_canon
+                                    )
+                                else:
+                                    latest_usage = chunk_canon
                             resp_id = extract_provider_response_id(normalized)
                             if resp_id:
                                 provider_response_id = resp_id
@@ -652,16 +712,15 @@ class ResilientChatModel:
                             raise EmptyModelResponseError(
                                 "Provider stream completed without chunks"
                             )
-                    if (
-                        provider_response_id
-                        and latest_usage.provider_response_id is None
-                    ):
-                        latest_usage = latest_usage.model_copy(
-                            update={"provider_response_id": provider_response_id}
-                        )
+                    final_usage = _finalize_stream_usage(
+                        latest_usage,
+                        delta_usage,
+                        provider_response_id,
+                        complete=True,
+                    )
                     await self._report_attempt_guarded(
                         invocation=invocation,
-                        usage=latest_usage,
+                        usage=final_usage,
                         status="succeeded",
                         finish_reason=finish_reason,
                     )
@@ -670,16 +729,15 @@ class ResilientChatModel:
                 except _ReporterFailure as failure:
                     raise failure.cause
                 except asyncio.CancelledError:
-                    if (
-                        provider_response_id
-                        and latest_usage.provider_response_id is None
-                    ):
-                        latest_usage = latest_usage.model_copy(
-                            update={"provider_response_id": provider_response_id}
-                        )
+                    partial_usage = _finalize_stream_usage(
+                        latest_usage,
+                        delta_usage,
+                        provider_response_id,
+                        complete=False,
+                    )
                     await self._report_attempt(
                         invocation=invocation,
-                        usage=latest_usage,
+                        usage=partial_usage,
                         status="cancelled",
                         finish_reason=finish_reason,
                     )
@@ -688,15 +746,21 @@ class ResilientChatModel:
                     last_error = error
                     decision = classify_model_error(error)
                     candidate.circuit.fail(candidate.preset.circuit_breaker)
-                    if (
-                        provider_response_id
-                        and latest_usage.provider_response_id is None
-                    ):
-                        latest_usage = latest_usage.model_copy(
-                            update={"provider_response_id": provider_response_id}
-                        )
-                    if latest_usage.source == "none":
-                        latest_usage = error_canonical_usage(error)
+                    partial_usage = _finalize_stream_usage(
+                        latest_usage,
+                        delta_usage,
+                        provider_response_id,
+                        complete=False,
+                    )
+                    if partial_usage.source == "none":
+                        partial_usage = error_canonical_usage(error)
+                        if (
+                            provider_response_id
+                            and partial_usage.provider_response_id is None
+                        ):
+                            partial_usage = partial_usage.model_copy(
+                                update={"provider_response_id": provider_response_id}
+                            )
                     if visible:
                         global_telemetry.event(
                             "model.stream_interrupted",
@@ -709,7 +773,7 @@ class ResilientChatModel:
                         )
                         await self._report_attempt(
                             invocation=invocation,
-                            usage=latest_usage,
+                            usage=partial_usage,
                             status="interrupted",
                             finish_reason=finish_reason,
                             error_kind=decision.kind,
@@ -721,7 +785,7 @@ class ResilientChatModel:
                         ) from error
                     await self._report_attempt(
                         invocation=invocation,
-                        usage=latest_usage,
+                        usage=partial_usage,
                         status="failed",
                         finish_reason=finish_reason,
                         error_kind=decision.kind,

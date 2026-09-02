@@ -5,8 +5,9 @@ import { loadFeedback } from "@/shared/utils/feedback";
 import { APP_VERSION } from "@/shared/version";
 import type { UserSettings } from "@/shared/types";
 
-const { getFeedbackDailyStateMock, getOwnFeedbackMock, listPublishedReleaseNotesMock, markOwnFeedbackReadMock, submitFeedbackMock } = vi.hoisted(() => ({ getFeedbackDailyStateMock: vi.fn(), getOwnFeedbackMock: vi.fn(), listPublishedReleaseNotesMock: vi.fn(), markOwnFeedbackReadMock: vi.fn(), submitFeedbackMock: vi.fn() }));
-vi.mock("@/platform/http/api", () => ({ api: { getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock, listPublishedReleaseNotes: listPublishedReleaseNotesMock, markOwnFeedbackRead: markOwnFeedbackReadMock, submitFeedback: submitFeedbackMock } }));
+const { getFeedbackDailyStateMock, getOwnFeedbackMock, getQuotaMock, getUsageMock, listPublishedReleaseNotesMock, markOwnFeedbackReadMock, submitFeedbackMock } = vi.hoisted(() => ({ getFeedbackDailyStateMock: vi.fn(), getOwnFeedbackMock: vi.fn(), getQuotaMock: vi.fn(), getUsageMock: vi.fn(), listPublishedReleaseNotesMock: vi.fn(), markOwnFeedbackReadMock: vi.fn(), submitFeedbackMock: vi.fn() }));
+vi.mock("@/platform/http/api", () => ({ api: { getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock, getQuota: getQuotaMock, getUsage: getUsageMock, listPublishedReleaseNotes: listPublishedReleaseNotesMock, markOwnFeedbackRead: markOwnFeedbackReadMock, submitFeedback: submitFeedbackMock } }));
+vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() {} close() {} } }));
 
 const settings: UserSettings = {
   theme: "system",
@@ -45,6 +46,10 @@ describe("SettingsDialog", () => {
     markOwnFeedbackReadMock.mockResolvedValue({ ok: true, updated: true });
     submitFeedbackMock.mockReset();
     submitFeedbackMock.mockResolvedValue({ thread_id: "thread-1", remaining: 2, daily_limit: 3 });
+    getQuotaMock.mockReset();
+    getQuotaMock.mockResolvedValue({ quota: { user_id: "user-1", workspace_id: "workspace-a", buckets: [] }, policy: null });
+    getUsageMock.mockReset();
+    getUsageMock.mockResolvedValue({ events: 0, priced_credits_micro: 0, unpriced_events: 0, credits_complete: true, tokens: {}, breakdown: [] });
   });
 
   it("renders the current version from the build-injected constant", () => {
@@ -200,6 +205,37 @@ describe("SettingsDialog", () => {
     expect(screen.getByRole("button", { name: /进入教师模式/ })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "数据与隐私" }));
     expect(screen.getByRole("button", { name: /开发者工作台/ })).toBeVisible();
+  });
+
+  it("shows personal quota inside settings for students", async () => {
+    render(<SettingsDialog {...baseProps} roles={["student"]} userId="user-1" workspaceIds={["workspace-a", "workspace-b"]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "额度与用量" }));
+
+    expect(await screen.findByText("Token 活动")).toBeVisible();
+    expect(screen.queryByText("查看当前账号在不同工作空间中的额度、用量与账务状态。")).not.toBeInTheDocument();
+    await waitFor(() => expect(getQuotaMock).toHaveBeenCalledWith("workspace-a"));
+    expect(getUsageMock).toHaveBeenCalledWith(7, "workspace-a", "day");
+    expect(getUsageMock).toHaveBeenCalledWith(182, "workspace-a", "day");
+    expect(getUsageMock).toHaveBeenCalledWith(182, "workspace-a", "week");
+  });
+
+  it("shows personal quota inside settings for developers", () => {
+    render(<SettingsDialog {...baseProps} roles={["developer"]} />);
+
+    expect(screen.getByRole("button", { name: "额度与用量" })).toBeVisible();
+  });
+
+  it("shows personal quota inside settings for guests", () => {
+    render(<SettingsDialog {...baseProps} roles={["guest"]} />);
+
+    expect(screen.getByRole("button", { name: "额度与用量" })).toBeVisible();
+  });
+
+  it("treats an empty compatibility permission list as the built-in role package", () => {
+    render(<SettingsDialog {...baseProps} roles={["student"]} permissions={[]} />);
+
+    expect(screen.getByRole("button", { name: "额度与用量" })).toBeVisible();
   });
   it("updates the answer content font size", () => {
     const onChange = vi.fn();

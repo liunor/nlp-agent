@@ -15,6 +15,8 @@ from core.rbac import Permission
 from gateway.dispatch import TurnTask
 from gateway.engine import AgentEngine
 from gateway.state import TurnExecutionState
+from core.model_runtime.usage import UsageAttributionContext, bind_usage_attribution
+from server.quota.contracts import FinishTurn
 
 
 EventSink = Callable[[str, str, GatewayEventType, dict], Awaitable[None]]
@@ -56,33 +58,89 @@ class InProcessTurnExecutor:
     async def run(self, task: TurnTask, execution_context: Any | None = None) -> None:
         await asyncio.to_thread(self._repository.update_turn, task.turn_id, TurnStatus.RUNNING)
         await self._emit(task.turn_id, task.context.session_id, GatewayEventType.TURN_STARTED, {"status": TurnStatus.RUNNING.value})
+        quota_heartbeat_task: asyncio.Task[None] | None = None
         try:
+            service = getattr(self._repository, "quota_service", None)
+            if service is not None and task.reservation_id is not None:
+                started = await asyncio.to_thread(
+                    service.begin_reservation,
+                    task.reservation_id,
+                )
+                if not started:
+                    raise RuntimeError("quota reservation is no longer active")
+                quota_heartbeat_task = asyncio.create_task(
+                    self._quota_heartbeat(task.reservation_id, service),
+                    name=f"quota-lease:{task.turn_id}",
+                )
             # A fenced Worker passes its freshly-resolved authorization context.
             # Re-check immediately before the model/tool execution boundary.
             if execution_context is not None and hasattr(execution_context, "require"):
                 execution_context.require(Permission.AGENT_TURN_SUBMIT)
-            final_text = await self._run_engine(task)
-            final_text, exercise_state = await self._finalize_learning(task, final_text)
-            await asyncio.to_thread(
-                self._repository.update_turn,
-                task.turn_id,
-                TurnStatus.COMPLETED,
-                final_text=final_text,
-                exercise_state=exercise_state,
+            attribution = UsageAttributionContext(
+                request_id=task.turn_id,
+                user_id=task.context.user_id,
+                workspace_id=task.context.workspace_id,
+                conversation_id=task.context.session_id,
+                turn_id=task.turn_id,
+                reservation_id=task.reservation_id,
+                worker_id=getattr(execution_context, "worker_id", None),
+                purpose=(
+                    "worker"
+                    if getattr(execution_context, "worker_id", None)
+                    else "coordinator"
+                ),
             )
+            with bind_usage_attribution(attribution):
+                final_text = await self._run_engine(task)
+                final_text, exercise_state = await self._finalize_learning(task, final_text)
+                await asyncio.to_thread(
+                    self._repository.update_turn,
+                    task.turn_id,
+                    TurnStatus.COMPLETED,
+                    final_text=final_text,
+                    exercise_state=exercise_state,
+                )
         except asyncio.CancelledError:
             await self._engine.cancel_turn(task.context, task.turn_id)
             await asyncio.to_thread(self._repository.update_turn, task.turn_id, TurnStatus.CANCELLED)
             await self._emit(task.turn_id, task.context.session_id, GatewayEventType.TURN_CANCELLED, {"status": TurnStatus.CANCELLED.value})
+            await self._finish_quota(task)
             raise
         except Exception as error:
             await asyncio.to_thread(self._repository.update_turn, task.turn_id, TurnStatus.FAILED, error_kind=type(error).__name__, error_message=str(error))
             await self._emit(task.turn_id, task.context.session_id, GatewayEventType.TURN_FAILED, {"status": TurnStatus.FAILED.value, "error_kind": type(error).__name__, "message": str(error)[:500]})
+            await self._finish_quota(task)
             return
+        finally:
+            if quota_heartbeat_task is not None:
+                quota_heartbeat_task.cancel()
+                await asyncio.gather(quota_heartbeat_task, return_exceptions=True)
+        await self._finish_quota(task)
         await self._emit(task.turn_id, task.context.session_id, GatewayEventType.MESSAGE_COMPLETED, {"content": final_text})
         await self._emit(task.turn_id, task.context.session_id, GatewayEventType.TURN_COMPLETED, {"status": TurnStatus.COMPLETED.value, "content": final_text})
         if self._on_turn_completed is not None:
             self._on_turn_completed(task.context.session_id)
+
+    async def _finish_quota(self, task: TurnTask) -> None:
+        service = getattr(self._repository, "quota_service", None)
+        if service is None or task.reservation_id is None:
+            return
+        await asyncio.to_thread(
+            service.finish_turn,
+            FinishTurn(
+                reservation_id=task.reservation_id,
+                turn_id=task.turn_id,
+                idempotency_key=f"turn-finished:{task.turn_id}",
+            ),
+        )
+
+    async def _quota_heartbeat(self, reservation_id: str, service: Any) -> None:
+        interval = max(1.0, float(getattr(service, "lease_seconds", 300)) / 3)
+        while True:
+            await asyncio.sleep(interval)
+            active = await asyncio.to_thread(service.heartbeat, reservation_id)
+            if not active:
+                return
 
     async def _run_engine(self, task: TurnTask) -> str:
         kwargs: dict[str, Any] = {}

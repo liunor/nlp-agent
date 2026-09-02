@@ -23,6 +23,7 @@ class TurnExecutionContext:
     operation_id: str = "turn.execution"
     principal: AuthenticatedPrincipal | None = None
     workspace_id: str | None = None
+    worker_id: str | None = None
 
     def require(self, permission: Permission) -> None:
         """Second authorization seam for tools/checkpoint operations in Worker."""
@@ -98,6 +99,7 @@ class FencedTurnExecutor:
                 TurnExecutionContext(
                     turn_id=task.turn_id,
                     claim_generation=generation,
+                    worker_id=self._worker_id,
                     principal=principal,
                     workspace_id=task.authorization.workspace_id,
                 ),

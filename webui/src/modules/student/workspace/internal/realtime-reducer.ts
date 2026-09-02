@@ -23,6 +23,21 @@ function toolDetail(event: ServerEvent): string | undefined {
   return detail && !["tool", "tools"].includes(detail.toLowerCase()) ? detail : undefined;
 }
 
+function quotaErrorMessage(event: ServerEvent): string | undefined {
+  const messages: Record<string, string> = {
+    quota_daily_exhausted: "今日额度已用尽",
+    quota_weekly_exhausted: "本周额度已用尽",
+    quota_workspace_exhausted: "工作区额度已用尽",
+    quota_request_limit: "本次请求预计超过单次额度限制",
+    quota_concurrency_limit: "当前并发请求已达上限，请稍后重试",
+    quota_model_not_allowed: "当前模型不在可用额度范围内",
+    quota_policy_not_found: "暂未配置可用额度策略，请联系开发者",
+    admission_denied: "额度校验暂时无法完成，请稍后重试",
+  };
+  const code = typeof event.payload.code === "string" ? event.payload.code : "";
+  return messages[code] ?? undefined;
+}
+
 function activityLabel(event: ServerEvent): Pick<ActivityItem, "kind" | "label" | "status" | "detail"> | null {
   const detail = eventDetail(event);
   const readableTool = toolDetail(event);
@@ -94,7 +109,7 @@ export function createRealtimeEventHandler({
         void loadSessions();
         return;
       }
-      setRequestError(typeof event.payload.message === "string" ? event.payload.message : "请求未能提交，请稍后重试。");
+      setRequestError(quotaErrorMessage(event) ?? (typeof event.payload.message === "string" ? event.payload.message : "请求未能提交，请稍后重试。"));
       return;
     }
     if (["session.created", "session.deleted", "session.updated"].includes(event.type)) void loadSessions();

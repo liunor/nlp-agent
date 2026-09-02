@@ -205,7 +205,7 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
       filesWorkspaceId={workspace.workspaceId}
     />
     <div className="student-school-logo"><SchoolLogo /></div>
-    <SettingsDialog open={settingsOpen} settings={workspace.settings} learningContext={workspace.preferences.context} roles={workspace.authSession?.roles} permissions={workspace.authSession?.permissions} userId={workspace.authSession?.user_id} onClose={() => setSettingsOpen(false)} onChange={(patch) => void workspace.patchSettings(patch)} onReset={workspace.resetSettings} onLearningContextChange={workspace.setLearningContext} onOpenDeveloper={() => { if (onNavigateTo) onNavigateTo("/developer"); else location.href = "/developer"; }} onOpenTeacher={() => { if (onNavigateTo) onNavigateTo("/teacher"); else location.href = "/teacher"; }} />
+    <SettingsDialog open={settingsOpen} settings={workspace.settings} learningContext={workspace.preferences.context} roles={workspace.authSession?.roles} permissions={workspace.authSession?.permissions} userId={workspace.authSession?.user_id} workspaceIds={workspace.authSession?.workspace_ids} onClose={() => setSettingsOpen(false)} onChange={(patch) => void workspace.patchSettings(patch)} onReset={workspace.resetSettings} onLearningContextChange={workspace.setLearningContext} onOpenDeveloper={() => { if (onNavigateTo) onNavigateTo("/developer"); else location.href = "/developer"; }} onOpenTeacher={() => { if (onNavigateTo) onNavigateTo("/teacher"); else location.href = "/teacher"; }} />
     <AccountDialog open={accountOpen} session={workspace.authSession} onClose={() => setAccountOpen(false)} onLogout={async () => { await workspace.logout(); setAccountOpen(false); }} />
     <ConfirmDialog
   open={!!deleteTarget}

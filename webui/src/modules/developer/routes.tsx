@@ -22,6 +22,7 @@ export function DeveloperRoutes() {
       <Route path="roles" element={<DeveloperWorkspace page="roles" onNavigate={page} />} />
       <Route path="audit" element={<DeveloperWorkspace page="audit" onNavigate={page} />} />
       <Route path="sessions" element={<DeveloperWorkspace page="sessions" onNavigate={page} />} />
+      <Route path="quotas" element={<DeveloperWorkspace page="quotas" onNavigate={page} />} />
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );

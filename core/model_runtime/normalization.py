@@ -7,7 +7,18 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
-from core.model_runtime.usage import CanonicalTokenUsage, UsageSource
+from core.model_runtime.usage import (
+    CanonicalTokenUsage,
+    UsageSemantics,
+    UsageSource,
+)
+
+
+_USAGE_SEMANTICS = {"final", "cumulative", "delta", "partial"}
+
+
+def _usage_semantics(value: Any, default: UsageSemantics) -> UsageSemantics:
+    return value if value in _USAGE_SEMANTICS else default  # type: ignore[return-value]
 
 
 def _parse_token_int(value: Any, field_name: str) -> int:
@@ -77,7 +88,11 @@ def _extract_usage_details(metadata: Mapping[str, Any] | None) -> dict[str, Any]
     }
 
 
-def normalize_usage(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+def normalize_usage(
+    metadata: Mapping[str, Any] | None,
+    *,
+    default_semantics: UsageSemantics = "final",
+) -> dict[str, Any]:
     extracted = _extract_usage_details(metadata)
     input_tokens = int(extracted["raw_input"] or 0)
     output_tokens = int(extracted["raw_output"] or 0)
@@ -104,6 +119,11 @@ def normalize_usage(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
         "prompt_cache_hit_tokens": max(0, cache_read),
         "prompt_cache_miss_tokens": max(0, cache_miss),
         "cache_write_input_tokens": max(0, cache_write),
+        "usage_semantics": _usage_semantics(
+            extracted["raw"].get("usage_semantics")
+            or extracted["raw"].get("semantics"),
+            default_semantics,
+        ),
     }
 
 
@@ -112,6 +132,7 @@ def canonical_usage(
     *,
     provider_response_id: str | None = None,
     source: UsageSource | None = None,
+    semantics: UsageSemantics = "final",
 ) -> CanonicalTokenUsage:
     if not metadata:
         if source == "provider":
@@ -120,6 +141,7 @@ def canonical_usage(
                 output_tokens=0,
                 total_tokens=0,
                 source="provider",
+                semantics=semantics,
                 provider_response_id=provider_response_id,
             )
         return CanonicalTokenUsage(
@@ -127,6 +149,7 @@ def canonical_usage(
             output_tokens=0,
             total_tokens=0,
             source="none",
+            semantics=semantics,
             provider_response_id=provider_response_id,
         )
 
@@ -166,6 +189,11 @@ def canonical_usage(
         reasoning_output_tokens=reasoning_output_tokens,
         total_tokens=total_tokens,
         source=resolved_source,
+        semantics=_usage_semantics(
+            extracted["raw"].get("usage_semantics")
+            or extracted["raw"].get("semantics"),
+            semantics,
+        ),
         provider_response_id=provider_response_id,
     )
 
@@ -185,12 +213,18 @@ def extract_provider_response_id(message: Any) -> str | None:
 def response_canonical_usage(message: Any) -> CanonicalTokenUsage:
     provider_response_id = extract_provider_response_id(message)
     add_kwargs = getattr(message, "additional_kwargs", None) or {}
+    default_semantics: UsageSemantics = (
+        "cumulative" if isinstance(message, AIMessageChunk) else "final"
+    )
     raw_provider_usage = add_kwargs.get("provider_usage_raw")
     if raw_provider_usage is not None:
         return canonical_usage(
             raw_provider_usage,
             provider_response_id=provider_response_id,
             source="provider",
+            semantics=_usage_semantics(
+                add_kwargs.get("provider_usage_semantics"), default_semantics
+            ),
         )
     direct = getattr(message, "usage_metadata", None)
     if direct:
@@ -198,6 +232,9 @@ def response_canonical_usage(message: Any) -> CanonicalTokenUsage:
             direct,
             provider_response_id=provider_response_id,
             source="provider",
+            semantics=_usage_semantics(
+                add_kwargs.get("provider_usage_semantics"), default_semantics
+            ),
         )
     resp_meta = getattr(message, "response_metadata", None) or {}
     raw_usage = resp_meta.get("token_usage") or resp_meta.get("usage")
@@ -206,6 +243,7 @@ def response_canonical_usage(message: Any) -> CanonicalTokenUsage:
             raw_usage,
             provider_response_id=provider_response_id,
             source="provider",
+            semantics=default_semantics,
         )
     prov_usage = add_kwargs.get("provider_usage")
     if prov_usage:
@@ -213,11 +251,15 @@ def response_canonical_usage(message: Any) -> CanonicalTokenUsage:
             prov_usage,
             provider_response_id=provider_response_id,
             source="provider",
+            semantics=_usage_semantics(
+                add_kwargs.get("provider_usage_semantics"), default_semantics
+            ),
         )
     return canonical_usage(
         None,
         provider_response_id=provider_response_id,
         source="none",
+        semantics=("partial" if isinstance(message, AIMessageChunk) else "final"),
     )
 
 
@@ -225,16 +267,16 @@ def error_canonical_usage(error: BaseException) -> CanonicalTokenUsage:
     """Conservatively extract usage carried by a Provider error payload."""
     body = getattr(error, "body", None)
     if not isinstance(body, Mapping):
-        return CanonicalTokenUsage(source="none")
+        return CanonicalTokenUsage(source="none", semantics="partial")
 
     raw_usage = body.get("usage")
     error_details = body.get("error")
     if raw_usage is None and isinstance(error_details, Mapping):
         raw_usage = error_details.get("usage")
     if raw_usage is None:
-        return CanonicalTokenUsage(source="none")
+        return CanonicalTokenUsage(source="none", semantics="partial")
     if not isinstance(raw_usage, Mapping):
-        return CanonicalTokenUsage(source="none")
+        return CanonicalTokenUsage(source="none", semantics="partial")
 
     response_id = body.get("id") or body.get("request_id")
     if response_id is None and isinstance(error_details, Mapping):
@@ -243,15 +285,22 @@ def error_canonical_usage(error: BaseException) -> CanonicalTokenUsage:
         raw_usage,
         provider_response_id=str(response_id) if response_id is not None else None,
         source="provider",
+        semantics="partial",
     )
 
 
 def response_usage(message: Any) -> dict[str, Any]:
+    default_semantics: UsageSemantics = (
+        "cumulative" if isinstance(message, AIMessageChunk) else "final"
+    )
     direct = getattr(message, "usage_metadata", None)
     if direct:
-        return normalize_usage(direct)
+        return normalize_usage(direct, default_semantics=default_semantics)
     response = getattr(message, "response_metadata", None) or {}
-    return normalize_usage(response.get("token_usage") or response.get("usage") or {})
+    return normalize_usage(
+        response.get("token_usage") or response.get("usage") or {},
+        default_semantics=default_semantics,
+    )
 
 
 def normalize_message(message: AIMessage) -> AIMessage:
@@ -292,6 +341,7 @@ def normalize_chunk(chunk: AIMessageChunk) -> AIMessageChunk:
             "additional_kwargs": {
                 **chunk.additional_kwargs,
                 "provider_usage": usage,
+                "provider_usage_semantics": usage["usage_semantics"],
             },
         }
     )

@@ -48,6 +48,8 @@ export function AccountDialog({
         open={profileOpen}
         onClose={() => setProfileOpen(false)}
         sessionRoles={session?.roles}
+        userId={session?.user_id}
+        workspaceIds={session?.workspace_ids}
       />
     )}
   </>;

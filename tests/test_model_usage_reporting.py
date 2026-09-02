@@ -29,6 +29,7 @@ from core.model_runtime.runtime import (
 from core.model_runtime.usage import (
     CanonicalTokenUsage,
     MissingUsageAttributionError,
+    UsageReporterUnavailableError,
     UsageAttributionContext,
     bind_usage_attribution,
 )
@@ -352,6 +353,52 @@ async def test_stream_interrupted_after_visible_output():
     inv, usage, outcome = reporter.events[0]
     assert outcome.status == "interrupted"
     assert outcome.error_kind == "upstream_connection_error"
+    assert usage.semantics == "partial"
+
+
+@pytest.mark.asyncio
+async def test_stream_delta_usage_is_aggregated_and_finalized_once():
+    reporter = InMemoryModelUsageReporter()
+    slot = ModelUsageReporterSlot(reporter)
+
+    async def _delta_stream(_input, **_kwargs):
+        yield AIMessageChunk(
+            content="part one",
+            response_metadata={
+                "token_usage": {
+                    "prompt_tokens": 4,
+                    "completion_tokens": 3,
+                    "usage_semantics": "delta",
+                }
+            },
+        )
+        yield AIMessageChunk(
+            content="part two",
+            response_metadata={
+                "token_usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 2,
+                    "usage_semantics": "delta",
+                }
+            },
+        )
+
+    fake = FakeRawModel([])
+    fake.astream = _delta_stream
+    cand = _candidate("cand-delta-stream", fake)
+    resilient = ResilientChatModel([cand], reporter_slot=slot)
+
+    with bind_usage_attribution(_sample_attribution()):
+        chunks = [chunk async for chunk in resilient.astream([HumanMessage(content="hi")])]
+
+    assert len(chunks) == 2
+    assert len(reporter.events) == 1
+    _, usage, outcome = reporter.events[0]
+    assert usage.input_tokens == 9
+    assert usage.output_tokens == 5
+    assert usage.total_tokens == 14
+    assert usage.semantics == "final"
+    assert outcome.status == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -570,6 +617,19 @@ async def test_missing_attribution_raises_before_calling_provider():
     # No attribution or telemetry context bound
     with pytest.raises(MissingUsageAttributionError):
         await resilient.ainvoke([HumanMessage(content="hi")])
+
+    assert fake.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_required_reporter_fails_before_calling_provider():
+    slot = ModelUsageReporterSlot(required=True)
+    fake = FakeRawModel([AIMessage(content="must not run")])
+    resilient = ResilientChatModel([_candidate("cand-no-reporter", fake)], reporter_slot=slot)
+
+    with bind_usage_attribution(_sample_attribution()):
+        with pytest.raises(UsageReporterUnavailableError, match="requires"):
+            await resilient.ainvoke([HumanMessage(content="hi")])
 
     assert fake.calls == 0
 

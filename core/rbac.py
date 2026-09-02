@@ -17,6 +17,7 @@ from core.authorization_audit import record as record_authorization_decision
 
 
 class Permission(StrEnum):
+    QUOTA_USAGE_READ_SELF = "quota:usage:read_self"
     IDENTITY_PROFILE_READ_SELF = "identity:profile:read_self"
     IDENTITY_PROFILE_UPDATE_SELF = "identity:profile:update_self"
     LEARNING_CONTENT_READ_PUBLIC = "learning:content:read_public"
@@ -50,6 +51,8 @@ class Permission(StrEnum):
     SYSTEM_PERMISSION_READ = "system:permission:read"
     SYSTEM_AUDIT_READ = "system:audit:read"
     SYSTEM_SENSITIVE_DATA_READ = "system:sensitive_data:read"
+    SYSTEM_QUOTA_READ = "system:quota:read"
+    SYSTEM_QUOTA_MANAGE = "system:quota:manage"
 
 
 class ScopeType(StrEnum):
@@ -101,6 +104,7 @@ _GUEST: Final[frozenset[Permission]] = frozenset(
         Permission.AGENT_TURN_SUBMIT,
         Permission.AGENT_TURN_CANCEL,
         Permission.AGENT_EVENT_REPLAY,
+        Permission.QUOTA_USAGE_READ_SELF,
     }
 )
 _STUDENT: Final[frozenset[Permission]] = _GUEST | {
@@ -131,6 +135,8 @@ _DEVELOPER: Final[frozenset[Permission]] = _TEACHER | {
     Permission.SYSTEM_RELEASE_NOTES_MANAGE,
     Permission.SYSTEM_PERMISSION_READ,
     Permission.SYSTEM_AUDIT_READ,
+    Permission.SYSTEM_QUOTA_READ,
+    Permission.SYSTEM_QUOTA_MANAGE,
 }
 
 ROLE_PERMISSIONS: Final[dict[str, frozenset[Permission]]] = {

@@ -81,9 +81,10 @@ class DeepSeekChatModel(ChatDeepSeek):
                 result.message.additional_kwargs["provider_response_id"] = response_id
             if chunk.get("usage"):
                 raw_usage = chunk["usage"]
-                usage = normalize_usage(raw_usage)
+                usage = normalize_usage(raw_usage, default_semantics="cumulative")
                 result.message.additional_kwargs["provider_usage"] = usage
                 result.message.additional_kwargs["provider_usage_raw"] = raw_usage
+                result.message.additional_kwargs["provider_usage_semantics"] = usage["usage_semantics"]
                 result.message.usage_metadata = {
                     "input_tokens": usage["input_tokens"],
                     "output_tokens": usage["output_tokens"],

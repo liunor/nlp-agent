@@ -16,6 +16,7 @@ from core.observability.context import current_telemetry_context
 
 
 UsageSource = Literal["provider", "estimated", "none"]
+UsageSemantics = Literal["final", "cumulative", "delta", "partial"]
 UsagePurpose = Literal[
     "coordinator",
     "worker",
@@ -32,6 +33,10 @@ StrictPositiveInt = Annotated[int, Field(strict=True, ge=1)]
 
 class MissingUsageAttributionError(RuntimeError):
     """Raised when an LLM invocation cannot resolve mandatory usage attribution."""
+
+
+class UsageReporterUnavailableError(RuntimeError):
+    """Raised when a required model-process usage Reporter is not configured."""
 
 
 class UsageFrozenModel(BaseModel):
@@ -69,6 +74,7 @@ class CanonicalTokenUsage(UsageFrozenModel):
     reasoning_output_tokens: StrictNonNegativeInt = 0
     total_tokens: StrictNonNegativeInt = 0
     source: UsageSource = "none"
+    semantics: UsageSemantics = "final"
     provider_response_id: str | None = None
 
     @model_validator(mode="after")

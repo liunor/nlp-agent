@@ -22,6 +22,7 @@ dependencies = [
     "pillow>=11.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    "pymysql>=1.1",
     "redis>=5.0",
     "sqlalchemy>=2.0",
     "python-dotenv>=1.0",

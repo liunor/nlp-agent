@@ -76,6 +76,8 @@ MENU_CATALOG = (
     ("developer.settings", "运行时设置", "/developer/settings", "settings", Permission.SYSTEM_RUNTIME_INSPECT, 90),
     ("developer.users", "用户管理", "/developer/users", "users", Permission.SYSTEM_USER_MANAGE, 100),
     ("developer.roles", "角色权限", "/developer/roles", "roles", Permission.SYSTEM_ROLE_MANAGE, 110),
+    ("developer.menus", "菜单管理", "/developer/menus", "menus", Permission.SYSTEM_ROLE_MANAGE, 120),
+    ("developer.quotas", "额度管理", "/developer/quotas", "quotas", Permission.SYSTEM_QUOTA_MANAGE, 125),
     ("developer.audit", "审计日志", "/developer/audit", "audit", Permission.SYSTEM_AUDIT_READ, 130),
     ("developer.sessions", "Agent 会话", "/developer/sessions", "sessions", Permission.AGENT_SESSION_READ, 140),
 )

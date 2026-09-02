@@ -9,7 +9,7 @@ import { TeacherWorkspace } from "./TeacherWorkspace";
 import { TeacherRoutes } from "../routes";
 import type { CourseTopic } from "@/shared/types";
 
-const { ensureAuthMock, generateTeacherAIAnalysisMock, getSettingsMock, getTeacherCatalog, getTeacherOverviewMock, updateTeacherCatalog } = vi.hoisted(() => ({
+const { ensureAuthMock, generateTeacherAIAnalysisMock, getSettingsMock, getTeacherCatalog, getTeacherOverviewMock, updateTeacherAnalysisAnnotationsMock, updateTeacherCatalog } = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
   generateTeacherAIAnalysisMock: vi.fn(),
   getSettingsMock: vi.fn(),
@@ -17,10 +17,11 @@ const { ensureAuthMock, generateTeacherAIAnalysisMock, getSettingsMock, getTeach
   getTeacherOverviewMock: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 9, active_days: 2, error_questions: 0, error_rate: 0, questions_per_student: 1, questions_per_session: 1, contextualized_questions: 2, context_coverage_rate: 100, exercises: 3, exercise_pass_rate: 66.67, guided_sessions: 1 }, student_activity: Array.from({ length: 9 }, (_, index) => ({ user_id: `u${index + 1}`, display_name: index === 0 ? "张三" : `学生${index + 1}`, username: `student${index + 1}`, questions: index === 0 ? 2 : 1, sessions: 1, active_days: 1, error_questions: 0, error_rate: 0, questions_per_session: index === 0 ? 2 : 1, last_active: "2026-07-19", top_topic: "Transformer" })), hourly_questions: [{ hour: 9, label: "09:00", count: 2, percentage: 100 }], weekday_questions: [{ weekday: 0, label: "星期一", count: 2, percentage: 100 }], peak_day: { date: "2026-07-19", count: 2 }, peak_hour: { hour: 9, label: "09:00", count: 2 }, weak_topics: [{ topic_id: "transformer", topic: "Transformer", questions: 2, errors: 0, exercises: 3, average_score: 70, pass_rate: 66.67, misconceptions: 1, risk: "medium" }], topic_distribution: [{ name: "Transformer", count: 2, percentage: 100 }], difficulty_distribution: [{ name: "入门", count: 2, percentage: 100 }], mode_distribution: [{ name: "讲解", count: 2, percentage: 100 }], daily_questions: [{ date: "2026-07-19", count: 2 }], knowledge_point_stats: [{ knowledge_point_id: "attention", name: "注意力", topic: "Transformer", exercises: 3, average_score: 70, pass_rate: 66.67, weak_criteria: [{ criterion: "概念准确", hit_rate: 100 }, { criterion: "步骤完整", hit_rate: 33.33 }] }], learning_analysis: { scope: { period_days: 30, period_label: "近 30 天", role_label: "学生", student_count: 9, attempt_count: 8 }, conclusions: { weak: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [{ criterion: "定义域判断", error_rate: 75 }], concern_score: 70, recommendation: { conclusion: "注意力当前掌握率为 50%", action: "补充概念示例和变式练习" } }, declining: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [], concern_score: 70, recommendation: { conclusion: "注意力近期下降", action: "安排复习" } }, good: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "位置编码", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 4, mastery_rate: 100, previous_mastery_rate: 88, trend: "up", problem_type: "—", data_sufficiency: "sufficient", average_score: 90, weak_criteria: [], concern_score: 0, recommendation: { conclusion: "位置编码掌握较好", action: "继续观察" } } }, diagnoses: [{ content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [{ criterion: "定义域判断", error_rate: 75 }], concern_score: 70, recommendation: { conclusion: "注意力当前掌握率为 50%", action: "补充概念示例和变式练习" } }, { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "位置编码", knowledge_point_name: "位置编码", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 4, mastery_rate: 100, previous_mastery_rate: 88, trend: "up", problem_type: "—", data_sufficiency: "sufficient", average_score: 90, weak_criteria: [], concern_score: 0, recommendation: { conclusion: "位置编码掌握较好", action: "继续观察" } }], problem_distribution: [{ name: "概念掌握不足", count: 1, percentage: 50 }, { name: "解题方法不熟", count: 0, percentage: 0 }, { name: "易错点集中", count: 0, percentage: 0 }, { name: "练习覆盖不足", count: 0, percentage: 0 }, { name: "学习参与不足", count: 0, percentage: 0 }, { name: "数据不足，暂不判断", count: 0, percentage: 0 }], mastery_trend: { months: [{ month: "2026-04", label: "2026年04月" }, { month: "2026-05", label: "2026年05月" }, { month: "2026-06", label: "2026年06月" }, { month: "2026-07", label: "2026年07月" }, { month: "2026-08", label: "2026年08月" }], series: [{ knowledge_point_id: "attention", name: "注意力", values: [62, 65, 72, 68, 50] }, { knowledge_point_id: "posenc", name: "位置编码", values: [74, 79, 84, 88, 100] }] } },
   }),
   updateTeacherCatalog: vi.fn().mockImplementation(async (_workspaceId, next) => ({ catalog: { workspace_id: "default", ...next } })),
+  updateTeacherAnalysisAnnotationsMock: vi.fn().mockResolvedValue({ annotations: { workspace_id: "default", focused: [], ignored: [], notes: {} }, revision: 1, updated_at: "2026-08-31T00:00:00Z" }),
 }));
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: ensureAuthMock,
-  api: { getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog, generateTeacherAIAnalysis: generateTeacherAIAnalysisMock },
+  api: { getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog, generateTeacherAIAnalysis: generateTeacherAIAnalysisMock, updateTeacherAnalysisAnnotations: updateTeacherAnalysisAnnotationsMock },
 }));
 
 describe("TeacherWorkspace catalog CRUD", () => {
@@ -474,8 +475,9 @@ describe("TeacherWorkspace catalog CRUD", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看建议 注意力" }));
     expect(screen.getByText("补充概念示例和变式练习")).toBeVisible();
     expect(screen.getByText("定义域判断 · 错误率 75%")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "标记已关注 注意力" }));
-    expect(screen.getByRole("button", { name: "已标记关注 注意力" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "标记关注 注意力" }));
+    expect(screen.getByRole("button", { name: "取消关注 注意力" })).toBeVisible();
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: ["attention"], ignored: [], notes: {} }));
     fireEvent.click(screen.getByRole("button", { name: "添加备注 注意力" }));
     expect(screen.getByRole("textbox", { name: "注意力备注" })).toBeVisible();
   });
@@ -493,5 +495,76 @@ describe("TeacherWorkspace catalog CRUD", () => {
     fireEvent.click(screen.getByRole("button", { name: "学生问题" }));
 
     expect(await screen.findByText("学生问题全景")).toBeVisible();
+  });
+});
+
+describe("LearningAnalysisPage teacher annotations", () => {
+  beforeEach(() => {
+    updateTeacherAnalysisAnnotationsMock.mockReset();
+    updateTeacherAnalysisAnnotationsMock.mockResolvedValue({ annotations: { workspace_id: "default", focused: [], ignored: [], notes: {} }, revision: 1, updated_at: "2026-08-31T00:00:00Z" });
+  });
+
+  it("toggles follow on and off for a diagnosis", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "标记关注 注意力" }));
+    expect(await screen.findByRole("button", { name: "取消关注 注意力" })).toBeVisible();
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: ["attention"], ignored: [], notes: {} }));
+
+    fireEvent.click(screen.getByRole("button", { name: "取消关注 注意力" }));
+    expect(await screen.findByRole("button", { name: "标记关注 注意力" })).toBeVisible();
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: [], ignored: [], notes: {} }));
+  });
+
+  it("ignores a diagnosis and restores it from the ignored list", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "忽略 注意力" }));
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: [], ignored: ["attention"], notes: {} }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "展开 1 个已忽略知识点" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复" }));
+    await waitFor(() => expect(updateTeacherAnalysisAnnotationsMock).toHaveBeenCalledWith("default", { focused: [], ignored: [], notes: {} }));
+    expect(screen.queryByRole("button", { name: "展开 1 个已忽略知识点" })).not.toBeInTheDocument();
+  });
+
+  it("shows a warning banner when the analysis data was truncated", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    data.truncated = true;
+    data.data_completeness = { complete: false, evidence_truncated: true, criterion_truncated: false, message: "统计达到数据读取上限" };
+    render(<LearningAnalysisPage data={data} />);
+
+    expect(await screen.findByText("分析数据可能不完整")).toBeVisible();
+    expect(screen.getByText("统计达到数据读取上限")).toBeVisible();
+  });
+
+  it("surfaces an alert when annotations fail to save", async () => {
+    updateTeacherAnalysisAnnotationsMock.mockRejectedValue(new Error("网络错误"));
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "标记关注 注意力" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("保存失败");
+    expect(alert).toHaveTextContent("网络错误");
+  });
+
+  it("caps note entry at 2000 characters and shows a counter", async () => {
+    const data = structuredClone(await getTeacherOverviewMock());
+    render(<LearningAnalysisPage data={data} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看建议 注意力" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加备注 注意力" }));
+    const textarea = screen.getByRole("textbox", { name: "注意力备注" }) as HTMLTextAreaElement;
+    expect(textarea).toHaveAttribute("maxlength", "2000");
+    expect(screen.getByText("0/2000")).toBeVisible();
+    fireEvent.change(textarea, { target: { value: "跟进课后练习" } });
+    expect(screen.getByText("6/2000")).toBeVisible();
   });
 });

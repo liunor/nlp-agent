@@ -112,9 +112,10 @@ class QwenChatModel(ChatOpenAI):
                 result.message.additional_kwargs["reasoning_content"] = reasoning
         if chunk.get("usage"):
             raw_usage = chunk["usage"]
-            usage = normalize_usage(raw_usage)
+            usage = normalize_usage(raw_usage, default_semantics="cumulative")
             result.message.additional_kwargs["provider_usage"] = usage
             result.message.additional_kwargs["provider_usage_raw"] = raw_usage
+            result.message.additional_kwargs["provider_usage_semantics"] = usage["usage_semantics"]
             if isinstance(result.message, AIMessageChunk):
                 result.message.usage_metadata = self._usage_metadata(chunk["usage"])
         return result

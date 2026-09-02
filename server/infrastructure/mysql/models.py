@@ -25,6 +25,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, TimestampedModel
 from .table_comments import TABLE_COMMENTS
 
+# Quota tables share the same Alembic metadata.  Importing them here keeps
+# metadata-based tooling (including foundation checks) aware of every active
+# MySQL table without requiring callers to know the quota package layout.
+from server.quota import models as _quota_models  # noqa: F401, E402
+
 
 UUID = String(36, collation="ascii_bin")
 SESSION_IDENTIFIER = String(128, collation="ascii_bin")
@@ -1094,4 +1099,6 @@ class SmsSendAuditModel(Base):
 
 
 for _table_name, _table_comment in TABLE_COMMENTS.items():
-    Base.metadata.tables[_table_name].comment = _table_comment
+    table = Base.metadata.tables.get(_table_name)
+    if table is not None:
+        table.comment = _table_comment

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
+from configs.settings import settings
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
 from server.teacher.archive import (
@@ -24,7 +25,7 @@ from server.teacher.ai_analysis import (
     generate_ai_analysis,
     learning_analysis_ai_cache,
 )
-from server.teacher.analytics import build_analytics, build_learning_analysis, build_monthly_analytics
+from server.teacher.analytics import build_analytics, build_learning_analysis, build_monthly_analytics, filter_period_rows
 from server.teacher.models import (
     ExerciseBlueprint,
     GuidedBlueprint,
@@ -42,8 +43,10 @@ from server.teacher.models import (
     TeacherBookNavigationItem,
     TeacherBookPage,
     TeacherCatalog,
+    TeacherAnalysisAnnotations,
     TeacherAIAnalysisRequest,
     TeachingGoals,
+    UpdateTeacherAnalysisAnnotations,
     UpdateTeacherBookPage,
     UpdateTeacherCatalog,
     UpdateTeachingGoals,
@@ -78,6 +81,23 @@ class TeacherService:
         goals = TeachingGoals(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
         result = await gateway.update_user_settings(principal, {f"teacher_goals:{workspace_id}": goals})
         return {"goals": goals, "revision": result["revision"], "updated_at": result["updated_at"]}
+
+    @staticmethod
+    def _default_annotations(workspace_id: str) -> dict[str, Any]:
+        return TeacherAnalysisAnnotations(workspace_id=workspace_id).model_dump(mode="json")
+
+    async def analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        settings = await gateway.get_user_settings(principal)
+        key = f"teacher_analysis_annotations:{workspace_id}"
+        value = settings["settings"].get(key) or self._default_annotations(workspace_id)
+        return {"annotations": value, "revision": settings["revision"], "updated_at": settings["updated_at"]}
+
+    async def update_analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, body: UpdateTeacherAnalysisAnnotations) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        annotations = TeacherAnalysisAnnotations(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
+        result = await gateway.update_user_settings(principal, {f"teacher_analysis_annotations:{workspace_id}": annotations})
+        return {"annotations": annotations, "revision": result["revision"], "updated_at": result["updated_at"]}
 
     async def catalog(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
         self.require_teacher(
@@ -636,27 +656,32 @@ class TeacherService:
         since = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         catalog = (await asyncio.to_thread(gateway.repository.get_teaching_catalog, workspace_id))["catalog"]
         student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
-        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since)
+        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE)
         question_rows = [
             row for row in monthly_question_rows
             if row.get("day") and period_start.isoformat() <= str(row["day"])[:10] <= period_end.isoformat()
         ]
-        evidence_rows = await asyncio.to_thread(gateway.repository.exercise_evidence_stats, workspace_id=workspace_id, since=since)
-        criterion_rows = await asyncio.to_thread(gateway.repository.exercise_criterion_stats, workspace_id=workspace_id, since=since)
         guided_rows = await asyncio.to_thread(gateway.repository.guided_session_stats, workspace_id=workspace_id, since=since)
         analysis_until = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
-        analysis_evidence_rows = await asyncio.to_thread(
+        # One broad evidence/criterion fetch feeds both the overview (sliced to
+        # the period just below) and the learning-analysis diagnostics (which
+        # also need the preceding window and month-trend history).  This halves
+        # the read-model queries for the page.  Each returns (rows, truncated)
+        # so a silently dropped tail of old rows can be surfaced.
+        analysis_evidence_rows, evidence_truncated = await asyncio.to_thread(
             gateway.repository.exercise_evidence_stats,
             workspace_id=workspace_id,
             since=monthly_since,
             until=analysis_until,
         )
-        analysis_criterion_rows = await asyncio.to_thread(
+        analysis_criterion_rows, criterion_truncated = await asyncio.to_thread(
             gateway.repository.exercise_criterion_stats,
             workspace_id=workspace_id,
             since=monthly_since,
             until=analysis_until,
         )
+        evidence_rows = filter_period_rows(analysis_evidence_rows, period_start, period_end)
+        criterion_rows = filter_period_rows(analysis_criterion_rows, period_start, period_end)
         result = build_analytics(
             question_rows, evidence_rows, criterion_rows, guided_rows, catalog,
             period_days=period_days,
@@ -679,7 +704,25 @@ class TeacherService:
             period_end=period_end,
             student_user_ids=student_user_ids,
         )
-        return {"workspace_id": workspace_id, "period_days": period_days, "monthly_statistics": monthly_statistics, "learning_analysis": learning_analysis, **result}
+        return {
+            "workspace_id": workspace_id,
+            "period_days": period_days,
+            "monthly_statistics": monthly_statistics,
+            "learning_analysis": learning_analysis,
+            "truncated": evidence_truncated or criterion_truncated,
+            "data_completeness": {
+                "complete": not (evidence_truncated or criterion_truncated),
+                "evidence_truncated": evidence_truncated,
+                "criterion_truncated": criterion_truncated,
+                "message": (
+                    "统计达到数据读取上限，更早的历史记录未能全部纳入分析；"
+                    "当前周期的数据完整，但上期对比与历史趋势可能不完整。"
+                    if (evidence_truncated or criterion_truncated)
+                    else None
+                ),
+            },
+            **result,
+        }
 
     async def ai_analysis(
         self,

@@ -27,6 +27,47 @@ class UpdateTeachingGoals(StrictTeacherModel):
     target_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
 
 
+# Teacher notes on individual knowledge points are short classroom observations,
+# not free-form documents.  Bounding each value keeps the annotations blob small
+# and forces the frontend to enforce the same cap before the round-trip.
+MAX_ANALYSIS_NOTE_LENGTH = 2_000
+MAX_ANALYSIS_NOTES = 200
+
+
+def _validate_analysis_notes(notes: dict[str, str]) -> dict[str, str]:
+    if len(notes) > MAX_ANALYSIS_NOTES:
+        raise ValueError(f"备注数量不能超过 {MAX_ANALYSIS_NOTES} 条")
+    for key, value in notes.items():
+        if len(value) > MAX_ANALYSIS_NOTE_LENGTH:
+            raise ValueError(f"知识点“{key}”的备注不能超过 {MAX_ANALYSIS_NOTE_LENGTH} 个字符")
+    return notes
+
+
+class TeacherAnalysisAnnotations(StrictTeacherModel):
+    """Per-workspace teacher bookmarks on the learning-analysis view."""
+
+    workspace_id: str = Field(min_length=1, max_length=128)
+    focused: list[str] = Field(default_factory=list, max_length=200)
+    ignored: list[str] = Field(default_factory=list, max_length=200)
+    notes: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("notes")
+    @classmethod
+    def _notes_within_limit(cls, value: dict[str, str]) -> dict[str, str]:
+        return _validate_analysis_notes(value)
+
+
+class UpdateTeacherAnalysisAnnotations(StrictTeacherModel):
+    focused: list[str] = Field(default_factory=list, max_length=200)
+    ignored: list[str] = Field(default_factory=list, max_length=200)
+    notes: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("notes")
+    @classmethod
+    def _notes_within_limit(cls, value: dict[str, str]) -> dict[str, str]:
+        return _validate_analysis_notes(value)
+
+
 class TeacherAIAnalysisRequest(StrictTeacherModel):
     workspace_id: str = Field(default="default", min_length=1, max_length=128)
     course_id: str = Field(default="all", min_length=1, max_length=128)

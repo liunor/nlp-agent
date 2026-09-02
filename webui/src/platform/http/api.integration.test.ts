@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import http from "node:http";
@@ -76,8 +77,9 @@ function waitUntil<T>(subscribe: (resolve: (value: T) => void) => void, timeoutM
 }
 
 describe.sequential("real frontend API client to FastAPI integration", () => {
-  const integrationUsername = process.env.PRO_NLP_INTEGRATION_USERNAME ?? "integration";
-  const integrationPassword = process.env.PRO_NLP_INTEGRATION_PASSWORD ?? "integration-password";
+  const testRunId = randomUUID().replaceAll("-", "");
+  const integrationUsername = process.env.PRO_NLP_INTEGRATION_USERNAME ?? `integrationtest${testRunId.slice(0, 24)}`;
+  const integrationPassword = process.env.PRO_NLP_INTEGRATION_PASSWORD ?? `Integration-${testRunId}!`;
   let serverProcess: ChildProcess;
   let origin = "";
   let cookie = "";
@@ -98,7 +100,7 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
       // This test exercises the real HTTP/WebSocket recovery path with the
       // deterministic FakeEngine. No standalone Redis worker is started, so
       // keep execution in-process while retaining the real MySQL repository.
-      env: { ...process.env, NLP_AGENT_GATEWAY_TRANSPORT: "inprocess" },
+      env: { ...process.env, PRO_NLP_INTEGRATION_USERNAME: integrationUsername, PRO_NLP_INTEGRATION_PASSWORD: integrationPassword, NLP_AGENT_GATEWAY_TRANSPORT: "inprocess" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });

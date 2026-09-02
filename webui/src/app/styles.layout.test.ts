@@ -159,4 +159,69 @@ describe("sandbox titlebar layout", () => {
 
     expect(feedbackMessagesRule).toContain("align-content: start");
   });
+
+  it("keeps the quota daily and weekly grids at the same seven-row height", () => {
+    const activityGridRule = [...stylesheet.matchAll(/\.quota-activity-grid\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";
+    const weeklyColumnRule = stylesheet.match(/\.quota-activity-week-column\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(activityGridRule).toContain("grid-template-rows: repeat(7, 14px)");
+    expect(activityGridRule).toContain("min-height: 122px");
+    expect(weeklyColumnRule).toContain("height: 122px");
+  });
+
+  it("lets developer quota management fill the control-plane workspace with compact controls", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) =>
+      [...stylesheet.matchAll(pattern)].map((match) => match[1]).find((rule) => rule.includes(fragment)) ?? "";
+    const pageRule = matchingRule(/\.developer-quota-page\s*\{([^}]*)\}/g, "width:100%");
+    const tabsRule = matchingRule(/\.developer-quota-page \.quota-management-tabs\s*\{([^}]*)\}/g, "width:max-content");
+    const tabButtonRule = matchingRule(/\.developer-quota-page \.quota-management-tabs button\s*\{([^}]*)\}/g, "flex:0 0 auto");
+    const panelRule = matchingRule(/\.developer-quota-page \.quota-panel\s*\{([^}]*)\}/g, "margin-bottom:0");
+
+    expect(pageRule).toContain("width:100%");
+    expect(pageRule).toContain("max-width:none");
+    expect(pageRule).toContain("min-height:100%");
+    expect(pageRule).toContain("box-sizing:border-box");
+    expect(tabsRule).toContain("width:max-content");
+    expect(tabsRule).toContain("max-width:100%");
+    expect(tabButtonRule).toContain("flex:0 0 auto");
+    expect(tabButtonRule).toContain("min-height:34px");
+    expect(panelRule).toContain("margin-bottom:0");
+  });
+
+  it("keeps developer quota collections fixed with internal scrolling", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) =>
+      [...stylesheet.matchAll(pattern)].map((match) => match[1]).find((rule) => rule.includes(fragment)) ?? "";
+    const pageRule = matchingRule(/\.developer-quota-page\s*\{([^}]*)\}/g, "overflow:hidden");
+    const controlRule = matchingRule(/\.developer-quota-page \.quota-control-grid\s*\{([^}]*)\}/g, "grid-template-rows:repeat(2,minmax(0,1fr))");
+    const panelRule = matchingRule(/\.developer-quota-page \.quota-control-grid \.quota-panel\s*\{([^}]*)\}/g, "display:flex");
+    const tableRule = matchingRule(/\.developer-quota-page \.quota-control-grid \.quota-panel \.quota-table-wrap\s*\{([^}]*)\}/g, "overflow:auto");
+    const operationsRule = matchingRule(/\.developer-quota-page \.quota-operations-grid\s*\{([^}]*)\}/g, "grid-template-rows:minmax(0,auto) minmax(0,1fr)");
+    const recoveryRule = matchingRule(/\.developer-quota-page \.quota-recovery-grid\s*\{([^}]*)\}/g, "overflow:hidden");
+
+    expect(pageRule).toContain("overflow:hidden");
+    expect(controlRule).toContain("grid-template-rows:repeat(2,minmax(0,1fr))");
+    expect(controlRule).toContain("min-height:0");
+    expect(panelRule).toContain("display:flex");
+    expect(panelRule).toContain("flex-direction:column");
+    expect(tableRule).toContain("overflow:auto");
+    expect(operationsRule).toContain("min-height:0");
+    expect(recoveryRule).toContain("flex:1");
+  });
+
+  it("keeps developer quota subroutes in one fixed panel with internal collection scrolling", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) =>
+      [...stylesheet.matchAll(pattern)].map((match) => match[1]).find((rule) => rule.includes(fragment)) ?? "";
+    const subrouteRule = matchingRule(/\.developer-quota-page \.quota-subroute-tabs\s*\{([^}]*)\}/g, "overflow-x:auto");
+    const routeRule = matchingRule(/\.developer-quota-page > \.quota-route-panel\s*\{([^}]*)\}/g, "overflow:hidden");
+    const contentRule = matchingRule(/\.developer-quota-page \.quota-route-panel > \.quota-route-content\s*\{([^}]*)\}/g, "flex-direction:column");
+    const tableRule = matchingRule(/\.developer-quota-page \.quota-route-content \.quota-table-wrap\s*\{([^}]*)\}/g, "overflow:auto");
+
+    expect(subrouteRule).toContain("flex:0 0 auto");
+    expect(routeRule).toContain("min-height:0");
+    expect(routeRule).toContain("flex:1 1 auto");
+    expect(contentRule).toContain("min-height:0");
+    expect(contentRule).toContain("overflow:hidden");
+    expect(tableRule).toContain("min-height:0");
+    expect(tableRule).toContain("flex:1 1 auto");
+  });
 });

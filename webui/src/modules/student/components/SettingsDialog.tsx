@@ -1,7 +1,8 @@
-import { BadgeInfo, BookOpenCheck, ChevronDown, ChevronRight, CircleHelp, Clock3, Database, Gauge, Globe2, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, X } from "lucide-react";
+import { BadgeInfo, BookOpenCheck, ChevronDown, ChevronRight, CircleHelp, Clock3, Coins, Database, Gauge, Globe2, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
+import { QuotaUsagePage } from "@/modules/quota/QuotaUsagePage";
 import { api } from "@/platform/http/api";
 import type { FeedbackCategory, FeedbackThread, LearningContext, ReleaseNoteEntry, UserSettings } from "@/shared/types";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
@@ -9,7 +10,7 @@ import { supportedLocales } from "@/shared/i18n/config";
 import { saveFeedback } from "@/shared/utils/feedback";
 import { APP_NAME, APP_VERSION } from "@/shared/version";
 
-type SettingsSection = "general" | "appearance" | "chat" | "learning" | "data" |  "feedback" | "updates";
+type SettingsSection = "general" | "appearance" | "chat" | "learning" | "data" | "quota" | "feedback" | "updates";
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings2 }> = [
   { id: "general", label: "通用", icon: Settings2 },
@@ -17,6 +18,7 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof Setting
   { id: "chat", label: "对话与流式", icon: Gauge },
   { id: "learning", label: "学习体验", icon: BookOpenCheck },
   { id: "data", label: "数据与隐私", icon: Database },
+  { id: "quota", label: "额度与用量", icon: Coins },
   { id: "feedback", label: "意见反馈", icon: MessageSquarePlus },
   { id: "updates", label: "版本与更新", icon: BadgeInfo },
 ];
@@ -27,13 +29,14 @@ const FEEDBACK_DISABLED_HINT = "当前身份不支持提交反馈";
 const feedbackStatusLabel: Record<string, string> = { open: "待处理", under_review: "审视中", planned: "已规划", in_progress: "进行中", complete: "已完成", closed: "已关闭" };
 const feedbackCategoryLabel: Record<string, string> = { feature: "功能建议", ux: "体验问题", bug: "Bug", other: "其他" };
 
-export function SettingsDialog({ open, settings, learningContext, roles = [], permissions, userId, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
+export function SettingsDialog({ open, settings, learningContext, roles = [], permissions, userId, workspaceIds, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
   open: boolean;
   settings: UserSettings;
   learningContext: LearningContext;
   roles?: string[];
   permissions?: string[];
   userId?: string;
+  workspaceIds?: string[];
   onClose: () => void;
   onChange: (patch: Partial<UserSettings>) => void;
   onReset: () => void;
@@ -58,10 +61,15 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   const [releaseNotesAttempt, setReleaseNotesAttempt] = useState(0);
   const canTeach = roles.includes("teacher") || roles.includes("developer");
   const canDevelop = roles.includes("developer");
+  const hasExplicitPermissions = Boolean(permissions?.length);
+  const canViewQuota = hasExplicitPermissions
+    ? permissions?.includes("quota:usage:read_self") ?? false
+    : roles.some((role) => ["guest", "student", "teacher", "developer"].includes(role));
+  const visibleSections = canViewQuota ? sections : sections.filter((item) => item.id !== "quota");
   // Server-side permissions win when present (custom RBAC roles); legacy guest
   // sessions only carry roles, so fall back to the built-in role packages.
-  const canSubmitFeedback = permissions
-    ? permissions.includes("learning:feedback:submit")
+  const canSubmitFeedback = hasExplicitPermissions
+    ? permissions?.includes("learning:feedback:submit") ?? false
     : ["student", "teacher", "developer"].some((role) => roles.includes(role));
   useEffect(() => {
     if (!open || section !== "updates" || releaseNotes !== null) return;
@@ -119,14 +127,14 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
 
   return <>
     <div className="dialog-backdrop settings-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="settings-dialog" role="dialog" aria-modal="true" aria-label="偏好设置" onMouseDown={(event) => event.stopPropagation()}>
+      <section className={`settings-dialog${section === "quota" ? " settings-dialog-quota" : ""}`} role="dialog" aria-modal="true" aria-label="偏好设置" onMouseDown={(event) => event.stopPropagation()}>
         <aside className="settings-nav">
           <div className="settings-nav-brand"><Settings2 size={19} /><span><strong>偏好设置</strong><small>学习空间</small></span></div>
-          <nav>{sections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} disabled={id === "feedback" && !canSubmitFeedback} title={id === "feedback" && !canSubmitFeedback ? FEEDBACK_DISABLED_HINT : undefined} onClick={() => setSection(id)}><Icon size={16} /><span className="settings-nav-label">{label}</span>{id === "feedback" && (feedbackHistory?.student_unread_count ?? 0) > 0 && <span className="settings-nav-unread" aria-label="未读消息">未读</span>}</button>)}</nav>
-          <p><CircleHelp size={14} />仅显示学生模式可安全调整的选项。</p>
+          <nav>{visibleSections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} disabled={id === "feedback" && !canSubmitFeedback} title={id === "feedback" && !canSubmitFeedback ? FEEDBACK_DISABLED_HINT : undefined} onClick={() => setSection(id)}><Icon size={16} /><span className="settings-nav-label">{label}</span>{id === "feedback" && (feedbackHistory?.student_unread_count ?? 0) > 0 && <span className="settings-nav-unread" aria-label="未读消息">未读</span>}</button>)}</nav>
+          <p><CircleHelp size={14} />额度只读展示，分配和策略调整由开发者统一管理。</p>
         </aside>
         <div className="settings-content">
-          <header><div><strong>{sections.find((item) => item.id === section)?.label}</strong><p>{section === "data" ? "数据、隐私与开发者配置集中在此管理。" : "修改会立即保存，并在下次打开时恢复。"}</p></div><button className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><X size={19} /></button></header>
+          <header><div><strong>{visibleSections.find((item) => item.id === section)?.label}</strong><p>{section === "data" ? "数据、隐私与开发者配置集中在此管理。" : section === "quota" ? "查看当前额度与 Token 用量。" : "修改会立即保存，并在下次打开时恢复。"}</p></div><button className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><X size={19} /></button></header>
           <div className="settings-scroll">
             {section === "general" && <>
               <SettingGroup title="界面语言" description="语言偏好会同步保存到本地后端，并立即切换学生模式的界面语言。"><label className="settings-field"><span><Globe2 size={15} />阅读语言</span><select value={settings.locale} onChange={(event) => onChange({ locale: event.target.value })}>{supportedLocales.map((locale) => <option key={locale.code} value={locale.code}>{locale.nativeLabel} · {locale.label}</option>)}</select></label></SettingGroup>
@@ -212,6 +220,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
     </SettingGroup>
   </>
 )}
+            {section === "quota" && canViewQuota && <QuotaUsagePage embedded userId={userId} workspaceIds={workspaceIds} />}
             {section === "feedback" && (canSubmitFeedback ? <>
               <SettingGroup title="提交你的建议" description="选择分类后提交，开发者可在工作台回复与更新状态。每日最多 3 条（北京时间自然日）。">
                 <div className="feedback-form">
