@@ -31,6 +31,7 @@ from .service import (
     UserAlreadyExistsError,
     UserNotFoundError,
     UserService,
+    LastDeveloperForbiddenError,
 )
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
@@ -230,6 +231,8 @@ async def get_user(
         return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -278,6 +281,8 @@ async def update_user(
         return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/disable", status_code=status.HTTP_204_NO_CONTENT)
@@ -308,6 +313,8 @@ async def disable_user(
         )
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/enable", status_code=status.HTTP_204_NO_CONTENT)
@@ -338,6 +345,8 @@ async def enable_user(
         )
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 # 角色分配统一由 ``PUT /api/v1/users/{user_id}/roles``（server/web/app.py 中的
@@ -375,6 +384,8 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     except SelfDeleteForbiddenError:
         raise HTTPException(status_code=403, detail="Cannot delete your own account")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/restore", response_model=UserResponse)
@@ -399,9 +410,11 @@ async def restore_user(
             resource_type="user",
             resource_id=user_id,
         )
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="Deleted user not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/sessions/revoke", status_code=status.HTTP_204_NO_CONTENT)

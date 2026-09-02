@@ -52,8 +52,6 @@ from server.web.contracts import (
     LoginBody,
     ReplaceUserRolesBody,
     ReplaceRolePermissionsBody,
-    CreateRoleBody,
-    UpdateRoleStatusBody,
     CreateClassroomBody,
     ReplaceClassroomMemberBody,
     InjectChatBody,
@@ -327,6 +325,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         gateway = gateway_factory()
+        redis_client = getattr(getattr(gateway, "dispatcher", None), "client", None)
+        if redis_client is None:
+            redis_client = getattr(getattr(getattr(gateway, "dispatcher", None), "_transport", None), "client", None)
+        database_auth.set_redis_client(redis_client)
         if (
             not auth_injected
             and gateway.authorization_session_factory is not None
@@ -788,37 +790,25 @@ def create_app(
         except InvalidPhoneNumberError as error:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
         client_ip = request.client.host if request.client else None
-        allowed, reason = await code_store.sms_send_allowed(
-            db, phone=phone, client_ip=client_ip
-        )
-        if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=reason
-            )
-        code = generate_sms_code()
         try:
-            provider = create_tencent_sms_provider_from_env()
-            if provider is not None:
-                if not await provider.send_verification_code(phone, code):
-                    await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="failed")
-                    return JSONResponse(
-                        {"detail": "SMS gateway failed to deliver the code"},
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                    )
-            else:
-                # Development-only fallback. Production never logs verification codes.
-                print(f"[SMS] Verification code for {phone}: {code}")
-            await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="sent")
+            async with code_store.sms_send_lock(db, phone):
+                allowed, reason = await code_store.sms_send_allowed(db, phone=phone, client_ip=client_ip)
+                if not allowed:
+                    raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=reason)
+                code = generate_sms_code()
+                provider = create_tencent_sms_provider_from_env()
+                if provider is not None:
+                    if not await provider.send_verification_code(phone, code):
+                        await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="failed")
+                        return JSONResponse({"detail": "SMS gateway failed to deliver the code"}, status_code=status.HTTP_502_BAD_GATEWAY)
+                else:
+                    print(f"[SMS] Verification code for {phone}: {code}")
+                await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="sent")
+                await code_store.put_code(db, kind="sms", subject=phone, code=code, ttl_s=code_store.SMS_CODE_TTL_S, client_ip=client_ip)
+        except TimeoutError as error:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="sms_send_busy") from error
         except SmsConfigurationError as error:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-        await code_store.put_code(
-            db,
-            kind="sms",
-            subject=phone,
-            code=code,
-            ttl_s=code_store.SMS_CODE_TTL_S,
-            client_ip=client_ip,
-        )
         return {"message": "SMS code sent successfully"}
 
     @app.post("/api/v1/auth/login", status_code=status.HTTP_200_OK, tags=["auth"])
@@ -995,24 +985,6 @@ def create_app(
                 }
             )
         return {"items": items}
-
-    @app.post("/api/v1/system/roles", status_code=status.HTTP_201_CREATED, tags=["rbac"])
-    async def create_role(body: CreateRoleBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                role = await rbac_service.create_role(session, code=body.code, name=body.name, description=body.description, actor_user_id=principal.user_id)
-        return {"code": role.code, "name": role.name, "description": role.description, "status": role.status, "is_builtin": role.is_builtin}
-
-    @app.patch("/api/v1/system/roles/{role_code}/status", tags=["rbac"])
-    async def update_role_status(role_code: str, body: UpdateRoleStatusBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                user_ids = await rbac_service.update_role_status(session, role_code=role_code, status=body.status, actor_user_id=principal.user_id)
-        for user_id in user_ids:
-            await hub.close_user(user_id)
-        return {"role_code": role_code, "status": body.status}
 
     @app.get("/api/v1/permissions", tags=["rbac"])
     async def list_permissions(request: Request, principal: Principal):

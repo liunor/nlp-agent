@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select
@@ -32,6 +33,23 @@ CAPTCHA_TTL_S = 120           # 图形验证码 2 分钟内有效
 SMS_RESEND_COOLDOWN_S = 60    # 同一手机号两次发送至少间隔 60 秒
 SMS_MAX_PER_PHONE_HOUR = 10   # 同一手机号每小时最多 10 条
 SMS_MAX_PER_IP_HOUR = 30      # 同一 IP 每小时最多 30 条
+
+
+@asynccontextmanager
+async def sms_send_lock(session: AsyncSession, phone: str):
+    """Serialize rate-check and send-record for one phone across replicas."""
+    bind = session.get_bind()
+    if bind is None or bind.dialect.name != "mysql":
+        yield
+        return
+    key = f"nlp-agent:sms-send:{phone}"
+    acquired = await session.scalar(select(func.get_lock(key, 15)))
+    if int(acquired or 0) != 1:
+        raise TimeoutError("sms_send_lock_timeout")
+    try:
+        yield
+    finally:
+        await session.execute(select(func.release_lock(key)))
 
 
 def _utc_now() -> datetime:
@@ -53,22 +71,23 @@ async def put_code(
 ) -> None:
     """Store a fresh code, replacing any previous one for the same subject."""
     now = _utc_now()
-    # 先清掉该 subject 的旧码（单码语义：重发即作废旧码）。
-    await session.execute(
-        delete(AuthCodeModel).where(
-            AuthCodeModel.kind == kind, AuthCodeModel.subject == subject
-        )
+    # Lock and update the single row in place. This preserves one-code
+    # semantics under concurrent requests and avoids delete/insert races.
+    row = await session.scalar(
+        select(AuthCodeModel)
+        .where(AuthCodeModel.kind == kind, AuthCodeModel.subject == subject)
+        .with_for_update()
     )
-    session.add(
-        AuthCodeModel(
-            id=str(uuid.uuid4()),
-            kind=kind,
-            subject=subject,
-            code_hash=_code_hash(code),
-            expires_at=now + timedelta(seconds=ttl_s),
+    if row is None:
+        session.add(AuthCodeModel(
+            id=str(uuid.uuid4()), kind=kind, subject=subject,
+            code_hash=_code_hash(code), expires_at=now + timedelta(seconds=ttl_s),
             client_ip=client_ip,
-        )
-    )
+        ))
+    else:
+        row.code_hash = _code_hash(code)
+        row.expires_at = now + timedelta(seconds=ttl_s)
+        row.client_ip = client_ip
     await session.flush()
 
 

@@ -59,6 +59,10 @@ class SelfDeleteForbiddenError(UserServiceError):
     """Raised when an actor attempts to delete their own account."""
 
 
+class LastDeveloperForbiddenError(UserServiceError):
+    """Raised when an operation would leave no usable developer account."""
+
+
 DEFAULT_USER_ROLE = "guest"
 
 
@@ -342,6 +346,8 @@ class UserService:
     ) -> UserModel:
         """Update user status (admin operation)."""
         user = await self.get_user(user_id)
+        if status in ("disabled", "locked") and user.status == "active":
+            await self._ensure_not_last_developer(user_id)
         user.status = status
         user.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -355,6 +361,23 @@ class UserService:
         await self._mark_authorization_changed(user_id, "user_status_changed")
         await self.session.flush()
         return user
+
+    async def _ensure_not_last_developer(self, user_id: str) -> None:
+        rows = await self.session.scalars(
+            select(UserModel.id)
+            .join(UserRoleModel, UserRoleModel.user_id == UserModel.id)
+            .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
+            .where(
+                RoleModel.code == "developer",
+                RoleModel.status == "active",
+                UserModel.status == "active",
+                UserModel.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        developer_ids = set(rows.all())
+        if user_id in developer_ids and len(developer_ids) <= 1:
+            raise LastDeveloperForbiddenError("cannot disable the last active developer")
 
     async def verify_password(self, user: UserModel, password: str) -> bool:
         """Verify a password against the stored hash (non-blocking)."""
@@ -414,6 +437,7 @@ class UserService:
             raise SelfDeleteForbiddenError("Admin cannot delete their own account")
 
         user = await self.get_user(user_id)
+        await self._ensure_not_last_developer(user_id)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         user.status = "disabled"
         user.deleted_at = now

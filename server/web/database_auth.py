@@ -123,6 +123,38 @@ class DatabaseSessionAuth:
         self._hasher = PasswordHasherSingleton.get()
         self._username_rate_limiter = _RateLimiter(max_login_attempts, rate_window_s)
         self._client_rate_limiter = _RateLimiter(max_login_attempts, rate_window_s)
+        self._redis = None
+        self._rate_prefix = "nlp-agent:auth-login:"
+
+    def set_redis_client(self, redis_client: Any | None) -> None:
+        """Use the shared Redis limiter when the deployment provides Redis."""
+        self._redis = redis_client
+
+    async def _rate_allowed(self, username: str, client_key: str) -> bool:
+        if self._redis is None:
+            return self._username_rate_limiter.allowed(username) and self._client_rate_limiter.allowed(client_key)
+        for key in (f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}"):
+            value = await self._redis.get(key)
+            if value is not None and int(value) >= self._username_rate_limiter.max_attempts:
+                return False
+        return True
+
+    async def _rate_failure(self, username: str, client_key: str) -> None:
+        if self._redis is None:
+            self._username_rate_limiter.record_failure(username)
+            self._client_rate_limiter.record_failure(client_key)
+            return
+        for key in (f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}"):
+            count = await self._redis.incr(key)
+            if int(count) == 1:
+                await self._redis.expire(key, self._username_rate_limiter.window_s)
+
+    async def _rate_clear(self, username: str, client_key: str) -> None:
+        if self._redis is None:
+            self._username_rate_limiter.clear(username)
+            self._client_rate_limiter.clear(client_key)
+            return
+        await self._redis.delete(f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}")
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "DatabaseSessionAuth":
@@ -178,10 +210,7 @@ class DatabaseSessionAuth:
         workspace_id: str | None = None,
     ) -> tuple[str, DatabaseSessionClaims]:
         normalized = username.casefold()
-        if not (
-            self._username_rate_limiter.allowed(normalized)
-            and self._client_rate_limiter.allowed(client_key)
-        ):
+        if not await self._rate_allowed(normalized, client_key):
             raise AuthenticationError("too many login attempts")
 
         async with factory.begin() as session:
@@ -207,12 +236,10 @@ class DatabaseSessionAuth:
                 )
             )
             if not valid:
-                self._username_rate_limiter.record_failure(normalized)
-                self._client_rate_limiter.record_failure(client_key)
+                await self._rate_failure(normalized, client_key)
                 raise AuthenticationError("invalid credentials")
 
-            self._username_rate_limiter.clear(normalized)
-            self._client_rate_limiter.clear(client_key)
+            await self._rate_clear(normalized, client_key)
             now = _utc_now()
             user.last_login_at = now
             selected_workspace = await self._select_workspace(

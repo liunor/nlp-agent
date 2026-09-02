@@ -165,6 +165,12 @@ class RbacService:
         feedback_write_code = Permission.LEARNING_FEEDBACK_WRITE.value
         if feedback_write_code in permission_codes and scopes.get(feedback_write_code) != {"system"}:
             raise ValueError("learning:feedback:write must use system scope")
+        if role_code == "developer":
+            required = {Permission.SYSTEM_USER_MANAGE.value, Permission.SYSTEM_ROLE_MANAGE.value}
+            if required - permission_codes:
+                raise PermissionError("developer role must retain user and role management permissions")
+            if any(scopes.get(code) != {"system"} for code in required):
+                raise ValueError("developer management permissions must use system scope")
         await session.execute(delete(RolePermissionScopeModel).where(RolePermissionScopeModel.role_id == role.id))
         await session.execute(delete(RolePermissionModel).where(RolePermissionModel.role_id == role.id))
         for item in permissions:

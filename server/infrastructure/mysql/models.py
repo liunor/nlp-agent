@@ -1063,6 +1063,7 @@ class AuthCodeModel(Base):
 
     __tablename__ = "nlp_auth_codes"
     __table_args__ = (
+        UniqueConstraint("kind", "subject", name="uq_nlp_auth_codes_kind_subject"),
         Index("ix_nlp_auth_codes_kind_subject", "kind", "subject"),
         Index("ix_nlp_auth_codes_kind_ip_created", "kind", "client_ip", "created_at"),
     )
