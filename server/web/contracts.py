@@ -285,6 +285,19 @@ class QuotaPricingRuleBody(StrictModel):
     )
 
 
+class QuotaMeterPricingRuleBody(StrictModel):
+    capability_type: str = Field(min_length=1, max_length=64)
+    meter: str = Field(min_length=1, max_length=64)
+    pricing_key: str = Field(min_length=1, max_length=128)
+    version: str = Field(min_length=1, max_length=64)
+    unit: str = Field(min_length=1, max_length=32)
+    rate_micro: StrictInt = Field(ge=0)
+    rate_unit: StrictInt = Field(default=1, ge=1)
+    min_charge_micro: StrictInt = Field(default=0, ge=0)
+    effective_from: datetime
+    effective_until: datetime | None = None
+
+
 class QuotaBillingStatementBody(StrictModel):
     provider: str = Field(min_length=1, max_length=128)
     statement_id: str = Field(min_length=1, max_length=255)
@@ -292,6 +305,8 @@ class QuotaBillingStatementBody(StrictModel):
     billed_at: datetime
     billed_credits_micro: StrictInt | None = Field(default=None, ge=0)
     billed_tokens: dict[str, StrictInt] = Field(default_factory=dict)
+    billed_usage: dict[str, StrictInt] = Field(default_factory=dict)
+    usage_event_type: Literal["model", "capability"] = "model"
     idempotency_key: str = Field(min_length=1, max_length=255)
 
 

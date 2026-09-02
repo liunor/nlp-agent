@@ -5,14 +5,16 @@ from __future__ import annotations
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import Engine, and_, create_engine, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from server.quota.contracts import AdmitTurn, PolicyBinding, QuotaPolicy
 from server.quota.errors import QuotaDomainError, QuotaErrorCode
+from core.usage_metering.contracts import MeterPricingRule
 from server.quota.models import (
+    MeterPricingRuleModel,
     PolicyBindingModel,
     QuotaAdjustmentModel,
     QuotaGrantModel,
@@ -33,6 +35,14 @@ _SOURCE_TYPES = {"role", "purchase", "grant", "adjustment", "reset"}
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("quota timestamps must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _row_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
 
 
@@ -520,6 +530,139 @@ class QuotaManagementService:
                 select(PricingRuleModel).where(PricingRuleModel.id == pricing_rule_id)
             ).mappings().one()
         return {**self._pricing_rule_payload(updated), "retired_by": actor_user_id}
+
+    def create_meter_pricing_rule(
+        self,
+        *,
+        capability_type: str,
+        meter: str,
+        pricing_key: str,
+        version: str,
+        unit: str,
+        rate_micro: int,
+        rate_unit: int = 1,
+        min_charge_micro: int = 0,
+        effective_from: datetime,
+        effective_until: datetime | None = None,
+        created_by: str,
+    ) -> dict[str, Any]:
+        """Create one active, immutable meter pricing rule."""
+        candidate = MeterPricingRule(
+            capability_type=capability_type,
+            meter=meter,
+            pricing_key=pricing_key,
+            version=version,
+            unit=unit,
+            rate_micro=rate_micro,
+            rate_unit=rate_unit,
+            minimum_charge_micro=min_charge_micro,
+            effective_from=_utc(effective_from),
+            effective_until=_utc(effective_until) if effective_until else None,
+        )
+        with self._engine.begin() as connection:
+            existing = connection.execute(
+                select(MeterPricingRuleModel)
+                .where(
+                    MeterPricingRuleModel.pricing_key == candidate.pricing_key,
+                    MeterPricingRuleModel.meter == candidate.meter,
+                    MeterPricingRuleModel.version == candidate.version,
+                )
+                .with_for_update()
+            ).mappings().first()
+            if existing is not None:
+                raise QuotaDomainError(
+                    QuotaErrorCode.PRICING_RULE_CONFLICT,
+                    "Meter pricing rule key, meter, and version already exist",
+                )
+            existing_rows = connection.execute(
+                select(MeterPricingRuleModel)
+                .where(
+                    MeterPricingRuleModel.pricing_key == candidate.pricing_key,
+                    MeterPricingRuleModel.meter == candidate.meter,
+                )
+                .with_for_update()
+            ).mappings().all()
+            for row in existing_rows:
+                existing_from = _row_utc(row["effective_from"])
+                existing_until = _row_utc(row["effective_until"])
+                existing_rule = MeterPricingRule(
+                    capability_type=candidate.capability_type,
+                    meter=row["meter"],
+                    pricing_key=row["pricing_key"],
+                    version=row["version"],
+                    unit=row["unit"],
+                    rate_micro=row["rate_micro"],
+                    rate_unit=row["rate_unit"],
+                    minimum_charge_micro=row["minimum_charge_micro"],
+                    effective_from=existing_from,
+                    effective_until=existing_until,
+                )
+                if candidate.overlaps(existing_rule):
+                    raise QuotaDomainError(
+                        QuotaErrorCode.PRICING_RULE_CONFLICT,
+                        "Meter pricing rule overlaps with existing version",
+                    )
+            rule_id = str(uuid.uuid4())
+            now = datetime.now(UTC)
+            connection.execute(
+                insert(MeterPricingRuleModel).values(
+                    id=rule_id,
+                    meter=candidate.meter,
+                    pricing_key=candidate.pricing_key,
+                    version=candidate.version,
+                    unit=candidate.unit,
+                    rate_micro=candidate.rate_micro,
+                    rate_unit=candidate.rate_unit,
+                    minimum_charge_micro=candidate.minimum_charge_micro,
+                    effective_from=_db_time(candidate.effective_from),
+                    effective_until=_db_time(candidate.effective_until) if candidate.effective_until else None,
+                    status="active",
+                    created_by=created_by,
+                    created_at=_db_time(now),
+                )
+            )
+            row = connection.execute(
+                select(MeterPricingRuleModel).where(MeterPricingRuleModel.id == rule_id)
+            ).mappings().one()
+            return self._meter_pricing_rule_payload(row)
+
+    def list_meter_pricing_rules(
+        self,
+        *,
+        pricing_key: str | None = None,
+        meter: str | None = None,
+        **_kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            stmt = select(MeterPricingRuleModel.__table__).order_by(
+                MeterPricingRuleModel.pricing_key,
+                MeterPricingRuleModel.meter,
+                MeterPricingRuleModel.effective_from.desc(),
+            )
+            if pricing_key is not None:
+                stmt = stmt.where(MeterPricingRuleModel.pricing_key == pricing_key)
+            if meter is not None:
+                stmt = stmt.where(MeterPricingRuleModel.meter == meter)
+            return [self._meter_pricing_rule_payload(row) for row in connection.execute(stmt).mappings()]
+
+    @staticmethod
+    def _meter_pricing_rule_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "meter": row["meter"],
+            "pricing_key": row["pricing_key"],
+            "version": row["version"],
+            "unit": row["unit"],
+            "rate_micro": row["rate_micro"],
+            "rate_unit": row["rate_unit"],
+            "minimum_charge_micro": row["minimum_charge_micro"],
+            "min_charge_micro": row["minimum_charge_micro"],
+            "effective_from": _iso(row["effective_from"]),
+            "effective_until": _iso(row["effective_until"]),
+            "status": row["status"],
+            "created_by": row["created_by"],
+            "created_at": _iso(row["created_at"]),
+        }
 
     def bind_policy(
         self,

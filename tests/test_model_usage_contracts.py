@@ -331,3 +331,49 @@ def test_reporter_slot_sharing():
     assert slot.reporter is None
     slot.configure(reporter)
     assert slot.reporter is reporter
+
+
+def test_canonical_token_usage_multimodal_validations():
+    usage = CanonicalTokenUsage(
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=150,
+        text_input_tokens=60,
+        image_input_tokens=40,
+        provider_usage_details={"plugins.search.count": 1},
+        source="provider",
+    )
+    assert usage.text_input_tokens == 60
+    assert usage.image_input_tokens == 40
+    assert usage.provider_usage_details == {"plugins.search.count": 1}
+
+    # image tokens cannot exceed input tokens
+    with pytest.raises(ValidationError, match="image_input_tokens must not exceed input_tokens"):
+        CanonicalTokenUsage(
+            input_tokens=50,
+            output_tokens=10,
+            total_tokens=60,
+            image_input_tokens=60,
+            source="provider",
+        )
+
+    # text + image tokens cannot exceed input tokens
+    with pytest.raises(ValidationError, match="text_input_tokens \\+ image_input_tokens must not exceed input_tokens"):
+        CanonicalTokenUsage(
+            input_tokens=50,
+            output_tokens=10,
+            total_tokens=60,
+            text_input_tokens=35,
+            image_input_tokens=20,
+            source="provider",
+        )
+
+    # source=none cannot carry image or text tokens
+    with pytest.raises(ValidationError, match="source=none cannot carry token values"):
+        CanonicalTokenUsage(
+            input_tokens=10,
+            output_tokens=0,
+            total_tokens=10,
+            image_input_tokens=5,
+            source="none",
+        )

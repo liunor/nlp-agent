@@ -6,7 +6,10 @@ from sqlalchemy import Engine
 
 from configs.settings import settings
 from core.model_runtime.reporters import configure_global_model_usage_reporter
+from core.usage_metering.reporters import configure_global_capability_usage_reporter
+from server.quota.capability_reporting import DurableCapabilityUsageReporter
 from server.quota.errors import UsageReporterConfigurationError
+from server.quota.meter_pricing import MeterPricingCatalog
 from server.quota.reporting import DurableModelUsageReporter
 from server.quota.service import QuotaService
 
@@ -49,4 +52,50 @@ def shutdown_usage_reporter(
     if reporter is None:
         return
     configure_global_model_usage_reporter(None)
+    reporter.close()
+
+
+def configure_capability_usage_reporter(
+    database: str | Engine | None = None,
+    *,
+    required: bool = False,
+    quota_enforcement: bool = False,
+    pricing_catalog: MeterPricingCatalog | None = None,
+) -> DurableCapabilityUsageReporter | None:
+    """Install the durable Capability Usage Reporter, optionally failing closed without a DB."""
+    resolved = database
+    if resolved is None:
+        resolved = settings.NLP_AGENT_DATABASE_URL.strip()
+    if resolved is None or (isinstance(resolved, str) and not resolved.strip()):
+        if required:
+            raise UsageReporterConfigurationError(
+                "Durable capability usage Reporter is required but NLP_AGENT_DATABASE_URL is not configured"
+            )
+        return None
+    quota_service = QuotaService(resolved) if quota_enforcement else None
+    try:
+        if quota_service is not None:
+            quota_service.verify_schema()
+        reporter = DurableCapabilityUsageReporter(
+            resolved,
+            quota_service=quota_service,
+            pricing_catalog=pricing_catalog,
+        )
+    except Exception:
+        if quota_service is not None:
+            quota_service.close()
+        raise
+    if required:
+        configure_global_capability_usage_reporter(reporter, required=True)
+    else:
+        configure_global_capability_usage_reporter(reporter)
+    return reporter
+
+
+def shutdown_capability_usage_reporter(
+    reporter: DurableCapabilityUsageReporter | None,
+) -> None:
+    if reporter is None:
+        return
+    configure_global_capability_usage_reporter(None)
     reporter.close()

@@ -136,6 +136,12 @@ class UsageEventModel(Base):
     finish_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_kind: Mapped[str | None] = mapped_column(String(128), nullable=True)
     input_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    text_input_tokens: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), nullable=True
+    )
+    image_input_tokens: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, default=0
+    )
     cached_input_tokens: Mapped[int] = mapped_column(
         BIGINT(unsigned=True), nullable=False
     )
@@ -154,6 +160,7 @@ class UsageEventModel(Base):
         BIGINT(unsigned=True), nullable=True
     )
     raw_usage_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    usage_details_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
@@ -167,8 +174,120 @@ class UsageEventModel(Base):
     )
 
 
+class MeterPricingRuleModel(Base):
+    """Versioned pricing rules for non-model capability meters."""
+
+    __tablename__ = "nlp_meter_pricing_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "pricing_key", "version", "meter",
+            name="uq_nlp_meter_pricing_rules_key_ver_meter",
+        ),
+        CheckConstraint("rate_unit > 0", name="ck_nlp_meter_pricing_rules_rate_unit"),
+        CheckConstraint(
+            "effective_until IS NULL OR effective_until > effective_from",
+            name="ck_nlp_meter_pricing_rules_effective_range",
+        ),
+        Index(
+            "ix_nlp_meter_pricing_rules_key_eff",
+            "pricing_key",
+            "effective_from",
+            "effective_until",
+        ),
+        Index(
+            "ix_nlp_meter_pricing_rules_status_eff",
+            "status",
+            "effective_from",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    pricing_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    meter: Mapped[str] = mapped_column(String(128), nullable=False)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    rate_unit: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    rate_micro: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    minimum_charge_micro: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, default=0
+    )
+    effective_from: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    effective_until: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), nullable=False, default=_utc_now
+    )
+
+
+class CapabilityUsageEventModel(Base):
+    """Append-only fact row for one non-model capability execution."""
+
+    __tablename__ = "nlp_capability_usage_events"
+    __table_args__ = (
+        UniqueConstraint("operation_id", name="uq_nlp_capability_usage_events_op_id"),
+        UniqueConstraint("idempotency_key", name="uq_nlp_capability_usage_events_idemp_key"),
+        Index("ix_nlp_cap_usage_user_occurred", "user_id", "occurred_at"),
+        Index("ix_nlp_cap_usage_workspace_occurred", "workspace_id", "occurred_at"),
+        Index("ix_nlp_cap_usage_type_occurred", "capability_type", "occurred_at"),
+        Index("ix_nlp_cap_usage_provider_occurred", "provider", "occurred_at"),
+        Index("ix_nlp_cap_usage_status_occurred", "usage_status", "occurred_at"),
+        Index("ix_nlp_cap_usage_res_occurred", "reservation_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    parent_operation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reservation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    turn_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    capability_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider_response_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pricing_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    pricing_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    usage_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    usage_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    credits_micro: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
+    raw_usage_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, default=_utc_now)
+    archived_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    archive_batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class CapabilityUsageItemModel(Base):
+    """Detailed meter line item for one capability usage event."""
+
+    __tablename__ = "nlp_capability_usage_items"
+    __table_args__ = (
+        UniqueConstraint("event_id", "meter", name="uq_nlp_capability_usage_items_event_meter"),
+        Index("ix_nlp_capability_usage_items_meter_created", "meter", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    event_id: Mapped[str] = mapped_column(ForeignKey("nlp_capability_usage_events.id"), nullable=False)
+    meter: Mapped[str] = mapped_column(String(128), nullable=False)
+    quantity: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    rate_unit: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
+    rate_micro: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
+    line_credits_micro: Mapped[int | None] = mapped_column(BIGINT(unsigned=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, default=_utc_now)
+
+
 PricingRuleModel.__table__.comment = TABLE_COMMENTS["nlp_pricing_rules"]
+MeterPricingRuleModel.__table__.comment = TABLE_COMMENTS["nlp_meter_pricing_rules"]
 UsageEventModel.__table__.comment = TABLE_COMMENTS["nlp_usage_events"]
+CapabilityUsageEventModel.__table__.comment = TABLE_COMMENTS["nlp_capability_usage_events"]
+CapabilityUsageItemModel.__table__.comment = TABLE_COMMENTS["nlp_capability_usage_items"]
 
 
 class QuotaPolicyModel(Base):
@@ -734,8 +853,15 @@ class QuotaProviderBillingModel(Base):
     billed_credits_micro: Mapped[int | None] = mapped_column(
         BIGINT(unsigned=True), nullable=True
     )
-    billed_tokens_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    usage_event_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="model"
+    )
+    billed_tokens_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    billed_usage_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     matched_usage_event_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    matched_capability_event_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True
     )
     local_credits_micro: Mapped[int | None] = mapped_column(BIGINT, nullable=True)

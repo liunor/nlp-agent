@@ -38,6 +38,11 @@ from core.model_runtime.usage import (
 from core.observability.context import current_telemetry_context
 from core.observability.models import SpanKind, SpanStatus
 from core.observability.runtime import global_telemetry
+from core.usage_metering.contracts import CapabilityUsageEvent, MeteredUsageItem
+from core.usage_metering.reporters import (
+    CapabilityUsageConflictError,
+    get_global_capability_reporter_slot,
+)
 from utils.logger import get_logger
 
 
@@ -112,6 +117,10 @@ def _merge_delta_usage(
     """Add provider-reported per-chunk deltas without double-counting them."""
     if current is None or current.source == "none":
         return incoming.model_copy(update={"semantics": "delta"})
+    text_tokens = None
+    if current.text_input_tokens is not None or incoming.text_input_tokens is not None:
+        text_tokens = (current.text_input_tokens or 0) + (incoming.text_input_tokens or 0)
+    details = {**current.provider_usage_details, **incoming.provider_usage_details}
     return CanonicalTokenUsage(
         input_tokens=current.input_tokens + incoming.input_tokens,
         cached_input_tokens=current.cached_input_tokens + incoming.cached_input_tokens,
@@ -121,6 +130,9 @@ def _merge_delta_usage(
         reasoning_output_tokens=current.reasoning_output_tokens
         + incoming.reasoning_output_tokens,
         total_tokens=current.total_tokens + incoming.total_tokens,
+        text_input_tokens=text_tokens,
+        image_input_tokens=current.image_input_tokens + incoming.image_input_tokens,
+        provider_usage_details=details,
         source="provider",
         semantics="delta",
         provider_response_id=incoming.provider_response_id
@@ -342,6 +354,48 @@ class ResilientChatModel:
             completed_at=datetime.now(timezone.utc),
         )
         await self.reporter_slot.reporter.report(invocation, usage, outcome)
+
+        search_count = usage.provider_usage_details.get("plugins.search.count")
+        if isinstance(search_count, int) and search_count > 0:
+            cap_slot = get_global_capability_reporter_slot()
+            if cap_slot is not None and cap_slot.reporter is not None:
+                pricing_key = (
+                    f"{invocation.identity.provider}/cn-beijing/web-search/turbo"
+                    if "qwen" in invocation.identity.provider.lower()
+                    else f"{invocation.identity.provider}/web-search/turbo"
+                )
+                search_event = CapabilityUsageEvent(
+                    operation_id=f"{invocation.operation_id}:native-search",
+                    parent_operation_id=invocation.operation_id,
+                    reservation_id=invocation.attribution.reservation_id,
+                    request_id=invocation.attribution.request_id,
+                    user_id=invocation.attribution.user_id,
+                    workspace_id=invocation.attribution.workspace_id,
+                    conversation_id=invocation.attribution.conversation_id,
+                    turn_id=invocation.attribution.turn_id,
+                    worker_id=invocation.attribution.worker_id,
+                    purpose=invocation.attribution.purpose,
+                    capability_type="search",
+                    provider=invocation.identity.provider,
+                    pricing_key=pricing_key,
+                    provider_response_id=usage.provider_response_id,
+                    usage_source="provider",
+                    usage_status="exact",
+                    items=(
+                        MeteredUsageItem(
+                            meter="search.requests",
+                            quantity=search_count,
+                            unit="call",
+                        ),
+                    ),
+                    occurred_at=outcome.completed_at,
+                    raw_usage={"search_count": search_count},
+                )
+                await cap_slot.reporter.report(search_event)
+            elif cap_slot is not None and getattr(cap_slot, "required", False):
+                raise CapabilityUsageConflictError(
+                    "This capability process requires a configured capability usage Reporter"
+                )
 
     async def _report_attempt_guarded(self, **kwargs: Any) -> None:
         """Tag Reporter failures while executing inside a Provider try block."""

@@ -4,6 +4,9 @@ import pytest
 
 from server.infrastructure.mysql.base import Base
 from server.quota.models import (
+    CapabilityUsageEventModel,
+    CapabilityUsageItemModel,
+    MeterPricingRuleModel,
     PolicyBindingModel,
     QuotaAdjustmentModel,
     QuotaAlertModel,
@@ -69,6 +72,9 @@ def test_quota_schema_verification_probes_counter_primary_key():
             QuotaProviderBillingModel.__table__,
             QuotaUsageArchiveBatchModel.__table__,
             QuotaAlertModel.__table__,
+            MeterPricingRuleModel.__table__,
+            CapabilityUsageEventModel.__table__,
+            CapabilityUsageItemModel.__table__,
         ],
     )
 
@@ -100,6 +106,9 @@ def test_quota_schema_verification_probes_daily_weekly_policy_columns():
             QuotaProviderBillingModel.__table__,
             QuotaUsageArchiveBatchModel.__table__,
             QuotaAlertModel.__table__,
+            MeterPricingRuleModel.__table__,
+            CapabilityUsageEventModel.__table__,
+            CapabilityUsageItemModel.__table__,
         ],
     )
     with engine.begin() as connection:

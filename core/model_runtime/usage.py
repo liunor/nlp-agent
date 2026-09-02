@@ -73,12 +73,23 @@ class CanonicalTokenUsage(UsageFrozenModel):
     output_tokens: StrictNonNegativeInt = 0
     reasoning_output_tokens: StrictNonNegativeInt = 0
     total_tokens: StrictNonNegativeInt = 0
+    text_input_tokens: StrictNonNegativeInt | None = None
+    image_input_tokens: StrictNonNegativeInt = 0
+    provider_usage_details: dict[str, object] = Field(default_factory=dict)
     source: UsageSource = "none"
     semantics: UsageSemantics = "final"
     provider_response_id: str | None = None
 
     @model_validator(mode="after")
     def validate_subsets_and_total(self) -> "CanonicalTokenUsage":
+        if self.image_input_tokens > self.input_tokens:
+            raise ValueError("image_input_tokens must not exceed input_tokens")
+        if self.text_input_tokens is not None and (
+            self.text_input_tokens + self.image_input_tokens > self.input_tokens
+        ):
+            raise ValueError(
+                "text_input_tokens + image_input_tokens must not exceed input_tokens"
+            )
         if self.cached_input_tokens + self.cache_write_input_tokens > self.input_tokens:
             raise ValueError(
                 "cached_input_tokens + cache_write_input_tokens "
@@ -95,6 +106,8 @@ class CanonicalTokenUsage(UsageFrozenModel):
             self.output_tokens,
             self.reasoning_output_tokens,
             self.total_tokens,
+            self.image_input_tokens,
+            self.text_input_tokens,
         )):
             raise ValueError("source=none cannot carry token values")
         return self

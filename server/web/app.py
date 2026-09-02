@@ -94,6 +94,7 @@ from server.web.contracts import (
     QuotaGrantBody,
     QuotaGrantRevokeBody,
     QuotaPricingRuleBody,
+    QuotaMeterPricingRuleBody,
     QuotaPolicyBody,
     QuotaPolicyUpdateBody,
     QuotaUsageArchiveBody,
@@ -1217,6 +1218,15 @@ def create_app(
             raise RuntimeError("Quota operations require the Phase 4 database schema")
         return QuotaOperationsService(quota_service.engine)
 
+    def quota_usage_reader_for(request: Request) -> UsageReadService:
+        service = getattr(request.app.state, "quota_usage_reader", None)
+        if service is not None:
+            return service
+        quota_service = getattr(request.app.state.gateway, "quota_service", None)
+        if quota_service is None:
+            raise RuntimeError("Quota usage reader requires the database schema")
+        return UsageReadService(quota_service.engine)
+
     async def audit_quota_change(
         request: Request,
         principal: AuthenticatedPrincipal,
@@ -1399,6 +1409,90 @@ def create_app(
             },
         )
         return row
+
+    @app.get("/api/v1/developer/quota/meter-pricing-rules", tags=["quota"])
+    async def list_quota_meter_pricing_rules(
+        request: Request,
+        principal: Principal,
+        capability_type: str | None = Query(default=None, max_length=64),
+        pricing_key: str | None = Query(default=None, max_length=128),
+        meter: str | None = Query(default=None, max_length=64),
+    ):
+        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        return {"items": await asyncio.to_thread(
+            quota_management_for(request).list_meter_pricing_rules,
+            capability_type=capability_type,
+            pricing_key=pricing_key,
+            meter=meter,
+        )}
+
+    @app.post(
+        "/api/v1/developer/quota/meter-pricing-rules",
+        status_code=status.HTTP_201_CREATED,
+        tags=["quota"],
+    )
+    async def create_quota_meter_pricing_rule(
+        body: QuotaMeterPricingRuleBody,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        try:
+            row = await asyncio.to_thread(
+                quota_management_for(request).create_meter_pricing_rule,
+                **body.model_dump(),
+                created_by=principal.user_id,
+            )
+        except QuotaDomainError as error:
+            return quota_domain_problem(request, error)
+        except ValueError as error:
+            return _problem(
+                request,
+                status_code=422,
+                code="quota_meter_pricing_rule_invalid",
+                title="计量价格规则创建失败",
+                detail=str(error),
+            )
+        await audit_quota_change(
+            request,
+            principal,
+            reason_code="quota_meter_pricing_rule_created",
+            resource_type="quota_meter_pricing_rule",
+            resource_id=row["id"],
+            detail={
+                "capability_type": row["capability_type"],
+                "pricing_key": row["pricing_key"],
+                "meter": row["meter"],
+                "version": row["version"],
+            },
+        )
+        return row
+
+    @app.get("/api/v1/developer/quota/capability-events", tags=["quota"])
+    async def list_quota_capability_events(
+        request: Request,
+        principal: Principal,
+        user_id: str | None = Query(default=None, max_length=64),
+        workspace_id: str | None = Query(default=None, max_length=64),
+        capability_type: str | None = Query(default=None, max_length=64),
+        provider: str | None = Query(default=None, max_length=64),
+        usage_status: str | None = Query(default=None, max_length=32),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ):
+        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        events = await asyncio.to_thread(
+            quota_usage_reader_for(request).list_capability_events,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            capability_type=capability_type,
+            provider=provider,
+            usage_status=usage_status,
+            limit=limit,
+            offset=offset,
+        )
+        return {"items": events}
 
     @app.get("/api/v1/developer/quota/policies/{policy_id}", tags=["quota"])
     async def get_quota_policy(policy_id: str, request: Request, principal: Principal):

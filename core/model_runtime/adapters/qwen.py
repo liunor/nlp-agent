@@ -72,7 +72,9 @@ class QwenChatModel(ChatOpenAI):
         result = super()._create_chat_result(response, generation_info)
         raw = response if isinstance(response, dict) else response.model_dump()
         response_id = raw.get("id")
-        raw_usage = raw.get("usage") or {}
+        raw_usage = dict(raw.get("usage") or {})
+        if "plugins" in raw and "plugins" not in raw_usage:
+            raw_usage["plugins"] = raw["plugins"]
         usage = normalize_usage(raw_usage)
         choices = raw.get("choices") or []
         for index, generation in enumerate(result.generations):
@@ -111,7 +113,9 @@ class QwenChatModel(ChatOpenAI):
             if reasoning:
                 result.message.additional_kwargs["reasoning_content"] = reasoning
         if chunk.get("usage"):
-            raw_usage = chunk["usage"]
+            raw_usage = dict(chunk["usage"])
+            if "plugins" in chunk and "plugins" not in raw_usage:
+                raw_usage["plugins"] = chunk["plugins"]
             usage = normalize_usage(raw_usage, default_semantics="cumulative")
             result.message.additional_kwargs["provider_usage"] = usage
             result.message.additional_kwargs["provider_usage_raw"] = raw_usage

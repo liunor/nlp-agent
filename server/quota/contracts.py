@@ -22,7 +22,7 @@ PolicySubjectType = Literal["default", "role", "user", "workspace", "classroom"]
 GrantOwnerType = Literal["user", "workspace", "classroom"]
 GrantSourceType = Literal["role", "purchase", "grant", "adjustment", "reset"]
 GrantStatus = Literal["active", "exhausted", "expired", "revoked"]
-UsageSource = Literal["provider", "estimated", "none"]
+UsageSource = Literal["provider", "measured", "estimated", "none"]
 UsageStatus = Literal["exact", "estimated", "pending", "unavailable"]
 ReservationStatus = Literal[
     "reserved", "running", "settling", "settled", "released", "expired"

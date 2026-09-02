@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy import Engine, create_engine, select
 
 from server.infrastructure.mysql.models import ObservabilityRecordModel
-from server.quota.models import UsageEventModel
+from server.quota.models import (
+    CapabilityUsageEventModel,
+    CapabilityUsageItemModel,
+    UsageEventModel,
+)
 from server.quota.service import QuotaService
 
 
 TOKEN_FIELDS = (
     "input_tokens",
+    "text_input_tokens",
+    "image_input_tokens",
     "cached_input_tokens",
     "cache_write_input_tokens",
     "output_tokens",
@@ -292,6 +299,14 @@ class UsageReadService:
         output_details = usage.get("output_token_details") or {}
         return {
             "input_tokens": int(usage.get("input_tokens") or 0),
+            "text_input_tokens": int(
+                input_details.get("text_tokens", usage.get("text_input_tokens", 0))
+                or 0
+            ),
+            "image_input_tokens": int(
+                input_details.get("image_tokens", usage.get("image_input_tokens", 0))
+                or 0
+            ),
             "cached_input_tokens": int(
                 input_details.get("cache_read", usage.get("cached_tokens", 0))
                 or 0
@@ -305,6 +320,104 @@ class UsageReadService:
                 or 0
             ),
             "total_tokens": int(usage.get("total_tokens") or 0),
+        }
+
+    def list_capability_events(
+        self,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        capability_type: str | None = None,
+        provider: str | None = None,
+        usage_status: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            stmt = select(CapabilityUsageEventModel.__table__)
+            if user_id is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.user_id == user_id)
+            if workspace_id is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.workspace_id == workspace_id)
+            if capability_type is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.capability_type == capability_type)
+            if provider is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.provider == provider)
+            if usage_status is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.usage_status == usage_status)
+            if start is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.occurred_at >= start)
+            if end is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.occurred_at < end)
+            stmt = (
+                stmt.order_by(CapabilityUsageEventModel.occurred_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            event_rows = connection.execute(stmt).mappings().all()
+            if not event_rows:
+                return []
+
+            event_ids = [row["id"] for row in event_rows]
+            items_by_event: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            item_rows = connection.execute(
+                select(CapabilityUsageItemModel.__table__).where(
+                    CapabilityUsageItemModel.event_id.in_(event_ids)
+                )
+            ).mappings().all()
+            for item in item_rows:
+                items_by_event[item["event_id"]].append(dict(item))
+
+            results = []
+            for ev in event_rows:
+                ev_dict = dict(ev)
+                ev_dict["items"] = items_by_event.get(ev["id"], [])
+                results.append(ev_dict)
+            return results
+
+    def summarize_capability_usage(
+        self,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> dict[str, Any]:
+        events = self.list_capability_events(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            start=start,
+            end=end,
+            limit=10000,
+            offset=0,
+        )
+        by_capability: dict[str, dict[str, Any]] = {}
+        total_credits = 0
+        for ev in events:
+            cap = ev["capability_type"]
+            credits = ev.get("credits_micro") or 0
+            total_credits += credits
+            if cap not in by_capability:
+                by_capability[cap] = {
+                    "capability_type": cap,
+                    "event_count": 0,
+                    "credits_micro": 0,
+                    "meters": {},
+                }
+            by_capability[cap]["event_count"] += 1
+            by_capability[cap]["credits_micro"] += credits
+            for item in ev.get("items", []):
+                meter = item["meter"]
+                qty = item["quantity"]
+                by_capability[cap]["meters"][meter] = (
+                    by_capability[cap]["meters"].get(meter, 0) + qty
+                )
+        return {
+            "total_credits_micro": total_credits,
+            "total_events": len(events),
+            "by_capability": list(by_capability.values()),
         }
 
     def close(self) -> None:

@@ -42,17 +42,48 @@ def _extract_usage_details(metadata: Mapping[str, Any] | None) -> dict[str, Any]
     input_details = {
         k: v
         for k, v in (
-            raw.get("input_token_details") or raw.get("prompt_tokens_details") or {}
+            raw.get("input_token_details")
+            or raw.get("prompt_tokens_details")
+            or raw.get("input_tokens_details")
+            or {}
         ).items()
         if v is not None
     }
     output_details = {
         k: v
         for k, v in (
-            raw.get("output_token_details") or raw.get("completion_tokens_details") or {}
+            raw.get("output_token_details")
+            or raw.get("completion_tokens_details")
+            or raw.get("output_tokens_details")
+            or {}
         ).items()
         if v is not None
     }
+
+    raw_image = (
+        input_details.get("image_tokens")
+        or raw.get("image_tokens")
+        or (raw.get("input_tokens_details") or {}).get("image_tokens")
+        or (raw.get("prompt_tokens_details") or {}).get("image_tokens")
+        or (raw.get("input_token_details") or {}).get("image_tokens")
+    )
+    raw_text = (
+        input_details.get("text_tokens")
+        or raw.get("text_tokens")
+        or (raw.get("input_tokens_details") or {}).get("text_tokens")
+        or (raw.get("prompt_tokens_details") or {}).get("text_tokens")
+        or (raw.get("input_token_details") or {}).get("text_tokens")
+    )
+
+    raw_search = None
+    plugins_candidate = raw.get("plugins")
+    if plugins_candidate is None and isinstance(raw.get("usage"), dict):
+        plugins_candidate = raw["usage"].get("plugins")
+    if isinstance(plugins_candidate, dict):
+        search_info = plugins_candidate.get("search") or plugins_candidate.get("web_search")
+        if isinstance(search_info, dict) and search_info.get("count") is not None:
+            raw_search = search_info.get("count")
+
     return {
         "raw": raw,
         "input_details": input_details,
@@ -84,6 +115,9 @@ def _extract_usage_details(metadata: Mapping[str, Any] | None) -> dict[str, Any]
             "reasoning_tokens",
             output_details.get("reasoning", output_details.get("reasoning_tokens", 0)),
         ),
+        "raw_image": raw_image,
+        "raw_text": raw_text,
+        "raw_search": raw_search,
         "raw_total": raw.get("total_tokens"),
     }
 
@@ -102,16 +136,27 @@ def normalize_usage(
     reasoning = int(extracted["raw_reasoning"] or 0)
     total_val = extracted["raw_total"]
     total = int(total_val if total_val is not None else (input_tokens + output_tokens))
-    return {
+
+    image_tokens = int(extracted["raw_image"] or 0)
+    text_tokens = int(extracted["raw_text"]) if extracted["raw_text"] is not None else None
+    search_count = int(extracted["raw_search"]) if extracted["raw_search"] is not None else None
+
+    norm_input_details = {
+        **extracted["input_details"],
+        "cache_read": max(0, cache_read),
+        "cache_miss": max(0, cache_miss),
+        "cache_write": max(0, cache_write),
+    }
+    if image_tokens > 0 or "image_tokens" in extracted["input_details"]:
+        norm_input_details["image_tokens"] = max(0, image_tokens)
+    if text_tokens is not None:
+        norm_input_details["text_tokens"] = max(0, text_tokens)
+
+    result: dict[str, Any] = {
         "input_tokens": max(0, input_tokens),
         "output_tokens": max(0, output_tokens),
         "total_tokens": max(0, total),
-        "input_token_details": {
-            **extracted["input_details"],
-            "cache_read": max(0, cache_read),
-            "cache_miss": max(0, cache_miss),
-            "cache_write": max(0, cache_write),
-        },
+        "input_token_details": norm_input_details,
         "output_token_details": {
             **extracted["output_details"],
             "reasoning": max(0, reasoning),
@@ -125,6 +170,13 @@ def normalize_usage(
             default_semantics,
         ),
     }
+    if image_tokens > 0:
+        result["image_input_tokens"] = image_tokens
+    if text_tokens is not None:
+        result["text_input_tokens"] = text_tokens
+    if search_count is not None:
+        result["plugins.search.count"] = search_count
+    return result
 
 
 def canonical_usage(
@@ -140,6 +192,9 @@ def canonical_usage(
                 input_tokens=0,
                 output_tokens=0,
                 total_tokens=0,
+                text_input_tokens=None,
+                image_input_tokens=0,
+                provider_usage_details={},
                 source="provider",
                 semantics=semantics,
                 provider_response_id=provider_response_id,
@@ -148,6 +203,9 @@ def canonical_usage(
             input_tokens=0,
             output_tokens=0,
             total_tokens=0,
+            text_input_tokens=None,
+            image_input_tokens=0,
+            provider_usage_details={},
             source="none",
             semantics=semantics,
             provider_response_id=provider_response_id,
@@ -165,7 +223,27 @@ def canonical_usage(
     reasoning_output_tokens = _parse_token_int(
         extracted["raw_reasoning"], "reasoning_output_tokens"
     )
+    image_input_tokens = _parse_token_int(extracted["raw_image"], "image_input_tokens")
+    text_input_tokens = (
+        _parse_token_int(extracted["raw_text"], "text_input_tokens")
+        if extracted["raw_text"] is not None
+        else None
+    )
     total_tokens = input_tokens + output_tokens
+
+    provider_usage_details: dict[str, object] = {}
+    if extracted["raw_search"] is not None:
+        provider_usage_details["plugins.search.count"] = int(extracted["raw_search"])
+    if image_input_tokens > 0:
+        provider_usage_details["image_tokens"] = image_input_tokens
+    if text_input_tokens is not None:
+        provider_usage_details["text_tokens"] = text_input_tokens
+    if cached_input_tokens > 0:
+        provider_usage_details["cached_tokens"] = cached_input_tokens
+    if cache_write_input_tokens > 0:
+        provider_usage_details["cache_write_tokens"] = cache_write_input_tokens
+    if reasoning_output_tokens > 0:
+        provider_usage_details["reasoning_tokens"] = reasoning_output_tokens
 
     has_tokens = any((
         input_tokens,
@@ -173,6 +251,8 @@ def canonical_usage(
         cache_write_input_tokens,
         output_tokens,
         reasoning_output_tokens,
+        image_input_tokens,
+        text_input_tokens is not None,
     ))
 
     resolved_source: UsageSource = (
@@ -188,6 +268,9 @@ def canonical_usage(
         output_tokens=output_tokens,
         reasoning_output_tokens=reasoning_output_tokens,
         total_tokens=total_tokens,
+        text_input_tokens=text_input_tokens,
+        image_input_tokens=image_input_tokens,
+        provider_usage_details=provider_usage_details,
         source=resolved_source,
         semantics=_usage_semantics(
             extracted["raw"].get("usage_semantics")

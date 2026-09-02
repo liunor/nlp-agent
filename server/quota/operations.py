@@ -26,6 +26,7 @@ from server.infrastructure.mysql.models import (
 )
 from server.quota.management import QuotaManagementService
 from server.quota.models import (
+    CapabilityUsageEventModel,
     QuotaAlertModel,
     QuotaAdjustmentModel,
     QuotaBucketModel,
@@ -487,6 +488,15 @@ class QuotaOperationsService:
                 UsageEventModel.provider == provider,
             )
         ).mappings().first()
+        cap_usage = None
+        if usage is None:
+            cap_usage = connection.execute(
+                select(CapabilityUsageEventModel)
+                .where(
+                    CapabilityUsageEventModel.operation_id == operation_id,
+                    CapabilityUsageEventModel.provider == provider,
+                )
+            ).mappings().first()
         values = self._billing_values(
             provider=provider,
             statement_id=statement_id,
@@ -497,6 +507,7 @@ class QuotaOperationsService:
             idempotency_key=idempotency_key,
             raw_payload=raw_payload,
             usage=usage,
+            cap_usage=cap_usage,
             checked_at=checked_at,
         )
         try:
@@ -548,9 +559,33 @@ class QuotaOperationsService:
                 UsageEventModel.provider == row["provider"],
             )
         ).mappings().first()
-        local = usage["credits_micro"] if usage is not None else None
-        billed = row["billed_credits_micro"]
+        cap_usage = None
         if usage is None:
+            cap_usage = connection.execute(
+                select(CapabilityUsageEventModel).where(
+                    CapabilityUsageEventModel.operation_id == row["operation_id"],
+                    CapabilityUsageEventModel.provider == row["provider"],
+                )
+            ).mappings().first()
+
+        if usage is not None:
+            local = usage["credits_micro"]
+            matched_usage_id = usage["id"]
+            matched_cap_id = None
+            usage_type = "model"
+        elif cap_usage is not None:
+            local = cap_usage["credits_micro"]
+            matched_usage_id = None
+            matched_cap_id = cap_usage["id"]
+            usage_type = "capability"
+        else:
+            local = None
+            matched_usage_id = None
+            matched_cap_id = None
+            usage_type = "model"
+
+        billed = row["billed_credits_micro"]
+        if usage is None and cap_usage is None:
             status = "unmatched"
         elif billed is None or local is None:
             status = "pending"
@@ -563,7 +598,9 @@ class QuotaOperationsService:
             update(QuotaProviderBillingModel)
             .where(QuotaProviderBillingModel.id == row["id"])
             .values(
-                matched_usage_event_id=usage["id"] if usage is not None else None,
+                usage_event_type=usage_type,
+                matched_usage_event_id=matched_usage_id,
+                matched_capability_event_id=matched_cap_id,
                 local_credits_micro=local,
                 difference_micro=difference,
                 status=status,
@@ -579,9 +616,25 @@ class QuotaOperationsService:
     @staticmethod
     def _billing_values(**kwargs: Any) -> dict[str, Any]:
         usage = kwargs.pop("usage")
+        cap_usage = kwargs.pop("cap_usage", None)
         billed = kwargs.pop("billed_credits_micro")
-        local = usage["credits_micro"] if usage is not None else None
-        if usage is None:
+        if usage is not None:
+            local = usage["credits_micro"]
+            usage_type = "model"
+            matched_usage_id = usage["id"]
+            matched_cap_id = None
+        elif cap_usage is not None:
+            local = cap_usage["credits_micro"]
+            usage_type = "capability"
+            matched_usage_id = None
+            matched_cap_id = cap_usage["id"]
+        else:
+            local = None
+            usage_type = "model"
+            matched_usage_id = None
+            matched_cap_id = None
+
+        if usage is None and cap_usage is None:
             status = "unmatched"
         elif billed is None or local is None:
             status = "pending"
@@ -596,8 +649,11 @@ class QuotaOperationsService:
             "operation_id": kwargs["operation_id"],
             "billed_at": _db_time(kwargs["billed_at"]),
             "billed_credits_micro": billed,
-            "billed_tokens_json": kwargs["billed_tokens"],
-            "matched_usage_event_id": usage["id"] if usage is not None else None,
+            "usage_event_type": usage_type,
+            "billed_tokens_json": kwargs.get("billed_tokens") or {},
+            "billed_usage_json": kwargs.get("billed_tokens") or {},
+            "matched_usage_event_id": matched_usage_id,
+            "matched_capability_event_id": matched_cap_id,
             "local_credits_micro": local,
             "difference_micro": None if billed is None or local is None else int(billed) - int(local),
             "status": status,
@@ -615,8 +671,11 @@ class QuotaOperationsService:
             "operation_id": row["operation_id"],
             "billed_at": _payload_value(row["billed_at"]),
             "billed_credits_micro": row["billed_credits_micro"],
+            "usage_event_type": row.get("usage_event_type", "model"),
             "billed_tokens": row["billed_tokens_json"],
+            "billed_usage": row.get("billed_usage_json") or {},
             "matched_usage_event_id": row["matched_usage_event_id"],
+            "matched_capability_event_id": row.get("matched_capability_event_id"),
             "local_credits_micro": row["local_credits_micro"],
             "difference_micro": row["difference_micro"],
             "status": row["status"],

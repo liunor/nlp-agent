@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from core.tool_config import WebToolsConfig
+from core.usage_metering.context import create_capability_event
+from core.usage_metering.contracts import MeteredUsageItem
+from core.usage_metering.reporters import (
+    CapabilityUsageConflictError,
+    get_global_capability_reporter_slot,
+)
 from server.tools.web.cache import TTLCache, cache_key
 from server.tools.web.contracts import (
     UNTRUSTED_CONTENT_BANNER,
@@ -105,7 +112,56 @@ class WebFetchService:
             truncated=result.truncated,
             response_bytes=download["response_bytes"],
         )
+        await self._report_usage(
+            url=download["final_url"],
+            status_code=result.status_code,
+            content_type=download.get("content_type", ""),
+            response_bytes=download["response_bytes"],
+        )
         return result
+
+    async def _report_usage(
+        self,
+        *,
+        url: str,
+        status_code: int,
+        content_type: str,
+        response_bytes: int,
+    ) -> None:
+        slot = get_global_capability_reporter_slot()
+        if slot is None or slot.reporter is None:
+            if slot is not None and getattr(slot, "required", False):
+                raise CapabilityUsageConflictError(
+                    "This capability process requires a configured capability usage Reporter"
+                )
+            return
+        event = create_capability_event(
+            operation_id=str(uuid.uuid4()),
+            capability_type="web_fetch",
+            provider="internal",
+            pricing_key="internal/web-fetch/v1",
+            items=(
+                MeteredUsageItem(
+                    meter="web_fetch.requests",
+                    quantity=1,
+                    unit="call",
+                ),
+                MeteredUsageItem(
+                    meter="web_fetch.bytes",
+                    quantity=max(0, response_bytes),
+                    unit="byte",
+                ),
+            ),
+            usage_source="measured",
+            usage_status="exact",
+            raw_usage={
+                "url": url,
+                "status_code": status_code,
+                "content_type": content_type,
+                "response_bytes": max(0, response_bytes),
+            },
+        )
+        await slot.reporter.report(event)
 
     def _build_client(self) -> httpx.AsyncClient:
         network = self.config.network

@@ -16,12 +16,20 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from collections.abc import Callable
 from statistics import fmean
 from typing import Any
 
 import cv2
 import numpy as np
+
+from core.usage_metering.context import create_capability_event
+from core.usage_metering.contracts import MeteredUsageItem
+from core.usage_metering.reporters import (
+    CapabilityUsageConflictError,
+    get_global_capability_reporter_slot,
+)
 
 from server.tools.vision.contracts import (
     BoundingBox,
@@ -82,7 +90,9 @@ class RapidOCRProvider:
 
     async def extract(self, image: ImageAsset, *, language: ImageLanguage) -> OCRResult:
         try:
-            return await asyncio.to_thread(self._extract_sync, image, language)
+            result = await asyncio.to_thread(self._extract_sync, image, language)
+            await self._report_usage()
+            return result
         except VisionError:
             raise
         except Exception as error:
@@ -90,6 +100,32 @@ class RapidOCRProvider:
                 VisionErrorCode.PROVIDER_UNAVAILABLE,
                 "OCR 引擎执行失败",
             ) from error
+
+    async def _report_usage(self) -> None:
+        slot = get_global_capability_reporter_slot()
+        if slot is None or slot.reporter is None:
+            if slot is not None and getattr(slot, "required", False):
+                raise CapabilityUsageConflictError(
+                    "This capability process requires a configured capability usage Reporter"
+                )
+            return
+        event = create_capability_event(
+            operation_id=str(uuid.uuid4()),
+            capability_type="ocr",
+            provider="internal",
+            pricing_key="internal/rapidocr/v1",
+            items=(
+                MeteredUsageItem(
+                    meter="ocr.pages",
+                    quantity=1,
+                    unit="page",
+                ),
+            ),
+            usage_source="measured",
+            usage_status="exact",
+            raw_usage={"page_count": 1},
+        )
+        await slot.reporter.report(event)
 
     def _engine_instance(self) -> Any:
         with self._engine_lock:

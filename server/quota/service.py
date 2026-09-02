@@ -27,6 +27,9 @@ from server.quota.contracts import (
 )
 from server.quota.errors import QuotaDomainError, QuotaErrorCode, QuotaRejectedError
 from server.quota.models import (
+    CapabilityUsageEventModel,
+    CapabilityUsageItemModel,
+    MeterPricingRuleModel,
     PolicyBindingModel,
     PricingRuleModel,
     QuotaAdjustmentModel,
@@ -750,7 +753,7 @@ class QuotaService:
                 reserved_delta_micro=-release_amount,
                 consumed_delta_micro=credits_micro,
                 idempotency_key=f"{prefix}none",
-                reason="provider_usage",
+                reason="measured_usage" if usage_source == "measured" else "provider_usage",
                 metadata={**metadata_base, "over_limit": False},
                 created_at=db_now,
             )
@@ -778,7 +781,7 @@ class QuotaService:
                 reserved_delta_micro=-bucket_release,
                 consumed_delta_micro=credits_micro,
                 idempotency_key=f"{prefix}{bucket['id']}",
-                reason="provider_usage",
+                reason="measured_usage" if usage_source == "measured" else "provider_usage",
                 metadata={**metadata_base, "over_limit": bucket_over_limit},
                 created_at=db_now,
             )
@@ -1487,6 +1490,9 @@ class QuotaService:
                 QuotaProviderBillingModel,
                 QuotaUsageArchiveBatchModel,
                 QuotaAlertModel,
+                MeterPricingRuleModel,
+                CapabilityUsageEventModel,
+                CapabilityUsageItemModel,
             ):
                 primary_key = next(iter(model.__table__.primary_key.columns))
                 connection.execute(select(primary_key).limit(1)).first()

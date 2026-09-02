@@ -1,4 +1,4 @@
-import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaClassroomUsage, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, CapabilityUsageEvent, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaClassroomUsage, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaMeterPricingRule, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
 import type { FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
@@ -186,6 +186,46 @@ export const api = {
   getQuotaPricingRule: (pricingRuleId: string) => request<QuotaPricingRule>(`/developer/quota/pricing-rules/${encodeURIComponent(pricingRuleId)}`),
   createQuotaPricingRule: (input: Omit<QuotaPricingRule, "pricing_rule_id" | "status" | "created_by" | "created_at">) => request<QuotaPricingRule>("/developer/quota/pricing-rules", { method: "POST", body: JSON.stringify(input) }),
   retireQuotaPricingRule: (pricingRuleId: string) => request<QuotaPricingRule>(`/developer/quota/pricing-rules/${encodeURIComponent(pricingRuleId)}`, { method: "DELETE" }),
+  listQuotaMeterPricingRules: (params?: { capability_type?: string; pricing_key?: string; meter?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.capability_type) qs.set("capability_type", params.capability_type);
+    if (params?.pricing_key) qs.set("pricing_key", params.pricing_key);
+    if (params?.meter) qs.set("meter", params.meter);
+    const query = qs.toString();
+    return request<{ items: QuotaMeterPricingRule[] }>(`/developer/quota/meter-pricing-rules${query ? `?${query}` : ""}`);
+  },
+  createQuotaMeterPricingRule: (input: {
+    capability_type: string;
+    meter: string;
+    pricing_key: string;
+    version: string;
+    unit: string;
+    rate_micro: number;
+    rate_unit?: number;
+    min_charge_micro?: number;
+    effective_from: string;
+    effective_until?: string | null;
+  }) => request<QuotaMeterPricingRule>("/developer/quota/meter-pricing-rules", { method: "POST", body: JSON.stringify(input) }),
+  listQuotaCapabilityEvents: (params?: {
+    user_id?: string;
+    workspace_id?: string;
+    capability_type?: string;
+    provider?: string;
+    usage_status?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.user_id) qs.set("user_id", params.user_id);
+    if (params?.workspace_id) qs.set("workspace_id", params.workspace_id);
+    if (params?.capability_type) qs.set("capability_type", params.capability_type);
+    if (params?.provider) qs.set("provider", params.provider);
+    if (params?.usage_status) qs.set("usage_status", params.usage_status);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.offset) qs.set("offset", String(params.offset));
+    const query = qs.toString();
+    return request<{ items: CapabilityUsageEvent[] }>(`/developer/quota/capability-events${query ? `?${query}` : ""}`);
+  },
   getQuotaPolicy: (policyId: string) => request<QuotaPolicy>(`/developer/quota/policies/${encodeURIComponent(policyId)}`),
   createQuotaPolicy: (input: Omit<QuotaPolicy, "policy_id" | "created_by" | "created_at" | "updated_at">) => request<QuotaPolicy>("/developer/quota/policies", { method: "POST", body: JSON.stringify(input) }),
   updateQuotaPolicy: (policyId: string, input: QuotaPolicyUpdateInput) => request<QuotaPolicy>(`/developer/quota/policies/${encodeURIComponent(policyId)}`, { method: "PATCH", body: JSON.stringify(input) }),

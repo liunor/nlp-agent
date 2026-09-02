@@ -653,6 +653,54 @@ export interface QuotaPricingRule {
   created_by: string;
   created_at: string;
 }
+export interface QuotaMeterPricingRule {
+  id: string;
+  meter: string;
+  pricing_key: string;
+  version: string;
+  unit: string;
+  rate_micro: number;
+  rate_unit: number;
+  minimum_charge_micro: number;
+  min_charge_micro: number;
+  effective_from: string;
+  effective_until: string | null;
+  status: string;
+  created_by: string;
+  created_at: string;
+}
+export interface CapabilityUsageItem {
+  id?: string;
+  event_id?: string;
+  meter: string;
+  quantity: number;
+  unit: string;
+  rate_micro?: number | null;
+  rate_unit?: number | null;
+  line_credits_micro?: number | null;
+}
+export interface CapabilityUsageEvent {
+  id: string;
+  operation_id: string;
+  parent_operation_id?: string | null;
+  reservation_id?: string | null;
+  request_id: string;
+  user_id: string;
+  workspace_id?: string | null;
+  conversation_id?: string | null;
+  turn_id?: string | null;
+  worker_id?: string | null;
+  purpose: string;
+  capability_type: "search" | "web_fetch" | "ocr" | string;
+  provider: string;
+  pricing_key: string;
+  pricing_version?: string | null;
+  usage_source: string;
+  usage_status: string;
+  credits_micro: number | null;
+  items: CapabilityUsageItem[];
+  occurred_at: string;
+}
 export interface QuotaBinding {
   binding_id: string;
   subject_type: string;
@@ -721,8 +769,11 @@ export interface QuotaBillingRecord {
   operation_id: string;
   billed_at: string;
   billed_credits_micro: number | null;
+  usage_event_type?: "model" | "capability";
   billed_tokens: Record<string, number>;
+  billed_usage?: Record<string, number>;
   matched_usage_event_id: string | null;
+  matched_capability_event_id?: string | null;
   local_credits_micro: number | null;
   difference_micro: number | null;
   status: string;

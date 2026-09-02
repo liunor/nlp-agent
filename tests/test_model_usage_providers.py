@@ -245,3 +245,42 @@ def test_openai_compatible_adapter_preserves_response_id():
     assert msg.additional_kwargs["provider_response_id"] == "chatcmpl-openai-789"
     assert msg.additional_kwargs["provider_usage_raw"] == raw_response["usage"]
     assert msg.usage_metadata["input_tokens"] == 80
+
+
+def test_canonical_usage_multimodal_image_tokens():
+    raw_vl = {
+        "prompt_tokens": 1200,
+        "completion_tokens": 300,
+        "total_tokens": 1500,
+        "prompt_tokens_details": {
+            "image_tokens": 800,
+            "text_tokens": 400,
+            "cached_tokens": 100,
+        },
+    }
+    canon = canonical_usage(raw_vl, provider_response_id="qwen-vl-1")
+    assert canon.input_tokens == 1200
+    assert canon.output_tokens == 300
+    assert canon.total_tokens == 1500
+    assert canon.image_input_tokens == 800
+    assert canon.text_input_tokens == 400
+    assert canon.cached_input_tokens == 100
+    assert canon.provider_usage_details["image_tokens"] == 800
+    assert canon.provider_usage_details["text_tokens"] == 400
+
+
+def test_canonical_usage_search_plugin_count():
+    raw_search = {
+        "prompt_tokens": 600,
+        "completion_tokens": 200,
+        "total_tokens": 800,
+        "plugins": {
+            "search": {
+                "count": 2,
+            }
+        },
+    }
+    canon = canonical_usage(raw_search, provider_response_id="qwen-search-1")
+    assert canon.input_tokens == 600
+    assert canon.output_tokens == 200
+    assert canon.provider_usage_details["plugins.search.count"] == 2
