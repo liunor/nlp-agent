@@ -329,7 +329,7 @@ export const api = {
     request<{ items: unknown[]; status: string }>(`/teacher/${resource}?workspace_id=${encodeURIComponent(workspaceId)}`),
 
   // ---- Admin module (用户 / 工作区 / 班级加入申请) ----
-  listUsers: (offset = 0, limit = 20, status?: string, keyword?: string, includeDeleted = false) =>
+  listUsers: (offset = 0, limit = 12, status?: string, keyword?: string, includeDeleted = false) =>
     request<UserListResponse>(
       `/users?offset=${offset}&limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ""}${includeDeleted ? "&include_deleted=true" : ""}`,
     ),
@@ -353,19 +353,11 @@ export const api = {
   replaceUserRoles: (userId: string, role_codes: string[]) =>
     request<{ user_id: string; role_codes: string[] }>(`/users/${encodeURIComponent(userId)}/roles`, { method: "PUT", body: JSON.stringify({ role_codes }) }),
   listRoles: () => request<{ items: RbacRole[] }>("/roles"),
-  createRole: (input: { code: string; name: string; description?: string }) =>
-    request<RbacRole>("/system/roles", { method: "POST", body: JSON.stringify(input) }),
-  updateRoleStatus: (roleCode: string, status: "active" | "disabled") =>
-    request<void>(`/system/roles/${encodeURIComponent(roleCode)}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
   listPermissions: () => request<{ items: RbacPermission[] }>("/permissions"),
   listRolePermissions: (roleCode: string) => request<{ role_code: string; permissions: Record<string, string[]> }>(`/system/roles/${encodeURIComponent(roleCode)}/permissions`),
   replaceRolePermissions: (roleCode: string, permission_codes: string[], scopes: Record<string, string[]>) =>
     request<void>(`/system/roles/${encodeURIComponent(roleCode)}/permissions`, { method: "PUT", body: JSON.stringify({ permission_codes, scopes }) }),
-  listMenus: () => request<{ items: SystemMenu[] }>("/system/menus"),
   listVisibleMenus: () => request<{ items: SystemMenu[] }>("/system/menus/visible"),
-  replaceRoleMenus: (roleCode: string, menu_ids: string[]) =>
-    request<void>(`/system/roles/${encodeURIComponent(roleCode)}/menus`, { method: "PUT", body: JSON.stringify({ menu_ids }) }),
-  listRoleMenus: (roleCode: string) => request<{ role_code: string; menu_ids: string[] }>(`/system/roles/${encodeURIComponent(roleCode)}/menus`),
   listAuthorizationAudit: (params?: { limit?: number; offset?: number; actorUserId?: string; decision?: string; reasonCode?: string }) => {
     const query = new URLSearchParams();
     if (params?.limit != null) query.set("limit", String(params.limit));

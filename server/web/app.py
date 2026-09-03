@@ -45,6 +45,7 @@ from server.web.auth import (
     SessionClaims,
 )
 from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
+from server.rbac.catalog import permission_display, role_display
 from server.agent.session_service import DatabaseSessionService, local_session_service
 from server.quota.errors import QuotaDomainError, QuotaRejectedError
 from server.quota.management import QuotaManagementService
@@ -62,9 +63,6 @@ from server.web.contracts import (
     LoginBody,
     ReplaceUserRolesBody,
     ReplaceRolePermissionsBody,
-    ReplaceRoleMenusBody,
-    CreateRoleBody,
-    UpdateRoleStatusBody,
     CreateClassroomBody,
     ReplaceClassroomMemberBody,
     InjectChatBody,
@@ -133,7 +131,11 @@ from server.teacher.models import (
     UpdateTeachingGoals,
 )
 from server.teacher.service import teacher_service
-from server.rbac.service import rbac_service
+from server.rbac.service import (
+    LastDeveloperForbiddenError,
+    UnknownRoleError,
+    rbac_service,
+)
 from server.infrastructure.mysql.models import RoleModel, UserModel, WorkspaceModel
 from server.sandbox.service import sandbox_lifecycle_service
 from server.sandbox.artifact_retention import purge_expired_artifacts
@@ -161,9 +163,17 @@ from server.web.feedback import (
 from server.auth.dependencies import get_db_session
 from server.auth import code_store
 from server.auth.captcha import generate_captcha_image
-from server.user.schemas import SmsCodeRequest, UserCreate, UserRegister
-from server.user.service import UserService, generate_sms_code
-from server.user.tencent_sms import create_tencent_sms_provider_from_env
+from server.user.schemas import SmsCodeRequest, UserRegister
+from server.user.service import (
+    InvalidCaptchaError,
+    InvalidSmsCodeError,
+    PhoneNumberAlreadyUsedError,
+    UserAlreadyExistsError,
+    UserService,
+    generate_sms_code,
+)
+from server.user.tencent_sms import SmsConfigurationError, create_tencent_sms_provider_from_env
+from server.user.phone import InvalidPhoneNumberError, normalize_phone_number
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
@@ -208,6 +218,34 @@ class SpaStaticFiles(StaticFiles):
                 and normalized_path not in {"api", "ws"}
                 and not normalized_path.startswith("api/")
                 and not normalized_path.startswith("ws/")
+                and not normalized_path.startswith("assets/")
+                and not normalized_path.startswith("static/")
+                and Path(normalized_path).suffix.lower()
+                not in {
+                    ".7z",
+                    ".avif",
+                    ".css",
+                    ".csv",
+                    ".gif",
+                    ".gz",
+                    ".ico",
+                    ".jpeg",
+                    ".jpg",
+                    ".js",
+                    ".json",
+                    ".map",
+                    ".pdf",
+                    ".png",
+                    ".svg",
+                    ".txt",
+                    ".wasm",
+                    ".webmanifest",
+                    ".webp",
+                    ".woff",
+                    ".woff2",
+                    ".xml",
+                    ".zip",
+                }
             )
             if error.status_code == 404 and is_navigation and self._spa_index.is_file():
                 return await super().get_response("index.html", scope)
@@ -310,6 +348,21 @@ def require_explicit_classroom_membership(
         raise HTTPException(status_code=403, detail="当前教师无权查看该课堂")
 
 
+def _rbac_http_error(error: Exception) -> HTTPException:
+    """Translate RBAC domain failures into stable API error contracts."""
+    if isinstance(error, KeyError):
+        return HTTPException(status_code=404, detail="RBAC resource not found")
+    if isinstance(error, UnknownRoleError):
+        return HTTPException(status_code=400, detail=str(error))
+    if isinstance(error, LastDeveloperForbiddenError):
+        return HTTPException(status_code=409, detail=str(error))
+    if isinstance(error, PermissionError):
+        return HTTPException(status_code=403, detail=str(error))
+    if isinstance(error, ValueError):
+        return HTTPException(status_code=422, detail=str(error))
+    raise error
+
+
 def create_app(
     *,
     gateway_factory: GatewayFactory = BackendGateway,
@@ -337,6 +390,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         gateway = gateway_factory()
+        redis_client = getattr(getattr(gateway, "dispatcher", None), "client", None)
+        if redis_client is None:
+            redis_client = getattr(getattr(getattr(gateway, "dispatcher", None), "_transport", None), "client", None)
+        database_auth.set_redis_client(redis_client)
         # Tests and embedded callers may inject lightweight quota readers on
         # app.state before entering the lifespan.  Preserve those doubles in
         # auth-injected mode while keeping production startup responsible for
@@ -921,10 +978,10 @@ def create_app(
 
         Server-side controls (the frontend 60s countdown is UX only):
         - the CAPTCHA answer is consumed single-use from ``nlp_auth_codes``;
-        - per-phone cooldown / per-phone hourly / per-IP hourly send limits;
-        - real delivery via Tencent Cloud SMS when ``TENCENT_SMS_*`` env vars
-          are configured, otherwise the code is printed to the server console
-          (development fallback);
+          - per-phone cooldown / per-phone hourly / per-IP hourly send limits;
+          - real delivery via Tencent Cloud SMS when ``TENCENT_SMS_*`` env vars
+            are configured; missing production configuration returns 503 and
+            never prints the verification code;
         - the code is stored hashed with a hard 120s expiry enforced at
           consumption time.
         """
@@ -936,34 +993,30 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired CAPTCHA",
             )
-        phone = body.phone_number.strip()
+        try:
+            phone = normalize_phone_number(body.phone_number)
+        except InvalidPhoneNumberError as error:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
         client_ip = request.client.host if request.client else None
-        allowed, reason = await code_store.sms_send_allowed(
-            db, phone=phone, client_ip=client_ip
-        )
-        if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=reason
-            )
-        code = generate_sms_code()
-        provider = create_tencent_sms_provider_from_env()
-        if provider is not None:
-            if not await provider.send_verification_code(phone, code):
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="SMS gateway failed to deliver the code",
-                )
-        else:
-            # Development fallback: no Tencent Cloud credentials configured.
-            print(f"[SMS] Verification code for {phone}: {code}")
-        await code_store.put_code(
-            db,
-            kind="sms",
-            subject=phone,
-            code=code,
-            ttl_s=code_store.SMS_CODE_TTL_S,
-            client_ip=client_ip,
-        )
+        try:
+            async with code_store.sms_send_lock(db, phone):
+                allowed, reason = await code_store.sms_send_allowed(db, phone=phone, client_ip=client_ip)
+                if not allowed:
+                    raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=reason)
+                code = generate_sms_code()
+                provider = create_tencent_sms_provider_from_env()
+                if provider is not None:
+                    if not await provider.send_verification_code(phone, code):
+                        await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="failed")
+                        return JSONResponse({"detail": "SMS gateway failed to deliver the code"}, status_code=status.HTTP_502_BAD_GATEWAY)
+                else:
+                    print(f"[SMS] Verification code for {phone}: {code}")
+                await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="sent")
+                await code_store.put_code(db, kind="sms", subject=phone, code=code, ttl_s=code_store.SMS_CODE_TTL_S, client_ip=client_ip)
+        except TimeoutError as error:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="sms_send_busy") from error
+        except SmsConfigurationError as error:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
         return {"message": "SMS code sent successfully"}
 
     @app.post("/api/v1/auth/login", status_code=status.HTTP_200_OK, tags=["auth"])
@@ -1045,59 +1098,24 @@ def create_app(
 
     @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED, tags=["auth"])
     async def register_user(body: UserRegister, db: DbSession):
-        """Register a new account via phone number (image CAPTCHA + SMS code).
-
-        The account's ``username`` is set to the digits of the phone number so
-        that ``database_auth.login`` (which matches on ``username_lower``) can
-        authenticate the user with their phone number directly.
-        """
-        # 1. Validate the image CAPTCHA (single-use, DB-backed, 120s TTL).
-        if not await code_store.consume_code(
-            db, kind="captcha", subject=body.captcha_id, code=body.captcha_code
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired CAPTCHA",
-            )
-        # 2. Validate the SMS code issued by /auth/sms/send.  The 120s expiry
-        #    is enforced by code_store at consumption time.
-        if not await code_store.consume_code(
-            db, kind="sms", subject=body.phone_number.strip(), code=body.sms_code
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired SMS code",
-            )
-        # 3. Reject duplicate phones (username == phone digits).
-        phone = body.phone_number.strip()
-        username = "".join(ch for ch in phone if ch.isdigit()) or phone
-        existing = await db.scalar(
-            select(UserModel).where(
-                (UserModel.username_lower == username.casefold())
-                | (UserModel.phone_number == phone)
-            )
-        )
-        if existing is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This phone number is already registered",
-            )
-        # 4. Create the account.  ``create_user`` provisions a personal workspace
-        #    and assigns the default least-privilege ``guest`` (游客) role, which is
-        #    the correct self-registration identity: a curious outsider who just
-        #    wants to try the agent.  Admins promote accounts to student/teacher/
-        #    developer later through the user-management roles API.
+        """Register a phone account through the unified user service."""
         service = UserService(db)
-        user = await service.create_user(
-            UserCreate(
-                username=username,
-                display_name=(body.display_name or "").strip() or username,
-                password=body.password,
-            )
-        )
-        user.phone_number = phone
-        user.registration_source = "phone"
-        await db.flush()
+        try:
+            user = await service.register_user(body)
+        except InvalidCaptchaError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        except InvalidSmsCodeError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from error
+        except (PhoneNumberAlreadyUsedError, UserAlreadyExistsError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(error)
+            ) from error
+        except InvalidPhoneNumberError as error:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
         return {
             "message": "User registered successfully",
             "user_id": user.id,
@@ -2290,46 +2308,54 @@ def create_app(
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
         async with authorization_session_factory(request)() as session:
             roles = await rbac_service.role_catalog(session)
-        return {"items": [
-            {"code": row.code, "name": row.name, "description": row.description,
-             "status": row.status, "is_builtin": row.is_builtin}
-            for row in roles
-        ]}
-
-    @app.post("/api/v1/system/roles", status_code=status.HTTP_201_CREATED, tags=["rbac"])
-    async def create_role(body: CreateRoleBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                role = await rbac_service.create_role(session, code=body.code, name=body.name, description=body.description, actor_user_id=principal.user_id)
-        return {"code": role.code, "name": role.name, "description": role.description, "status": role.status, "is_builtin": role.is_builtin}
-
-    @app.patch("/api/v1/system/roles/{role_code}/status", tags=["rbac"])
-    async def update_role_status(role_code: str, body: UpdateRoleStatusBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                user_ids = await rbac_service.update_role_status(session, role_code=role_code, status=body.status, actor_user_id=principal.user_id)
-        for user_id in user_ids:
-            await hub.close_user(user_id)
-        return {"role_code": role_code, "status": body.status}
+        items = []
+        for row in roles:
+            name, description = role_display(
+                row.code,
+                fallback_name=row.name,
+                fallback_description=row.description,
+            )
+            items.append(
+                {
+                    "code": row.code,
+                    "name": name,
+                    "description": description,
+                    "status": row.status,
+                    "is_builtin": row.is_builtin,
+                }
+            )
+        return {"items": items}
 
     @app.get("/api/v1/permissions", tags=["rbac"])
     async def list_permissions(request: Request, principal: Principal):
         authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
         async with authorization_session_factory(request)() as session:
             permissions = await rbac_service.permission_catalog(session)
-        return {"items": [
-            {"code": row.code, "name": row.name, "description": row.description,
-             "status": row.status}
-            for row in permissions
-        ]}
+        items = []
+        for row in permissions:
+            name, description = permission_display(
+                row.code,
+                fallback_name=row.name,
+                fallback_description=row.description,
+            )
+            items.append(
+                {
+                    "code": row.code,
+                    "name": name,
+                    "description": description,
+                    "status": row.status,
+                }
+            )
+        return {"items": items}
 
     @app.get("/api/v1/users/{user_id}/roles", tags=["rbac"])
     async def get_user_roles(user_id: str, request: Request, principal: Principal):
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            roles = await rbac_service.user_role_codes(session, user_id)
+        try:
+            async with authorization_session_factory(request)() as session:
+                roles = await rbac_service.user_role_codes(session, user_id)
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         return {"user_id": user_id, "role_codes": sorted(roles)}
 
     @app.put("/api/v1/users/{user_id}/roles", tags=["rbac"])
@@ -2341,28 +2367,37 @@ def create_app(
         _claims: WriteClaims,
     ):
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                roles = await rbac_service.replace_user_roles(
-                    session, user_id=user_id, role_codes=body.role_codes,
-                    assigned_by_user_id=principal.user_id,
-                )
+        try:
+            async with authorization_session_factory(request)() as session:
+                async with session.begin():
+                    roles = await rbac_service.replace_user_roles(
+                        session, user_id=user_id, role_codes=body.role_codes,
+                        assigned_by_user_id=principal.user_id,
+                    )
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         await hub.close_user(user_id)
         return {"user_id": user_id, "role_codes": sorted(roles)}
 
     @app.get("/api/v1/system/roles/{role_code}/permissions", tags=["rbac"])
     async def get_role_permissions(role_code: str, request: Request, principal: Principal):
         authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
-        async with authorization_session_factory(request)() as session:
-            values = await rbac_service.role_permissions(session, role_code)
+        try:
+            async with authorization_session_factory(request)() as session:
+                values = await rbac_service.role_permissions(session, role_code)
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         return {"role_code": role_code, "permissions": {key: sorted(value) for key, value in values.items()}}
 
     @app.put("/api/v1/system/roles/{role_code}/permissions", tags=["rbac"])
     async def put_role_permissions(role_code: str, body: ReplaceRolePermissionsBody, request: Request, principal: Principal, _claims: WriteClaims):
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                user_ids = await rbac_service.replace_role_permissions(session, role_code=role_code, permission_codes=body.permission_codes, scopes=body.scopes, actor_user_id=principal.user_id)
+        try:
+            async with authorization_session_factory(request)() as session:
+                async with session.begin():
+                    user_ids = await rbac_service.replace_role_permissions(session, role_code=role_code, permission_codes=body.permission_codes, scopes=body.scopes, actor_user_id=principal.user_id)
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         for user_id in user_ids:
             await hub.close_user(user_id)
         return {"role_code": role_code, "permission_codes": sorted(body.permission_codes)}
@@ -2392,20 +2427,6 @@ def create_app(
         await hub.close_user(user_id)
         return {"classroom_id": classroom_id, "user_id": user_id, "member_role": body.member_role, "status": body.status}
 
-    @app.get("/api/v1/system/menus", tags=["rbac"])
-    async def get_menus(request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
-        async with authorization_session_factory(request)() as session:
-            menus = await rbac_service.menus(session)
-        return {"items": [
-            {"id": item.id, "parent_id": item.parent_id, "type": item.menu_type,
-             "name": item.name, "route_path": item.route_path,
-             "component_key": item.component_key, "permission_id": item.permission_id,
-             "client_scope": item.client_scope, "sort_order": item.sort_order,
-             "visible": item.visible, "status": item.status}
-            for item in menus
-        ]}
-
     @app.get("/api/v1/system/menus/visible", tags=["rbac"])
     async def get_visible_menus(request: Request, principal: Principal):
         async with authorization_session_factory(request)() as session:
@@ -2418,21 +2439,6 @@ def create_app(
              "visible": item.visible, "status": item.status}
             for item in menus
         ]}
-
-    @app.put("/api/v1/system/roles/{role_code}/menus", tags=["rbac"])
-    async def put_role_menus(role_code: str, body: ReplaceRoleMenusBody, request: Request, principal: Principal, _claims: WriteClaims):
-        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                await rbac_service.replace_role_menus(session, role_code=role_code, menu_ids=body.menu_ids, actor_user_id=principal.user_id)
-        return {"role_code": role_code, "menu_ids": sorted(body.menu_ids)}
-
-    @app.get("/api/v1/system/roles/{role_code}/menus", tags=["rbac"])
-    async def get_role_menus(role_code: str, request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
-        async with authorization_session_factory(request)() as session:
-            menu_ids = await rbac_service.role_menu_ids(session, role_code)
-        return {"role_code": role_code, "menu_ids": sorted(menu_ids)}
 
     @app.get("/api/v1/audit/authorization", tags=["rbac"])
     async def list_authorization_audit(

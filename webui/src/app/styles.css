@@ -1907,7 +1907,6 @@ button { color: inherit; }
   .teacher-content-catalog .teacher-book-markdown-toolbar > small { width: 100%; margin-left: 0; }
   .teacher-catalog-custom-type { max-width: none; }
 }
-
 /* Feedback workspace: keep the list and conversation readable while allowing
    the developer page to shrink on smaller screens. */
 .developer-feedback-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
@@ -2027,6 +2026,37 @@ button { color: inherit; }
 .feedback-history-message p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.6; }
 @media (max-width: 900px) { .developer-feedback { grid-template-columns: 1fr; max-height: none; }.developer-feedback-list,.developer-feedback-detail { min-height: 280px; max-height: 440px; }.developer-feedback-list { border-right: 0; border-bottom: 1px solid var(--dev-border); }.developer-feedback-detail-head { align-items: flex-start; flex-direction: column; }.developer-feedback-detail-actions { width: 100%; justify-content: flex-start; } }
 @media (max-width: 640px) { .developer-feedback-toolbar { align-items: stretch; flex-direction: column; }.developer-feedback-search { max-width: none; }.developer-feedback-filters { width: 100%; }.developer-feedback-filters .developer-feedback-select { min-width: 0; flex: 1; }.developer-feedback-count { align-self: flex-start; } }
+
+/* User management follows the reference admin table composition while keeping the existing API surface. */
+.user-manage-page { display: grid; gap: 16px; min-width: 0; min-height: calc(100vh - 96px); }
+.user-page-header { padding: 4px 2px; }
+.user-search-card,.user-filter-card,.user-table-card { border-color: var(--dev-border); background: var(--dev-panel); }
+.user-search-card { position: relative; overflow: hidden; }
+.user-search-card::before { position: absolute; inset: 0 0 auto; height: 3px; background: var(--dev-accent); content: ""; }
+.user-filter-card { gap: 10px; }
+.user-filter-card input,.user-filter-card select,.user-search-card input { background: var(--bg); color: var(--fg); }
+.user-table-card { min-width: 0; }
+.user-table-card > .relative { min-height: 360px; }
+.user-table-card table { border-collapse: separate; border-spacing: 0; }
+.user-table-card thead { position: sticky; top: 0; z-index: 2; }
+.user-table-card th { height: 42px; border-bottom: 1px solid var(--dev-border); background: var(--dev-soft); color: var(--dev-muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+.user-table-card td { border-bottom: 1px solid color-mix(in srgb, var(--dev-border) 72%, transparent); }
+.user-table-card tbody tr { height: 64px; transition: background-color .16s ease; }
+.user-table-card tbody tr:hover { background: color-mix(in srgb, var(--dev-soft) 72%, transparent); }
+.user-table-card tbody tr:last-child td { border-bottom: 0; }
+.user-row-actions { display: flex; min-width: 240px; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.user-row-action-menu { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; animation: user-actions-in .16s ease-out; }
+@keyframes user-actions-in { from { opacity: 0; transform: translateX(4px); } to { opacity: 1; transform: translateX(0); } }
+.user-table-card button { transition: color .16s ease, background-color .16s ease, border-color .16s ease; }
+.user-table-card button:focus-visible,.user-filter-card input:focus,.user-filter-card select:focus,.user-search-card input:focus { outline: 2px solid color-mix(in srgb, var(--dev-accent) 55%, transparent); outline-offset: 1px; }
+.user-table-card .animate-pulse span { background: color-mix(in srgb, var(--dev-muted) 22%, transparent); }
+@media (max-width: 700px) {
+  .user-search-card .grid { grid-template-columns: 1fr; }
+  .user-filter-card { align-items: stretch; }
+  .user-filter-card select,.user-filter-card label { width: 100%; }
+  .user-table-card > div:first-child { align-items: flex-start; gap: 12px; }
+  .user-row-actions { min-width: 300px; }
+}
 
 /* Feedback inbox interactions: compact people rows, explicit selection
    actions, and a conversation layout that matches the student chat surface. */

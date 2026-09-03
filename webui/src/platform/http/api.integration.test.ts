@@ -95,7 +95,15 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
       : path.join(repositoryRoot, ".venv", "bin", "python");
     const python = process.env.PRO_NLP_PYTHON ?? (existsSync(virtualEnvironmentPython) ? virtualEnvironmentPython : "python");
     const script = path.join(repositoryRoot, "tests", "support", "run_web_api_server.py");
-    serverProcess = spawn(python, [script, String(port)], { cwd: repositoryRoot, env: { ...process.env, PRO_NLP_INTEGRATION_USERNAME: integrationUsername, PRO_NLP_INTEGRATION_PASSWORD: integrationPassword }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    serverProcess = spawn(python, [script, String(port)], {
+      cwd: repositoryRoot,
+      // This test exercises the real HTTP/WebSocket recovery path with the
+      // deterministic FakeEngine. No standalone Redis worker is started, so
+      // keep execution in-process while retaining the real MySQL repository.
+      env: { ...process.env, PRO_NLP_INTEGRATION_USERNAME: integrationUsername, PRO_NLP_INTEGRATION_PASSWORD: integrationPassword, NLP_AGENT_GATEWAY_TRANSPORT: "inprocess" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
     serverProcess.stdout?.on("data", (chunk: Buffer) => { serverStdout += chunk.toString(); });
     serverProcess.stderr?.on("data", (chunk: Buffer) => { serverStderr += chunk.toString(); });
     try {

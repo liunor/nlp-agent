@@ -125,6 +125,10 @@ class TencentSmsProvider:
             return False
 
 
+class SmsConfigurationError(RuntimeError):
+    """Raised when production SMS delivery has not been configured."""
+
+
 def create_tencent_sms_provider_from_env() -> Optional[TencentSmsProvider]:
     """Create a TencentSmsProvider instance from environment variables.
 
@@ -139,11 +143,12 @@ def create_tencent_sms_provider_from_env() -> Optional[TencentSmsProvider]:
     region = os.getenv("TENCENT_SMS_REGION", "ap-guangzhou")
 
     if not all([secret_id, secret_key, app_id, sign_name, template_id]):
-        logger.warning(
-            "[TencentSMS] Missing required environment variables. "
-            "Using LoggingSmsProvider instead."
+        development = os.getenv("NLP_AGENT_SMS_DEVELOPMENT_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+        if development:
+            return None
+        raise SmsConfigurationError(
+            "Tencent SMS is not configured; set TENCENT_SMS_* or explicitly enable NLP_AGENT_SMS_DEVELOPMENT_MODE"
         )
-        return None
 
     return TencentSmsProvider(
         secret_id=secret_id,

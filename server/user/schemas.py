@@ -82,7 +82,7 @@ class PasswordReset(BaseModel):
 class UserCreateWithRole(UserCreate):
     """Schema for admin creating a user with role assignment."""
 
-    role_codes: list[str] = Field(default_factory=list)
+    role_codes: list[str] = Field(default_factory=list, max_length=4)
 
 
 class UserRegister(BaseModel):
@@ -107,4 +107,4 @@ class SmsCodeRequest(BaseModel):
 class UserRoleUpdate(BaseModel):
     """Schema for assigning/replacing user roles (admin only)."""
 
-    role_codes: list[str] = Field(..., min_length=1)
+    role_codes: list[str] = Field(default_factory=list, max_length=4)

@@ -335,10 +335,10 @@ DEVELOPER (最高权限)
    → 创建 nlp_users 记录（username = 随机生成）
    → 创建 nlp_workspaces 记录（个人工作空间）
    → 创建 nlp_workspace_members 记录（user as owner）
-   → 创建 nlp_user_roles 记录（role = student）
+   → 创建 nlp_user_roles 记录（role = guest）
    
-2. POST /api/v1/auth/login/db
-   → 查询 nlp_users（通过 username 或 phone_number）
+2. POST /api/v1/auth/login
+   → 查询 nlp_users（通过 username_lower 或 phone_number）
    → 验证 password_hash
    → 查询 nlp_user_roles → nlp_roles → nlp_role_permissions
    → 构建 Principal { roles: ["student"], permissions: [...] }
@@ -446,7 +446,7 @@ WHERE user_id = :user_id AND revoked_at IS NULL;
 ### 8.1 认证相关
 | 端点 | 方法 | 描述 | 权限要求 |
 |-----|------|------|---------|
-| `/api/v1/auth/login/db` | POST | 用户名/手机号登录 | 无 |
+| `/api/v1/auth/login` | POST | 用户名/手机号登录 | 无 |
 | `/api/v1/auth/session` | GET | 获取当前会话信息 | 已登录 |
 | `/api/v1/auth/session` | DELETE | 退出登录 | 已登录 |
 | `/api/v1/auth/register` | POST | 手机号注册 | 无 |

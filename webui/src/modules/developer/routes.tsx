@@ -20,7 +20,6 @@ export function DeveloperRoutes() {
       <Route path="settings" element={<DeveloperWorkspace page="settings" onNavigate={page} />} />
       <Route path="users" element={<DeveloperWorkspace page="users" onNavigate={page} />} />
       <Route path="roles" element={<DeveloperWorkspace page="roles" onNavigate={page} />} />
-      <Route path="menus" element={<DeveloperWorkspace page="menus" onNavigate={page} />} />
       <Route path="audit" element={<DeveloperWorkspace page="audit" onNavigate={page} />} />
       <Route path="sessions" element={<DeveloperWorkspace page="sessions" onNavigate={page} />} />
       <Route path="quotas" element={<DeveloperWorkspace page="quotas" onNavigate={page} />} />

@@ -67,7 +67,10 @@ class UserModel(TimestampedModel, Base):
     # 但 develop 合并后的模型缺失定义，导致 ``server/user/service.py`` 里的
     # ``UserModel.phone_number`` 查询/赋值会抛 AttributeError。此处补齐保持一致。
     phone_number: Mapped[str | None] = mapped_column(
-        String(20), nullable=True, unique=True, index=True
+        String(20), nullable=True, index=True
+    )
+    phone_number_normalized: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, unique=True, index=True
     )
     registration_source: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="manual"
@@ -1065,6 +1068,7 @@ class AuthCodeModel(Base):
 
     __tablename__ = "nlp_auth_codes"
     __table_args__ = (
+        UniqueConstraint("kind", "subject", name="uq_nlp_auth_codes_kind_subject"),
         Index("ix_nlp_auth_codes_kind_subject", "kind", "subject"),
         Index("ix_nlp_auth_codes_kind_ip_created", "kind", "client_ip", "created_at"),
     )
@@ -1075,6 +1079,22 @@ class AuthCodeModel(Base):
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, index=True)
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
+class SmsSendAuditModel(Base):
+    """Immutable audit record for every SMS send attempt."""
+
+    __tablename__ = "nlp_sms_send_audits"
+    __table_args__ = (
+        Index("ix_nlp_sms_send_audits_phone_created", "phone_number", "created_at"),
+        Index("ix_nlp_sms_send_audits_ip_created", "client_ip", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    phone_number: Mapped[str] = mapped_column(String(16), nullable=False)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False, server_default="sent")
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
 
 

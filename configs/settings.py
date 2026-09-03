@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     NLP_AGENT_AUTH_IDLE_TIMEOUT_S: int = 900
     NLP_AGENT_AUTH_MAX_LOGIN_ATTEMPTS: int = 5
     NLP_AGENT_AUTH_RATE_WINDOW_S: int = 300
+    NLP_AGENT_SMS_DEVELOPMENT_MODE: bool = False
     NLP_AGENT_AUTH_COOKIE_SECURE: bool | None = None
     NLP_AGENT_AUDIT_SUCCESSFUL_READS: bool = False
     NLP_AGENT_WEB_HOST: str = ""

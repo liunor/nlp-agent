@@ -24,6 +24,7 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_workspaces": "租户或工作区的基本信息及状态。",
     "nlp_sessions": "登录会话、令牌摘要、CSRF 摘要及过期/撤销状态。",
     "nlp_auth_codes": "图形/短信一次性验证码的哈希存储，含过期时间与发送频控记录。",
+    "nlp_sms_send_audits": "短信发送审计记录，独立于可消费的一次性验证码保存，用于可靠频控。",
     "nlp_pricing_rules": "按 Runtime pricing_key 版本化保存的 Token 到 Credits 换算规则。",
     "nlp_meter_pricing_rules": "按 pricing_key 与 meter 版本化保存的通用计量项换算规则。",
     "nlp_usage_events": "每次模型 Attempt 的不可变 Token 用量、归属、状态与 Shadow Credits。",

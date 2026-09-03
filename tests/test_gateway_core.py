@@ -7,6 +7,7 @@ import gateway.core as gateway_core
 from core.identity import AccessDeniedError, AuthenticatedPrincipal
 from core.learning import LearningContext
 from core.session_context import SessionContext
+from configs.settings import settings
 from gateway.contracts import (
     EvaluationContext,
     GatewayEventType,
@@ -17,7 +18,7 @@ from gateway.contracts import (
     TeachingConfigurationError,
 )
 from gateway.core import BackendGateway
-from gateway.dispatch import TurnTask
+from gateway.dispatch import InProcessTurnDispatcher, TurnTask
 from gateway.repository import GatewayRepository
 
 
@@ -114,6 +115,19 @@ class RecordingTurnDispatcher:
 class FailingTurnDispatcher(RecordingTurnDispatcher):
     async def submit(self, task):
         raise ConnectionError("redis unavailable")
+
+
+def test_explicit_repository_bypasses_redis_runtime_dispatch(tmp_path, monkeypatch):
+    """Injected repositories must keep tests/local integrations in-process."""
+    monkeypatch.setattr(settings, "NLP_AGENT_GATEWAY_TRANSPORT", "redis")
+
+    gateway = BackendGateway(
+        engine=FakeEngine(),
+        repository=GatewayRepository(tmp_path / "gateway.sqlite3"),
+        sessions=FakeSessions(),
+    )
+
+    assert isinstance(gateway.dispatcher, InProcessTurnDispatcher)
 
 
 class FlakyTurnDispatcher(RecordingTurnDispatcher):

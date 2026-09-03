@@ -1,19 +1,48 @@
-"""Stable IDs and seed data for built-in Pro_NLP RBAC records."""
+"""Frozen RBAC seed data for historical Alembic migrations.
 
-from __future__ import annotations
-
+This module intentionally has no imports from application packages.  Changing
+the live permission catalogue must not change the result of an old migration.
+"""
+from enum import StrEnum
 from uuid import NAMESPACE_URL, uuid5
 
-from core.rbac import Permission, ROLE_PERMISSIONS
+
+class Permission(StrEnum):
+    IDENTITY_PROFILE_READ_SELF = "identity:profile:read_self"
+    IDENTITY_PROFILE_UPDATE_SELF = "identity:profile:update_self"
+    LEARNING_CONTENT_READ_PUBLIC = "learning:content:read_public"
+    LEARNING_CONTENT_READ_WORKSPACE = "learning:content:read_workspace"
+    LEARNING_EXERCISE_SUBMIT = "learning:exercise:submit"
+    LEARNING_PROGRESS_READ_SELF = "learning:progress:read_self"
+    LEARNING_CONTENT_MANAGE = "learning:content:manage"
+    LEARNING_PROGRESS_READ_CLASSROOM = "learning:progress:read_classroom"
+    LEARNING_FEEDBACK_SUBMIT = "learning:feedback:submit"
+    LEARNING_FEEDBACK_READ = "learning:feedback:read"
+    LEARNING_FEEDBACK_CREATE = "learning:feedback:create"
+    CLASSROOM_CREATE = "classroom:classroom:create"
+    CLASSROOM_MEMBER_MANAGE = "classroom:member:manage"
+    AGENT_SESSION_CREATE = "agent:session:create"
+    AGENT_SESSION_READ = "agent:session:read"
+    AGENT_SESSION_UPDATE = "agent:session:update"
+    AGENT_SESSION_DELETE = "agent:session:delete"
+    AGENT_TURN_SUBMIT = "agent:turn:submit"
+    AGENT_TURN_CANCEL = "agent:turn:cancel"
+    AGENT_EVENT_REPLAY = "agent:event:replay"
+    AGENT_CHECKPOINT_RESTORE = "agent:checkpoint:restore"
+    SYSTEM_MODEL_PROFILE_MANAGE = "system:model_profile:manage"
+    SYSTEM_PROMPT_TEMPLATE_MANAGE = "system:prompt_template:manage"
+    SYSTEM_TOOL_CONFIG_MANAGE = "system:tool_config:manage"
+    SYSTEM_RUNTIME_MONITOR = "system:runtime:monitor"
+    SYSTEM_RUNTIME_INSPECT = "system:runtime:inspect"
+    SYSTEM_USER_MANAGE = "system:user:manage"
+    SYSTEM_ROLE_MANAGE = "system:role:manage"
+    SYSTEM_RELEASE_NOTES_MANAGE = "system:release_notes:manage"
+    SYSTEM_PERMISSION_READ = "system:permission:read"
+    SYSTEM_AUDIT_READ = "system:audit:read"
+    SYSTEM_SENSITIVE_DATA_READ = "system:sensitive_data:read"
 
 
-ROLE_NAMES = {
-    "guest": "游客",
-    "student": "学生",
-    "teacher": "教师",
-    "developer": "开发者",
-}
-
+ROLE_NAMES = {"guest": "游客", "student": "学生", "teacher": "教师", "developer": "开发者"}
 ROLE_DESCRIPTIONS = {
     "guest": "基础试用用户，可使用自己的智能体会话和公开学习内容，不能访问教学管理或系统管理功能。",
     "student": "学习用户，可在游客权限基础上访问工作区学习内容、提交练习、查看个人进度并提交学习反馈。",
@@ -21,9 +50,7 @@ ROLE_DESCRIPTIONS = {
     "developer": "平台管理用户，可管理模型、提示词、工具、运行状态、用户和四个固定角色的权限。",
 }
 
-# Stable Chinese labels shown in the administration UI. Codes remain the
-# machine-facing identifiers returned alongside these labels.
-PERMISSION_LABELS: dict[Permission, tuple[str, str]] = {
+PERMISSION_LABELS = {
     Permission.IDENTITY_PROFILE_READ_SELF: ("查看个人资料", "查看当前账号自己的昵称、头像和资料信息，不能查看其他用户资料。"),
     Permission.IDENTITY_PROFILE_UPDATE_SELF: ("编辑个人资料", "修改当前账号自己的昵称、头像和资料信息，不会改变账号和角色。"),
     Permission.LEARNING_CONTENT_READ_PUBLIC: ("查看公开学习内容", "查看平台公开发布的课程、知识点和学习材料，不需要加入工作区。"),
@@ -58,13 +85,33 @@ PERMISSION_LABELS: dict[Permission, tuple[str, str]] = {
     Permission.SYSTEM_SENSITIVE_DATA_READ: ("查看敏感数据", "查看受保护的敏感信息，仅在明确授权且符合数据访问范围时使用。"),
 }
 
+_GUEST = {
+    Permission.IDENTITY_PROFILE_READ_SELF, Permission.IDENTITY_PROFILE_UPDATE_SELF,
+    Permission.LEARNING_CONTENT_READ_PUBLIC, Permission.AGENT_SESSION_CREATE,
+    Permission.AGENT_SESSION_READ, Permission.AGENT_SESSION_UPDATE,
+    Permission.AGENT_SESSION_DELETE, Permission.AGENT_TURN_SUBMIT,
+    Permission.AGENT_TURN_CANCEL, Permission.AGENT_EVENT_REPLAY,
+}
+_STUDENT = _GUEST | {
+    Permission.AGENT_CHECKPOINT_RESTORE, Permission.LEARNING_CONTENT_READ_WORKSPACE,
+    Permission.LEARNING_EXERCISE_SUBMIT, Permission.LEARNING_PROGRESS_READ_SELF,
+    Permission.LEARNING_FEEDBACK_SUBMIT,
+}
+_TEACHER = _STUDENT | {
+    Permission.LEARNING_CONTENT_MANAGE, Permission.LEARNING_PROGRESS_READ_CLASSROOM,
+    Permission.LEARNING_FEEDBACK_CREATE, Permission.CLASSROOM_CREATE,
+    Permission.CLASSROOM_MEMBER_MANAGE,
+}
+_DEVELOPER = _TEACHER | {
+    Permission.LEARNING_FEEDBACK_READ, Permission.SYSTEM_MODEL_PROFILE_MANAGE,
+    Permission.SYSTEM_PROMPT_TEMPLATE_MANAGE, Permission.SYSTEM_TOOL_CONFIG_MANAGE,
+    Permission.SYSTEM_RUNTIME_MONITOR, Permission.SYSTEM_RUNTIME_INSPECT,
+    Permission.SYSTEM_USER_MANAGE, Permission.SYSTEM_ROLE_MANAGE,
+    Permission.SYSTEM_RELEASE_NOTES_MANAGE, Permission.SYSTEM_PERMISSION_READ,
+    Permission.SYSTEM_AUDIT_READ,
+}
+ROLE_PERMISSIONS = {"guest": _GUEST, "student": _STUDENT, "teacher": _TEACHER, "developer": _DEVELOPER}
 
-# The developer control plane is represented in the database menu projection.
-# The React shell may keep route components statically bundled, but visibility
-# and role binding must come from this catalog so a menu change has an
-# observable effect without changing application code. Menu administration is
-# deliberately not exposed: the product supports four fixed roles and the
-# developer workspace has no live menu-management route.
 MENU_CATALOG = (
     ("developer.overview", "工作台", "/developer", "overview", Permission.SYSTEM_RUNTIME_MONITOR, 10),
     ("developer.agents", "Agent 与 Worker", "/developer/agents", "agents", Permission.SYSTEM_RUNTIME_MONITOR, 20),
@@ -78,162 +125,49 @@ MENU_CATALOG = (
     ("developer.settings", "运行时设置", "/developer/settings", "settings", Permission.SYSTEM_RUNTIME_INSPECT, 90),
     ("developer.users", "用户管理", "/developer/users", "users", Permission.SYSTEM_USER_MANAGE, 100),
     ("developer.roles", "角色权限", "/developer/roles", "roles", Permission.SYSTEM_ROLE_MANAGE, 110),
-    ("developer.quotas", "额度管理", "/developer/quotas", "quotas", Permission.SYSTEM_QUOTA_MANAGE, 125),
     ("developer.audit", "审计日志", "/developer/audit", "audit", Permission.SYSTEM_AUDIT_READ, 130),
     ("developer.sessions", "Agent 会话", "/developer/sessions", "sessions", Permission.AGENT_SESSION_READ, 140),
 )
 
-
-def role_id(code: str) -> str:
+def role_id(code):
     return str(uuid5(NAMESPACE_URL, f"pro-nlp/rbac/role/{code}"))
 
-
-def permission_id(permission: Permission | str) -> str:
+def permission_id(permission):
     return str(uuid5(NAMESPACE_URL, f"pro-nlp/rbac/permission/{permission}"))
 
-
-def permission_scope(permission: Permission) -> str:
+def permission_scope(permission):
     if permission is Permission.LEARNING_CONTENT_READ_PUBLIC:
         return "public"
-    if (
-        permission.name.startswith("SYSTEM_")
-        or permission in {
-            Permission.LEARNING_FEEDBACK_READ,
-            Permission.LEARNING_FEEDBACK_WRITE,
-        }
-    ):
+    if permission.name.startswith("SYSTEM_") or permission is Permission.LEARNING_FEEDBACK_READ:
         return "system"
-    if permission in {
-        Permission.LEARNING_FEEDBACK_SUBMIT,
-    }:
+    if permission is Permission.LEARNING_FEEDBACK_SUBMIT:
         return "own"
-    if permission in {
-        Permission.LEARNING_CONTENT_MANAGE,
-        Permission.LEARNING_PROGRESS_READ_CLASSROOM,
-        Permission.LEARNING_FEEDBACK_CREATE,
-        Permission.CLASSROOM_CREATE,
-        Permission.CLASSROOM_MEMBER_MANAGE,
-    }:
+    if permission in {Permission.LEARNING_CONTENT_MANAGE, Permission.LEARNING_PROGRESS_READ_CLASSROOM, Permission.LEARNING_FEEDBACK_CREATE, Permission.CLASSROOM_CREATE, Permission.CLASSROOM_MEMBER_MANAGE}:
         return "classroom"
-    if permission in {
-        Permission.LEARNING_CONTENT_READ_WORKSPACE,
-        Permission.AGENT_SESSION_READ,
-        Permission.AGENT_TURN_SUBMIT,
-        Permission.AGENT_EVENT_REPLAY,
-    }:
+    if permission in {Permission.LEARNING_CONTENT_READ_WORKSPACE, Permission.AGENT_SESSION_READ, Permission.AGENT_TURN_SUBMIT, Permission.AGENT_EVENT_REPLAY}:
         return "workspace"
     return "own"
 
+def permission_row(permission):
+    domain, resource, action = permission.value.split(":", 2)
+    name, description = PERMISSION_LABELS[permission]
+    return {"id": permission_id(permission), "code": permission.value, "domain_name": domain, "resource_name": resource, "action_name": action, "name": name, "description": description, "status": "active", "is_builtin": True}
 
-def permission_row(permission: Permission) -> dict[str, str | bool]:
-    domain_name, resource_name, action_name = permission.value.split(":", 2)
-    name, description = PERMISSION_LABELS.get(permission, (permission.value, ""))
-    return {
-        "id": permission_id(permission),
-        "code": permission.value,
-        "domain_name": domain_name,
-        "resource_name": resource_name,
-        "action_name": action_name,
-        "name": name,
-        "description": description,
-        "status": "active",
-        "is_builtin": True,
-    }
+def role_row(code):
+    return {"id": role_id(code), "code": code, "name": ROLE_NAMES[code], "description": ROLE_DESCRIPTIONS[code], "status": "active", "is_builtin": True}
 
+def role_permission_rows():
+    return [{"role_id": role_id(code), "permission_id": permission_id(permission)} for code in ROLE_NAMES for permission in sorted(ROLE_PERMISSIONS[code], key=str)]
 
-def permission_display(
-    permission_code: str,
-    *,
-    fallback_name: str = "",
-    fallback_description: str = "",
-) -> tuple[str, str]:
-    """Return the stable display labels for a permission code.
+def role_permission_scope_rows():
+    return [{"role_id": role_id(code), "permission_id": permission_id(permission), "scope_type": permission_scope(permission)} for code in ROLE_NAMES for permission in sorted(ROLE_PERMISSIONS[code], key=str)]
 
-    Permission codes are the durable contract.  Older databases may contain
-    an empty, stale, or incorrectly decoded display value, so known built-in
-    permissions must use the catalog labels instead of trusting persisted text.
-    Unknown codes retain their database values for forward compatibility.
-    """
-    try:
-        permission = Permission(permission_code)
-    except ValueError:
-        return fallback_name, fallback_description
-    return PERMISSION_LABELS.get(permission, (fallback_name, fallback_description))
-
-
-def role_display(
-    role_code: str,
-    *,
-    fallback_name: str = "",
-    fallback_description: str = "",
-) -> tuple[str, str]:
-    """Return stable display labels for one of the four fixed roles."""
-    name = ROLE_NAMES.get(role_code, fallback_name)
-    description = ROLE_DESCRIPTIONS.get(role_code, fallback_description)
-    return name, description
-
-
-def role_row(code: str) -> dict[str, str | bool]:
-    return {
-        "id": role_id(code),
-        "code": code,
-        "name": ROLE_NAMES[code],
-        "description": ROLE_DESCRIPTIONS[code],
-        "status": "active",
-        "is_builtin": True,
-    }
-
-
-def role_permission_rows() -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for code in ROLE_NAMES:
-        for permission in sorted(ROLE_PERMISSIONS[code], key=str):
-            rows.append(
-                {
-                    "role_id": role_id(code),
-                    "permission_id": permission_id(permission),
-                }
-            )
-    return rows
-
-
-def role_permission_scope_rows() -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for code in ROLE_NAMES:
-        for permission in sorted(ROLE_PERMISSIONS[code], key=str):
-            rows.append(
-                {
-                    "role_id": role_id(code),
-                    "permission_id": permission_id(permission),
-                    "scope_type": permission_scope(permission),
-                }
-            )
-    return rows
-
-
-def menu_id(key: str) -> str:
+def menu_id(key):
     return str(uuid5(NAMESPACE_URL, f"pro-nlp/rbac/menu/{key}"))
 
-
-def menu_row(item: tuple[str, str, str, str, Permission, int]) -> dict[str, str | int | bool | None]:
+def menu_row(item):
     key, name, route_path, component_key, permission, sort_order = item
-    return {
-        "id": menu_id(key),
-        "parent_id": None,
-        "menu_type": "page",
-        "name": name,
-        "route_path": route_path,
-        "component_key": component_key,
-        "permission_id": permission_id(permission),
-        "client_scope": "developer",
-        "sort_order": sort_order,
-        "visible": True,
-        "status": "active",
-    }
+    return {"id": menu_id(key), "parent_id": None, "menu_type": "page", "name": name, "route_path": route_path, "component_key": component_key, "permission_id": permission_id(permission), "client_scope": "developer", "sort_order": sort_order, "visible": True, "status": "active"}
 
-
-def role_menu_rows() -> list[dict[str, str]]:
-    return [
-        {"role_id": role_id("developer"), "menu_id": menu_id(item[0])}
-        for item in MENU_CATALOG
-    ]
+def role_menu_rows():
+    return [{"role_id": role_id("developer"), "menu_id": menu_id(item[0])} for item in MENU_CATALOG]

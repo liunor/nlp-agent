@@ -32,14 +32,12 @@ export function AppRouter() {
               <TeacherRoutes />
             </RouteGuard>
           } />
-
           {/* Developer routes: require developer role */}
           <Route path="developer/*" element={
             <RouteGuard allowedRoles={["developer", "admin"]}>
               <DeveloperRoutes />
             </RouteGuard>
           } />
-
           {/* Admin routes: require developer role */}
           <Route path="admin/*" element={
             <RouteGuard allowedRoles={["developer", "admin"]}>

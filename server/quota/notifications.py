@@ -71,4 +71,3 @@ class QuotaSnapshotRedisPublisher:
         close = getattr(self._client, "close", None)
         if close is not None:
             close()
-

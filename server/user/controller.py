@@ -31,6 +31,7 @@ from .service import (
     UserAlreadyExistsError,
     UserNotFoundError,
     UserService,
+    LastDeveloperForbiddenError,
 )
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
@@ -42,6 +43,11 @@ async def _user_response_with_roles(
     service: UserService, user
 ) -> UserResponse:
     """Build a ``UserResponse`` including the user's role codes."""
+    # Role replacement increments authorization_version, which also expires
+    # SQLAlchemy's server-managed timestamp attributes. Refresh while we are
+    # still inside the async session so Pydantic serialization never attempts
+    # an implicit lazy load (which raises MissingGreenlet).
+    await service.session.refresh(user)
     roles_map = await service.get_roles_for_users([user.id])
     return UserResponse.model_validate(user).model_copy(
         update={"roles": roles_map.get(user.id, [])}
@@ -104,6 +110,8 @@ async def create_user(
     protection) applies.
     """
     authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
+    if data.role_codes:
+        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
 
     service = UserService(db)
     try:
@@ -225,6 +233,8 @@ async def get_user(
         return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -243,17 +253,54 @@ async def update_user(
         user = await service.get_user(user_id)
 
         # Apply admin updates
+        previous_display_name = user.display_name
         if data.display_name is not None:
             user.display_name = data.display_name
+            if data.display_name != previous_display_name:
+                await rbac_service.audit(
+                    db,
+                    actor_user_id=principal.user_id,
+                    target_user_id=user_id,
+                    decision="allow",
+                    reason_code="user_display_name_updated",
+                    permission_code="system:user:manage",
+                    resource_type="user",
+                    resource_id=user_id,
+                    detail={
+                        "before": previous_display_name,
+                        "after": data.display_name,
+                    },
+                )
+        previous_status = user.status
         if data.status is not None:
             await service.update_user_status(
                 user_id, data.status, actor_user_id=principal.user_id
             )
 
+            if data.status != previous_status:
+                reason_code = {
+                    "disabled": "user_account_disabled",
+                    "active": "user_account_enabled",
+                    "locked": "user_account_locked",
+                }[data.status]
+                await rbac_service.audit(
+                    db,
+                    actor_user_id=principal.user_id,
+                    target_user_id=user_id,
+                    decision="allow",
+                    reason_code=reason_code,
+                    permission_code="system:user:manage",
+                    resource_type="user",
+                    resource_id=user_id,
+                    detail={"before": previous_status, "after": data.status},
+                )
+
         await db.flush()
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/disable", status_code=status.HTTP_204_NO_CONTENT)
@@ -284,6 +331,8 @@ async def disable_user(
         )
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/enable", status_code=status.HTTP_204_NO_CONTENT)
@@ -314,6 +363,8 @@ async def enable_user(
         )
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 # 角色分配统一由 ``PUT /api/v1/users/{user_id}/roles``（server/web/app.py 中的
@@ -351,6 +402,8 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     except SelfDeleteForbiddenError:
         raise HTTPException(status_code=403, detail="Cannot delete your own account")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/restore", response_model=UserResponse)
@@ -375,9 +428,11 @@ async def restore_user(
             resource_type="user",
             resource_id=user_id,
         )
-        return UserResponse.model_validate(user)
+        return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="Deleted user not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.post("/{user_id}/sessions/revoke", status_code=status.HTTP_204_NO_CONTENT)

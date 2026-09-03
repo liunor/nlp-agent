@@ -8,6 +8,7 @@ effect immediately across processes.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import secrets
@@ -32,6 +33,7 @@ from server.infrastructure.mysql.models import (
     WsTicketModel,
 )
 from server.user.service import PasswordHasherSingleton
+from server.user.phone import InvalidPhoneNumberError, normalize_phone_number
 from server.sandbox.service import sandbox_lifecycle_service
 from server.web.auth import AuthenticationError, CsrfRejectedError, OriginRejectedError
 
@@ -43,22 +45,14 @@ def _utc_now() -> datetime:
 def _phone_variants(identifier: str) -> list[str]:
     """Plausible stored forms of *identifier* when it looks like a phone number.
 
-    Registration stores the phone exactly as submitted (after ``strip()``), so
-    we match the raw input, its bare digits, and the ``+86`` national-prefix
-    variants.  Returns ``[]`` for inputs that are not phone-shaped.
+    Registration stores one canonical E.164 value, so login uses the same
+    identity regardless of spacing, punctuation or domestic ``+86`` prefix.
+    Returns ``[]`` for inputs that are not phone-shaped.
     """
-    cleaned = identifier.strip()
-    digits = "".join(ch for ch in cleaned if ch.isdigit())
-    if not (7 <= len(digits) <= 15):
+    try:
+        return [normalize_phone_number(identifier)]
+    except InvalidPhoneNumberError:
         return []
-    variants = {cleaned, digits}
-    if len(digits) == 13 and digits.startswith("86"):
-        variants.add(digits[2:])
-        variants.add(f"+{digits}")
-    else:
-        variants.add(f"86{digits}")
-        variants.add(f"+86{digits}")
-    return sorted(variants)
 
 
 @dataclass(frozen=True)
@@ -129,6 +123,38 @@ class DatabaseSessionAuth:
         self._hasher = PasswordHasherSingleton.get()
         self._username_rate_limiter = _RateLimiter(max_login_attempts, rate_window_s)
         self._client_rate_limiter = _RateLimiter(max_login_attempts, rate_window_s)
+        self._redis = None
+        self._rate_prefix = "nlp-agent:auth-login:"
+
+    def set_redis_client(self, redis_client: Any | None) -> None:
+        """Use the shared Redis limiter when the deployment provides Redis."""
+        self._redis = redis_client
+
+    async def _rate_allowed(self, username: str, client_key: str) -> bool:
+        if self._redis is None:
+            return self._username_rate_limiter.allowed(username) and self._client_rate_limiter.allowed(client_key)
+        for key in (f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}"):
+            value = await self._redis.get(key)
+            if value is not None and int(value) >= self._username_rate_limiter.max_attempts:
+                return False
+        return True
+
+    async def _rate_failure(self, username: str, client_key: str) -> None:
+        if self._redis is None:
+            self._username_rate_limiter.record_failure(username)
+            self._client_rate_limiter.record_failure(client_key)
+            return
+        for key in (f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}"):
+            count = await self._redis.incr(key)
+            if int(count) == 1:
+                await self._redis.expire(key, self._username_rate_limiter.window_s)
+
+    async def _rate_clear(self, username: str, client_key: str) -> None:
+        if self._redis is None:
+            self._username_rate_limiter.clear(username)
+            self._client_rate_limiter.clear(client_key)
+            return
+        await self._redis.delete(f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}")
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "DatabaseSessionAuth":
@@ -184,19 +210,16 @@ class DatabaseSessionAuth:
         workspace_id: str | None = None,
     ) -> tuple[str, DatabaseSessionClaims]:
         normalized = username.casefold()
-        if not (
-            self._username_rate_limiter.allowed(normalized)
-            and self._client_rate_limiter.allowed(client_key)
-        ):
+        if not await self._rate_allowed(normalized, client_key):
             raise AuthenticationError("too many login attempts")
 
         async with factory.begin() as session:
-            # 主登录入口同时接受用户名与手机号：用户名走 ``username_lower``
-            # 精确匹配，手机号按常见存储形态（含 +86 变体）匹配。
+            # 主登录入口同时接受用户名与规范化手机号。手机号命中唯一的
+            # ``phone_number_normalized`` 索引，避免多种原始格式产生歧义。
             identity_criteria = UserModel.username_lower == normalized
             phone_variants = _phone_variants(username)
             if phone_variants:
-                identity_criteria = identity_criteria | UserModel.phone_number.in_(phone_variants)
+                identity_criteria = identity_criteria | UserModel.phone_number_normalized.in_(phone_variants)
             user = await session.scalar(
                 select(UserModel)
                 .where(
@@ -205,16 +228,18 @@ class DatabaseSessionAuth:
                 )
                 .with_for_update()
             )
-            valid = user is not None and user.status == "active" and self._verify_password(
-                user.password_hash, password, self._hasher
+            valid = (
+                user is not None
+                and user.status == "active"
+                and await asyncio.to_thread(
+                    self._verify_password, user.password_hash, password, self._hasher
+                )
             )
             if not valid:
-                self._username_rate_limiter.record_failure(normalized)
-                self._client_rate_limiter.record_failure(client_key)
+                await self._rate_failure(normalized, client_key)
                 raise AuthenticationError("invalid credentials")
 
-            self._username_rate_limiter.clear(normalized)
-            self._client_rate_limiter.clear(client_key)
+            await self._rate_clear(normalized, client_key)
             now = _utc_now()
             user.last_login_at = now
             selected_workspace = await self._select_workspace(

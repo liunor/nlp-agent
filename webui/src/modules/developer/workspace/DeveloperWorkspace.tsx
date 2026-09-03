@@ -2,7 +2,7 @@ import {
   Activity, AppWindow, Bot, Box, ChevronLeft, ChevronRight, Clock3, Code2, Database,
   ExternalLink, FileKey2, Gauge, Globe2, KeyRound, Mail, MailOpen, Newspaper, PlugZap,
   Inbox, MessageCircle, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, TerminalSquare, Trash2, User, Wrench,
-  Users, LayoutList, ScrollText, MessageSquare, WalletCards,
+  Users, ScrollText, MessageSquare, WalletCards,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -10,14 +10,13 @@ import { api, ensureAuth } from "@/platform/http/api";
 import type { DeveloperSnapshot, FeedbackCategory, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadSummary, ReleaseNoteEntry } from "@/shared/types";
 import { UserManagementPage } from "@/modules/admin/UserManagementPage";
 import { RoleManagementPageV2 } from "@/modules/admin/RoleManagementPageV2";
-import { MenuManagementPageV2 } from "@/modules/admin/MenuManagementPageV2";
 import { AuditLogPageV2 } from "@/modules/admin/AuditLogPageV2";
 import { AgentSessionListPageV2 } from "@/modules/admin/AgentSessionListPageV2";
 import { monitorUrl } from "@/monitor/monitor-helpers";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { QuotaManagementPage } from "@/modules/quota/QuotaManagementPage";
 
-export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "menus" | "audit" | "sessions" | "quotas";
+export type DeveloperPage = "overview" | "agents" | "tools" | "models" | "mcp" | "skills" | "release-notes" | "automations" | "feedback" | "settings" | "users" | "roles" | "audit" | "sessions" | "quotas";
 
 const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "overview", label: "工作台", icon: Gauge },
@@ -32,7 +31,6 @@ const NAV: Array<{ page: DeveloperPage; label: string; icon: typeof Gauge }> = [
   { page: "settings", label: "运行时设置", icon: Settings2 },
   { page: "users", label: "用户管理", icon: Users },
   { page: "roles", label: "角色权限", icon: ShieldCheck },
-  { page: "menus", label: "菜单管理", icon: LayoutList },
   { page: "audit", label: "审计日志", icon: ScrollText },
   { page: "sessions", label: "Agent 会话", icon: MessageSquare },
   { page: "quotas", label: "额度管理", icon: WalletCards },
@@ -503,6 +501,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
   const [feedbackPriority, setFeedbackPriority] = useState<FeedbackPriority | "">("");
   const [feedbackSort, setFeedbackSort] = useState<"latest" | "oldest" | "unread">("latest");
   const [feedbackLoadError, setFeedbackLoadError] = useState("");
+  const [managementRefreshToken, setManagementRefreshToken] = useState(0);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const feedbackQueryRef = useRef({ offset: 0, search: "", status: "" as FeedbackStatus | "", category: "" as FeedbackCategory | "", priority: "" as FeedbackPriority | "", sort: "latest" as "latest" | "oldest" | "unread" });
   useEffect(() => {
@@ -589,6 +588,10 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setLoading(false); }
   }, []);
+  const refreshWorkspace = useCallback(async () => {
+    setManagementRefreshToken((current) => current + 1);
+    await load();
+  }, [load]);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => {
     if (page !== "feedback") return;
@@ -618,9 +621,8 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     // Pages that own their data sources render regardless of the snapshot.
     if (page === "release-notes") return <ReleaseNotes />;
     if (page === "feedback") return <Feedback threads={feedbackThreads} total={feedbackTotal} pageSize={FEEDBACK_PAGE_SIZE} offset={feedbackOffset} search={feedbackSearch} loadError={feedbackLoadError} loading={feedbackLoading} selectedId={feedbackSelectedId} onSelect={(threadId) => setFeedbackSelectedId(threadId)} onSearchChange={changeFeedbackSearch} onOffsetChange={setFeedbackOffset} onDelete={deleteFeedback} onMarkRead={markFeedbackRead} onBulkMarkRead={markFeedbackThreadsRead} onBulkDelete={deleteFeedbackThreads} refresh={refreshFeedback} statusFilter={feedbackStatus} categoryFilter={feedbackCategory} priorityFilter={feedbackPriority} sort={feedbackSort} onStatusFilterChange={changeFeedbackStatus} onCategoryFilterChange={changeFeedbackCategory} onPriorityFilterChange={changeFeedbackPriority} onSortChange={changeFeedbackSort} />;
-    if (page === "users") return <UserManagementPage />;
-    if (page === "roles") return <RoleManagementPageV2 />;
-    if (page === "menus") return <MenuManagementPageV2 />;
+    if (page === "users") return <UserManagementPage onShellRefresh={load} refreshToken={managementRefreshToken} />;
+    if (page === "roles") return <RoleManagementPageV2 onShellRefresh={load} refreshToken={managementRefreshToken} />;
     if (page === "audit") return <AuditLogPageV2 />;
     if (page === "sessions") return <AgentSessionListPageV2 />;
     if (page === "quotas") return <QuotaManagementPage />;
@@ -633,7 +635,7 @@ export function DeveloperWorkspace({ page: routedPage, onNavigate }: { page?: De
     if (page === "automations") return <Automations snapshot={snapshot} />;
     if (page === "settings") return <RuntimeSettings snapshot={snapshot} />;
     return <Overview snapshot={snapshot} />;
-  }, [changeFeedbackCategory, changeFeedbackPriority, changeFeedbackSearch, changeFeedbackSort, changeFeedbackStatus, deleteFeedback, deleteFeedbackThreads, feedbackCategory, feedbackLoadError, feedbackLoading, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, markFeedbackRead, markFeedbackThreadsRead, page, refreshFeedback, snapshot, snapshotError, load]);
+  }, [changeFeedbackCategory, changeFeedbackPriority, changeFeedbackSearch, changeFeedbackSort, changeFeedbackStatus, deleteFeedback, deleteFeedbackThreads, feedbackCategory, feedbackLoadError, feedbackLoading, feedbackOffset, feedbackPriority, feedbackSearch, feedbackSelectedId, feedbackSort, feedbackStatus, feedbackThreads, feedbackTotal, markFeedbackRead, markFeedbackThreadsRead, load, managementRefreshToken, page, refreshFeedback, snapshot, snapshotError]);
   const accessDenied = !loading && visiblePages.size > 0 && !visiblePages.has(page);
-  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void load(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
+  return <div className="developer-shell"><aside className="developer-nav"><div className="developer-brand"><TerminalSquare /><span><strong>NLP Developer</strong><small>Control plane · 8765</small></span></div><nav>{NAV.filter(({ page: itemPage }) => visiblePages.has(itemPage)).map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/"><ChevronLeft size={16} />返回学生模式</a></aside><main className="developer-main"><header className="developer-topbar"><div><Globe2 size={16} /><span>当前开发者</span></div><button type="button" onClick={() => { if (page === "feedback") void refreshFeedback(); void refreshWorkspace(); }} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} />刷新</button></header><div className="developer-content">{loading && visiblePages.size === 0 ? <div className="developer-loading"><RefreshCw className="spin" />正在读取运行时…</div> : error ? <div className="developer-error"><ShieldCheck /><strong>无法进入开发者模式</strong><p>{error}</p></div> : accessDenied ? <div className="developer-error"><ShieldCheck /><strong>无权访问该页面</strong><p>当前身份未被授予此菜单；请从左侧导航选择可用的页面。</p></div> : content}</div></main></div>;
 }

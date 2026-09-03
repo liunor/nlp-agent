@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.pytest-tmp/
 # ── 虚拟环境 ──
 .venv/
 venv/
