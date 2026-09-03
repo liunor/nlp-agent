@@ -24,6 +24,7 @@ class ProviderConfig(FrozenModel):
     adapter: str
     base_url: str
     api_key_env: str
+    region: str | None = None
     default_headers: dict[str, str] = Field(default_factory=dict)
 
 

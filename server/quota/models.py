@@ -185,7 +185,7 @@ class MeterPricingRuleModel(Base):
         ),
         CheckConstraint("rate_unit > 0", name="ck_nlp_meter_pricing_rules_rate_unit"),
         CheckConstraint(
-            "effective_until IS NULL OR effective_until > effective_from",
+            "effective_until is null or effective_until > effective_from",
             name="ck_nlp_meter_pricing_rules_effective_range",
         ),
         Index(

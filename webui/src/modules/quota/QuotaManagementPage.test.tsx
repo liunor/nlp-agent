@@ -5,6 +5,7 @@ import { QuotaManagementPage } from "./QuotaManagementPage";
 const methods = vi.hoisted(() => ({
   listQuotaPolicies: vi.fn(),
   listQuotaPricingRules: vi.fn(),
+  listQuotaMeterPricingRules: vi.fn(),
   listQuotaBindings: vi.fn(),
   listQuotaGrants: vi.fn(),
   listQuotaAdjustments: vi.fn(),
@@ -17,9 +18,11 @@ const methods = vi.hoisted(() => ({
   purgeQuotaUsage: vi.fn(),
   createQuotaPolicy: vi.fn(),
   createQuotaPricingRule: vi.fn(),
+  createQuotaMeterPricingRule: vi.fn(),
   updateQuotaPolicy: vi.fn(),
   archiveQuotaPolicy: vi.fn(),
   retireQuotaPricingRule: vi.fn(),
+  retireQuotaMeterPricingRule: vi.fn(),
   publishQuotaPolicy: vi.fn(),
   bindQuotaPolicy: vi.fn(),
   retireQuotaBinding: vi.fn(),
@@ -42,6 +45,7 @@ describe("QuotaManagementPage", () => {
     Object.values(methods).forEach((method) => method.mockReset());
     methods.listQuotaPolicies.mockResolvedValue({ items: [] });
     methods.listQuotaPricingRules.mockResolvedValue({ items: [] });
+    methods.listQuotaMeterPricingRules.mockResolvedValue({ items: [] });
     methods.listQuotaBindings.mockResolvedValue({ items: [] });
     methods.listQuotaGrants.mockResolvedValue({ items: [] });
     methods.listQuotaAdjustments.mockResolvedValue({ items: [] });
@@ -54,9 +58,11 @@ describe("QuotaManagementPage", () => {
     methods.purgeQuotaUsage.mockResolvedValue({ purged_events: 2, deleted_events: 2, cutoff_at: "2026-08-01T00:00:00Z" });
     methods.createQuotaPolicy.mockResolvedValue({});
     methods.createQuotaPricingRule.mockResolvedValue({});
+    methods.createQuotaMeterPricingRule.mockResolvedValue({});
     methods.updateQuotaPolicy.mockResolvedValue({});
     methods.archiveQuotaPolicy.mockResolvedValue({});
     methods.retireQuotaPricingRule.mockResolvedValue({});
+    methods.retireQuotaMeterPricingRule.mockResolvedValue({});
     methods.publishQuotaPolicy.mockResolvedValue({});
     methods.bindQuotaPolicy.mockResolvedValue({});
     methods.retireQuotaBinding.mockResolvedValue({});
@@ -131,6 +137,26 @@ describe("QuotaManagementPage", () => {
     expect(screen.getByRole("heading", { name: "价格规则" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("deepseek/deepseek-v4-pro")).toBeInTheDocument();
     expect(screen.getByText(/缺少规则的调用会保持待处理/)).toBeInTheDocument();
+  });
+
+  it("creates versioned capability Meter pricing rules", async () => {
+    render(<QuotaManagementPage />);
+
+    await waitFor(() => expect(methods.listQuotaPricingRules).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "能力 Meter 价格" }));
+    await waitFor(() => expect(methods.listQuotaMeterPricingRules).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("Meter Pricing Key"), { target: { value: "qwen/cn-beijing/web-search/turbo" } });
+    fireEvent.change(screen.getByLabelText("Meter 价格版本"), { target: { value: "2026-09-03" } });
+    fireEvent.change(screen.getByLabelText("Meter 计价金额"), { target: { value: "3000" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建 Meter 价格版本" }));
+
+    await waitFor(() => expect(methods.createQuotaMeterPricingRule).toHaveBeenCalledWith(expect.objectContaining({
+      capability_type: "search",
+      meter: "search.requests",
+      pricing_key: "qwen/cn-beijing/web-search/turbo",
+      rate_micro: 3000,
+      rate_unit: 1,
+    })));
   });
 
   it("offers role gifting and submits one batch operation for the selected role", async () => {

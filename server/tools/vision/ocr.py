@@ -29,6 +29,7 @@ from core.usage_metering.contracts import MeteredUsageItem
 from core.usage_metering.reporters import (
     CapabilityUsageConflictError,
     get_global_capability_reporter_slot,
+    pre_reserve_capability,
 )
 
 from server.tools.vision.contracts import (
@@ -89,9 +90,18 @@ class RapidOCRProvider:
         self._engine_lock = threading.Lock()
 
     async def extract(self, image: ImageAsset, *, language: ImageLanguage) -> OCRResult:
+        operation_id = str(uuid.uuid4())
+        await pre_reserve_capability(
+            operation_key=operation_id,
+            reason="ocr_execution",
+            pricing_key="internal/rapidocr/v1",
+            estimated_items=(
+                MeteredUsageItem(meter="ocr.pages", quantity=1, unit="page"),
+            ),
+        )
         try:
             result = await asyncio.to_thread(self._extract_sync, image, language)
-            await self._report_usage()
+            await self._report_usage(operation_id)
             return result
         except VisionError:
             raise
@@ -101,7 +111,7 @@ class RapidOCRProvider:
                 "OCR 引擎执行失败",
             ) from error
 
-    async def _report_usage(self) -> None:
+    async def _report_usage(self, operation_id: str) -> None:
         slot = get_global_capability_reporter_slot()
         if slot is None or slot.reporter is None:
             if slot is not None and getattr(slot, "required", False):
@@ -110,7 +120,7 @@ class RapidOCRProvider:
                 )
             return
         event = create_capability_event(
-            operation_id=str(uuid.uuid4()),
+            operation_id=operation_id,
             capability_type="ocr",
             provider="internal",
             pricing_key="internal/rapidocr/v1",

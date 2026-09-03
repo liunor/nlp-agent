@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOptionalAuth } from "@/platform/auth/AuthContext";
 import { api, ApiError } from "@/platform/http/api";
 import { StudentSocket } from "@/platform/realtime/client";
-import type { QuotaBucketSnapshot, QuotaSnapshot, QuotaUsageBreakdown, QuotaUsageSnapshot } from "@/shared/types";
+import type { QuotaBucketSnapshot, QuotaCategoryUsage, QuotaSnapshot, QuotaUsageBreakdown, QuotaUsageSnapshot } from "@/shared/types";
 
 export const formatMicro = (value: number | null | undefined) => `${Number(value ?? 0).toLocaleString("zh-CN")} μcredits`;
 const formatLimit = (value: number | null) => value == null ? "无限" : formatMicro(value);
@@ -12,6 +12,40 @@ const ownerLabel = (ownerType: QuotaBucketSnapshot["owner_type"]) => ownerType =
 const periodLabel = (bucketType: QuotaBucketSnapshot["bucket_type"]) => bucketType === "daily" ? "今日" : "本周";
 const ACTIVITY_DAY_COUNT = 182;
 const ACTIVITY_WEEK_COUNT = 26;
+
+const CATEGORY_NAMES: Record<string, string> = {
+  model: "模型文本",
+  vision: "视觉模型",
+  search: "联网搜索",
+  web_fetch: "链接读取",
+};
+
+function CategoryUsageGrid({ categories }: { categories?: QuotaCategoryUsage[] }) {
+  const displayList = useMemo(() => {
+    const defaultOrder = ["model", "vision", "search", "web_fetch"];
+    const map = new Map((categories ?? []).map((c) => [c.category, c]));
+    return defaultOrder.map((key) => map.get(key) ?? { category: key, credits_micro: 0, events: 0 });
+  }, [categories]);
+
+  return (
+    <section className="quota-panel" aria-label="能力分类用量">
+      <div className="quota-panel-heading">
+        <h2>能力分类用量</h2>
+        <span>近 7 天</span>
+      </div>
+      <div className="quota-stat-strip" style={{ marginTop: "1rem" }}>
+        {displayList.map((item) => (
+          <div key={item.category}>
+            <strong>{formatMicro(item.credits_micro)}</strong>
+            <span>
+              {CATEGORY_NAMES[item.category] ?? item.category} · {item.events} 次
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 const formatTokenCount = (value: number) => {
   if (value >= 100_000_000) return `${(value / 100_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}亿`;
   if (value >= 10_000) return `${(value / 10_000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}万`;
@@ -249,6 +283,7 @@ export function QuotaUsagePage({ embedded = false, userId, workspaceIds: provide
     <div className="quota-page-toolbar"><button className="quota-refresh-button" type="button" onClick={() => void load()} disabled={loading} aria-label="刷新额度" title="刷新额度"><RefreshCw size={16} className={loading ? "spin" : ""} /></button></div>
     {error && <div className="quota-error" role="alert"><CircleAlert size={17} /><span>{error}</span><button type="button" onClick={() => void load()}>重试</button></div>}
     <section className="quota-stat-strip"><div><strong>{effectiveRemainingLabel}</strong><span>当前可用</span></div><div><strong>{Number(recentUsage?.events ?? 0).toLocaleString("zh-CN")}</strong><span>近 7 天请求</span></div><div><strong>{totalTokens.toLocaleString("zh-CN")}</strong><span>近 7 天 Token</span></div><div><strong>{recentUsage?.credits_complete ? "正常" : "待处理"}</strong><span>账务状态</span></div></section>
+    <CategoryUsageGrid categories={recentUsage?.categories} />
     <UsageSummary breakdown={activityUsage?.breakdown ?? []} granularity={activityGranularity} />
     <section className="quota-panel quota-balances-panel"><div className="quota-panel-heading"><h2>额度</h2><span>{personalBuckets.length ? "日 / 周" : "暂无额度"}</span></div><div className="quota-balance-list">{personalBuckets.length > 0 && (["daily", "weekly"] as const).map((bucketType) => personalBucketsByPeriod.get(bucketType) ? <BucketSummary bucket={personalBucketsByPeriod.get(bucketType)!} key={`user-${bucketType}`} /> : <UnconfiguredBucketSummary bucketType={bucketType} key={`user-${bucketType}`} />)}{personalBuckets.length === 0 && <div className="quota-empty quota-empty-compact"><Coins size={18} /><span>当前周期暂无可用额度。</span></div>}</div></section>
     <ActivityHeatmap breakdown={activityUsage?.breakdown ?? []} dailyBreakdown={dailyUsage?.breakdown ?? []} granularity={activityGranularity} onGranularityChange={setActivityGranularity} />

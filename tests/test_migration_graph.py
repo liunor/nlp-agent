@@ -10,10 +10,13 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 
 
-def test_migration_graph_has_one_head_after_knowledge_book_is_added() -> None:
+def test_migration_graph_has_one_head_after_capability_metering_is_added() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260901_44_quota_summary"]
+    assert scripts.get_heads() == ["20260902_45_cap_usage_metering"]
+    assert scripts.get_revision("20260902_45_cap_usage_metering").down_revision == (
+        "20260901_44_quota_summary"
+    )
     assert scripts.get_revision("20260901_44_quota_summary").down_revision == (
         "20260901_43_role_credit_ops",
         "20260831_40_summary_merge",

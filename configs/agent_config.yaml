@@ -93,6 +93,7 @@ providers:
     # compatible DashScope API key instead of a collaborator's workspace key.
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_key_env: QWEN_API_KEY
+    region: cn-beijing
     default_headers: {}
 
 models:

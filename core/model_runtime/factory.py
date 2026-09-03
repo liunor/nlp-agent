@@ -88,6 +88,7 @@ class ModelFactory:
             definition=definition,
             preset=preset,
             model=model,
+            provider_region=provider.region,
         )
 
     def build_route(

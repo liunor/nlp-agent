@@ -73,6 +73,54 @@ class DurableModelUsageReporter(ModelUsageReporter):
     ) -> None:
         await asyncio.to_thread(self._report_sync, invocation, usage, outcome)
 
+    async def reserve_additional(
+        self,
+        invocation: ModelInvocation,
+        *,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+    ) -> object:
+        """Price and reserve one conservative Provider-attempt estimate."""
+        if self._quota_service is None or invocation.attribution.reservation_id is None:
+            return None
+        return await asyncio.to_thread(
+            self._reserve_additional_sync,
+            invocation,
+            estimated_input_tokens,
+            estimated_output_tokens,
+        )
+
+    def _reserve_additional_sync(
+        self,
+        invocation: ModelInvocation,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+    ) -> object:
+        assert self._quota_service is not None
+        reservation_id = invocation.attribution.reservation_id
+        assert reservation_id is not None
+        usage = CanonicalTokenUsage(
+            input_tokens=estimated_input_tokens,
+            output_tokens=estimated_output_tokens,
+            total_tokens=estimated_input_tokens + estimated_output_tokens,
+            source="estimated",
+        )
+        outcome = InvocationOutcome(
+            status="succeeded",
+            completed_at=invocation.started_at,
+        )
+        with self._engine.connect() as connection:
+            catalog = PricingCatalog(self._pricing_rules(connection, invocation))
+        priced = catalog.price(invocation, usage, outcome, allow_estimated=True)
+        return self._quota_service.reserve_additional(
+            reservation_id=reservation_id,
+            operation_key=invocation.operation_id,
+            estimated_micro=priced.credits_micro,
+            reason="model_provider_attempt",
+            pricing_key=priced.pricing_key,
+            now=invocation.started_at,
+        )
+
     def _report_sync(
         self,
         invocation: ModelInvocation,

@@ -1,6 +1,6 @@
 """Add capability usage metering tables and extend usage events and billing.
 
-Revision ID: 20260902_45_capability_usage_metering
+Revision ID: 20260902_45_cap_usage_metering
 Revises: 20260901_44_quota_summary
 Create Date: 2026-09-02
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.mysql import BIGINT, DATETIME
 
 
-revision = "20260902_45_capability_usage_metering"
+revision = "20260902_45_cap_usage_metering"
 down_revision = "20260901_44_quota_summary"
 branch_labels = None
 depends_on = None

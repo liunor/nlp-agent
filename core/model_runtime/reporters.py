@@ -62,6 +62,15 @@ class InMemoryModelUsageReporter:
             str, tuple[ModelInvocation, CanonicalTokenUsage, InvocationOutcome]
         ] = {}
 
+    async def reserve_additional(
+        self,
+        invocation: ModelInvocation,
+        *,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+    ) -> None:
+        del invocation, estimated_input_tokens, estimated_output_tokens
+
     async def report(
         self,
         invocation: ModelInvocation,

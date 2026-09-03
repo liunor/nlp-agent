@@ -588,6 +588,12 @@ export interface QuotaUsageBreakdown {
   output_tokens?: number;
   reasoning_output_tokens?: number;
 }
+export interface QuotaCategoryUsage {
+  category: string;
+  credits_micro: number;
+  events: number;
+  providers?: string[];
+}
 export interface QuotaUsageSnapshot {
   user_id: string;
   workspace_id: string | null;
@@ -602,8 +608,17 @@ export interface QuotaUsageSnapshot {
   credit_status: string;
   credits_micro: number | null;
   priced_credits_micro: number;
+  total_credits_micro?: number;
+  capability_events?: number;
   tokens: Record<string, number>;
   breakdown: QuotaUsageBreakdown[];
+  categories?: QuotaCategoryUsage[];
+  category_breakdown?: Array<{
+    category: string;
+    provider: string;
+    credits_micro: number;
+    events: number;
+  }>;
 }
 export interface QuotaPolicy {
   policy_id: string;
@@ -783,10 +798,13 @@ export interface QuotaBillingRecord {
 export interface QuotaBillingStatementInput {
   provider: string;
   statement_id: string;
-  operation_id: string;
+  operation_id?: string | null;
+  provider_response_id?: string | null;
   billed_at: string;
   billed_credits_micro: number | null;
   billed_tokens: Record<string, number>;
+  billed_usage?: Record<string, number>;
+  usage_event_type?: "model" | "capability";
   idempotency_key: string;
 }
 export interface QuotaCreditOperation {

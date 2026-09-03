@@ -15,6 +15,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from server.quota.contracts import (
+    AdditionalReservationResult,
     AdmitTurn,
     FinishTurn,
     PolicyBinding,
@@ -1067,6 +1068,218 @@ class QuotaService:
                     )
                 )
                 return True
+
+    def reserve_additional(
+        self,
+        *,
+        reservation_id: str,
+        operation_key: str,
+        estimated_micro: int,
+        reason: str,
+        pricing_key: str | None = None,
+        now: datetime | None = None,
+    ) -> AdditionalReservationResult:
+        def reserve_once() -> AdditionalReservationResult:
+            with _GLOBAL_QUOTA_LOCK:
+                with self._engine.begin() as connection:
+                    return self.reserve_additional_in_transaction(
+                        connection,
+                        reservation_id=reservation_id,
+                        operation_key=operation_key,
+                        estimated_micro=estimated_micro,
+                        reason=reason,
+                        pricing_key=pricing_key,
+                        now=now,
+                    )
+
+        result = retry_mysql_transaction(reserve_once)
+        if not result.duplicate:
+            self.notify_reservation(reservation_id)
+        return result
+
+    def reserve_additional_in_transaction(
+        self,
+        connection: Connection,
+        *,
+        reservation_id: str,
+        operation_key: str,
+        estimated_micro: int,
+        reason: str,
+        pricing_key: str | None = None,
+        now: datetime | None = None,
+    ) -> AdditionalReservationResult:
+        at = _utc(now)
+        db_now = _db_time(at)
+
+        reservation = connection.execute(
+            select(QuotaReservationModel)
+            .where(QuotaReservationModel.id == reservation_id)
+            .with_for_update()
+        ).mappings().first()
+        if reservation is None:
+            raise QuotaDomainError(
+                QuotaErrorCode.RESERVATION_NOT_ACTIVE,
+                f"Reservation {reservation_id!r} does not exist",
+            )
+        if reservation["status"] not in _ACTIVE_RESERVATION_STATUSES:
+            raise QuotaDomainError(
+                QuotaErrorCode.RESERVATION_NOT_ACTIVE,
+                f"Reservation {reservation_id!r} is not active (status={reservation['status']})",
+            )
+
+        idempotency_prefix = f"reserve-increment:{reservation_id}:{operation_key}:"
+        existing_ledgers = connection.execute(
+            select(QuotaLedgerEntryModel)
+            .where(
+                QuotaLedgerEntryModel.reservation_id == reservation_id,
+                QuotaLedgerEntryModel.entry_type == "reserve_increment",
+                QuotaLedgerEntryModel.idempotency_key.like(f"{idempotency_prefix}%"),
+            )
+        ).mappings().all()
+        if existing_ledgers:
+            for ledger in existing_ledgers:
+                metadata = ledger["metadata_json"] or {}
+                if (
+                    int(ledger["amount_micro"]) != estimated_micro
+                    or ledger["reason"] != reason
+                    or metadata.get("operation_key") != operation_key
+                    or metadata.get("pricing_key") != pricing_key
+                    or metadata.get("estimated_micro") != estimated_micro
+                ):
+                    raise ValueError(
+                        "additional reservation operation key conflicts with "
+                        "an existing reserve increment"
+                    )
+            return AdditionalReservationResult(
+                allowed=True,
+                reservation_id=reservation_id,
+                operation_key=operation_key,
+                reserved_micro=int(existing_ledgers[0]["amount_micro"]),
+                duplicate=True,
+            )
+
+        snapshot = reservation["policy_snapshot_json"] or {}
+
+        request_limit = snapshot.get("request_limit_micro")
+        current_total = (
+            int(reservation["reserved_micro"])
+            + int(reservation["settled_micro"])
+            + estimated_micro
+        )
+        if request_limit is not None and current_total > request_limit:
+            remaining = max(0, request_limit - int(reservation["reserved_micro"]) - int(reservation["settled_micro"]))
+            raise self._rejection(
+                QuotaErrorCode.REQUEST_LIMIT,
+                "The additional cost exceeds the per-request quota limit",
+                remaining_micro=remaining,
+                retryable=False,
+            )
+
+        buckets = self._reservation_buckets(connection, reservation_id)
+        overdrafts = snapshot.get("overdrafts", {})
+        for bucket in buckets:
+            owner_type = bucket["owner_type"]
+            owner_id = bucket["owner_id"]
+            if owner_type == "user":
+                overdraft = overdrafts.get("user", snapshot.get("max_overdraft_micro", 0))
+            elif owner_type == "workspace":
+                overdraft = overdrafts.get("workspace", 0)
+            elif owner_type == "classroom":
+                overdraft = overdrafts.get(f"classroom:{owner_id}", 0)
+            else:
+                overdraft = 0
+
+            extra_capacity = self._additional_capacity(
+                connection,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                bucket_type=bucket["bucket_type"],
+                period_start=_aware(bucket["period_start"]),
+                period_end=_aware(bucket["period_end"]),
+                at=at,
+            )
+            available = self._available(bucket, overdraft, extra_capacity)
+            if estimated_micro > available:
+                if owner_type == "workspace":
+                    code = QuotaErrorCode.WORKSPACE_EXHAUSTED
+                else:
+                    code = (
+                        QuotaErrorCode.DAILY_EXHAUSTED
+                        if bucket["bucket_type"] == "daily"
+                        else QuotaErrorCode.WEEKLY_EXHAUSTED
+                    )
+                raise self._rejection(
+                    code,
+                    f"The {owner_type} {bucket['bucket_type']} quota is exhausted for additional reservation",
+                    remaining_micro=available,
+                    reset_at=_aware(bucket["period_end"]),
+                    retryable=True,
+                )
+
+        for bucket in buckets:
+            connection.execute(
+                update(QuotaBucketModel)
+                .where(QuotaBucketModel.id == bucket["id"])
+                .values(
+                    reserved_micro=QuotaBucketModel.reserved_micro + estimated_micro,
+                    updated_at=db_now,
+                )
+            )
+
+        connection.execute(
+            update(QuotaReservationModel)
+            .where(QuotaReservationModel.id == reservation_id)
+            .values(
+                reserved_micro=QuotaReservationModel.reserved_micro + estimated_micro,
+                updated_at=db_now,
+            )
+        )
+
+        metadata = {
+            "operation_key": operation_key,
+            "pricing_key": pricing_key,
+            "estimated_micro": estimated_micro,
+            "reason": reason,
+        }
+        if buckets:
+            for bucket in buckets:
+                idemp_key = f"{idempotency_prefix}{bucket['id']}"
+                self._insert_ledger(
+                    connection,
+                    reservation_id=reservation_id,
+                    bucket_id=bucket["id"],
+                    entry_type="reserve_increment",
+                    amount_micro=estimated_micro,
+                    reserved_delta_micro=estimated_micro,
+                    consumed_delta_micro=0,
+                    idempotency_key=idemp_key,
+                    reason=reason,
+                    metadata=metadata,
+                    created_at=db_now,
+                )
+        else:
+            idemp_key = f"{idempotency_prefix}none"
+            self._insert_ledger(
+                connection,
+                reservation_id=reservation_id,
+                bucket_id=None,
+                entry_type="reserve_increment",
+                amount_micro=estimated_micro,
+                reserved_delta_micro=estimated_micro,
+                consumed_delta_micro=0,
+                idempotency_key=idemp_key,
+                reason=reason,
+                metadata=metadata,
+                created_at=db_now,
+            )
+
+        return AdditionalReservationResult(
+            allowed=True,
+            reservation_id=reservation_id,
+            operation_key=operation_key,
+            reserved_micro=estimated_micro,
+            duplicate=False,
+        )
 
     def finish_turn(
         self,

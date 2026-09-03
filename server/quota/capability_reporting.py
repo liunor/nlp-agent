@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.usage_metering.contracts import (
     CapabilityUsageEvent,
+    MeteredUsageItem,
     MeterPricingRule,
     PricedCapabilityUsage,
 )
@@ -70,13 +71,78 @@ class DurableCapabilityUsageReporter(CapabilityUsageReporter):
     async def report(self, event: CapabilityUsageEvent) -> None:
         await asyncio.to_thread(self._report_sync, event)
 
+    async def reserve_additional(
+        self,
+        *,
+        reservation_id: str,
+        operation_key: str,
+        estimated_micro: int | None,
+        reason: str,
+        pricing_key: str | None = None,
+        estimated_items: tuple[MeteredUsageItem, ...] = (),
+        now: datetime | None = None,
+    ) -> Any:
+        return await asyncio.to_thread(
+            self._reserve_additional_sync,
+            reservation_id=reservation_id,
+            operation_key=operation_key,
+            estimated_micro=estimated_micro,
+            reason=reason,
+            pricing_key=pricing_key,
+            estimated_items=estimated_items,
+            now=now,
+        )
+
+    def _reserve_additional_sync(
+        self,
+        *,
+        reservation_id: str,
+        operation_key: str,
+        estimated_micro: int | None,
+        reason: str,
+        pricing_key: str | None,
+        estimated_items: tuple[MeteredUsageItem, ...],
+        now: datetime | None,
+    ) -> Any:
+        estimated_at = _utc(now or datetime.now(timezone.utc))
+        if estimated_micro is None:
+            if pricing_key is None or not estimated_items:
+                raise ValueError(
+                    "pricing_key and estimated_items are required when estimated_micro is omitted"
+                )
+            with self._engine.connect() as connection:
+                catalog = self._get_catalog(connection, pricing_key)
+                estimated_micro = catalog.estimate_micro(
+                    pricing_key=pricing_key,
+                    items=estimated_items,
+                    at=estimated_at,
+                )
+        if self._quota_service is None:
+            from server.quota.contracts import AdditionalReservationResult
+
+            return AdditionalReservationResult(
+                allowed=True,
+                reservation_id=reservation_id,
+                operation_key=operation_key,
+                reserved_micro=estimated_micro,
+                duplicate=False,
+            )
+        return self._quota_service.reserve_additional(
+            reservation_id=reservation_id,
+            operation_key=operation_key,
+            estimated_micro=estimated_micro,
+            reason=reason,
+            pricing_key=pricing_key,
+            now=estimated_at,
+        )
+
     def _get_catalog(self, connection: Connection, pricing_key: str) -> MeterPricingCatalog:
         if self._fixed_pricing_catalog is not None:
             return self._fixed_pricing_catalog
         rows = connection.execute(
             select(MeterPricingRuleModel).where(
                 MeterPricingRuleModel.pricing_key == pricing_key,
-                MeterPricingRuleModel.status == "active",
+                MeterPricingRuleModel.status.in_(("active", "retired")),
             )
         ).mappings().all()
         rules = [

@@ -79,11 +79,25 @@ def test_meter_pricing_rule_management(memory_db):
     )
     assert rule["pricing_key"] == "qwen/cn-beijing/web-search/turbo"
     assert rule["rate_micro"] == 10_000
+    assert rule["capability_type"] == "search"
 
     # 2. List rules
     rules = mgmt.list_meter_pricing_rules(capability_type="search")
     assert len(rules) == 1
     assert rules[0]["meter"] == "search.requests"
+    assert mgmt.list_meter_pricing_rules(capability_type="ocr") == []
+
+    with pytest.raises(ValueError, match="must match the meter namespace"):
+        mgmt.create_meter_pricing_rule(
+            capability_type="ocr",
+            meter="search.requests",
+            pricing_key="qwen/other-region/web-search/turbo",
+            version="v1",
+            unit="call",
+            rate_micro=10_000,
+            effective_from=NOW,
+            created_by="admin-1",
+        )
 
     # 3. Overlapping version conflict
     from server.quota.errors import QuotaDomainError
@@ -99,6 +113,11 @@ def test_meter_pricing_rule_management(memory_db):
             effective_from=NOW,
             created_by="admin-1",
         )
+
+    # 4. Retire rule
+    retired = mgmt.retire_meter_pricing_rule(rule["id"], retired_by="admin-1", now=NOW)
+    assert retired["status"] == "retired"
+    assert retired["retired_by"] == "admin-1"
 
 
 def test_usage_read_service_capability_queries(memory_db):
@@ -125,7 +144,7 @@ def test_usage_read_service_capability_queries(memory_db):
                 capability_type="ocr",
                 provider="internal",
                 pricing_key="internal/rapidocr/v1",
-                provider_response_id=None,
+                provider_response_id="provider-search-response-1",
                 usage_source="measured",
                 usage_status="exact",
                 credits_micro=500,
@@ -164,6 +183,29 @@ def test_usage_read_service_capability_queries(memory_db):
     assert summary["by_capability"][0]["capability_type"] == "ocr"
     assert summary["by_capability"][0]["meters"]["ocr.pages"] == 1
 
+    # 3. User snapshot with 4 categories
+    snapshot = usage_reader.user_snapshot("user-1", now=NOW)
+    assert snapshot["capability_events"] == 1
+    assert "categories" in snapshot
+    cats = {c["category"]: c for c in snapshot["categories"]}
+    assert "vision" in cats
+    assert cats["vision"]["credits_micro"] == 500
+    assert cats["vision"]["events"] == 1
+
+    # Estimated usage has a persisted conservative price and is therefore
+    # priced, even though it is less authoritative than an exact measurement.
+    with memory_db.begin() as conn:
+        conn.execute(
+            CapabilityUsageEventModel.__table__.update()
+            .where(CapabilityUsageEventModel.id == ev_id)
+            .values(usage_source="estimated", usage_status="estimated")
+        )
+    estimated_snapshot = usage_reader.user_snapshot("user-1", now=NOW)
+    assert estimated_snapshot["priced_events"] == 1
+    assert estimated_snapshot["unpriced_events"] == 0
+    assert estimated_snapshot["credits_complete"] is True
+    assert estimated_snapshot["credits_micro"] == 500
+
 
 def test_billing_reconciliation_with_capability_event(memory_db):
     ops = QuotaOperationsService(memory_db)
@@ -189,7 +231,7 @@ def test_billing_reconciliation_with_capability_event(memory_db):
                 capability_type="search",
                 provider="qwen",
                 pricing_key="qwen/cn-beijing/web-search/turbo",
-                provider_response_id=None,
+                provider_response_id="provider-search-response-1",
                 usage_source="provider",
                 usage_status="exact",
                 credits_micro=10_000,
@@ -205,9 +247,11 @@ def test_billing_reconciliation_with_capability_event(memory_db):
             {
                 "provider": "qwen",
                 "statement_id": "stmt-12345",
-                "operation_id": "op-cap-search-1",
+                "provider_response_id": "provider-search-response-1",
                 "billed_at": NOW,
                 "billed_credits_micro": 10_000,
+                "billed_usage": {"search.requests": 1},
+                "usage_event_type": "capability",
                 "idempotency_key": "billing:stmt-12345",
             }
         ],
@@ -222,3 +266,104 @@ def test_billing_reconciliation_with_capability_event(memory_db):
     assert billing["matched_capability_event_id"] == ev_id
     assert billing["local_credits_micro"] == 10_000
     assert billing["difference_micro"] == 0
+    assert billing["billed_usage"] == {"search.requests": 1}
+
+
+def test_billing_operation_match_isolated_by_usage_event_type(memory_db):
+    ops = QuotaOperationsService(memory_db)
+    operation_id = "shared-operation-id"
+    model_event_id = str(uuid.uuid4())
+    capability_event_id = str(uuid.uuid4())
+    with memory_db.begin() as conn:
+        conn.execute(
+            UsageEventModel.__table__.insert().values(
+                id=model_event_id,
+                operation_id=operation_id,
+                reservation_id=None,
+                user_id="user-1",
+                workspace_id=None,
+                conversation_id=None,
+                turn_id="turn-1",
+                worker_id=None,
+                parent_operation_id=None,
+                purpose="worker",
+                provider="qwen",
+                provider_model="qwen-plus",
+                provider_response_id="response-shared",
+                model_profile="default",
+                preset="default",
+                route="worker",
+                pricing_key="qwen/qwen-plus",
+                attempt=1,
+                fallback_index=0,
+                outcome_status="succeeded",
+                finish_reason="stop",
+                error_kind=None,
+                input_tokens=10,
+                cached_input_tokens=0,
+                cache_write_input_tokens=0,
+                output_tokens=5,
+                reasoning_output_tokens=0,
+                total_tokens=15,
+                usage_source="provider",
+                usage_status="exact",
+                pricing_version="v1",
+                credits_micro=9_000,
+                raw_usage_json={},
+                dedupe_key=operation_id,
+                idempotency_key=operation_id,
+                started_at=NOW,
+                occurred_at=NOW,
+                created_at=NOW,
+            )
+        )
+        conn.execute(
+            CapabilityUsageEventModel.__table__.insert().values(
+                id=capability_event_id,
+                dedupe_key=capability_event_id,
+                idempotency_key=f"idemp:{capability_event_id}",
+                operation_id=operation_id,
+                parent_operation_id=None,
+                reservation_id=None,
+                request_id="req-1",
+                user_id="user-1",
+                workspace_id=None,
+                conversation_id=None,
+                turn_id="turn-1",
+                worker_id=None,
+                purpose="search",
+                capability_type="search",
+                provider="qwen",
+                pricing_key="qwen/cn-beijing/web-search/turbo",
+                provider_response_id="response-shared",
+                usage_source="provider",
+                usage_status="exact",
+                credits_micro=10_000,
+                occurred_at=NOW,
+                raw_usage_json={"search_count": 1},
+                created_at=NOW,
+            )
+        )
+
+    statement = {
+        "provider": "qwen",
+        "statement_id": "stmt-shared-operation",
+        "operation_id": operation_id,
+        "provider_response_id": "response-shared",
+        "billed_at": NOW,
+        "billed_credits_micro": 10_000,
+        "billed_usage": {"search.requests": 1},
+        "usage_event_type": "capability",
+        "idempotency_key": "billing:shared-operation",
+    }
+    billing = ops.reconcile_provider_billing([statement], now=NOW)["items"][0]
+
+    assert billing["matched_usage_event_id"] is None
+    assert billing["matched_capability_event_id"] == capability_event_id
+    assert billing["status"] == "matched"
+
+    with pytest.raises(ValueError, match="idempotency key conflicts"):
+        ops.reconcile_provider_billing(
+            [{**statement, "usage_event_type": "model"}],
+            now=NOW,
+        )

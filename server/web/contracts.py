@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictInt, StringConstraints, field_validator, model_validator
 from core.learning import LearningContext
 from gateway.contracts import EvaluationContext
 
@@ -286,14 +286,18 @@ class QuotaPricingRuleBody(StrictModel):
 
 
 class QuotaMeterPricingRuleBody(StrictModel):
-    capability_type: str = Field(min_length=1, max_length=64)
-    meter: str = Field(min_length=1, max_length=64)
-    pricing_key: str = Field(min_length=1, max_length=128)
+    capability_type: Literal["search", "web_fetch", "ocr"] | None = None
+    meter: str = Field(min_length=1, max_length=128)
+    pricing_key: str = Field(min_length=1, max_length=255)
     version: str = Field(min_length=1, max_length=64)
     unit: str = Field(min_length=1, max_length=32)
     rate_micro: StrictInt = Field(ge=0)
     rate_unit: StrictInt = Field(default=1, ge=1)
-    min_charge_micro: StrictInt = Field(default=0, ge=0)
+    min_charge_micro: StrictInt = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("min_charge_micro", "minimum_charge_micro"),
+    )
     effective_from: datetime
     effective_until: datetime | None = None
 
@@ -301,13 +305,20 @@ class QuotaMeterPricingRuleBody(StrictModel):
 class QuotaBillingStatementBody(StrictModel):
     provider: str = Field(min_length=1, max_length=128)
     statement_id: str = Field(min_length=1, max_length=255)
-    operation_id: str = Field(min_length=1, max_length=128)
+    operation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    provider_response_id: str | None = Field(default=None, min_length=1, max_length=255)
     billed_at: datetime
     billed_credits_micro: StrictInt | None = Field(default=None, ge=0)
     billed_tokens: dict[str, StrictInt] = Field(default_factory=dict)
     billed_usage: dict[str, StrictInt] = Field(default_factory=dict)
     usage_event_type: Literal["model", "capability"] = "model"
     idempotency_key: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def require_match_key(self) -> "QuotaBillingStatementBody":
+        if self.operation_id is None and self.provider_response_id is None:
+            raise ValueError("operation_id or provider_response_id is required")
+        return self
 
 
 class QuotaBillingReconcileBody(StrictModel):

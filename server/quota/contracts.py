@@ -215,6 +215,17 @@ class TurnAdmissionResult(QuotaFrozenModel):
     problem: QuotaProblem | None = None
 
 
+class AdditionalReservationResult(QuotaFrozenModel):
+    """Result returned after an additional reservation request."""
+
+    allowed: StrictBool
+    reservation_id: str = Field(min_length=1)
+    operation_key: str = Field(min_length=1)
+    reserved_micro: StrictNonNegativeInt = 0
+    duplicate: StrictBool = False
+    problem: QuotaProblem | None = None
+
+
 class UsageRecordResult(QuotaFrozenModel):
     """Result returned after one Attempt is priced and recorded."""
 

@@ -159,6 +159,16 @@ class InvocationOutcome(UsageFrozenModel):
 
 
 class ModelUsageReporter(Protocol):
+    async def reserve_additional(
+        self,
+        invocation: ModelInvocation,
+        *,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+    ) -> object:
+        """Reserve conservative quota before one real Provider attempt."""
+        ...
+
     async def report(
         self,
         invocation: ModelInvocation,

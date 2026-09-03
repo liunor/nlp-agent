@@ -23,14 +23,38 @@ from core.model_runtime.usage import (
 )
 from core.tool_config import WebToolsConfig
 from core.usage_metering.reporters import (
+    CapabilityUsageConflictError,
     InMemoryCapabilityUsageReporter,
     get_global_capability_reporter_slot,
+    pre_reserve_capability,
 )
 from server.tools.vision.contracts import ImageAsset, ImageLanguage, ImageReference
 from server.tools.vision.ocr import RapidOCRProvider
 from server.tools.web.fetch import WebFetchInput, WebFetchService
 
 UTC = timezone.utc
+
+
+@pytest.mark.asyncio
+async def test_required_capability_reporter_missing_blocks_pre_reservation():
+    slot = get_global_capability_reporter_slot()
+    slot.configure(None, required=True)
+    attribution = UsageAttributionContext(
+        request_id="req-required",
+        user_id="user-required",
+        reservation_id="res-required",
+        purpose="worker",
+    )
+    try:
+        with bind_usage_attribution(attribution):
+            with pytest.raises(CapabilityUsageConflictError):
+                await pre_reserve_capability(
+                    operation_key="op-required",
+                    estimated_micro=1,
+                    reason="test",
+                )
+    finally:
+        slot.configure(InMemoryCapabilityUsageReporter(), required=False)
 
 
 @pytest.fixture(autouse=True)
@@ -212,3 +236,109 @@ async def test_web_fetch_capability_event_emission(clean_capability_reporter_slo
     assert meters["web_fetch.requests"] == 1
     assert meters["web_fetch.bytes"] == 1024
     assert "hello world" not in str(event.raw_usage)  # Never stores web content
+    assert "https://example.com/page" not in str(event.raw_usage)  # No full plain url
+    assert "host_digest" in event.raw_usage
+
+    # Test cache hit emission
+    with bind_usage_attribution(attr):
+        cached_res = await service.fetch(WebFetchInput(url="https://example.com/page"))
+    assert cached_res.text.endswith("hello world")
+    assert len(cap_reporter.events) == 2
+    cached_event = cap_reporter.events[1]
+    assert cached_event.raw_usage.get("cache_hit") is True
+    cached_meters = {item.meter: item.quantity for item in cached_event.items}
+    assert cached_meters["web_fetch.requests"] == 0
+    assert cached_meters["web_fetch.bytes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_native_search_fallback_when_count_missing(clean_capability_reporter_slot):
+    from core.model_runtime.contracts import NativeSearchConfig
+
+    cap_reporter = clean_capability_reporter_slot
+    model_reporter = InMemoryModelUsageReporter()
+    slot = ModelUsageReporterSlot(model_reporter)
+
+    model_def = ModelDefinition(
+        provider="qwen",
+        model_id="qwen-plus",
+        pricing_key="qwen/qwen-plus",
+        context_window_tokens=32000,
+        max_output_tokens=2048,
+        capabilities=ModelCapabilities(thinking=False),
+    )
+    # 1. forced=True -> estimated 1
+    preset_forced = ModelPresetConfig(
+        model="qwen-plus",
+        native_search=NativeSearchConfig(enabled=True, forced=True, strategy="turbo"),
+        thinking=ThinkingConfig(enabled=False, effort="none"),
+        timeouts=TimeoutPolicy(connect_s=1, first_token_s=1, stream_idle_s=1, total_s=2),
+        retry=RetryPolicy(max_attempts=1, base_delay_s=0, max_delay_s=0, jitter="none"),
+        circuit_breaker=CircuitBreakerPolicy(failure_threshold=5, cooldown_s=1),
+    )
+    candidate_forced = ModelCandidate(
+        preset_name="qwen-plus",
+        provider_name="qwen",
+        model_name="qwen-plus",
+        definition=model_def,
+        preset=preset_forced,
+        model=MagicMock(),
+    )
+    client_forced = ResilientChatModel([candidate_forced], reporter_slot=slot)
+    attr = UsageAttributionContext(
+        request_id="req-fallback-1",
+        user_id="user-1",
+        turn_id="turn-1",
+        reservation_id="res-1",
+        purpose="worker",
+    )
+    usage_no_count = CanonicalTokenUsage(
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=150,
+        provider_usage_details={},  # No plugins.search.count
+        source="provider",
+    )
+    with bind_usage_attribution(attr):
+        inv_forced, _ = client_forced._prepare_invocation(candidate_forced, attempt=1, fallback_index=0)
+        await client_forced._report_attempt(
+            invocation=inv_forced,
+            usage=usage_no_count,
+            status="succeeded",
+        )
+
+    assert len(cap_reporter.events) == 1
+    forced_event = cap_reporter.events[0]
+    assert forced_event.usage_status == "estimated"
+    assert forced_event.items[0].quantity == 1
+
+    # 2. forced=False -> pending 0
+    preset_unforced = ModelPresetConfig(
+        model="qwen-plus",
+        native_search=NativeSearchConfig(enabled=True, forced=False, strategy="turbo"),
+        thinking=ThinkingConfig(enabled=False, effort="none"),
+        timeouts=TimeoutPolicy(connect_s=1, first_token_s=1, stream_idle_s=1, total_s=2),
+        retry=RetryPolicy(max_attempts=1, base_delay_s=0, max_delay_s=0, jitter="none"),
+        circuit_breaker=CircuitBreakerPolicy(failure_threshold=5, cooldown_s=1),
+    )
+    candidate_unforced = ModelCandidate(
+        preset_name="qwen-plus",
+        provider_name="qwen",
+        model_name="qwen-plus",
+        definition=model_def,
+        preset=preset_unforced,
+        model=MagicMock(),
+    )
+    client_unforced = ResilientChatModel([candidate_unforced], reporter_slot=slot)
+    with bind_usage_attribution(attr):
+        inv_unforced, _ = client_unforced._prepare_invocation(candidate_unforced, attempt=1, fallback_index=0)
+        await client_unforced._report_attempt(
+            invocation=inv_unforced,
+            usage=usage_no_count,
+            status="succeeded",
+        )
+
+    assert len(cap_reporter.events) == 2
+    unforced_event = cap_reporter.events[1]
+    assert unforced_event.usage_status == "pending"
+    assert unforced_event.items[0].quantity == 0

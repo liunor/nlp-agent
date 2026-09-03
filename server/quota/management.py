@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import Engine, and_, create_engine, func, insert, select, update
@@ -30,6 +30,7 @@ UTC = timezone.utc
 _OWNER_TYPES = {"user", "workspace", "classroom"}
 _BUCKET_TYPES = {"daily", "weekly"}
 _SOURCE_TYPES = {"role", "purchase", "grant", "adjustment", "reset"}
+_CAPABILITY_TYPES = {"search", "web_fetch", "ocr"}
 
 
 def _utc(value: datetime) -> datetime:
@@ -44,6 +45,15 @@ def _row_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _capability_type_for_meter(meter: str) -> str:
+    capability_type = meter.partition(".")[0]
+    if capability_type not in _CAPABILITY_TYPES:
+        raise ValueError(
+            "meter must use a supported capability namespace: search, web_fetch, or ocr"
+        )
+    return capability_type
 
 
 def _db_time(value: datetime) -> datetime:
@@ -534,7 +544,7 @@ class QuotaManagementService:
     def create_meter_pricing_rule(
         self,
         *,
-        capability_type: str,
+        capability_type: str | None = None,
         meter: str,
         pricing_key: str,
         version: str,
@@ -547,8 +557,14 @@ class QuotaManagementService:
         created_by: str,
     ) -> dict[str, Any]:
         """Create one active, immutable meter pricing rule."""
+        derived_capability_type = _capability_type_for_meter(meter)
+        if capability_type is not None and capability_type != derived_capability_type:
+            raise ValueError(
+                "capability_type must match the meter namespace "
+                f"({derived_capability_type!r})"
+            )
         candidate = MeterPricingRule(
-            capability_type=capability_type,
+            capability_type=derived_capability_type,
             meter=meter,
             pricing_key=pricing_key,
             version=version,
@@ -626,12 +642,49 @@ class QuotaManagementService:
             ).mappings().one()
             return self._meter_pricing_rule_payload(row)
 
+    def retire_meter_pricing_rule(
+        self,
+        rule_id: str,
+        *,
+        retired_by: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Retire an active meter pricing rule version."""
+        at = _utc(now or datetime.now(UTC))
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                select(MeterPricingRuleModel)
+                .where(MeterPricingRuleModel.id == rule_id)
+                .with_for_update()
+            ).mappings().first()
+            if row is None:
+                raise QuotaDomainError(
+                    QuotaErrorCode.PRICING_RULE_CONFLICT,
+                    "Meter pricing rule does not exist",
+                )
+            if row["status"] == "active":
+                effective_until = row["effective_until"]
+                stored_now = _db_time(at)
+                if stored_now <= row["effective_from"]:
+                    effective_until = row["effective_from"] + timedelta(seconds=1)
+                elif effective_until is None or effective_until > stored_now:
+                    effective_until = stored_now
+                connection.execute(
+                    update(MeterPricingRuleModel)
+                    .where(MeterPricingRuleModel.id == rule_id)
+                    .values(status="retired", effective_until=effective_until)
+                )
+            updated = connection.execute(
+                select(MeterPricingRuleModel).where(MeterPricingRuleModel.id == rule_id)
+            ).mappings().one()
+        return {**self._meter_pricing_rule_payload(updated), "retired_by": retired_by}
+
     def list_meter_pricing_rules(
         self,
         *,
+        capability_type: str | None = None,
         pricing_key: str | None = None,
         meter: str | None = None,
-        **_kwargs: Any,
     ) -> list[dict[str, Any]]:
         with self._engine.connect() as connection:
             stmt = select(MeterPricingRuleModel.__table__).order_by(
@@ -643,12 +696,19 @@ class QuotaManagementService:
                 stmt = stmt.where(MeterPricingRuleModel.pricing_key == pricing_key)
             if meter is not None:
                 stmt = stmt.where(MeterPricingRuleModel.meter == meter)
+            if capability_type is not None:
+                if capability_type not in _CAPABILITY_TYPES:
+                    return []
+                stmt = stmt.where(
+                    MeterPricingRuleModel.meter.like(f"{capability_type}.%")
+                )
             return [self._meter_pricing_rule_payload(row) for row in connection.execute(stmt).mappings()]
 
     @staticmethod
     def _meter_pricing_rule_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "id": row["id"],
+            "capability_type": _capability_type_for_meter(row["meter"]),
             "meter": row["meter"],
             "pricing_key": row["pricing_key"],
             "version": row["version"],

@@ -8,6 +8,7 @@ from typing import Iterable
 
 from core.usage_metering.contracts import (
     CapabilityUsageEvent,
+    MeteredUsageItem,
     MeterPricingRule,
     PricedCapabilityUsage,
     PricedMeterUsageItem,
@@ -20,7 +21,7 @@ class MeterPricingError(PricingError):
 
 
 class UnknownMeterPricingError(MeterPricingError):
-    """Raised when a pricing key or meter has no active rule at the event time."""
+    """Raised when a pricing key or meter has no effective rule at the event time."""
 
 
 class MeterPricingRuleConflictError(MeterPricingError):
@@ -48,10 +49,10 @@ class MeterPricingCatalog:
 
     def _validate_ranges(self) -> None:
         for (key, meter), rules in self._rules_by_key_meter.items():
-            active_rules = [r for r in rules if r.status == "active"]
-            for i in range(len(active_rules) - 1):
-                first = active_rules[i]
-                second = active_rules[i + 1]
+            usable_rules = [r for r in rules if r.status in {"active", "retired"}]
+            for i in range(len(usable_rules) - 1):
+                first = usable_rules[i]
+                second = usable_rules[i + 1]
                 if first.effective_until is None or first.effective_until > second.effective_from:
                     raise MeterPricingRuleConflictError(
                         f"Overlapping meter pricing rules for {key} / {meter}: "
@@ -68,14 +69,15 @@ class MeterPricingCatalog:
         time_utc = _utc(at)
         rules = self._rules_by_key_meter.get((pricing_key, meter), ())
         for rule in rules:
-            if rule.status != "active":
+            if rule.status not in {"active", "retired"}:
                 continue
             if rule.effective_from <= time_utc and (
                 rule.effective_until is None or time_utc < rule.effective_until
             ):
                 return rule
         raise UnknownMeterPricingError(
-            f"No active meter pricing rule for pricing_key={pricing_key!r}, "
+            f"No active meter pricing rule or retired historical rule for "
+            f"pricing_key={pricing_key!r}, "
             f"meter={meter!r} at {time_utc.isoformat()}"
         )
 
@@ -86,6 +88,7 @@ class MeterPricingCatalog:
             for item in event.items:
                 try:
                     rule = self.select_rule(event.pricing_key, item.meter, event.occurred_at)
+                    self._validate_unit(item, rule)
                     rate_unit = rule.rate_unit
                     rate_micro = rule.rate_micro
                     pricing_version = rule.version
@@ -117,6 +120,7 @@ class MeterPricingCatalog:
         rule_version = ""
         for item in event.items:
             rule = self.select_rule(event.pricing_key, item.meter, event.occurred_at)
+            self._validate_unit(item, rule)
             rule_version = rule.version
             max_minimum_charge = max(max_minimum_charge, rule.minimum_charge_micro)
 
@@ -151,3 +155,29 @@ class MeterPricingCatalog:
             credits_micro=total_micro,
             items=tuple(priced_items),
         )
+
+    def estimate_micro(
+        self,
+        *,
+        pricing_key: str,
+        items: Iterable[MeteredUsageItem],
+        at: datetime,
+    ) -> int:
+        """Price a conservative pre-execution meter estimate with production rules."""
+        total = 0
+        minimum = 0
+        for item in items:
+            rule = self.select_rule(pricing_key, item.meter, at)
+            self._validate_unit(item, rule)
+            minimum = max(minimum, rule.minimum_charge_micro)
+            total += (
+                item.quantity * rule.rate_micro + rule.rate_unit - 1
+            ) // rule.rate_unit
+        return max(minimum, total)
+
+    @staticmethod
+    def _validate_unit(item: MeteredUsageItem, rule: MeterPricingRule) -> None:
+        if item.unit != rule.unit:
+            raise MeterPricingError(
+                f"Unit mismatch for {item.meter!r}: {item.unit!r} != {rule.unit!r}"
+            )

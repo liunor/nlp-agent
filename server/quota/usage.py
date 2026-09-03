@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-from sqlalchemy import Engine, create_engine, select
+from sqlalchemy import Engine, create_engine, inspect, select
 
 from server.infrastructure.mysql.models import ObservabilityRecordModel
 from server.quota.models import (
@@ -19,14 +19,19 @@ from server.quota.service import QuotaService
 
 TOKEN_FIELDS = (
     "input_tokens",
-    "text_input_tokens",
-    "image_input_tokens",
     "cached_input_tokens",
     "cache_write_input_tokens",
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
 )
+
+MULTIMODAL_TOKEN_FIELDS = (
+    "text_input_tokens",
+    "image_input_tokens",
+)
+
+ALL_TOKEN_FIELDS = TOKEN_FIELDS + MULTIMODAL_TOKEN_FIELDS
 
 UsageGranularity = Literal["day", "week"]
 
@@ -87,6 +92,90 @@ class UsageReadService:
             rows=rows,
             granularity=granularity,
         )
+
+        # Aggregate categories: model, vision, search, web_fetch
+        cat_prov_map: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in rows:
+            cat = "vision" if r.get("purpose") == "vision" else "model"
+            prov = str(r.get("provider") or "unknown")
+            key = (cat, prov)
+            item = cat_prov_map.setdefault(
+                key,
+                {"category": cat, "provider": prov, "credits_micro": 0, "events": 0},
+            )
+            item["events"] += 1
+            if r.get("credits_micro") is not None:
+                item["credits_micro"] += int(r["credits_micro"])
+
+        cap_rows = self._capability_rows(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            start=start,
+            end=end,
+        )
+        cap_unpriced = 0
+        cap_credits = 0
+        cap_priced_events = 0
+        for cr in cap_rows:
+            ctype = cr.get("capability_type")
+            if ctype == "search":
+                cat = "search"
+            elif ctype == "web_fetch":
+                cat = "web_fetch"
+            elif ctype in ("vision", "ocr"):
+                cat = "vision"
+            else:
+                cat = "model"
+            prov = str(cr.get("provider") or "internal")
+            key = (cat, prov)
+            item = cat_prov_map.setdefault(
+                key,
+                {"category": cat, "provider": prov, "credits_micro": 0, "events": 0},
+            )
+            item["events"] += 1
+            c_micro = cr.get("credits_micro")
+            is_priced = (
+                c_micro is not None
+                and cr.get("usage_status") in {"exact", "estimated"}
+            )
+            if not is_priced:
+                cap_unpriced += 1
+            else:
+                item["credits_micro"] += int(c_micro)
+                cap_credits += int(c_micro)
+                cap_priced_events += 1
+
+        categories_breakdown = [
+            cat_prov_map[k] for k in sorted(cat_prov_map.keys())
+        ]
+        category_totals: dict[str, dict[str, Any]] = {
+            "model": {"category": "model", "credits_micro": 0, "events": 0},
+            "vision": {"category": "vision", "credits_micro": 0, "events": 0},
+            "search": {"category": "search", "credits_micro": 0, "events": 0},
+            "web_fetch": {"category": "web_fetch", "credits_micro": 0, "events": 0},
+        }
+        for item in categories_breakdown:
+            cat = item["category"]
+            if cat in category_totals:
+                category_totals[cat]["credits_micro"] += item["credits_micro"]
+                category_totals[cat]["events"] += item["events"]
+
+        snapshot["categories"] = list(category_totals.values())
+        snapshot["category_breakdown"] = categories_breakdown
+        snapshot["capability_events"] = len(cap_rows)
+        total_priced_credits = (snapshot.get("priced_credits_micro") or 0) + cap_credits
+        total_unpriced = (snapshot.get("unpriced_events") or 0) + cap_unpriced
+        snapshot["events"] += len(cap_rows)
+        snapshot["priced_events"] += cap_priced_events
+        snapshot["unpriced_events"] = total_unpriced
+        snapshot["priced_credits_micro"] = total_priced_credits
+        snapshot["total_credits_micro"] = total_priced_credits
+        snapshot["credits_complete"] = total_unpriced == 0
+        snapshot["credit_status"] = "complete" if total_unpriced == 0 else "partial"
+        snapshot["credits_micro"] = (
+            total_priced_credits if total_unpriced == 0 else None
+        )
+
         if self._quota_service is not None:
             snapshot["quota"] = self._quota_service.snapshot(
                 user_id=user_id,
@@ -104,6 +193,7 @@ class UsageReadService:
         end = _utc(now or _utc_now())
         start = end - timedelta(days=max(1, days))
         usage_rows = self._usage_rows(start=start, end=end)
+        capability_rows = self._capability_rows(start=start, end=end)
         usage_by_operation = {
             row["operation_id"]: row for row in usage_rows
         }
@@ -127,6 +217,19 @@ class UsageReadService:
             if event_tokens == observed_tokens:
                 exact_token_matches += 1
 
+        capability_by_type: dict[str, dict[str, int]] = {}
+        for row in capability_rows:
+            capability_type = str(row["capability_type"])
+            item = capability_by_type.setdefault(
+                capability_type,
+                {"events": 0, "priced_events": 0, "pending_events": 0},
+            )
+            item["events"] += 1
+            if row["credits_micro"] is not None:
+                item["priced_events"] += 1
+            if row["usage_status"] in {"pending", "unavailable"}:
+                item["pending_events"] += 1
+
         return {
             "period_days": max(1, days),
             "from": start.isoformat(),
@@ -144,6 +247,11 @@ class UsageReadService:
             "token_delta": delta,
             "unpriced_usage_events": sum(
                 row["credits_micro"] is None for row in usage_rows
+            ),
+            "capability_events": len(capability_rows),
+            "capability_by_type": capability_by_type,
+            "unpriced_capability_events": sum(
+                row["credits_micro"] is None for row in capability_rows
             ),
         }
 
@@ -171,6 +279,28 @@ class UsageReadService:
         with self._engine.connect() as connection:
             return [dict(row) for row in connection.execute(statement).mappings()]
 
+    def _capability_rows(
+        self,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            if not inspect(connection).has_table("nlp_capability_usage_events"):
+                return []
+            stmt = select(CapabilityUsageEventModel.__table__).where(
+                CapabilityUsageEventModel.occurred_at >= start,
+                CapabilityUsageEventModel.occurred_at <= end,
+                CapabilityUsageEventModel.archived_at.is_(None),
+            )
+            if user_id is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.user_id == user_id)
+            if workspace_id is not None:
+                stmt = stmt.where(CapabilityUsageEventModel.workspace_id == workspace_id)
+            return [dict(r) for r in connection.execute(stmt).mappings().all()]
+
     @staticmethod
     def _snapshot(
         *,
@@ -183,7 +313,7 @@ class UsageReadService:
     ) -> dict[str, Any]:
         tokens = {
             field: sum(int(row[field] or 0) for row in rows)
-            for field in TOKEN_FIELDS
+            for field in ALL_TOKEN_FIELDS
         }
         breakdown: dict[tuple[str, str, str, str], dict[str, Any]] = {}
         for row in rows:
@@ -211,7 +341,7 @@ class UsageReadService:
                     "priced_events": 0,
                     "unpriced_events": 0,
                     "priced_credits_micro": 0,
-                    **{field: 0 for field in TOKEN_FIELDS},
+                    **{field: 0 for field in ALL_TOKEN_FIELDS},
                 },
             )
             item["events"] += 1
@@ -220,7 +350,7 @@ class UsageReadService:
             else:
                 item["priced_events"] += 1
                 item["priced_credits_micro"] += int(row["credits_micro"])
-            for field in TOKEN_FIELDS:
+            for field in ALL_TOKEN_FIELDS:
                 item[field] += int(row[field] or 0)
 
         unpriced_events = sum(row["credits_micro"] is None for row in rows)
@@ -299,14 +429,6 @@ class UsageReadService:
         output_details = usage.get("output_token_details") or {}
         return {
             "input_tokens": int(usage.get("input_tokens") or 0),
-            "text_input_tokens": int(
-                input_details.get("text_tokens", usage.get("text_input_tokens", 0))
-                or 0
-            ),
-            "image_input_tokens": int(
-                input_details.get("image_tokens", usage.get("image_input_tokens", 0))
-                or 0
-            ),
             "cached_input_tokens": int(
                 input_details.get("cache_read", usage.get("cached_tokens", 0))
                 or 0

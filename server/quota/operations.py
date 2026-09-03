@@ -14,7 +14,17 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
-from sqlalchemy import Engine, case, create_engine, delete, func, insert, select, update
+from sqlalchemy import (
+    Engine,
+    case,
+    create_engine,
+    delete,
+    func,
+    insert,
+    inspect,
+    select,
+    update,
+)
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
@@ -346,6 +356,17 @@ class QuotaOperationsService:
                 select(UsageEventModel)
                 .where(UsageEventModel.id == billing["matched_usage_event_id"])
             ).mappings().first()
+            if (
+                usage is None
+                and billing.get("matched_capability_event_id")
+                and self._has_capability_table(connection)
+            ):
+                usage = connection.execute(
+                    select(CapabilityUsageEventModel).where(
+                        CapabilityUsageEventModel.id
+                        == billing["matched_capability_event_id"]
+                    )
+                ).mappings().first()
             if usage is None:
                 raise ValueError("billing discrepancy has no UsageEvent")
             reservation_id = usage["reservation_id"]
@@ -428,13 +449,23 @@ class QuotaOperationsService:
     def _reconcile_billing_line(
         self, connection: Connection, statement: Mapping[str, Any], checked_at: datetime
     ) -> dict[str, Any]:
-        required = ("provider", "statement_id", "operation_id", "idempotency_key")
+        required = ("provider", "statement_id", "idempotency_key")
         missing = [key for key in required if not str(statement.get(key) or "").strip()]
+        if not str(statement.get("operation_id") or "").strip() and not str(
+            statement.get("provider_response_id") or ""
+        ).strip():
+            missing.append("operation_id or provider_response_id")
         if missing:
             raise ValueError(f"billing statement missing fields: {', '.join(missing)}")
         provider = str(statement["provider"])
         statement_id = str(statement["statement_id"])
-        operation_id = str(statement["operation_id"])
+        provider_response_id = str(statement.get("provider_response_id") or "").strip()
+        operation_id = str(statement.get("operation_id") or "").strip()
+        if not operation_id:
+            response_digest = hashlib.sha256(
+                provider_response_id.encode("utf-8")
+            ).hexdigest()
+            operation_id = f"provider-response:{response_digest}"
         idempotency_key = str(statement["idempotency_key"])
         billed_at = _utc(statement.get("billed_at") or checked_at)
         billed_credits = statement.get("billed_credits_micro")
@@ -442,11 +473,20 @@ class QuotaOperationsService:
             if isinstance(billed_credits, bool) or not isinstance(billed_credits, int) or billed_credits < 0:
                 raise ValueError("billed_credits_micro must be a non-negative integer")
         billed_tokens = dict(statement.get("billed_tokens") or {})
+        billed_usage = dict(statement.get("billed_usage") or {})
+        usage_event_type = str(statement.get("usage_event_type") or "model")
+        if usage_event_type not in {"model", "capability"}:
+            raise ValueError("usage_event_type must be 'model' or 'capability'")
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
             for value in billed_tokens.values()
         ):
             raise ValueError("billed_tokens values must be non-negative integers")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in billed_usage.values()
+        ):
+            raise ValueError("billed_usage values must be non-negative integers")
         raw_payload = _json_safe(statement)
         existing = connection.execute(
             select(QuotaProviderBillingModel)
@@ -454,13 +494,17 @@ class QuotaOperationsService:
             .with_for_update()
         ).mappings().first()
         if existing is not None:
-            if (
-                existing["provider"] != provider
-                or existing["statement_id"] != statement_id
-                or existing["operation_id"] != operation_id
-                or existing["billed_at"] != _db_time(billed_at)
-                or existing["billed_credits_micro"] != billed_credits
-                or existing["billed_tokens_json"] != billed_tokens
+            if self._billing_row_conflicts(
+                existing,
+                provider=provider,
+                statement_id=statement_id,
+                operation_id=operation_id,
+                provider_response_id=provider_response_id,
+                usage_event_type=usage_event_type,
+                billed_at=billed_at,
+                billed_credits=billed_credits,
+                billed_tokens=billed_tokens,
+                billed_usage=billed_usage,
             ):
                 raise ValueError("billing idempotency key conflicts with existing statement")
             return self._refresh_billing_match(connection, existing, checked_at)
@@ -473,30 +517,27 @@ class QuotaOperationsService:
             .with_for_update()
         ).mappings().first()
         if statement_existing is not None:
-            if (
-                statement_existing["operation_id"] != operation_id
-                or statement_existing["billed_at"] != _db_time(billed_at)
-                or statement_existing["billed_credits_micro"] != billed_credits
-                or statement_existing["billed_tokens_json"] != billed_tokens
+            if self._billing_row_conflicts(
+                statement_existing,
+                provider=provider,
+                statement_id=statement_id,
+                operation_id=operation_id,
+                provider_response_id=provider_response_id,
+                usage_event_type=usage_event_type,
+                billed_at=billed_at,
+                billed_credits=billed_credits,
+                billed_tokens=billed_tokens,
+                billed_usage=billed_usage,
             ):
                 raise ValueError("provider statement conflicts with an existing billing line")
             return self._refresh_billing_match(connection, statement_existing, checked_at)
-        usage = connection.execute(
-            select(UsageEventModel)
-            .where(
-                UsageEventModel.operation_id == operation_id,
-                UsageEventModel.provider == provider,
-            )
-        ).mappings().first()
-        cap_usage = None
-        if usage is None:
-            cap_usage = connection.execute(
-                select(CapabilityUsageEventModel)
-                .where(
-                    CapabilityUsageEventModel.operation_id == operation_id,
-                    CapabilityUsageEventModel.provider == provider,
-                )
-            ).mappings().first()
+        usage, cap_usage = self._find_billing_usage(
+            connection,
+            provider=provider,
+            operation_id=operation_id,
+            provider_response_id=provider_response_id,
+            usage_event_type=usage_event_type,
+        )
         values = self._billing_values(
             provider=provider,
             statement_id=statement_id,
@@ -504,6 +545,8 @@ class QuotaOperationsService:
             billed_at=billed_at,
             billed_credits_micro=billed_credits,
             billed_tokens=billed_tokens,
+            billed_usage=billed_usage,
+            usage_event_type=usage_event_type,
             idempotency_key=idempotency_key,
             raw_payload=raw_payload,
             usage=usage,
@@ -534,11 +577,17 @@ class QuotaOperationsService:
                 ).mappings().first()
             if winner is None:
                 raise
-            if (
-                winner["operation_id"] != operation_id
-                or winner["billed_at"] != _db_time(billed_at)
-                or winner["billed_credits_micro"] != billed_credits
-                or winner["billed_tokens_json"] != billed_tokens
+            if self._billing_row_conflicts(
+                winner,
+                provider=provider,
+                statement_id=statement_id,
+                operation_id=operation_id,
+                provider_response_id=provider_response_id,
+                usage_event_type=usage_event_type,
+                billed_at=billed_at,
+                billed_credits=billed_credits,
+                billed_tokens=billed_tokens,
+                billed_usage=billed_usage,
             ):
                 raise ValueError("provider statement conflicts with an existing billing line")
             return self._refresh_billing_match(connection, winner, checked_at)
@@ -548,31 +597,60 @@ class QuotaOperationsService:
         ).mappings().one()
         return self._billing_payload(row)
 
+    @staticmethod
+    def _billing_row_conflicts(
+        row: Mapping[str, Any],
+        *,
+        provider: str,
+        statement_id: str,
+        operation_id: str,
+        provider_response_id: str,
+        usage_event_type: str,
+        billed_at: datetime,
+        billed_credits: int | None,
+        billed_tokens: Mapping[str, int],
+        billed_usage: Mapping[str, int],
+    ) -> bool:
+        raw_payload = row.get("raw_payload_json") or {}
+        recorded_response_id = str(raw_payload.get("provider_response_id") or "")
+        recorded_event_type = str(
+            raw_payload.get("usage_event_type")
+            or row.get("usage_event_type")
+            or "model"
+        )
+        return (
+            row["provider"] != provider
+            or row["statement_id"] != statement_id
+            or row["operation_id"] != operation_id
+            or recorded_response_id != provider_response_id
+            or recorded_event_type != usage_event_type
+            or row["billed_at"] != _db_time(billed_at)
+            or row["billed_credits_micro"] != billed_credits
+            or row["billed_tokens_json"] != dict(billed_tokens)
+            or row.get("billed_usage_json", {}) != dict(billed_usage)
+        )
+
     def _refresh_billing_match(
         self, connection: Connection, row: Mapping[str, Any], checked_at: datetime
     ) -> dict[str, Any]:
         if row["status"] == "repaired":
             return self._billing_payload(row)
-        usage = connection.execute(
-            select(UsageEventModel).where(
-                UsageEventModel.operation_id == row["operation_id"],
-                UsageEventModel.provider == row["provider"],
-            )
-        ).mappings().first()
-        cap_usage = None
-        if usage is None:
-            cap_usage = connection.execute(
-                select(CapabilityUsageEventModel).where(
-                    CapabilityUsageEventModel.operation_id == row["operation_id"],
-                    CapabilityUsageEventModel.provider == row["provider"],
-                )
-            ).mappings().first()
+        raw_payload = row.get("raw_payload_json") or {}
+        usage, cap_usage = self._find_billing_usage(
+            connection,
+            provider=str(row["provider"]),
+            operation_id=str(row["operation_id"]),
+            provider_response_id=str(raw_payload.get("provider_response_id") or ""),
+            usage_event_type=str(
+                raw_payload.get("usage_event_type") or row.get("usage_event_type") or "model"
+            ),
+        )
 
         if usage is not None:
             local = usage["credits_micro"]
             matched_usage_id = usage["id"]
             matched_cap_id = None
-            usage_type = "model"
+            usage_type = str(row.get("usage_event_type") or "model")
         elif cap_usage is not None:
             local = cap_usage["credits_micro"]
             matched_usage_id = None
@@ -614,6 +692,65 @@ class QuotaOperationsService:
         return self._billing_payload(updated)
 
     @staticmethod
+    def _has_capability_table(connection: Connection) -> bool:
+        return inspect(connection).has_table("nlp_capability_usage_events")
+
+    def _find_billing_usage(
+        self,
+        connection: Connection,
+        *,
+        provider: str,
+        operation_id: str,
+        provider_response_id: str,
+        usage_event_type: str,
+    ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+        usage = None
+        cap_usage = None
+        if usage_event_type == "model":
+            usage = connection.execute(
+                select(UsageEventModel).where(
+                    UsageEventModel.operation_id == operation_id,
+                    UsageEventModel.provider == provider,
+                )
+            ).mappings().first()
+        elif self._has_capability_table(connection):
+            cap_usage = connection.execute(
+                select(CapabilityUsageEventModel).where(
+                    CapabilityUsageEventModel.operation_id == operation_id,
+                    CapabilityUsageEventModel.provider == provider,
+                )
+            ).mappings().first()
+        if (usage is not None or cap_usage is not None) or not provider_response_id:
+            return usage, cap_usage
+
+        model_matches: list[Mapping[str, Any]] = []
+        if usage_event_type == "model":
+            model_matches = list(
+                connection.execute(
+                    select(UsageEventModel).where(
+                        UsageEventModel.provider == provider,
+                        UsageEventModel.provider_response_id == provider_response_id,
+                    )
+                ).mappings().all()
+            )
+        capability_matches: list[Mapping[str, Any]] = []
+        if usage_event_type == "capability" and self._has_capability_table(connection):
+            capability_matches = list(
+                connection.execute(
+                    select(CapabilityUsageEventModel).where(
+                        CapabilityUsageEventModel.provider == provider,
+                        CapabilityUsageEventModel.provider_response_id
+                        == provider_response_id,
+                    )
+                ).mappings().all()
+            )
+        if len(model_matches) + len(capability_matches) != 1:
+            return None, None
+        if model_matches:
+            return model_matches[0], None
+        return None, capability_matches[0]
+
+    @staticmethod
     def _billing_values(**kwargs: Any) -> dict[str, Any]:
         usage = kwargs.pop("usage")
         cap_usage = kwargs.pop("cap_usage", None)
@@ -630,7 +767,7 @@ class QuotaOperationsService:
             matched_cap_id = cap_usage["id"]
         else:
             local = None
-            usage_type = "model"
+            usage_type = kwargs.get("usage_event_type") or "model"
             matched_usage_id = None
             matched_cap_id = None
 
@@ -651,7 +788,7 @@ class QuotaOperationsService:
             "billed_credits_micro": billed,
             "usage_event_type": usage_type,
             "billed_tokens_json": kwargs.get("billed_tokens") or {},
-            "billed_usage_json": kwargs.get("billed_tokens") or {},
+            "billed_usage_json": kwargs.get("billed_usage") or {},
             "matched_usage_event_id": matched_usage_id,
             "matched_capability_event_id": matched_cap_id,
             "local_credits_micro": local,

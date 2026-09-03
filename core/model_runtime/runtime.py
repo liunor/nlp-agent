@@ -42,8 +42,10 @@ from core.usage_metering.contracts import CapabilityUsageEvent, MeteredUsageItem
 from core.usage_metering.reporters import (
     CapabilityUsageConflictError,
     get_global_capability_reporter_slot,
+    pre_reserve_capability,
 )
 from utils.logger import get_logger
+from utils.tokens import rough_estimation_for_messages
 
 
 logger = get_logger("nlp_agent.model_runtime")
@@ -100,6 +102,7 @@ class ModelCandidate:
     definition: ModelDefinition
     preset: ModelPresetConfig
     model: Any
+    provider_region: str | None = None
     circuit: CircuitState = field(default_factory=CircuitState)
 
 
@@ -121,6 +124,12 @@ def _merge_delta_usage(
     if current.text_input_tokens is not None or incoming.text_input_tokens is not None:
         text_tokens = (current.text_input_tokens or 0) + (incoming.text_input_tokens or 0)
     details = {**current.provider_usage_details, **incoming.provider_usage_details}
+    current_search_count = current.provider_usage_details.get("plugins.search.count")
+    incoming_search_count = incoming.provider_usage_details.get("plugins.search.count")
+    if isinstance(current_search_count, int) or isinstance(incoming_search_count, int):
+        details["plugins.search.count"] = (
+            current_search_count if isinstance(current_search_count, int) else 0
+        ) + (incoming_search_count if isinstance(incoming_search_count, int) else 0)
     return CanonicalTokenUsage(
         input_tokens=current.input_tokens + incoming.input_tokens,
         cached_input_tokens=current.cached_input_tokens + incoming.cached_input_tokens,
@@ -289,6 +298,7 @@ class ResilientChatModel:
                     definition=item.definition,
                     preset=item.preset,
                     model=item.model.bind_tools(tools, **kwargs),
+                    provider_region=item.provider_region,
                     circuit=item.circuit,
                 )
                 for item in self.candidates
@@ -317,6 +327,7 @@ class ResilientChatModel:
                     model=item.model.with_structured_output(
                         schema, **underlying_kwargs
                     ),
+                    provider_region=item.provider_region,
                     circuit=item.circuit,
                 )
                 for item in self.candidates
@@ -356,14 +367,36 @@ class ResilientChatModel:
         await self.reporter_slot.reporter.report(invocation, usage, outcome)
 
         search_count = usage.provider_usage_details.get("plugins.search.count")
-        if isinstance(search_count, int) and search_count > 0:
+        candidate = (
+            self.candidates[invocation.fallback_index]
+            if 0 <= invocation.fallback_index < len(self.candidates)
+            else None
+        )
+        native_search = getattr(getattr(candidate, "preset", None), "native_search", None)
+        search_enabled = bool(native_search and native_search.enabled)
+
+        if (isinstance(search_count, int) and search_count > 0) or search_enabled:
+            strategy = getattr(native_search, "strategy", "turbo") or "turbo"
+            pricing_key = (
+                self._search_pricing_key(candidate)
+                if candidate is not None
+                else f"{invocation.identity.provider}/web-search/{strategy}"
+            )
+            if isinstance(search_count, int) and search_count > 0:
+                usage_status = "exact"
+                usage_source = "provider"
+                quantity = search_count
+            elif native_search and getattr(native_search, "forced", False):
+                usage_status = "estimated"
+                usage_source = "estimated"
+                quantity = 1
+            else:
+                usage_status = "pending"
+                usage_source = "none"
+                quantity = 0
+
             cap_slot = get_global_capability_reporter_slot()
             if cap_slot is not None and cap_slot.reporter is not None:
-                pricing_key = (
-                    f"{invocation.identity.provider}/cn-beijing/web-search/turbo"
-                    if "qwen" in invocation.identity.provider.lower()
-                    else f"{invocation.identity.provider}/web-search/turbo"
-                )
                 search_event = CapabilityUsageEvent(
                     operation_id=f"{invocation.operation_id}:native-search",
                     parent_operation_id=invocation.operation_id,
@@ -379,17 +412,17 @@ class ResilientChatModel:
                     provider=invocation.identity.provider,
                     pricing_key=pricing_key,
                     provider_response_id=usage.provider_response_id,
-                    usage_source="provider",
-                    usage_status="exact",
+                    usage_source=usage_source,
+                    usage_status=usage_status,
                     items=(
                         MeteredUsageItem(
                             meter="search.requests",
-                            quantity=search_count,
+                            quantity=quantity,
                             unit="call",
                         ),
                     ),
                     occurred_at=outcome.completed_at,
-                    raw_usage={"search_count": search_count},
+                    raw_usage={"search_count": search_count, "search_strategy": strategy},
                 )
                 await cap_slot.reporter.report(search_event)
             elif cap_slot is not None and getattr(cap_slot, "required", False):
@@ -456,6 +489,67 @@ class ResilientChatModel:
         return invocation, operation_id
 
     @staticmethod
+    def _search_pricing_key(candidate: ModelCandidate) -> str:
+        search = candidate.preset.native_search
+        if "qwen" in candidate.provider_name.lower():
+            region = candidate.provider_region or "cn-beijing"
+            return f"{candidate.provider_name}/{region}/web-search/{search.strategy}"
+        return f"{candidate.provider_name}/web-search/{search.strategy}"
+
+    async def _pre_reserve_attempt(
+        self,
+        candidate: ModelCandidate,
+        invocation: ModelInvocation | None,
+        model_input: Any,
+    ) -> None:
+        """Reserve model and native-search risk before reaching the Provider."""
+        if invocation is None or invocation.attribution.reservation_id is None:
+            return
+        messages = model_input if isinstance(model_input, (list, tuple)) else [model_input]
+        try:
+            input_tokens = rough_estimation_for_messages(messages)
+        except Exception:
+            input_tokens = candidate.definition.context_window_tokens
+        max_input_tokens = max(
+            0,
+            candidate.definition.context_window_tokens
+            - candidate.preset.generation.max_output_tokens,
+        )
+        input_tokens = min(max_input_tokens, max(0, input_tokens))
+
+        reserve_model = getattr(
+            self.reporter_slot.reporter if self.reporter_slot is not None else None,
+            "reserve_additional",
+            None,
+        )
+        if reserve_model is None:
+            if self.reporter_slot is not None and self.reporter_slot.required:
+                raise UsageReporterUnavailableError(
+                    "The configured model usage Reporter cannot reserve quota"
+                )
+        else:
+            await reserve_model(
+                invocation,
+                estimated_input_tokens=input_tokens,
+                estimated_output_tokens=candidate.preset.generation.max_output_tokens,
+            )
+
+        if candidate.preset.native_search.enabled:
+            await pre_reserve_capability(
+                operation_key=f"{invocation.operation_id}:native-search",
+                reason="native_search_request",
+                pricing_key=self._search_pricing_key(candidate),
+                estimated_items=(
+                    MeteredUsageItem(
+                        meter="search.requests",
+                        quantity=1,
+                        unit="call",
+                    ),
+                ),
+                reservation_id=invocation.attribution.reservation_id,
+            )
+
+    @staticmethod
     def _delay(
         candidate: ModelCandidate, attempt: int, decision: ErrorDecision
     ) -> float:
@@ -519,6 +613,7 @@ class ResilientChatModel:
                 invocation, operation_id = self._prepare_invocation(
                     candidate, attempt, fallback_index
                 )
+                await self._pre_reserve_attempt(candidate, invocation, input)
                 attempt_reported = False
                 try:
                     async with _attempt_span(
@@ -684,6 +779,7 @@ class ResilientChatModel:
                 invocation, operation_id = self._prepare_invocation(
                     candidate, attempt, fallback_index
                 )
+                await self._pre_reserve_attempt(candidate, invocation, input)
                 received = False
                 visible = False
                 first = True

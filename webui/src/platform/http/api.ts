@@ -206,6 +206,10 @@ export const api = {
     effective_from: string;
     effective_until?: string | null;
   }) => request<QuotaMeterPricingRule>("/developer/quota/meter-pricing-rules", { method: "POST", body: JSON.stringify(input) }),
+  retireQuotaMeterPricingRule: (ruleId: string) =>
+    request<QuotaMeterPricingRule>(`/developer/quota/meter-pricing-rules/${encodeURIComponent(ruleId)}/retire`, {
+      method: "POST",
+    }),
   listQuotaCapabilityEvents: (params?: {
     user_id?: string;
     workspace_id?: string;

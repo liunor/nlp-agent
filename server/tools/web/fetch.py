@@ -15,6 +15,7 @@ from core.usage_metering.contracts import MeteredUsageItem
 from core.usage_metering.reporters import (
     CapabilityUsageConflictError,
     get_global_capability_reporter_slot,
+    pre_reserve_capability,
 )
 from server.tools.web.cache import TTLCache, cache_key
 from server.tools.web.contracts import (
@@ -80,9 +81,44 @@ class WebFetchService:
         cached = self.cache.get(key)
         if cached is not None:
             logger.debug("web_fetch cache hit", host_digest=_host_digest(entry.host))
+            await self._report_usage(
+                operation_id=str(uuid.uuid4()),
+                host_digest=_host_digest(entry.host),
+                status_code=200,
+                content_type="application/json",
+                response_bytes=0,
+                is_cache_hit=True,
+            )
             return WebFetchResponse.model_validate_json(cached)
+        operation_id = str(uuid.uuid4())
+        await pre_reserve_capability(
+            operation_key=operation_id,
+            reason="web_fetch_request",
+            pricing_key="internal/web-fetch/v1",
+            estimated_items=(
+                MeteredUsageItem(meter="web_fetch.requests", quantity=1, unit="call"),
+                MeteredUsageItem(
+                    meter="web_fetch.bytes",
+                    quantity=self.config.network.max_response_bytes,
+                    unit="byte",
+                ),
+            ),
+        )
 
-        download = await self._download(entry, as_markdown=request.extract_mode == "markdown")
+        try:
+            download = await self._download(entry, as_markdown=request.extract_mode == "markdown")
+        except Exception as err:
+            await self._report_usage(
+                operation_id=operation_id,
+                host_digest=_host_digest(entry.host),
+                status_code=getattr(err, "status_code", 500) if hasattr(err, "status_code") else 500,
+                content_type="",
+                response_bytes=0,
+                is_cache_hit=False,
+                error=type(err).__name__,
+            )
+            raise
+
         truncated, text_body, warnings = self._extract(download, max_chars)
         result = WebFetchResponse(
             url=entry.normalized,
@@ -113,20 +149,25 @@ class WebFetchService:
             response_bytes=download["response_bytes"],
         )
         await self._report_usage(
-            url=download["final_url"],
+            operation_id=operation_id,
+            host_digest=_host_digest(entry.host),
             status_code=result.status_code,
             content_type=download.get("content_type", ""),
             response_bytes=download["response_bytes"],
+            is_cache_hit=False,
         )
         return result
 
     async def _report_usage(
         self,
         *,
-        url: str,
+        operation_id: str,
+        host_digest: str,
         status_code: int,
         content_type: str,
         response_bytes: int,
+        is_cache_hit: bool = False,
+        error: str | None = None,
     ) -> None:
         slot = get_global_capability_reporter_slot()
         if slot is None or slot.reporter is None:
@@ -135,15 +176,25 @@ class WebFetchService:
                     "This capability process requires a configured capability usage Reporter"
                 )
             return
+        requests_count = 0 if is_cache_hit else 1
+        raw_info: dict[str, Any] = {
+            "host_digest": host_digest,
+            "status_code": status_code,
+            "content_type": content_type,
+            "response_bytes": max(0, response_bytes),
+            "cache_hit": is_cache_hit,
+        }
+        if error:
+            raw_info["error"] = error
         event = create_capability_event(
-            operation_id=str(uuid.uuid4()),
+            operation_id=operation_id,
             capability_type="web_fetch",
             provider="internal",
             pricing_key="internal/web-fetch/v1",
             items=(
                 MeteredUsageItem(
                     meter="web_fetch.requests",
-                    quantity=1,
+                    quantity=requests_count,
                     unit="call",
                 ),
                 MeteredUsageItem(
@@ -154,12 +205,7 @@ class WebFetchService:
             ),
             usage_source="measured",
             usage_status="exact",
-            raw_usage={
-                "url": url,
-                "status_code": status_code,
-                "content_type": content_type,
-                "response_bytes": max(0, response_bytes),
-            },
+            raw_usage=raw_info,
         )
         await slot.reporter.report(event)
 

@@ -10,6 +10,7 @@ from core.usage_metering.contracts import (
 )
 from server.quota.meter_pricing import (
     MeterPricingCatalog,
+    MeterPricingError,
     MeterPricingRuleConflictError,
     UnknownMeterPricingError,
 )
@@ -186,6 +187,73 @@ def test_meter_pricing_missing_rule_raises_error():
     )
     with pytest.raises(UnknownMeterPricingError, match="No active meter pricing rule"):
         catalog.price_event(event)
+
+
+def test_meter_pricing_rejects_usage_unit_that_differs_from_rule():
+    now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=UTC)
+    catalog = MeterPricingCatalog(
+        [
+            MeterPricingRule(
+                pricing_key="internal/rapidocr/v1",
+                version="v1",
+                meter="ocr.pages",
+                unit="page",
+                rate_unit=1,
+                rate_micro=250,
+                effective_from=datetime(2026, 9, 1, tzinfo=UTC),
+            )
+        ]
+    )
+    event = CapabilityUsageEvent(
+        operation_id="op-invalid-unit",
+        request_id="req-1",
+        user_id="user-1",
+        purpose="vision",
+        capability_type="ocr",
+        provider="internal",
+        pricing_key="internal/rapidocr/v1",
+        usage_source="measured",
+        usage_status="exact",
+        items=(MeteredUsageItem(meter="ocr.pages", quantity=1, unit="call"),),
+        occurred_at=now,
+    )
+
+    with pytest.raises(MeterPricingError, match="Unit mismatch"):
+        catalog.price_event(event)
+
+
+def test_retired_rule_still_prices_an_event_inside_its_historical_window():
+    event_time = datetime(2026, 9, 2, 12, 0, 0, tzinfo=UTC)
+    catalog = MeterPricingCatalog(
+        [
+            MeterPricingRule(
+                pricing_key="internal/rapidocr/v1",
+                version="v1",
+                meter="ocr.pages",
+                unit="page",
+                rate_unit=1,
+                rate_micro=250,
+                effective_from=datetime(2026, 9, 1, tzinfo=UTC),
+                effective_until=datetime(2026, 9, 3, tzinfo=UTC),
+                status="retired",
+            )
+        ]
+    )
+    event = CapabilityUsageEvent(
+        operation_id="op-historical-ocr",
+        request_id="req-1",
+        user_id="user-1",
+        purpose="vision",
+        capability_type="ocr",
+        provider="internal",
+        pricing_key="internal/rapidocr/v1",
+        usage_source="measured",
+        usage_status="exact",
+        items=(MeteredUsageItem(meter="ocr.pages", quantity=2, unit="page"),),
+        occurred_at=event_time,
+    )
+
+    assert catalog.price_event(event).credits_micro == 500
 
 
 def test_meter_pricing_pending_and_unavailable_status():

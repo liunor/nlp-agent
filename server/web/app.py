@@ -54,6 +54,7 @@ from server.quota.notifications import (
 )
 from server.quota.operations import QuotaOperationsService
 from server.quota.service import QuotaService
+from server.quota.usage import UsageReadService
 from server.session.summary import summary_sweep_loop
 from server.web.contracts import (
     CreateSessionBody,
@@ -379,12 +380,20 @@ def create_app(
         from server.quota.bootstrap import (
             configure_usage_reporter,
             shutdown_usage_reporter,
+            configure_capability_usage_reporter,
+            shutdown_capability_usage_reporter,
         )
         from server.quota.usage import UsageReadService
 
         database_url = settings.NLP_AGENT_DATABASE_URL.strip()
+        cap_usage_reporter = None
         if not auth_injected:
             usage_reporter = configure_usage_reporter(
+                database_url,
+                required=True,
+                quota_enforcement=settings.quota_enforcement_enabled,
+            )
+            cap_usage_reporter = configure_capability_usage_reporter(
                 database_url,
                 required=True,
                 quota_enforcement=settings.quota_enforcement_enabled,
@@ -574,6 +583,7 @@ def create_app(
             await hub.close()
             await gateway.close()
             shutdown_usage_reporter(usage_reporter)
+            shutdown_capability_usage_reporter(cap_usage_reporter)
             if usage_reader is not None:
                 close_usage_reader = getattr(usage_reader, "close", None)
                 if close_usage_reader is not None:
@@ -1466,6 +1476,35 @@ def create_app(
                 "meter": row["meter"],
                 "version": row["version"],
             },
+        )
+        return row
+
+    @app.post(
+        "/api/v1/developer/quota/meter-pricing-rules/{rule_id}/retire",
+        tags=["quota"],
+    )
+    async def retire_quota_meter_pricing_rule(
+        rule_id: str,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        try:
+            row = await asyncio.to_thread(
+                quota_management_for(request).retire_meter_pricing_rule,
+                rule_id,
+                retired_by=principal.user_id,
+            )
+        except QuotaDomainError as error:
+            return quota_domain_problem(request, error)
+        await audit_quota_change(
+            request,
+            principal,
+            reason_code="quota_meter_pricing_rule_retired",
+            resource_type="quota_meter_pricing_rule",
+            resource_id=rule_id,
+            detail={"status": "retired"},
         )
         return row
 

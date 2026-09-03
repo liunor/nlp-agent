@@ -88,11 +88,18 @@ async def run_worker() -> None:
     from server.quota.bootstrap import (
         configure_usage_reporter,
         shutdown_usage_reporter,
+        configure_capability_usage_reporter,
+        shutdown_capability_usage_reporter,
     )
 
     database_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
     await database_runtime.start()
     usage_reporter = configure_usage_reporter(
+        settings.NLP_AGENT_DATABASE_URL.strip(),
+        required=True,
+        quota_enforcement=settings.quota_enforcement_enabled,
+    )
+    cap_usage_reporter = configure_capability_usage_reporter(
         settings.NLP_AGENT_DATABASE_URL.strip(),
         required=True,
         quota_enforcement=settings.quota_enforcement_enabled,
@@ -259,4 +266,5 @@ async def run_worker() -> None:
         quota_snapshot_publisher.close()
         await redis.aclose()
         shutdown_usage_reporter(usage_reporter)
+        shutdown_capability_usage_reporter(cap_usage_reporter)
         await database_runtime.close()

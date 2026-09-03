@@ -138,6 +138,38 @@ class FakeStructuredModel(FakeRawModel):
         }
 
 
+class RejectingReservationReporter(InMemoryModelUsageReporter):
+    async def reserve_additional(
+        self,
+        invocation,
+        *,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+    ) -> None:
+        del invocation, estimated_input_tokens, estimated_output_tokens
+        raise RuntimeError("quota reservation rejected")
+
+
+@pytest.mark.asyncio
+async def test_model_reservation_rejection_blocks_provider_call():
+    provider = FakeRawModel([AIMessage(content="must not be called")])
+    reporter = RejectingReservationReporter()
+    runtime = ResilientChatModel(
+        [_candidate("blocked", provider)],
+        normalize_response=False,
+        reporter_slot=ModelUsageReporterSlot(reporter, required=True),
+    )
+    attribution = _sample_attribution().model_copy(
+        update={"reservation_id": "reservation-1"}
+    )
+
+    with bind_usage_attribution(attribution):
+        with pytest.raises(RuntimeError, match="quota reservation rejected"):
+            await runtime.ainvoke([HumanMessage(content="hello")])
+
+    assert provider.calls == 0
+
+
 @pytest.mark.asyncio
 async def test_non_streaming_success_reports_once():
     reporter = InMemoryModelUsageReporter()
@@ -368,6 +400,7 @@ async def test_stream_delta_usage_is_aggregated_and_finalized_once():
                 "token_usage": {
                     "prompt_tokens": 4,
                     "completion_tokens": 3,
+                    "plugins": {"search": {"count": 1}},
                     "usage_semantics": "delta",
                 }
             },
@@ -378,6 +411,7 @@ async def test_stream_delta_usage_is_aggregated_and_finalized_once():
                 "token_usage": {
                     "prompt_tokens": 5,
                     "completion_tokens": 2,
+                    "plugins": {"web_search": {"count": 2}},
                     "usage_semantics": "delta",
                 }
             },
@@ -396,6 +430,7 @@ async def test_stream_delta_usage_is_aggregated_and_finalized_once():
     _, usage, outcome = reporter.events[0]
     assert usage.input_tokens == 9
     assert usage.output_tokens == 5
+    assert usage.provider_usage_details["plugins.search.count"] == 3
     assert usage.total_tokens == 14
     assert usage.semantics == "final"
     assert outcome.status == "succeeded"

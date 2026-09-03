@@ -75,11 +75,11 @@ def _extract_usage_details(metadata: Mapping[str, Any] | None) -> dict[str, Any]
         or (raw.get("input_token_details") or {}).get("text_tokens")
     )
 
-    raw_search = None
+    raw_search = raw.get("plugins.search.count")
     plugins_candidate = raw.get("plugins")
     if plugins_candidate is None and isinstance(raw.get("usage"), dict):
         plugins_candidate = raw["usage"].get("plugins")
-    if isinstance(plugins_candidate, dict):
+    if raw_search is None and isinstance(plugins_candidate, dict):
         search_info = plugins_candidate.get("search") or plugins_candidate.get("web_search")
         if isinstance(search_info, dict) and search_info.get("count") is not None:
             raw_search = search_info.get("count")
@@ -309,6 +309,16 @@ def response_canonical_usage(message: Any) -> CanonicalTokenUsage:
                 add_kwargs.get("provider_usage_semantics"), default_semantics
             ),
         )
+    prov_usage = add_kwargs.get("provider_usage")
+    if prov_usage:
+        return canonical_usage(
+            prov_usage,
+            provider_response_id=provider_response_id,
+            source="provider",
+            semantics=_usage_semantics(
+                add_kwargs.get("provider_usage_semantics"), default_semantics
+            ),
+        )
     direct = getattr(message, "usage_metadata", None)
     if direct:
         return canonical_usage(
@@ -327,16 +337,6 @@ def response_canonical_usage(message: Any) -> CanonicalTokenUsage:
             provider_response_id=provider_response_id,
             source="provider",
             semantics=default_semantics,
-        )
-    prov_usage = add_kwargs.get("provider_usage")
-    if prov_usage:
-        return canonical_usage(
-            prov_usage,
-            provider_response_id=provider_response_id,
-            source="provider",
-            semantics=_usage_semantics(
-                add_kwargs.get("provider_usage_semantics"), default_semantics
-            ),
         )
     return canonical_usage(
         None,
