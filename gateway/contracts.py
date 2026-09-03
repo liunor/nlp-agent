@@ -69,6 +69,7 @@ class SubmitTurnRequest(BaseModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+    reservation_id: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "SubmitTurnRequest":
@@ -124,6 +125,7 @@ class TurnRecord(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    reservation_id: str | None = None
 
 
 class GatewayEvent(BaseModel):

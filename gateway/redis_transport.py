@@ -441,6 +441,8 @@ class TurnTaskCodec:
                     }
                     if task.authorization else None
                 ),
+                "reservation_id": task.reservation_id,
+                "request_id": task.request_id,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -468,4 +470,6 @@ class TurnTaskCodec:
                 ExecutionAuthorizationContext(**value["authorization"])
                 if value.get("authorization") else None
             ),
+            reservation_id=value.get("reservation_id"),
+            request_id=value.get("request_id"),
         )

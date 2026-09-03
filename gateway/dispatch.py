@@ -35,6 +35,8 @@ class TurnTask:
     exercise_session_id: str | None
     model_profile: str | None = None
     authorization: ExecutionAuthorizationContext | None = None
+    reservation_id: str | None = None
+    request_id: str | None = None
 
 
 class TurnDispatcher(Protocol):

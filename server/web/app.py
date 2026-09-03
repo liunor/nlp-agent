@@ -290,6 +290,29 @@ def create_app(
             asyncio.create_task(reconcile_sandbox_leases(), name="sandbox-lease-reconciler")
             if gateway.authorization_session_factory is not None else None
         )
+        from server.quota.bootstrap import (
+            configure_usage_reporter,
+            shutdown_usage_reporter,
+        )
+
+        database_url = settings.NLP_AGENT_DATABASE_URL.strip()
+        usage_reporter = None
+        if not auth_injected:
+            usage_reporter = configure_usage_reporter(
+                database_url,
+                required=True,
+                quota_enforcement=getattr(settings, "quota_enforcement_enabled", False),
+            )
+        elif auth_injected:
+            usage_reporter = getattr(app.state, "quota_usage_reporter", None)
+            if usage_reporter is None and database_url:
+                usage_reporter = configure_usage_reporter(
+                    database_url,
+                    required=False,
+                    quota_enforcement=getattr(settings, "quota_enforcement_enabled", False),
+                )
+        app.state.quota_usage_reporter = usage_reporter
+
         try:
             yield
         finally:
@@ -305,6 +328,7 @@ def create_app(
             await gateway.begin_shutdown()
             await hub.close()
             await gateway.close()
+            shutdown_usage_reporter(usage_reporter)
 
     app = FastAPI(
         title="NLP Agent Web API",

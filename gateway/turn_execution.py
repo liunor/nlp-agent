@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from gateway.contracts import GatewayEventType, TurnStatus
+from core.model_runtime.usage import UsageAttributionContext, bind_usage_attribution
 from core.rbac import Permission
 from gateway.dispatch import TurnTask
 from gateway.engine import AgentEngine
@@ -76,6 +77,15 @@ class InProcessTurnExecutor:
         await self._emit(task.turn_id, task.context.session_id, GatewayEventType.TURN_COMPLETED, {"status": TurnStatus.COMPLETED.value, "content": final_text})
 
     async def _run_engine(self, task: TurnTask) -> str:
+        attribution = UsageAttributionContext(
+            request_id=task.request_id or task.turn_id,
+            user_id=task.context.user_id,
+            workspace_id=task.context.workspace_id,
+            conversation_id=task.context.session_id,
+            turn_id=task.turn_id,
+            reservation_id=task.reservation_id,
+            purpose="coordinator",
+        )
         kwargs: dict[str, Any] = {}
         if self._accepts_learning:
             kwargs.update(
@@ -87,9 +97,10 @@ class InProcessTurnExecutor:
             kwargs["teaching_materials"] = task.teaching_materials
         if self._accepts_model_profile:
             kwargs["model_profile"] = task.model_profile
-        return await self._engine.run_turn(
-            task.context, task.turn_id, task.content, **kwargs
-        )
+        with bind_usage_attribution(attribution):
+            return await self._engine.run_turn(
+                task.context, task.turn_id, task.content, **kwargs
+            )
 
     async def _finalize_learning(self, task: TurnTask, final_text: str) -> tuple[str, object]:
         if task.guided_session_id is not None:

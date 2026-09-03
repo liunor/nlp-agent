@@ -59,6 +59,16 @@ async def run_worker() -> None:
 
     database_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
     await database_runtime.start()
+    from server.quota.bootstrap import (
+        configure_usage_reporter,
+        shutdown_usage_reporter,
+    )
+
+    usage_reporter = configure_usage_reporter(
+        settings.NLP_AGENT_DATABASE_URL.strip(),
+        required=True,
+        quota_enforcement=getattr(settings, "quota_enforcement_enabled", False),
+    )
     sandbox_model_service, sandbox_manager = configure_worker_sandbox_service(
         database_runtime.session_factory
     )
@@ -182,4 +192,5 @@ async def run_worker() -> None:
             await sandbox_manager.close()
         repository.close()
         await redis.aclose()
+        shutdown_usage_reporter(usage_reporter)
         await database_runtime.close()

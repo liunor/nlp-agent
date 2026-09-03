@@ -62,8 +62,15 @@ Side effects:
 import asyncio
 import hashlib
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+
+from core.model_runtime.usage import (
+    UsageAttributionContext,
+    bind_usage_attribution,
+    current_usage_attribution,
+)
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from core.task_manager import global_task_manager
@@ -590,8 +597,20 @@ async def _execute_sandbox_loop(
             ),
         )
 
+    parent_attr = current_usage_attribution()
+    worker_attr = UsageAttributionContext(
+        request_id=parent_attr.request_id if parent_attr else str(uuid.uuid4()),
+        user_id=session_context.user_id or (parent_attr.user_id if parent_attr else "unknown"),
+        workspace_id=session_context.workspace_id or (parent_attr.workspace_id if parent_attr else None),
+        conversation_id=session_context.session_id or (parent_attr.conversation_id if parent_attr else None),
+        turn_id=parent_attr.turn_id if parent_attr else None,
+        reservation_id=parent_attr.reservation_id if parent_attr else None,
+        worker_id=worker_id,
+        purpose="worker",
+    )
     try:
-        execution = await asyncio.wait_for(query_loop(), timeout=budget.max_duration_s)
+        with bind_usage_attribution(worker_attr):
+            execution = await asyncio.wait_for(query_loop(), timeout=budget.max_duration_s)
         worker_logger.info(
             "Worker attempt finished",
             status=execution.status,

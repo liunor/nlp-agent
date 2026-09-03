@@ -452,6 +452,7 @@ class BackendGateway:
                 workspace_id=context.workspace_id,
                 authorization_version=principal.authorization_version,
             ),
+            reservation_id=getattr(request, "reservation_id", None),
         )
         turn, duplicate = await asyncio.to_thread(
             self.repository.create_turn,
