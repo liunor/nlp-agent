@@ -37,10 +37,11 @@ def configure_usage_reporter(
     if quota_enforcement:
         try:
             from server.quota.service import QuotaService
-
-            quota_service = QuotaService(resolved)
-        except (ImportError, Exception):
-            quota_service = None
+        except ImportError as exc:
+            raise UsageReporterConfigurationError(
+                "quota_enforcement is enabled but QuotaService could not be imported"
+            ) from exc
+        quota_service = QuotaService(resolved)
 
     try:
         if quota_service is not None and hasattr(quota_service, "verify_schema"):
