@@ -90,7 +90,9 @@ class FeedbackReplyBody(StrictModel):
 
 
 class ReplaceUserRolesBody(StrictModel):
-    role_codes: set[str] = Field(min_length=1, max_length=16)
+    # An empty selection is intentional: the service converts it to the
+    # least-privilege guest role instead of leaving an account roleless.
+    role_codes: set[str] = Field(max_length=4)
 
 
 class ReplaceRolePermissionsBody(StrictModel):

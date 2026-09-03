@@ -36,7 +36,24 @@ class UnknownRoleError(ValueError):
     pass
 
 
+class LastDeveloperForbiddenError(PermissionError):
+    """Raised when a role change would remove the last active developer."""
+
+
 class RbacService:
+    async def _lock_developer_role(self, session: AsyncSession) -> RoleModel | None:
+        """Serialize every operation that can change developer availability.
+
+        The last-developer check must share a stable lock with both role
+        replacement and account-status changes. Locking the role row before
+        any user row also keeps the lock order compatible with role-permission
+        updates, which lock the role first.
+        """
+        return await session.scalar(
+            select(RoleModel)
+            .where(RoleModel.code == "developer")
+            .with_for_update()
+        )
     async def create_role(self, session: AsyncSession, *, code: str, name: str, description: str, actor_user_id: str) -> RoleModel:
         raise PermissionError("系统仅支持游客、学生、教师、开发者四个固定角色")
 
@@ -137,6 +154,15 @@ class RbacService:
         return list((await session.scalars(select(PermissionModel).order_by(PermissionModel.code))).all())
 
     async def role_permissions(self, session: AsyncSession, role_code: str) -> dict[str, frozenset[str]]:
+        role = await session.scalar(
+            select(RoleModel.id).where(
+                RoleModel.code == role_code,
+                RoleModel.code.in_(ROLE_NAMES),
+                RoleModel.is_builtin.is_(True),
+            )
+        )
+        if role is None:
+            raise KeyError(role_code)
         rows = await session.execute(
             select(PermissionModel.code, RolePermissionScopeModel.scope_type)
             .join(RolePermissionModel, RolePermissionModel.permission_id == PermissionModel.id)
@@ -461,6 +487,8 @@ class RbacService:
         role_codes: set[str] | frozenset[str],
         assigned_by_user_id: str | None,
     ) -> frozenset[str]:
+        requested_codes = set(role_codes) or {"guest"}
+        await self._lock_developer_role(session)
         user = await session.scalar(
             select(UserModel).where(UserModel.id == user_id).with_for_update()
         )
@@ -470,16 +498,16 @@ class RbacService:
             (
                 await session.scalars(
                     select(RoleModel).where(
-                        RoleModel.code.in_(role_codes), RoleModel.code.in_(ROLE_NAMES), RoleModel.status == "active", RoleModel.is_builtin.is_(True)
+                        RoleModel.code.in_(requested_codes), RoleModel.code.in_(ROLE_NAMES), RoleModel.status == "active", RoleModel.is_builtin.is_(True)
                     )
                 )
             ).all()
         )
         found_codes = {role.code for role in roles}
-        if found_codes != set(role_codes):
-            missing = ", ".join(sorted(set(role_codes) - found_codes))
+        if found_codes != requested_codes:
+            missing = ", ".join(sorted(requested_codes - found_codes))
             raise UnknownRoleError(f"unknown or inactive role codes: {missing}")
-        if user_id == assigned_by_user_id and not set(role_codes).issubset(
+        if user_id == assigned_by_user_id and not requested_codes.issubset(
             await self.roles_for(session, user_id)
         ):
             raise PermissionError("users cannot grant themselves additional roles")
@@ -491,7 +519,9 @@ class RbacService:
                 .where(RoleModel.code == "developer", RoleModel.status == "active")
             )
             if int(developer_count or 0) <= 1:
-                raise PermissionError("cannot remove the last active developer")
+                raise LastDeveloperForbiddenError(
+                    "cannot remove the last active developer"
+                )
         await session.execute(delete(UserRoleModel).where(UserRoleModel.user_id == user_id))
         session.add_all(
             [

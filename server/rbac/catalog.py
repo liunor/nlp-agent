@@ -59,10 +59,12 @@ PERMISSION_LABELS: dict[Permission, tuple[str, str]] = {
 }
 
 
-# The developer control plane is also represented in the database menu
-# projection.  The React shell may keep route components statically bundled,
-# but visibility and role binding must come from this catalog so a menu change
-# has an observable effect without changing application code.
+# The developer control plane is represented in the database menu projection.
+# The React shell may keep route components statically bundled, but visibility
+# and role binding must come from this catalog so a menu change has an
+# observable effect without changing application code. Menu administration is
+# deliberately not exposed: the product supports four fixed roles and the
+# developer workspace has no live menu-management route.
 MENU_CATALOG = (
     ("developer.overview", "工作台", "/developer", "overview", Permission.SYSTEM_RUNTIME_MONITOR, 10),
     ("developer.agents", "Agent 与 Worker", "/developer/agents", "agents", Permission.SYSTEM_RUNTIME_MONITOR, 20),
@@ -76,7 +78,6 @@ MENU_CATALOG = (
     ("developer.settings", "运行时设置", "/developer/settings", "settings", Permission.SYSTEM_RUNTIME_INSPECT, 90),
     ("developer.users", "用户管理", "/developer/users", "users", Permission.SYSTEM_USER_MANAGE, 100),
     ("developer.roles", "角色权限", "/developer/roles", "roles", Permission.SYSTEM_ROLE_MANAGE, 110),
-    ("developer.menus", "菜单管理", "/developer/menus", "menus", Permission.SYSTEM_ROLE_MANAGE, 120),
     ("developer.quotas", "额度管理", "/developer/quotas", "quotas", Permission.SYSTEM_QUOTA_MANAGE, 125),
     ("developer.audit", "审计日志", "/developer/audit", "audit", Permission.SYSTEM_AUDIT_READ, 130),
     ("developer.sessions", "Agent 会话", "/developer/sessions", "sessions", Permission.AGENT_SESSION_READ, 140),

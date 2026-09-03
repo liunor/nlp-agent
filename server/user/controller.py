@@ -110,6 +110,8 @@ async def create_user(
     protection) applies.
     """
     authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
+    if data.role_codes:
+        authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
 
     service = UserService(db)
     try:
@@ -251,8 +253,24 @@ async def update_user(
         user = await service.get_user(user_id)
 
         # Apply admin updates
+        previous_display_name = user.display_name
         if data.display_name is not None:
             user.display_name = data.display_name
+            if data.display_name != previous_display_name:
+                await rbac_service.audit(
+                    db,
+                    actor_user_id=principal.user_id,
+                    target_user_id=user_id,
+                    decision="allow",
+                    reason_code="user_display_name_updated",
+                    permission_code="system:user:manage",
+                    resource_type="user",
+                    resource_id=user_id,
+                    detail={
+                        "before": previous_display_name,
+                        "after": data.display_name,
+                    },
+                )
         previous_status = user.status
         if data.status is not None:
             await service.update_user_status(

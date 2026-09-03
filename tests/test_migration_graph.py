@@ -13,7 +13,13 @@ from alembic.script import ScriptDirectory
 def test_migration_graph_has_one_head_after_knowledge_book_is_added() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260902_45_merge_auth_quota"]
+    assert scripts.get_heads() == ["20260903_47_sms_send_locks"]
+    assert scripts.get_revision("20260903_47_sms_send_locks").down_revision == (
+        "20260903_46_fixed_role_backfill"
+    )
+    assert scripts.get_revision("20260903_46_fixed_role_backfill").down_revision == (
+        "20260902_45_merge_auth_quota"
+    )
     assert scripts.get_revision("20260902_45_merge_auth_quota").down_revision == (
         "20260901_44_quota_summary",
         "20260831_43_auth_code_identity",

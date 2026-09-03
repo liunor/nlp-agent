@@ -9,7 +9,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from core.identity import AuthenticatedPrincipal
+from core.identity import AccessDeniedError, AuthenticatedPrincipal
+from core.rbac import Permission
 from server.rbac.service import rbac_service
 from server.user import controller
 from server.user.schemas import PasswordReset, UserAdminUpdate, UserCreateWithRole
@@ -21,6 +22,15 @@ def _principal() -> AuthenticatedPrincipal:
         user_id="admin-user",
         workspace_ids=frozenset({"*"}),
         roles=frozenset({"developer"}),
+    )
+
+
+def _user_manager_principal() -> AuthenticatedPrincipal:
+    return AuthenticatedPrincipal(
+        user_id="user-manager",
+        workspace_ids=frozenset({"*"}),
+        roles=frozenset({"custom-user-manager"}),
+        permissions=frozenset({Permission.SYSTEM_USER_MANAGE.value}),
     )
 
 
@@ -101,9 +111,31 @@ async def test_create_user_handler_assigns_requested_roles_and_returns_safe_resp
 
 
 @pytest.mark.asyncio
+async def test_create_user_with_roles_requires_role_management_permission(monkeypatch):
+    service = _FakeService(None)
+    monkeypatch.setattr(controller, "UserService", lambda session: service)
+
+    with pytest.raises(AccessDeniedError):
+        await controller.create_user(
+            UserCreateWithRole(
+                username="newuser",
+                display_name="New User",
+                password="InitialPw0rd1",
+                role_codes=["developer"],
+            ),
+            db=object(),
+            _write=object(),
+            principal=_user_manager_principal(),
+        )
+
+    service.create_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_user_handler_persists_display_name(monkeypatch):
     service = _FakeService(None)
     monkeypatch.setattr(controller, "UserService", lambda session: service)
+    monkeypatch.setattr(rbac_service, "audit", AsyncMock())
 
     result = await controller.update_user(
         service.user.id,
@@ -115,6 +147,25 @@ async def test_update_user_handler_persists_display_name(monkeypatch):
 
     assert service.user.display_name == "Renamed user"
     assert result.display_name == "Renamed user"
+
+
+@pytest.mark.asyncio
+async def test_admin_display_name_update_is_audited(monkeypatch):
+    service = _FakeService(None)
+    monkeypatch.setattr(controller, "UserService", lambda session: service)
+    audit = AsyncMock()
+    monkeypatch.setattr(rbac_service, "audit", audit)
+
+    await controller.update_user(
+        service.user.id,
+        UserAdminUpdate(display_name="Renamed user"),
+        db=SimpleNamespace(flush=AsyncMock()),
+        _write=object(),
+        principal=_principal(),
+    )
+
+    audit.assert_awaited_once()
+    assert audit.await_args.kwargs["reason_code"] == "user_display_name_updated"
 
 
 @pytest.mark.asyncio

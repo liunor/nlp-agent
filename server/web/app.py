@@ -128,7 +128,11 @@ from server.teacher.models import (
     UpdateTeachingGoals,
 )
 from server.teacher.service import teacher_service
-from server.rbac.service import rbac_service
+from server.rbac.service import (
+    LastDeveloperForbiddenError,
+    UnknownRoleError,
+    rbac_service,
+)
 from server.infrastructure.mysql.models import RoleModel, UserModel, WorkspaceModel
 from server.sandbox.service import sandbox_lifecycle_service
 from server.sandbox.artifact_retention import purge_expired_artifacts
@@ -339,6 +343,21 @@ def require_explicit_classroom_membership(
     """Require object-level classroom scope for every non-admin teacher."""
     if not principal.is_admin and classroom_id not in principal.classroom_ids:
         raise HTTPException(status_code=403, detail="当前教师无权查看该课堂")
+
+
+def _rbac_http_error(error: Exception) -> HTTPException:
+    """Translate RBAC domain failures into stable API error contracts."""
+    if isinstance(error, KeyError):
+        return HTTPException(status_code=404, detail="RBAC resource not found")
+    if isinstance(error, UnknownRoleError):
+        return HTTPException(status_code=400, detail=str(error))
+    if isinstance(error, LastDeveloperForbiddenError):
+        return HTTPException(status_code=409, detail=str(error))
+    if isinstance(error, PermissionError):
+        return HTTPException(status_code=403, detail=str(error))
+    if isinstance(error, ValueError):
+        return HTTPException(status_code=422, detail=str(error))
+    raise error
 
 
 def create_app(
@@ -2061,8 +2080,11 @@ def create_app(
     @app.get("/api/v1/users/{user_id}/roles", tags=["rbac"])
     async def get_user_roles(user_id: str, request: Request, principal: Principal):
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            roles = await rbac_service.user_role_codes(session, user_id)
+        try:
+            async with authorization_session_factory(request)() as session:
+                roles = await rbac_service.user_role_codes(session, user_id)
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         return {"user_id": user_id, "role_codes": sorted(roles)}
 
     @app.put("/api/v1/users/{user_id}/roles", tags=["rbac"])
@@ -2074,28 +2096,37 @@ def create_app(
         _claims: WriteClaims,
     ):
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                roles = await rbac_service.replace_user_roles(
-                    session, user_id=user_id, role_codes=body.role_codes,
-                    assigned_by_user_id=principal.user_id,
-                )
+        try:
+            async with authorization_session_factory(request)() as session:
+                async with session.begin():
+                    roles = await rbac_service.replace_user_roles(
+                        session, user_id=user_id, role_codes=body.role_codes,
+                        assigned_by_user_id=principal.user_id,
+                    )
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         await hub.close_user(user_id)
         return {"user_id": user_id, "role_codes": sorted(roles)}
 
     @app.get("/api/v1/system/roles/{role_code}/permissions", tags=["rbac"])
     async def get_role_permissions(role_code: str, request: Request, principal: Principal):
         authorization_service.require(principal, Permission.SYSTEM_PERMISSION_READ)
-        async with authorization_session_factory(request)() as session:
-            values = await rbac_service.role_permissions(session, role_code)
+        try:
+            async with authorization_session_factory(request)() as session:
+                values = await rbac_service.role_permissions(session, role_code)
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         return {"role_code": role_code, "permissions": {key: sorted(value) for key, value in values.items()}}
 
     @app.put("/api/v1/system/roles/{role_code}/permissions", tags=["rbac"])
     async def put_role_permissions(role_code: str, body: ReplaceRolePermissionsBody, request: Request, principal: Principal, _claims: WriteClaims):
         authorization_service.require(principal, Permission.SYSTEM_ROLE_MANAGE)
-        async with authorization_session_factory(request)() as session:
-            async with session.begin():
-                user_ids = await rbac_service.replace_role_permissions(session, role_code=role_code, permission_codes=body.permission_codes, scopes=body.scopes, actor_user_id=principal.user_id)
+        try:
+            async with authorization_session_factory(request)() as session:
+                async with session.begin():
+                    user_ids = await rbac_service.replace_role_permissions(session, role_code=role_code, permission_codes=body.permission_codes, scopes=body.scopes, actor_user_id=principal.user_id)
+        except (KeyError, PermissionError, ValueError) as error:
+            raise _rbac_http_error(error) from error
         for user_id in user_ids:
             await hub.close_user(user_id)
         return {"role_code": role_code, "permission_codes": sorted(body.permission_codes)}

@@ -19,7 +19,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.infrastructure.mysql.models import AuthCodeModel, SmsSendAuditModel
@@ -37,19 +37,33 @@ SMS_MAX_PER_IP_HOUR = 30      # 同一 IP 每小时最多 30 条
 
 @asynccontextmanager
 async def sms_send_lock(session: AsyncSession, phone: str):
-    """Serialize rate-check and send-record for one phone across replicas."""
+    """Serialize SMS rate checks with a transaction-scoped MySQL row lock.
+
+    A connection-scoped ``GET_LOCK`` is not sufficient here: releasing it in
+    the endpoint before the request transaction commits lets the next replica
+    miss the still-uncommitted audit row. The lock row is held by ``SELECT FOR
+    UPDATE`` until the request-scoped transaction commits or rolls back.
+    """
     bind = session.get_bind()
     if bind is None or bind.dialect.name != "mysql":
         yield
         return
-    key = f"nlp-agent:sms-send:{phone}"
-    acquired = await session.scalar(select(func.get_lock(key, 15)))
-    if int(acquired or 0) != 1:
-        raise TimeoutError("sms_send_lock_timeout")
-    try:
-        yield
-    finally:
-        await session.execute(select(func.release_lock(key)))
+    await session.execute(
+        text(
+            "INSERT INTO nlp_sms_send_locks (phone_number, locked_at) "
+            "VALUES (:phone, UTC_TIMESTAMP(6)) "
+            "ON DUPLICATE KEY UPDATE locked_at = UTC_TIMESTAMP(6)"
+        ),
+        {"phone": phone},
+    )
+    await session.execute(
+        text(
+            "SELECT phone_number FROM nlp_sms_send_locks "
+            "WHERE phone_number = :phone FOR UPDATE"
+        ),
+        {"phone": phone},
+    )
+    yield
 
 
 def _utc_now() -> datetime:

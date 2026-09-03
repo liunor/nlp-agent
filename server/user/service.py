@@ -363,6 +363,14 @@ class UserService:
         return user
 
     async def _ensure_not_last_developer(self, user_id: str) -> None:
+        # Keep the same lock order as RbacService.replace_user_roles. Without
+        # a stable role-row lock, two concurrent admin requests can both see
+        # two developers and disable/remove both of them.
+        await self.session.scalar(
+            select(RoleModel)
+            .where(RoleModel.code == "developer")
+            .with_for_update()
+        )
         rows = await self.session.scalars(
             select(UserModel.id)
             .join(UserRoleModel, UserRoleModel.user_id == UserModel.id)
