@@ -289,6 +289,12 @@ class QuotaPricingRuleBody(StrictModel):
     reasoning_output_credits_micro_per_million_tokens: StrictInt | None = Field(
         default=None, ge=0
     )
+    visual_input_credits_micro_per_million_tokens: StrictInt | None = Field(
+        default=None, ge=0
+    )
+    image_unit_credits_micro: StrictInt | None = Field(default=None, ge=0)
+    search_call_credits_micro: StrictInt | None = Field(default=None, ge=0)
+    link_page_credits_micro: StrictInt | None = Field(default=None, ge=0)
 
 
 class QuotaBillingStatementBody(StrictModel):

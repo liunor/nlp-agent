@@ -364,6 +364,10 @@ class QuotaManagementService:
         output_credits_micro_per_million_tokens: int,
         reasoning_output_credits_micro_per_million_tokens: int | None,
         created_by: str,
+        visual_input_credits_micro_per_million_tokens: int | None = None,
+        image_unit_credits_micro: int | None = None,
+        search_call_credits_micro: int | None = None,
+        link_page_credits_micro: int | None = None,
     ) -> dict[str, Any]:
         """Create one active, immutable pricing version.
 
@@ -389,6 +393,12 @@ class QuotaManagementService:
             reasoning_output_credits_micro_per_million_tokens=(
                 reasoning_output_credits_micro_per_million_tokens
             ),
+            visual_input_credits_micro_per_million_tokens=(
+                visual_input_credits_micro_per_million_tokens
+            ),
+            image_unit_credits_micro=image_unit_credits_micro,
+            search_call_credits_micro=search_call_credits_micro,
+            link_page_credits_micro=link_page_credits_micro,
         )
         with self._engine.begin() as connection:
             existing = connection.execute(
@@ -447,6 +457,18 @@ class QuotaManagementService:
                         ),
                         reasoning_output_credits_micro_per_million_tokens=(
                             candidate.reasoning_output_credits_micro_per_million_tokens
+                        ),
+                        visual_input_credits_micro_per_million_tokens=(
+                            candidate.visual_input_credits_micro_per_million_tokens
+                        ),
+                        image_unit_credits_micro=(
+                            candidate.image_unit_credits_micro
+                        ),
+                        search_call_credits_micro=(
+                            candidate.search_call_credits_micro
+                        ),
+                        link_page_credits_micro=(
+                            candidate.link_page_credits_micro
                         ),
                         status="active",
                         created_by=created_by,
@@ -1144,6 +1166,26 @@ class QuotaManagementService:
                 if row["reasoning_output_credits_micro_per_million_tokens"] is not None
                 else None
             ),
+            visual_input_credits_micro_per_million_tokens=(
+                int(row["visual_input_credits_micro_per_million_tokens"])
+                if row["visual_input_credits_micro_per_million_tokens"] is not None
+                else None
+            ),
+            image_unit_credits_micro=(
+                int(row["image_unit_credits_micro"])
+                if row["image_unit_credits_micro"] is not None
+                else None
+            ),
+            search_call_credits_micro=(
+                int(row["search_call_credits_micro"])
+                if row["search_call_credits_micro"] is not None
+                else None
+            ),
+            link_page_credits_micro=(
+                int(row["link_page_credits_micro"])
+                if row["link_page_credits_micro"] is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -1169,6 +1211,26 @@ class QuotaManagementService:
             "reasoning_output_credits_micro_per_million_tokens": (
                 int(row["reasoning_output_credits_micro_per_million_tokens"])
                 if row["reasoning_output_credits_micro_per_million_tokens"] is not None
+                else None
+            ),
+            "visual_input_credits_micro_per_million_tokens": (
+                int(row["visual_input_credits_micro_per_million_tokens"])
+                if row["visual_input_credits_micro_per_million_tokens"] is not None
+                else None
+            ),
+            "image_unit_credits_micro": (
+                int(row["image_unit_credits_micro"])
+                if row["image_unit_credits_micro"] is not None
+                else None
+            ),
+            "search_call_credits_micro": (
+                int(row["search_call_credits_micro"])
+                if row["search_call_credits_micro"] is not None
+                else None
+            ),
+            "link_page_credits_micro": (
+                int(row["link_page_credits_micro"])
+                if row["link_page_credits_micro"] is not None
                 else None
             ),
             "status": row["status"],

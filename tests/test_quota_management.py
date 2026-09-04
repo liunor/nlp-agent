@@ -524,10 +524,18 @@ def test_pricing_rule_management_preserves_versioned_lifecycle(quota_engine):
         cache_write_credits_micro_per_million_tokens=500_000,
         output_credits_micro_per_million_tokens=2_000_000,
         reasoning_output_credits_micro_per_million_tokens=3_000_000,
+        visual_input_credits_micro_per_million_tokens=750_000,
+        image_unit_credits_micro=50,
+        search_call_credits_micro=75,
+        link_page_credits_micro=25,
         created_by="developer-1",
     )
 
     assert management.get_pricing_rule(rule["pricing_rule_id"])["pricing_key"] == "deepseek/deepseek-v4-pro"
+    assert rule["visual_input_credits_micro_per_million_tokens"] == 750_000
+    assert rule["image_unit_credits_micro"] == 50
+    assert rule["search_call_credits_micro"] == 75
+    assert rule["link_page_credits_micro"] == 25
     assert management.list_pricing_rules(pricing_key="deepseek/deepseek-v4-pro")[0]["version"] == "2026-09-02"
 
     retired = management.retire_pricing_rule(rule["pricing_rule_id"], actor_user_id="developer-1")

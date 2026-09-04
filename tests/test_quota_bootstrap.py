@@ -5,6 +5,7 @@ import pytest
 from server.infrastructure.mysql.base import Base
 from server.quota.models import (
     PolicyBindingModel,
+    PricingRuleModel,
     QuotaAdjustmentModel,
     QuotaAlertModel,
     QuotaBucketModel,
@@ -19,6 +20,7 @@ from server.quota.models import (
     QuotaReservationModel,
     QuotaRoleCreditOperationModel,
     QuotaUsageArchiveBatchModel,
+    UsageEventModel,
 )
 from server.quota.service import QuotaService
 
@@ -69,6 +71,8 @@ def test_quota_schema_verification_probes_counter_primary_key():
             QuotaProviderBillingModel.__table__,
             QuotaUsageArchiveBatchModel.__table__,
             QuotaAlertModel.__table__,
+            PricingRuleModel.__table__,
+            UsageEventModel.__table__,
         ],
     )
 
@@ -100,6 +104,8 @@ def test_quota_schema_verification_probes_daily_weekly_policy_columns():
             QuotaProviderBillingModel.__table__,
             QuotaUsageArchiveBatchModel.__table__,
             QuotaAlertModel.__table__,
+            PricingRuleModel.__table__,
+            UsageEventModel.__table__,
         ],
     )
     with engine.begin() as connection:
@@ -108,4 +114,37 @@ def test_quota_schema_verification_probes_daily_weekly_policy_columns():
         )
 
     with pytest.raises(OperationalError, match="weekly_limit_micro"):
+        QuotaService(engine).verify_schema()
+
+
+def test_quota_schema_verification_probes_billable_feature_columns():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            QuotaPolicyModel.__table__,
+            PolicyBindingModel.__table__,
+            QuotaBucketModel.__table__,
+            QuotaConcurrencyLockModel.__table__,
+            QuotaReservationModel.__table__,
+            QuotaLedgerEntryModel.__table__,
+            QuotaGrantModel.__table__,
+            QuotaAdjustmentModel.__table__,
+            QuotaCreditOperationModel.__table__,
+            QuotaRoleCreditOperationModel.__table__,
+            QuotaCreditScopeLockModel.__table__,
+            QuotaDailyRollupModel.__table__,
+            QuotaProviderBillingModel.__table__,
+            QuotaUsageArchiveBatchModel.__table__,
+            QuotaAlertModel.__table__,
+            PricingRuleModel.__table__,
+            UsageEventModel.__table__,
+        ],
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE nlp_usage_events DROP COLUMN link_pages"
+        )
+
+    with pytest.raises(OperationalError, match="link_pages"):
         QuotaService(engine).verify_schema()

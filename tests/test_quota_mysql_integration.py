@@ -134,6 +134,16 @@ def test_mysql_phase4_schema_contains_operations_tables_and_archive_columns():
                     )
                 )
             }
+            pricing_columns = {
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = DATABASE() "
+                        "AND table_name = 'nlp_pricing_rules'"
+                    )
+                )
+            }
             credit_columns = {
                 row[0]
                 for row in connection.execute(
@@ -154,6 +164,18 @@ def test_mysql_phase4_schema_contains_operations_tables_and_archive_columns():
             ).scalar_one()
         assert operations_tables <= tables
         assert {"archived_at", "archive_batch_id"} <= usage_columns
+        assert {
+            "visual_input_tokens",
+            "image_units",
+            "search_calls",
+            "link_pages",
+        } <= usage_columns
+        assert {
+            "visual_input_credits_micro_per_million_tokens",
+            "image_unit_credits_micro",
+            "search_call_credits_micro",
+            "link_page_credits_micro",
+        } <= pricing_columns
         assert {"effective_from", "expires_at"} <= credit_columns
         assert entry_type_length >= 32
         assert QuotaOperationsService(engine).partition_strategy(

@@ -6,6 +6,7 @@ import uuid
 import pytest
 
 from core.model_runtime.usage import (
+    BillableFeatureUsage,
     CanonicalTokenUsage,
     InvocationOutcome,
     ModelIdentity,
@@ -14,6 +15,7 @@ from core.model_runtime.usage import (
 )
 from server.quota.pricing import (
     EstimatedUsageCannotBePricedError,
+    MissingFeaturePricingError,
     PricingCatalog,
     PricingRule,
     UnknownUsageCannotBePricedError,
@@ -25,7 +27,11 @@ UTC = timezone.utc
 AT_START = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def _invocation(*, pricing_key: str | None = "deepseek/deepseek-v4-pro") -> ModelInvocation:
+def _invocation(
+    *,
+    pricing_key: str | None = "deepseek/deepseek-v4-pro",
+    feature_usage: BillableFeatureUsage | None = None,
+) -> ModelInvocation:
     return ModelInvocation(
         operation_id=str(uuid.uuid4()),
         identity=ModelIdentity(
@@ -49,6 +55,7 @@ def _invocation(*, pricing_key: str | None = "deepseek/deepseek-v4-pro") -> Mode
         attempt=1,
         fallback_index=0,
         started_at=AT_START,
+        feature_usage=feature_usage or BillableFeatureUsage(),
     )
 
 
@@ -208,3 +215,104 @@ def test_rejects_overlapping_price_versions_for_one_pricing_key():
             _rule(version="2026-01", effective_until=datetime(2026, 2, 15, tzinfo=UTC)),
             _rule(version="2026-02", effective_from=datetime(2026, 2, 1, tzinfo=UTC)),
         ])
+
+
+def test_visual_tokens_replace_model_input_but_keep_output_pricing():
+    usage = CanonicalTokenUsage(
+        input_tokens=1_000,
+        output_tokens=100,
+        total_tokens=1_100,
+        source="provider",
+    )
+    rule = _rule(
+        ordinary_input_credits_micro_per_million_tokens=9_000_000,
+        output_credits_micro_per_million_tokens=3_000_000,
+        reasoning_output_credits_micro_per_million_tokens=None,
+        visual_input_credits_micro_per_million_tokens=2_000_000,
+    )
+
+    priced = PricingCatalog([rule]).price(
+        _invocation(
+            feature_usage=BillableFeatureUsage(visual_input_tokens=800)
+        ),
+        usage,
+        _outcome(),
+    )
+
+    assert priced.ordinary_input_tokens == 0
+    assert priced.visual_input_tokens == 800
+    assert priced.ordinary_output_tokens == 100
+    assert priced.credits_micro == 1_900
+
+
+def test_image_unit_fallback_replaces_input_and_adds_fixed_units():
+    usage = CanonicalTokenUsage(
+        input_tokens=1_000,
+        output_tokens=100,
+        total_tokens=1_100,
+        source="provider",
+    )
+    rule = _rule(
+        ordinary_input_credits_micro_per_million_tokens=9_000_000,
+        output_credits_micro_per_million_tokens=2_000_000,
+        reasoning_output_credits_micro_per_million_tokens=None,
+        image_unit_credits_micro=500,
+    )
+
+    priced = PricingCatalog([rule]).price(
+        _invocation(feature_usage=BillableFeatureUsage(image_units=2)),
+        usage,
+        _outcome(),
+    )
+
+    assert priced.ordinary_input_tokens == 0
+    assert priced.image_units == 2
+    assert priced.credits_micro == 1_200
+
+
+def test_search_call_fee_and_model_tokens_are_combined_without_result_surcharge():
+    usage = CanonicalTokenUsage(
+        input_tokens=100,
+        output_tokens=20,
+        total_tokens=120,
+        source="provider",
+    )
+    rule = _rule(
+        ordinary_input_credits_micro_per_million_tokens=1_000_000,
+        cached_input_credits_micro_per_million_tokens=0,
+        cache_write_credits_micro_per_million_tokens=0,
+        output_credits_micro_per_million_tokens=2_000_000,
+        reasoning_output_credits_micro_per_million_tokens=None,
+        search_call_credits_micro=300,
+    )
+
+    priced = PricingCatalog([rule]).price(
+        _invocation(feature_usage=BillableFeatureUsage(search_calls=2)),
+        usage,
+        _outcome(),
+    )
+
+    assert priced.ordinary_input_tokens == 100
+    assert priced.search_calls == 2
+    assert priced.credits_micro == 740
+
+
+def test_link_page_event_prices_only_the_actual_fetch_unit():
+    rule = _rule(link_page_credits_micro=90)
+    priced = PricingCatalog([rule]).price(
+        _invocation(feature_usage=BillableFeatureUsage(link_pages=1)),
+        CanonicalTokenUsage(source="provider"),
+        _outcome(),
+    )
+
+    assert priced.link_pages == 1
+    assert priced.credits_micro == 90
+
+
+def test_measured_feature_without_configured_rate_fails_closed():
+    with pytest.raises(MissingFeaturePricingError):
+        PricingCatalog([_rule()]).price(
+            _invocation(feature_usage=BillableFeatureUsage(search_calls=1)),
+            CanonicalTokenUsage(source="provider"),
+            _outcome(),
+        )

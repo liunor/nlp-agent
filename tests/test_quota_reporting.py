@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, insert, select, text
 from sqlalchemy.pool import StaticPool
 
 from core.model_runtime.usage import (
+    BillableFeatureUsage,
     CanonicalTokenUsage,
     InvocationOutcome,
     ModelIdentity,
@@ -34,7 +35,11 @@ from server.quota.usage import UsageReadService
 from server.quota.service import QuotaService
 
 
-def _invocation(*, operation_id: str | None = None) -> ModelInvocation:
+def _invocation(
+    *,
+    operation_id: str | None = None,
+    feature_usage: BillableFeatureUsage | None = None,
+) -> ModelInvocation:
     return ModelInvocation(
         operation_id=operation_id or str(uuid4()),
         identity=ModelIdentity(
@@ -61,6 +66,7 @@ def _invocation(*, operation_id: str | None = None) -> ModelInvocation:
         attempt=2,
         fallback_index=1,
         started_at=datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc),
+        feature_usage=feature_usage or BillableFeatureUsage(),
     )
 
 
@@ -112,6 +118,10 @@ def _insert_pricing_rule(engine) -> None:
                 cache_write_credits_micro_per_million_tokens=2_000_000,
                 output_credits_micro_per_million_tokens=4_000_000,
                 reasoning_output_credits_micro_per_million_tokens=8_000_000,
+                visual_input_credits_micro_per_million_tokens=2_000_000,
+                image_unit_credits_micro=500,
+                search_call_credits_micro=123,
+                link_page_credits_micro=90,
                 status="active",
                 created_by="system",
                 created_at=datetime(2026, 1, 1),
@@ -147,6 +157,31 @@ async def test_durable_reporter_persists_exact_attempt_and_shadow_credits(quota_
     assert row["usage_status"] == "exact"
     assert row["pricing_version"] == "2026-08-29"
     assert row["credits_micro"] == 2_798_000
+
+
+@pytest.mark.asyncio
+async def test_durable_reporter_persists_and_prices_search_feature_usage(quota_engine):
+    _insert_pricing_rule(quota_engine)
+    reporter = DurableModelUsageReporter(quota_engine)
+    invocation = _invocation(
+        feature_usage=BillableFeatureUsage(search_calls=1)
+    )
+    usage = CanonicalTokenUsage(
+        input_tokens=10,
+        output_tokens=2,
+        total_tokens=12,
+        source="provider",
+    )
+
+    await reporter.report(invocation, usage, _outcome())
+
+    with quota_engine.connect() as connection:
+        row = connection.execute(select(UsageEventModel.__table__)).mappings().one()
+    assert row["search_calls"] == 1
+    assert row["visual_input_tokens"] == 0
+    assert row["image_units"] == 0
+    assert row["link_pages"] == 0
+    assert row["credits_micro"] == 161
 
 
 @pytest.mark.asyncio

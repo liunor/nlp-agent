@@ -37,6 +37,10 @@ class EstimatedUsageCannotBePricedError(PricingError):
     """Raised unless a caller explicitly permits estimated shadow pricing."""
 
 
+class MissingFeaturePricingError(PricingError):
+    """Raised when measured non-Token usage has no configured unit price."""
+
+
 class PricingFrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -53,6 +57,10 @@ class PricingRule(PricingFrozenModel):
     cache_write_credits_micro_per_million_tokens: StrictNonNegativeInt
     output_credits_micro_per_million_tokens: StrictNonNegativeInt
     reasoning_output_credits_micro_per_million_tokens: StrictNonNegativeInt | None = None
+    visual_input_credits_micro_per_million_tokens: StrictNonNegativeInt | None = None
+    image_unit_credits_micro: StrictNonNegativeInt | None = None
+    search_call_credits_micro: StrictNonNegativeInt | None = None
+    link_page_credits_micro: StrictNonNegativeInt | None = None
 
     @field_validator("effective_from", "effective_until")
     @classmethod
@@ -83,6 +91,10 @@ class PricedUsage(PricingFrozenModel):
     cache_write_input_tokens: StrictNonNegativeInt
     ordinary_output_tokens: StrictNonNegativeInt
     reasoning_output_tokens: StrictNonNegativeInt
+    visual_input_tokens: StrictNonNegativeInt
+    image_units: StrictNonNegativeInt
+    search_calls: StrictNonNegativeInt
+    link_pages: StrictNonNegativeInt
     credits_micro: StrictNonNegativeInt
 
 
@@ -126,11 +138,45 @@ class PricingCatalog:
 
         pricing_key = invocation.identity.pricing_key
         rule = self._active_rule(pricing_key, outcome.completed_at)
-        ordinary_input = (
-            usage.input_tokens
-            - usage.cached_input_tokens
-            - usage.cache_write_input_tokens
+        features = invocation.feature_usage
+        vision_metered = bool(
+            features.visual_input_tokens or features.image_units
         )
+        if features.visual_input_tokens > usage.input_tokens:
+            raise ValueError("visual_input_tokens must not exceed input_tokens")
+        if features.visual_input_tokens and (
+            rule.visual_input_credits_micro_per_million_tokens is None
+        ):
+            raise MissingFeaturePricingError(
+                "visual input usage has no configured price"
+            )
+        if features.image_units and rule.image_unit_credits_micro is None:
+            raise MissingFeaturePricingError(
+                "image unit usage has no configured price"
+            )
+        if features.search_calls and rule.search_call_credits_micro is None:
+            raise MissingFeaturePricingError(
+                "search usage has no configured price"
+            )
+        if features.link_pages and rule.link_page_credits_micro is None:
+            raise MissingFeaturePricingError(
+                "link page usage has no configured price"
+            )
+
+        if vision_metered:
+            # Vision input is priced by exact visual Tokens or by the image-unit
+            # fallback, never a second time as ordinary/cached model input.
+            ordinary_input = 0
+            cached_input = 0
+            cache_write_input = 0
+        else:
+            ordinary_input = (
+                usage.input_tokens
+                - usage.cached_input_tokens
+                - usage.cache_write_input_tokens
+            )
+            cached_input = usage.cached_input_tokens
+            cache_write_input = usage.cache_write_input_tokens
         if rule.reasoning_output_credits_micro_per_million_tokens is None:
             ordinary_output = usage.output_tokens
             reasoning_output = 0
@@ -140,25 +186,39 @@ class PricingCatalog:
 
         numerator = (
             ordinary_input * rule.ordinary_input_credits_micro_per_million_tokens
-            + usage.cached_input_tokens
+            + cached_input
             * rule.cached_input_credits_micro_per_million_tokens
-            + usage.cache_write_input_tokens
+            + cache_write_input
             * rule.cache_write_credits_micro_per_million_tokens
+            + features.visual_input_tokens
+            * (rule.visual_input_credits_micro_per_million_tokens or 0)
             + ordinary_output * rule.output_credits_micro_per_million_tokens
             + reasoning_output
             * (rule.reasoning_output_credits_micro_per_million_tokens or 0)
         )
-        credits_micro = self._ceil_divide(numerator, TOKENS_PER_MILLION)
+        fixed_credits_micro = (
+            features.image_units * (rule.image_unit_credits_micro or 0)
+            + features.search_calls * (rule.search_call_credits_micro or 0)
+            + features.link_pages * (rule.link_page_credits_micro or 0)
+        )
+        credits_micro = (
+            self._ceil_divide(numerator, TOKENS_PER_MILLION)
+            + fixed_credits_micro
+        )
 
         return PricedUsage(
             pricing_key=rule.pricing_key,
             pricing_version=rule.version,
             usage_source=usage.source,
             ordinary_input_tokens=ordinary_input,
-            cached_input_tokens=usage.cached_input_tokens,
-            cache_write_input_tokens=usage.cache_write_input_tokens,
+            cached_input_tokens=cached_input,
+            cache_write_input_tokens=cache_write_input,
             ordinary_output_tokens=ordinary_output,
             reasoning_output_tokens=reasoning_output,
+            visual_input_tokens=features.visual_input_tokens,
+            image_units=features.image_units,
+            search_calls=features.search_calls,
+            link_pages=features.link_pages,
             credits_micro=credits_micro,
         )
 

@@ -23,6 +23,7 @@ from core.model_runtime.normalization import (
     extract_provider_response_id,
     normalize_chunk,
     normalize_message,
+    response_billable_feature_usage,
     response_canonical_usage,
     response_usage,
 )
@@ -33,6 +34,7 @@ from core.model_runtime.usage import (
     ModelIdentity,
     ModelInvocation,
     UsageReporterUnavailableError,
+    current_billable_feature_usage,
     resolve_usage_attribution,
 )
 from core.observability.context import current_telemetry_context
@@ -42,6 +44,22 @@ from utils.logger import get_logger
 
 
 logger = get_logger("nlp_agent.model_runtime")
+
+
+def _with_response_feature_usage(
+    invocation: ModelInvocation | None, message: Any
+) -> ModelInvocation | None:
+    if invocation is None:
+        return None
+    updates = response_billable_feature_usage(message)
+    if not updates:
+        return invocation
+    current = invocation.feature_usage
+    if updates.get("visual_input_tokens", 0) > 0:
+        updates["image_units"] = 0
+    return invocation.model_copy(
+        update={"feature_usage": current.model_copy(update=updates)}
+    )
 
 
 class ModelRuntimeExhaustedError(RuntimeError):
@@ -391,6 +409,9 @@ class ResilientChatModel:
             context_window_tokens=candidate.definition.context_window_tokens,
             max_output_tokens=candidate.preset.generation.max_output_tokens,
         )
+        feature_usage = current_billable_feature_usage()
+        if candidate.preset.native_search.enabled and candidate.preset.native_search.forced:
+            feature_usage = feature_usage.model_copy(update={"search_calls": 1})
         invocation = ModelInvocation(
             operation_id=operation_id,
             identity=identity,
@@ -398,6 +419,7 @@ class ResilientChatModel:
             attempt=attempt,
             fallback_index=fallback_index,
             started_at=started_at,
+            feature_usage=feature_usage,
         )
         return invocation, operation_id
 
@@ -483,6 +505,9 @@ class ResilientChatModel:
                             parsed = response.get("parsed")
                             parsing_error = response.get("parsing_error")
                             canon_usage = response_canonical_usage(raw_msg)
+                            invocation = _with_response_feature_usage(
+                                invocation, raw_msg
+                            )
                             finish_reason = (
                                 getattr(raw_msg, "response_metadata", {}) or {}
                             ).get("finish_reason")
@@ -514,6 +539,9 @@ class ResilientChatModel:
                         else:
                             parsing_error = None
                             canon_usage = response_canonical_usage(response)
+                            invocation = _with_response_feature_usage(
+                                invocation, response
+                            )
                             finish_reason = (
                                 getattr(response, "response_metadata", {}) or {}
                             ).get("finish_reason")
@@ -677,6 +705,9 @@ class ResilientChatModel:
                                 else chunk
                             )
                             chunk_canon = response_canonical_usage(normalized)
+                            invocation = _with_response_feature_usage(
+                                invocation, normalized
+                            )
                             if chunk_canon.source != "none":
                                 if chunk_canon.semantics == "delta":
                                     delta_usage = _merge_delta_usage(

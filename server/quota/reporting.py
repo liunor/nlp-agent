@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping
 
 from sqlalchemy import Engine, insert, select, update
 from sqlalchemy.engine import Connection
@@ -13,21 +15,31 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import create_engine
 
 from core.model_runtime.usage import (
+    BillableFeatureUsage,
     CanonicalTokenUsage,
     InvocationOutcome,
+    ModelIdentity,
     ModelInvocation,
     ModelUsageReporter,
+    UsageReporterUnavailableError,
+    resolve_usage_attribution,
 )
+from core.tool_runtime import ToolExecutionResult
 from core.model_runtime.reporters import UsageEventConflictError
 from server.quota.models import PricingRuleModel, UsageEventModel
 from server.quota.service import QuotaService
 from server.quota.pricing import (
     EstimatedUsageCannotBePricedError,
+    MissingFeaturePricingError,
     PricingCatalog,
     PricingRule,
     UnknownPricingKeyError,
     UnknownUsageCannotBePricedError,
 )
+
+
+_IMAGE_ANALYZE_PRICING_KEY = "feature/image-understanding"
+_LINK_READ_PRICING_KEY = "feature/link-read"
 
 
 def _utc(value: datetime) -> datetime:
@@ -236,6 +248,10 @@ class DurableModelUsageReporter(ModelUsageReporter):
             "cache_write_input_tokens": usage.cache_write_input_tokens,
             "output_tokens": usage.output_tokens,
             "reasoning_output_tokens": usage.reasoning_output_tokens,
+            "visual_input_tokens": invocation.feature_usage.visual_input_tokens,
+            "image_units": invocation.feature_usage.image_units,
+            "search_calls": invocation.feature_usage.search_calls,
+            "link_pages": invocation.feature_usage.link_pages,
             "total_tokens": usage.total_tokens,
             "usage_source": usage.source,
             "usage_status": usage_status,
@@ -278,6 +294,7 @@ class DurableModelUsageReporter(ModelUsageReporter):
             )
         except (
             EstimatedUsageCannotBePricedError,
+            MissingFeaturePricingError,
             UnknownUsageCannotBePricedError,
             UnknownPricingKeyError,
             ValueError,
@@ -325,6 +342,12 @@ class DurableModelUsageReporter(ModelUsageReporter):
                 reasoning_output_credits_micro_per_million_tokens=(
                     row["reasoning_output_credits_micro_per_million_tokens"]
                 ),
+                visual_input_credits_micro_per_million_tokens=(
+                    row["visual_input_credits_micro_per_million_tokens"]
+                ),
+                image_unit_credits_micro=row["image_unit_credits_micro"],
+                search_call_credits_micro=row["search_call_credits_micro"],
+                link_page_credits_micro=row["link_page_credits_micro"],
             )
             for row in rows
         ]
@@ -353,3 +376,116 @@ class DurableModelUsageReporter(ModelUsageReporter):
             self._quota_service.close()
         if self._owns_engine:
             self._engine.dispose()
+
+
+def _tool_payload(output: Any) -> Mapping[str, Any] | None:
+    if isinstance(output, Mapping):
+        return output
+    if not isinstance(output, str):
+        return None
+    try:
+        parsed = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, Mapping) else None
+
+
+def _stable_tool_operation_id(*, tool_call_id: str, tool_name: str) -> str:
+    """Build a replay-stable UUIDv4 from the current attribution and tool call."""
+
+    attribution = resolve_usage_attribution()
+    material = "\x1f".join(
+        (
+            attribution.request_id,
+            attribution.turn_id or "",
+            attribution.worker_id or "",
+            tool_name,
+            tool_call_id,
+        )
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).digest()[:16]
+    return str(uuid.UUID(bytes=digest, version=4))
+
+
+async def report_billable_tool_execution(
+    *,
+    tool_call_id: str,
+    execution: ToolExecutionResult,
+) -> None:
+    """Report successful non-model feature use through the existing Reporter."""
+
+    if not execution.ok or execution.tool_name not in {"image_analyze", "web_fetch"}:
+        return
+    payload = _tool_payload(execution.output)
+    if payload is None:
+        return
+
+    attribution = resolve_usage_attribution()
+    if execution.tool_name == "web_fetch":
+        if payload.get("cache_hit") is True or "final_url" not in payload:
+            return
+        feature_usage = BillableFeatureUsage(link_pages=1)
+        identity = ModelIdentity(
+            provider="internal-tool",
+            provider_model="web_fetch",
+            preset="web_fetch",
+            pricing_key=_LINK_READ_PRICING_KEY,
+        )
+    else:
+        # VLM and fusion routes already attach vision usage to their model event.
+        # Only the OCR-only route needs a zero-Token feature event here.
+        if payload.get("route") != "ocr":
+            return
+        image = payload.get("input")
+        task = payload.get("task_executed")
+        if not isinstance(image, Mapping) or not isinstance(task, str):
+            return
+        width = image.get("width")
+        height = image.get("height")
+        if not isinstance(width, int) or not isinstance(height, int):
+            return
+        from server.tools.vision.config import get_vision_config
+
+        image_units = get_vision_config().vlm.fallback_image_units(
+            width=width,
+            height=height,
+            task=task,
+        )
+        feature_usage = BillableFeatureUsage(image_units=image_units)
+        identity = ModelIdentity(
+            provider="internal-tool",
+            provider_model="image_analyze",
+            preset="image_analyze",
+            pricing_key=_IMAGE_ANALYZE_PRICING_KEY,
+        )
+        attribution = attribution.model_copy(update={"purpose": "vision"})
+
+    from core.model_runtime.factory import get_global_model_factory
+
+    slot = get_global_model_factory().reporter_slot
+    reporter = slot.reporter
+    if reporter is None:
+        if slot.required:
+            raise UsageReporterUnavailableError(
+                "Required usage Reporter is not configured for billable tool usage"
+            )
+        return
+
+    completed_at = datetime.now(timezone.utc)
+    invocation = ModelInvocation(
+        operation_id=_stable_tool_operation_id(
+            tool_call_id=tool_call_id,
+            tool_name=execution.tool_name,
+        ),
+        identity=identity,
+        attribution=attribution,
+        attempt=max(1, execution.attempts),
+        fallback_index=0,
+        started_at=completed_at - timedelta(milliseconds=execution.duration_ms),
+        feature_usage=feature_usage,
+    )
+    await reporter.report(
+        invocation,
+        CanonicalTokenUsage(source="provider"),
+        InvocationOutcome(status="succeeded", completed_at=completed_at),
+    )

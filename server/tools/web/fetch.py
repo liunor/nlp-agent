@@ -73,7 +73,9 @@ class WebFetchService:
         cached = self.cache.get(key)
         if cached is not None:
             logger.debug("web_fetch cache hit", host_digest=_host_digest(entry.host))
-            return WebFetchResponse.model_validate_json(cached)
+            return WebFetchResponse.model_validate_json(cached).model_copy(
+                update={"cache_hit": True}
+            )
 
         download = await self._download(entry, as_markdown=request.extract_mode == "markdown")
         truncated, text_body, warnings = self._extract(download, max_chars)

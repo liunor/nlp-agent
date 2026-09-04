@@ -256,6 +256,7 @@ def build_image_analyze_service(*, context: SessionContext) -> ImageAnalyzeServi
             model_route=config.vlm.model_route,
             max_image_bytes=config.vlm.max_image_bytes,
             send_ocr_context=config.vlm.send_ocr_context,
+            billing_config=config.vlm,
         ),
         signal_provider=OpenCVSignalProvider(),
         result_max_chars=config.result.max_chars,

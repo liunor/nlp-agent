@@ -263,6 +263,45 @@ def response_canonical_usage(message: Any) -> CanonicalTokenUsage:
     )
 
 
+def response_billable_feature_usage(message: Any) -> dict[str, int]:
+    """Extract optional provider-metered feature counts without changing Token usage."""
+
+    add_kwargs = getattr(message, "additional_kwargs", None) or {}
+    raw: Any = add_kwargs.get("provider_usage_raw")
+    if not isinstance(raw, Mapping):
+        direct = getattr(message, "usage_metadata", None)
+        if isinstance(direct, Mapping):
+            raw = direct
+        else:
+            resp_meta = getattr(message, "response_metadata", None) or {}
+            raw = resp_meta.get("token_usage") or resp_meta.get("usage")
+    if not isinstance(raw, Mapping):
+        return {}
+
+    result: dict[str, int] = {}
+    input_details = (
+        raw.get("input_tokens_details")
+        or raw.get("input_token_details")
+        or raw.get("prompt_tokens_details")
+        or {}
+    )
+    raw_visual = raw.get("image_tokens")
+    if raw_visual is None and isinstance(input_details, Mapping):
+        raw_visual = input_details.get("image_tokens")
+    if raw_visual is not None:
+        result["visual_input_tokens"] = _parse_token_int(
+            raw_visual, "visual_input_tokens"
+        )
+
+    plugins = raw.get("plugins") or {}
+    search = plugins.get("search") if isinstance(plugins, Mapping) else None
+    if isinstance(search, Mapping) and search.get("count") is not None:
+        result["search_calls"] = _parse_token_int(
+            search.get("count"), "search_calls"
+        )
+    return result
+
+
 def error_canonical_usage(error: BaseException) -> CanonicalTokenUsage:
     """Conservatively extract usage carried by a Provider error payload."""
     body = getattr(error, "body", None)

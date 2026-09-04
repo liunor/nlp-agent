@@ -550,6 +550,13 @@ async def _execute_sandbox_loop(
                 worker_logger.info("发起工具调用", tool_name=name)
             tool_results = await toolset.execute_many(calls, tool_config)
             for tool_call, execution in zip(response.tool_calls, tool_results, strict=True):
+                if tool_call["name"] in {"image_analyze", "web_fetch"}:
+                    from server.quota.reporting import report_billable_tool_execution
+
+                    await report_billable_tool_execution(
+                        tool_call_id=tool_call["id"],
+                        execution=execution,
+                    )
                 descriptor = toolset.descriptor(tool_call["name"])
                 persist_result = descriptor.persist_result if descriptor else True
                 status = "success" if execution.ok else "error"

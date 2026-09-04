@@ -68,6 +68,18 @@ class PricingRuleModel(Base):
     reasoning_output_credits_micro_per_million_tokens: Mapped[int | None] = mapped_column(
         BIGINT(unsigned=True), nullable=True
     )
+    visual_input_credits_micro_per_million_tokens: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), nullable=True
+    )
+    image_unit_credits_micro: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), nullable=True
+    )
+    search_call_credits_micro: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), nullable=True
+    )
+    link_page_credits_micro: Mapped[int | None] = mapped_column(
+        BIGINT(unsigned=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     created_by: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -145,6 +157,18 @@ class UsageEventModel(Base):
     output_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
     reasoning_output_tokens: Mapped[int] = mapped_column(
         BIGINT(unsigned=True), nullable=False
+    )
+    visual_input_tokens: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, default=0
+    )
+    image_units: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, default=0
+    )
+    search_calls: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, default=0
+    )
+    link_pages: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, default=0
     )
     total_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
     usage_source: Mapped[str] = mapped_column(String(16), nullable=False)

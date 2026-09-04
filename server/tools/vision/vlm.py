@@ -10,6 +10,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
 
 from core.model_runtime.factory import ModelFactory, get_global_model_factory
+from core.model_runtime.usage import (
+    BillableFeatureUsage,
+    bind_billable_feature_usage,
+    bind_usage_purpose,
+)
+from core.tool_config import VisionVLMConfig
 from server.tools.vision.contracts import (
     UNTRUSTED_IMAGE_BANNER,
     ImageAsset,
@@ -62,6 +68,7 @@ class ModelRuntimeVLMProvider:
         max_image_bytes: int,
         send_ocr_context: bool = True,
         factory: ModelFactory | None = None,
+        billing_config: VisionVLMConfig | None = None,
     ) -> None:
         if not model_route.strip():
             raise ValueError("model_route cannot be blank")
@@ -71,6 +78,7 @@ class ModelRuntimeVLMProvider:
         self.max_image_bytes = max_image_bytes
         self.send_ocr_context = send_ocr_context
         self._factory = factory
+        self._billing_config = billing_config or VisionVLMConfig()
 
     async def analyze(
         self,
@@ -109,10 +117,19 @@ class ModelRuntimeVLMProvider:
             language=language,
             ocr_context=ocr_context,
         )
-        from core.model_runtime.usage import bind_usage_purpose
+        image_units = self._billing_config.fallback_image_units(
+            width=image.reference.width,
+            height=image.reference.height,
+            task=task,
+        )
 
         try:
-            with bind_usage_purpose("vision"):
+            with (
+                bind_usage_purpose("vision"),
+                bind_billable_feature_usage(
+                    BillableFeatureUsage(image_units=image_units)
+                ),
+            ):
                 response = await structured_model.ainvoke(messages)
         except asyncio.CancelledError:
             raise

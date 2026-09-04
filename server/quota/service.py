@@ -43,6 +43,7 @@ from server.quota.models import (
     QuotaReservationModel,
     QuotaRoleCreditOperationModel,
     QuotaUsageArchiveBatchModel,
+    UsageEventModel,
 )
 from server.infrastructure.mysql.models import ClassroomModel
 from server.quota.policy import resolve_effective_policy
@@ -1507,6 +1508,25 @@ class QuotaService:
                 select(
                     QuotaCreditOperationModel.effective_from,
                     QuotaCreditOperationModel.expires_at,
+                ).limit(1)
+            ).first()
+            # Feature metering depends on additive pricing and immutable usage
+            # columns. Probe them before serving requests so an unapplied
+            # migration cannot fail only after a paid tool call completes.
+            connection.execute(
+                select(
+                    PricingRuleModel.visual_input_credits_micro_per_million_tokens,
+                    PricingRuleModel.image_unit_credits_micro,
+                    PricingRuleModel.search_call_credits_micro,
+                    PricingRuleModel.link_page_credits_micro,
+                ).limit(1)
+            ).first()
+            connection.execute(
+                select(
+                    UsageEventModel.visual_input_tokens,
+                    UsageEventModel.image_units,
+                    UsageEventModel.search_calls,
+                    UsageEventModel.link_pages,
                 ).limit(1)
             ).first()
 

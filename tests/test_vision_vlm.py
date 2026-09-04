@@ -10,6 +10,8 @@ import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.model_runtime.factory import ModelFactory
+from core.model_runtime.usage import BillableFeatureUsage, current_billable_feature_usage
+from core.tool_config import VisionVLMConfig
 from server.tools.vision import vlm as vlm_module
 from server.tools.vision.contracts import (
     UNTRUSTED_IMAGE_BANNER,
@@ -29,9 +31,11 @@ class FakeStructuredModel:
     def __init__(self, response) -> None:
         self.response = response
         self.calls: list[list] = []
+        self.feature_usages: list[BillableFeatureUsage] = []
 
     async def ainvoke(self, messages):
         self.calls.append(messages)
+        self.feature_usages.append(current_billable_feature_usage())
         return self.response
 
 
@@ -189,6 +193,21 @@ async def test_builds_openai_compatible_multimodal_message(monkeypatch) -> None:
     prefix, encoded = data_url.split(",", 1)
     assert prefix == "data:image/png;base64"
     assert base64.b64decode(encoded) == asset.data
+    assert factory.route.structured.feature_usages == [
+        BillableFeatureUsage(image_units=1)
+    ]
+
+
+def test_fallback_image_units_use_sent_dimensions_and_complex_mode():
+    config = VisionVLMConfig(
+        standard_image_max_pixels=1_000_000,
+        high_image_max_pixels=4_000_000,
+    )
+
+    assert config.fallback_image_units(width=1_000, height=1_000, task="describe") == 1
+    assert config.fallback_image_units(width=2_000, height=1_000, task="describe") == 2
+    assert config.fallback_image_units(width=3_000, height=2_000, task="describe") == 3
+    assert config.fallback_image_units(width=100, height=100, task="chart") == 3
 
 
 async def test_marks_and_serializes_ocr_context_as_untrusted(monkeypatch) -> None:

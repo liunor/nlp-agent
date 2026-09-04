@@ -229,6 +229,8 @@ async def test_fetch_caches_cleaned_response(monkeypatch):
     first = await service.fetch(WebFetchInput(url="https://example.com/c"))
     second = await service.fetch(WebFetchInput(url="https://example.com/c"))
     assert calls["count"] == 1
+    assert first.cache_hit is False
+    assert second.cache_hit is True
     assert second.text == first.text
 
 

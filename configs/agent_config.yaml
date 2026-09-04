@@ -374,6 +374,11 @@ tools:
       model_route: vision-worker
       max_image_bytes: 6000000
       send_ocr_context: true
+      # Fallback billing tiers when the Provider omits visual Token details.
+      # The current VLM path sends the validated upload bytes without resizing,
+      # so these thresholds apply to the decoded dimensions actually sent.
+      standard_image_max_pixels: 1048576
+      high_image_max_pixels: 4194304
     result:
       max_chars: 20000
       retain_raw_ocr: true
