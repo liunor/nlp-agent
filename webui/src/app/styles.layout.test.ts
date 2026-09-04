@@ -251,4 +251,47 @@ describe("sandbox titlebar layout", () => {
     expect(tableRule).toContain("min-height:0");
     expect(tableRule).toContain("flex:1 1 auto");
   });
+
+  it("keeps user management fixed with an internal user table scroller", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) => [...stylesheet.matchAll(pattern)]
+      .map((match) => match[1])
+      .find((rule) => rule.includes(fragment)) ?? "";
+    const pageRule = matchingRule(/\.user-manage-page\s*\{([^}]*)\}/g, "height: 100%");
+    const tableRule = matchingRule(/\.user-table-card\s*\{([^}]*)\}/g, "flex: 1 1 auto");
+    const scrollRule = matchingRule(/\.user-table-scroll\s*\{([^}]*)\}/g, "overflow: auto");
+
+    expect(pageRule).toContain("height: 100%");
+    expect(pageRule).toContain("min-height: 0");
+    expect(pageRule).toContain("overflow: hidden");
+    expect(tableRule).toContain("min-height: 0");
+    expect(tableRule).toContain("flex: 1 1 auto");
+    expect(tableRule).toContain("overflow: hidden");
+    expect(scrollRule).toContain("min-height: 0");
+    expect(scrollRule).toContain("overflow: auto");
+  });
+
+  it("keeps the role permission workbench fixed with scrolling only in the permission catalog", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) => [...stylesheet.matchAll(pattern)]
+      .map((match) => match[1])
+      .find((rule) => rule.includes(fragment)) ?? "";
+    const shellRule = matchingRule(/\.developer-shell:has\(\.developer-role-page\)\s*\{([^}]*)\}/g, "height: 100%");
+    const mainRule = matchingRule(/\.developer-shell:has\(\.developer-role-page\) \.developer-main\s*\{([^}]*)\}/g, "height: 100%");
+    const contentRule = matchingRule(/\.developer-content:has\(\.developer-role-page\)\s*\{([^}]*)\}/g, "height: 100%");
+    const pageRule = matchingRule(/\.developer-role-page\s*\{([^}]*)\}/g, "height: 100%");
+    const layoutRule = matchingRule(/\.developer-role-layout\s*\{([^}]*)\}/g, "min-height: 0");
+    const permissionScrollRule = matchingRule(/\.developer-role-permission-scroll\s*\{([^}]*)\}/g, "overflow: auto");
+
+    expect(shellRule).toContain("height: 100%");
+    expect(shellRule).toContain("overflow: hidden");
+    expect(stylesheet).toContain(".developer-eyebrow,.user-eyebrow { display: none; }");
+    expect(mainRule).toContain("height: 100%");
+    expect(mainRule).toContain("min-height: 0");
+    expect(mainRule).toContain("overflow: hidden");
+    expect(contentRule).toContain("height: 100%");
+    expect(contentRule).toContain("overflow: hidden");
+    expect(pageRule).toContain("height: 100%");
+    expect(pageRule).toContain("overflow: hidden");
+    expect(layoutRule).toContain("min-height: 0");
+    expect(permissionScrollRule).toContain("overflow: auto");
+  });
 });

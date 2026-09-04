@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Ban, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, KeyRound, Pencil, RefreshCw, Search, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { Ban, Check, ChevronLeft, ChevronRight, KeyRound, MoreHorizontal, Pencil, RefreshCw, Search, ShieldCheck, Trash2, Unlock, UserPlus, X } from "lucide-react";
 import { api } from "@/platform/http/api";
 import type { RbacRole, UserListResponse, UserProfile } from "@/shared/types";
 import { PasswordResetDialog } from "@/shared/ui/PasswordResetDialog";
 import { TextInputDialog } from "@/shared/ui/TextInputDialog";
 
 type PageItem = number | "ellipsis";
+
+const USER_PAGE_SIZE = 10;
+const USER_CACHE_LIMIT = 24;
+
+type UserListCache = Map<string, UserListResponse>;
 
 function getPageItems(currentPage: number, totalPages: number): PageItem[] {
   if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
@@ -41,10 +46,9 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
   const [statusFilter, setStatusFilter] = useState("");
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [offset, setOffset] = useState(0);
-  const limit = 8;
+  const limit = USER_PAGE_SIZE;
   const [pageInput, setPageInput] = useState("1");
-  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
-  const [createExpanded, setCreateExpanded] = useState(false);
+  const [actionMenuUserId, setActionMenuUserId] = useState<string | null>(null);
   const [selected, setSelected] = useState<UserProfile | null>(null);
   const [displayNameTarget, setDisplayNameTarget] = useState<UserProfile | null>(null);
   const [passwordTarget, setPasswordTarget] = useState<UserProfile | null>(null);
@@ -54,19 +58,37 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
   const [createRoles, setCreateRoles] = useState<string[]>([]);
   const requestVersion = useRef(0);
   const userRolesRequestVersion = useRef(0);
-  const load = useCallback(async () => {
+  const userCache = useRef<UserListCache>(new Map());
+
+  const cacheKey = `${offset}:${limit}:${statusFilter}:${search}:${includeDeleted}`;
+  const clearUserCache = useCallback(() => userCache.current.clear(), []);
+
+  const load = useCallback(async (force = false) => {
     const requestId = ++requestVersion.current;
     setLoading(true); setError("");
+    if (!force) {
+      const cached = userCache.current.get(cacheKey);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+        return;
+      }
+    }
     try {
       const result = await api.listUsers(offset, limit, statusFilter || undefined, search || undefined, includeDeleted);
       if (requestId !== requestVersion.current) return;
+      userCache.current.set(cacheKey, result);
+      if (userCache.current.size > USER_CACHE_LIMIT) {
+        const oldestKey = userCache.current.keys().next().value;
+        if (oldestKey) userCache.current.delete(oldestKey);
+      }
       setData(result);
     } catch (err) {
       if (requestId === requestVersion.current) setError(err instanceof Error ? err.message : "加载失败");
     } finally {
       if (requestId === requestVersion.current) setLoading(false);
     }
-  }, [includeDeleted, limit, offset, search, statusFilter]);
+  }, [cacheKey, includeDeleted, limit, offset, search, statusFilter]);
 
   const loadRoles = useCallback(async () => {
     setRolesLoading(true);
@@ -81,7 +103,10 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
 
   const activeRoles = roles.filter((role) => role.status === "active");
 
-  useEffect(() => { queueMicrotask(() => void load()); }, [load, refreshToken]);
+  useEffect(() => {
+    if (refreshToken > 0) clearUserCache();
+    queueMicrotask(() => void load());
+  }, [clearUserCache, load, refreshToken]);
   useEffect(() => { queueMicrotask(() => void loadRoles()); }, [loadRoles, refreshToken]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -106,6 +131,7 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
   };
 
   const updateVisibleUser = (userId: string, patch: Partial<UserProfile>) => {
+    clearUserCache();
     setData((current) => {
       if (!current) return current;
       const target = current.users.find((user) => user.id === userId);
@@ -136,6 +162,7 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
     }, "用户已创建", (result) => {
       setForm({ username: "", display_name: "", password: "" });
       setCreateRoles([]);
+      clearUserCache();
       if (result && typeof result === "object" && "id" in result && matchesCurrentView(result as UserProfile)) {
         setData((current) => current ? { ...current, users: offset === 0 ? [result as UserProfile, ...current.users].slice(0, limit) : current.users, total: current.total + 1 } : current);
       }
@@ -194,7 +221,10 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
     if (!window.confirm(`确认软删用户 ${user.username}？`)) return;
     void run(() => api.deleteUser(user.id), "用户已软删", () => {
       if (includeDeleted) updateVisibleUser(user.id, { deleted_at: new Date().toISOString() });
-      else setData((current) => current ? { ...current, users: current.users.filter((item) => item.id !== user.id), total: Math.max(0, current.total - 1) } : current);
+      else {
+        clearUserCache();
+        setData((current) => current ? { ...current, users: current.users.filter((item) => item.id !== user.id), total: Math.max(0, current.total - 1) } : current);
+      }
     });
   };
 
@@ -221,50 +251,78 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
     });
   };
 
+  const roleName = (code: string) => roles.find((role) => role.code === code)?.name ?? code;
+  const submitSearch = () => {
+    const next = searchInput.trim();
+    setSearch((current) => current === next ? current : next);
+    setOffset(0);
+    setPageInput("1");
+  };
+
   return (
-    <div className="user-manage-page space-y-5">
-      <header className="user-page-header flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><h1 className="text-2xl font-bold tracking-tight text-slate-900">用户管理</h1><p className="mt-1 text-sm text-slate-500">账户、生命周期、角色和会话安全</p></div><span className="text-xs text-slate-400">服务端分页 · 每页 {limit} 条</span></header>
-      <section className={`user-search-card rounded-xl border border-slate-200 bg-white shadow-sm ${createExpanded ? "p-5" : "px-5 py-3"}`}>
-        <button type="button" className="flex w-full items-center justify-between text-left" aria-expanded={createExpanded} onClick={() => setCreateExpanded((current) => !current)}><span><span className="flex items-center gap-2 text-sm font-semibold text-slate-900">{createExpanded ? <ChevronUp size={15} className="text-indigo-500" /> : <ChevronDown size={15} className="text-indigo-500" />}创建用户</span>{!createExpanded && <span className="mt-1 block text-xs text-slate-500">点击展开创建账号</span>}{createExpanded && <span className="mt-1 block text-xs text-slate-500">填写账号信息，可选分配已有角色</span>}</span><span className="text-xs text-slate-400">{createExpanded ? "收起" : "展开"}</span></button>
-        {createExpanded && <>
-        <div className="mt-4 grid gap-3 md:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
-          <input aria-label="用户名" className="h-10 rounded-lg border border-slate-200 px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" placeholder="用户名" value={form.username} disabled={actionPending} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-          <input aria-label="显示名称" className="h-10 rounded-lg border border-slate-200 px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" placeholder="显示名称" value={form.display_name} disabled={actionPending} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-          <input aria-label="初始密码" className="h-10 rounded-lg border border-slate-200 px-3 text-sm outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" type="password" placeholder="初始密码（至少 8 位）" value={form.password} disabled={actionPending} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-          <button type="button" onClick={() => void create()} disabled={actionPending || form.username.trim().length < 3 || form.display_name.trim().length < 1 || form.password.length < 8} className="inline-flex h-10 items-center justify-center rounded-lg bg-indigo-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">{actionPending ? "处理中…" : createRoles.some((code) => activeRoles.some((role) => role.code === code)) ? "创建并分配所选角色" : "创建并赋予游客角色"}</button>
+    <div className="user-manage-page">
+      <header className="user-page-header">
+        <div>
+          <p className="user-eyebrow">CONTROL PLANE / ACCESS</p>
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900">用户管理</h1>
+              <p className="mt-1 text-sm text-slate-500">账户、角色与访问状态统一在这里维护</p>
+            </div>
+            <span className="hidden text-xs text-slate-400 sm:inline">服务端分页 · 缓存最近访问页</span>
+          </div>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2"><span className="mr-1 text-xs text-slate-500">角色：</span>
-          {activeRoles.map((role) => <label key={role.code} className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600"><input type="checkbox" disabled={actionPending || rolesLoading} checked={createRoles.includes(role.code)} onChange={() => toggleCreateRole(role.code)} />{role.name}</label>)}
-          {!activeRoles.length && <span className="text-xs text-slate-400">{rolesLoading ? "正在加载角色…" : "未选择角色时默认赋予游客角色"}</span>}
+      </header>
+
+      <section className="user-create-panel" aria-labelledby="user-create-title">
+        <div className="user-create-heading">
+          <div>
+            <p className="user-eyebrow">NEW ACCOUNT</p>
+            <h2 id="user-create-title" className="text-base font-semibold text-slate-900">创建用户</h2>
+            <p className="mt-1 text-xs text-slate-500">创建后默认赋予游客角色，可按需追加平台角色。</p>
+          </div>
+          <span className="user-panel-hint">管理员操作</span>
         </div>
-        </>}
+        <form className="user-create-form" onSubmit={(event) => { event.preventDefault(); void create(); }}>
+          <label className="user-field-label" htmlFor="create-username">用户名<input id="create-username" aria-label="用户名" autoComplete="off" className="user-form-input" placeholder="输入登录用户名" value={form.username} disabled={actionPending} onChange={(e) => setForm({ ...form, username: e.target.value })} /></label>
+          <label className="user-field-label" htmlFor="create-display-name">显示名称<input id="create-display-name" aria-label="显示名称" className="user-form-input" placeholder="输入用户显示名称" value={form.display_name} disabled={actionPending} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></label>
+          <label className="user-field-label" htmlFor="create-password">初始密码<input id="create-password" aria-label="初始密码" autoComplete="new-password" className="user-form-input" type="password" placeholder="至少 8 位" value={form.password} disabled={actionPending} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
+          <div className="user-create-role-field"><span className="user-field-label">角色</span><div className="user-role-options">{activeRoles.map((role) => <label key={role.code} className="user-role-option"><input type="checkbox" disabled={actionPending || rolesLoading} checked={createRoles.includes(role.code)} onChange={() => toggleCreateRole(role.code)} />{role.name}</label>)}{!activeRoles.length && <span className="text-xs text-slate-400">{rolesLoading ? "加载角色…" : "默认游客"}</span>}</div></div>
+          <button type="submit" disabled={actionPending || form.username.trim().length < 3 || form.display_name.trim().length < 1 || form.password.length < 8} className="user-primary-button">{actionPending ? "处理中…" : <><UserPlus size={15} />创建用户</>}</button>
+        </form>
       </section>
-      <div className="user-filter-card flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:flex-row sm:items-center">
-        <label htmlFor="user-keyword" className="shrink-0 text-sm font-medium text-slate-600">搜索</label>
-        <div className="min-w-64 flex-1"><input id="user-keyword" aria-label="搜索用户名或显示名称" className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" placeholder="用户名或显示名称" value={searchInput} onChange={(e) => setSearchInput(e.target.value)} /></div>
-        <button type="button" className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-4 text-sm font-medium text-white hover:bg-indigo-700" onClick={() => { setSearch(searchInput.trim()); setOffset(0); setPageInput("1"); }}><Search size={15} />搜索</button>
-        <select aria-label="状态筛选" className="h-10 rounded-lg border border-slate-200 px-3 text-sm text-slate-600 outline-none focus:border-indigo-400" value={statusFilter} disabled={actionPending} onChange={(e) => { setStatusFilter(e.target.value); setOffset(0); setPageInput("1"); }}><option value="">全部状态</option><option value="active">活跃</option><option value="disabled">已禁用</option><option value="locked">已锁定</option><option value="deleted">已软删</option></select>
-        <label className="flex h-10 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 px-3 text-sm text-slate-600"><input type="checkbox" disabled={actionPending} checked={includeDeleted} onChange={(e) => { setIncludeDeleted(e.target.checked); setOffset(0); setPageInput("1"); }} />包含软删账户</label>
-      </div>
-      {error && <div className="rounded bg-red-50 p-4 text-sm text-red-700">{error}</div>}
-      {actionError && <div className="rounded bg-red-50 p-3 text-sm text-red-700">{actionError}</div>}
-      {actionMessage && <div className="rounded bg-green-50 p-3 text-sm text-green-700">{actionMessage}</div>}
-      <section className="user-table-card overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4"><div><h2 className="text-sm font-semibold text-slate-900">用户列表</h2><p className="mt-1 text-xs text-slate-500">管理账户状态、角色和登录会话</p></div><button type="button" aria-label="刷新用户列表" title="刷新用户列表" onClick={() => void load()} disabled={loading || actionPending} className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"><RefreshCw className={loading ? "animate-spin" : ""} size={14} />刷新</button></div>
-      <div className="relative overflow-x-auto">
-        {loading && data && <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/60 backdrop-blur-[1px]" role="status" aria-live="polite"><div className="inline-flex items-center gap-2 rounded-full bg-white/95 px-3 py-1.5 text-xs text-slate-600 shadow-sm ring-1 ring-slate-200"><RefreshCw className="animate-spin text-indigo-500" size={13} />正在更新</div></div>}
-        {loading && !data ? <table aria-busy={loading} className="min-w-[980px] w-full animate-pulse"><thead className="bg-slate-50"><tr>{["用户名", "显示名称", "状态", "最后登录", "创建时间", "操作"].map((item) => <th key={item} className="px-5 py-3 text-left text-xs font-semibold text-slate-500">{item}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">{Array.from({ length: 6 }, (_, index) => <tr key={index}><td colSpan={6} className="px-5 py-4"><div className="grid grid-cols-[1.1fr_1.1fr_.6fr_1fr_1fr_2fr] items-center gap-5">{Array.from({ length: 6 }, (_, cell) => <span key={cell} className={`h-3 rounded bg-slate-200 ${cell === 5 ? "w-11/12" : cell === 2 ? "w-14" : "w-3/4"}`} />)}</div></td></tr>)}</tbody></table> : <table aria-busy={loading} className={`min-w-[980px] w-full transition-opacity ${loading ? "opacity-60" : ""}`}><thead className="bg-slate-50"><tr>{["用户名", "显示名称", "状态", "最后登录", "创建时间", "操作"].map((item) => <th key={item} className="px-5 py-3 text-left text-xs font-semibold text-slate-500">{item}</th>)}</tr></thead><tbody className="divide-y divide-slate-100">
-          {(data?.users ?? []).map((user) => {
-            const meta = statusMeta(user.status);
-            const expanded = expandedUserId === user.id;
-            const disabled = loading || actionPending || userRolesLoading;
-            return <tr key={user.id} className="transition hover:bg-slate-50/80"><td className="px-5 py-3.5 text-sm font-semibold text-slate-900">{user.username}</td><td className="px-5 py-3.5 text-sm text-slate-600">{user.display_name}</td><td className="px-5 py-3.5 text-sm">{user.deleted_at ? <span className="inline-flex rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">已软删</span> : <span className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ${meta.className}`}>{meta.label}</span>}</td><td className="px-5 py-3.5 text-sm text-slate-500">{user.last_login_at ? new Date(user.last_login_at).toLocaleString("zh-CN") : "从未登录"}</td><td className="px-5 py-3.5 text-sm text-slate-500">{new Date(user.created_at).toLocaleDateString("zh-CN")}</td><td className="px-5 py-3.5"><div className="user-row-actions"><button type="button" disabled={disabled} className="inline-flex items-center gap-1 font-medium text-indigo-700 disabled:opacity-50" onClick={() => void selectUser(user)}><ShieldCheck size={13} />角色</button><button type="button" disabled={disabled} className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-50 disabled:opacity-50" onClick={() => setExpandedUserId((current) => current === user.id ? null : user.id)}>{expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}更多</button>{expanded && <span className="user-row-action-menu">{!user.deleted_at && <><button type="button" disabled={disabled} className="inline-flex items-center gap-1 text-slate-700 disabled:opacity-50" title="编辑显示名" onClick={() => setDisplayNameTarget(user)}><Pencil size={13} />编辑</button><button type="button" disabled={disabled} className="inline-flex items-center gap-1 text-violet-700 disabled:opacity-50" title="重置密码" onClick={() => setPasswordTarget(user)}><KeyRound size={13} />重置密码</button></>}<button type="button" disabled={disabled} className="inline-flex items-center gap-1 text-slate-600 disabled:opacity-50" onClick={() => revokeSessions(user)}><RefreshCw size={13} />撤销会话</button>{user.deleted_at ? <button type="button" disabled={disabled} className="inline-flex items-center gap-1 text-emerald-700 disabled:opacity-50" onClick={() => restoreUser(user)}><Unlock size={13} />恢复</button> : <><button type="button" disabled={disabled} className="inline-flex items-center gap-1 text-amber-700 disabled:opacity-50" onClick={() => changeStatus(user)}>{user.status === "active" ? <><Ban size={13} />禁用</> : <><Check size={13} />启用</>}</button><button type="button" disabled={disabled} className="inline-flex items-center gap-1 text-rose-700 disabled:opacity-50" onClick={() => deleteUser(user)}><Trash2 size={13} />软删</button></>}</span>}</div></td></tr>;
-          })}
-          {!data?.users.length && <tr><td colSpan={6} className="px-5 py-14 text-center text-sm text-slate-500">暂无用户</td></tr>}
-        </tbody></table>}
-      </div></section>
-      {data && <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500"><span>共 {data.total} 个用户 · 第 {currentPage}/{totalPages} 页 · 每页 {limit} 条</span><div className="flex flex-wrap items-center justify-end gap-2"><button type="button" aria-label="上一页" disabled={currentPage <= 1 || actionPending || loading} onClick={() => { const targetPage = currentPage - 1; setOffset((targetPage - 1) * limit); setPageInput(String(targetPage)); }} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50"><ChevronLeft size={14} />上一页</button>{pageItems.map((item, index) => item === "ellipsis" ? <span key={`ellipsis-${index}`} className="px-1" aria-hidden="true">...</span> : <button key={item} type="button" aria-label={`第 ${item} 页`} aria-current={item === currentPage ? "page" : undefined} disabled={actionPending || loading || item === currentPage} onClick={() => { setOffset((item - 1) * limit); setPageInput(String(item)); }} className={`min-w-8 rounded-lg border px-2.5 py-1.5 text-xs disabled:opacity-100 ${item === currentPage ? "border-indigo-600 bg-indigo-600 text-white" : "border-slate-200 hover:bg-slate-50 disabled:cursor-default"}`}>{item}</button>)}<button type="button" aria-label="下一页" disabled={currentPage >= totalPages || actionPending || loading} onClick={() => { const targetPage = currentPage + 1; setOffset((targetPage - 1) * limit); setPageInput(String(targetPage)); }} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50">下一页<ChevronRight size={14} /></button><form className="flex items-center gap-1.5" onSubmit={(event) => { event.preventDefault(); jumpToPage(); }}><label htmlFor="user-page-jump">跳转</label><input id="user-page-jump" className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-center text-xs" type="number" min={1} max={totalPages} value={pageInput} disabled={actionPending || loading} onChange={(event) => setPageInput(event.target.value)} /><button type="submit" disabled={actionPending || loading} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs hover:bg-slate-50 disabled:opacity-50">确定</button>{loading && <span className="text-xs text-slate-400">加载中...</span>}</form></div></div>}
-      {selected && <section className="rounded-lg border border-blue-200 bg-blue-50 p-4"><div className="flex items-center justify-between"><h2 className="font-semibold text-gray-900">{selected.username} 的角色</h2><button type="button" className="text-sm text-gray-500" disabled={actionPending || userRolesLoading} onClick={() => setSelected(null)}>关闭</button></div>{userRolesLoading ? <div className="py-4 text-sm text-gray-500">加载角色中...</div> : <><div className="mt-3 flex flex-wrap gap-3">{activeRoles.map((role) => <label key={role.code} className="flex items-center gap-2 rounded bg-white px-3 py-2 text-sm"><input type="checkbox" disabled={actionPending} checked={selectedRoles.includes(role.code)} onChange={() => toggleRole(role.code)} />{role.name}（{role.code}）</label>)}</div><button type="button" disabled={actionPending} className="mt-3 rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50" onClick={saveRoles}>{actionPending ? "保存中…" : "保存角色并撤销旧会话"}</button></>}</section>}
+
+      {(error || actionError || actionMessage) && <div className="user-feedback-stack" aria-live="polite">{error && <div className="user-feedback user-feedback-error">{error}</div>}{actionError && <div className="user-feedback user-feedback-error">{actionError}</div>}{actionMessage && <div className="user-feedback user-feedback-success">{actionMessage}</div>}</div>}
+
+      <section className="user-table-card" aria-label="用户列表">
+        <div className="user-table-heading">
+          <div><div className="flex items-center gap-2"><h2 className="text-sm font-semibold text-slate-900">用户列表</h2>{data && <span className="user-count-badge">{data.total}</span>}</div><p className="mt-1 text-xs text-slate-500">按需加载账户数据，角色和更多操作在行内完成</p></div>
+          <button type="button" aria-label="刷新用户列表" title="刷新用户列表" onClick={() => void load(true)} disabled={loading || actionPending} className="user-refresh-button"><RefreshCw className={loading ? "animate-spin" : ""} size={14} />刷新</button>
+        </div>
+        <form className="user-list-toolbar" onSubmit={(event) => { event.preventDefault(); submitSearch(); }}>
+          <label className="user-search-box" htmlFor="user-keyword"><Search size={16} aria-hidden="true" /><span className="sr-only">搜索</span><input id="user-keyword" aria-label="搜索用户名或显示名称" placeholder="搜索用户名或显示名称" value={searchInput} onChange={(e) => setSearchInput(e.target.value)} /></label>
+          <button type="submit" className="user-toolbar-button user-toolbar-primary"><Search size={14} />搜索</button>
+          <select aria-label="状态筛选" className="user-filter-select" value={statusFilter} disabled={actionPending} onChange={(e) => { setStatusFilter(e.target.value); setOffset(0); setPageInput("1"); }}><option value="">全部状态</option><option value="active">活跃</option><option value="disabled">已禁用</option><option value="locked">已锁定</option><option value="deleted">已软删</option></select>
+          <label className="user-deleted-filter"><input type="checkbox" disabled={actionPending} checked={includeDeleted} onChange={(e) => { setIncludeDeleted(e.target.checked); setOffset(0); setPageInput("1"); }} />包含软删</label>
+        </form>
+
+        <div className="user-table-scroll">
+          {loading && data && <div className="user-table-loading" role="status" aria-live="polite"><div><RefreshCw className="animate-spin text-indigo-500" size={14} />正在更新列表</div></div>}
+          {loading && !data ? <table aria-busy={loading} className="user-data-table animate-pulse"><thead><tr>{["用户名", "显示名称", "角色", "状态", "最后登录", "创建时间", "操作"].map((item) => <th key={item}>{item}</th>)}</tr></thead><tbody>{Array.from({ length: 7 }, (_, index) => <tr key={index}><td colSpan={7}><div className="user-skeleton-row">{Array.from({ length: 7 }, (_, cell) => <span key={cell} className={cell === 6 ? "user-skeleton-long" : cell === 2 || cell === 3 ? "user-skeleton-short" : ""} />)}</div></td></tr>)}</tbody></table> : <table aria-busy={loading} className={`user-data-table ${loading ? "opacity-60" : ""}`}><thead><tr>{["用户名", "显示名称", "角色", "状态", "最后登录", "创建时间", "操作"].map((item) => <th key={item}>{item}</th>)}</tr></thead><tbody>
+            {(data?.users ?? []).map((user) => {
+              const meta = statusMeta(user.status);
+              const userRoles = user.roles ?? [];
+              const disabled = loading || actionPending || userRolesLoading;
+              return <tr key={user.id}><td className="user-identity-cell"><span>{user.username}</span><small>{user.id}</small></td><td>{user.display_name}</td><td><div className="user-role-chip-list">{userRoles.length ? userRoles.map((code) => <span key={code} className="user-role-chip">{roleName(code)}</span>) : <span className="text-xs text-slate-400">游客</span>}</div></td><td>{user.deleted_at ? <span className="user-status-pill user-status-deleted">已软删</span> : <span className={`user-status-pill ${meta.className}`}>{meta.label}</span>}</td><td>{user.last_login_at ? new Date(user.last_login_at).toLocaleString("zh-CN") : "从未登录"}</td><td>{new Date(user.created_at).toLocaleDateString("zh-CN")}</td><td><div className="user-row-actions"><button type="button" aria-label={`${user.username} 角色`} title="管理角色" disabled={disabled} className="user-icon-action user-role-trigger" onClick={() => void selectUser(user)}><ShieldCheck size={15} /></button><div className="user-action-details"><button type="button" aria-label={`${user.username} 操作`} aria-expanded={actionMenuUserId === user.id} title="更多操作" className="user-icon-action" disabled={disabled} onClick={() => setActionMenuUserId((current) => current === user.id ? null : user.id)}><MoreHorizontal size={16} /></button>{actionMenuUserId === user.id && <div role="menu" aria-label={`${user.username} 操作菜单`} className="user-action-menu">{!user.deleted_at && <><button type="button" role="menuitem" disabled={disabled} onClick={() => { setActionMenuUserId(null); setDisplayNameTarget(user); }}><Pencil size={14} />编辑显示名</button><button type="button" role="menuitem" disabled={disabled} onClick={() => { setActionMenuUserId(null); setPasswordTarget(user); }}><KeyRound size={14} />重置密码</button></>}<button type="button" role="menuitem" disabled={disabled} onClick={() => { setActionMenuUserId(null); revokeSessions(user); }}><RefreshCw size={14} />撤销会话</button>{user.deleted_at ? <button type="button" role="menuitem" disabled={disabled} onClick={() => { setActionMenuUserId(null); restoreUser(user); }}><Unlock size={14} />恢复</button> : <><button type="button" role="menuitem" disabled={disabled} onClick={() => { setActionMenuUserId(null); changeStatus(user); }}>{user.status === "active" ? <><Ban size={14} />禁用</> : <><Check size={14} />启用</>}</button><button type="button" role="menuitem" disabled={disabled} onClick={() => { setActionMenuUserId(null); deleteUser(user); }}><Trash2 size={14} />软删</button></>}</div>}</div></div></td></tr>;
+            })}
+            {!data?.users.length && <tr><td colSpan={7} className="user-empty-state">暂无用户</td></tr>}
+          </tbody></table>}
+        </div>
+
+        {data && <footer className="user-table-footer"><span>共 {data.total} 个用户 · 第 {currentPage}/{totalPages} 页 · 每页 {limit} 条</span><div className="user-pagination-controls"><button type="button" aria-label="上一页" disabled={currentPage <= 1 || actionPending || loading} onClick={() => { const targetPage = currentPage - 1; setOffset((targetPage - 1) * limit); setPageInput(String(targetPage)); }} className="user-page-button"><ChevronLeft size={14} />上一页</button>{pageItems.map((item, index) => item === "ellipsis" ? <span key={`ellipsis-${index}`} className="user-page-ellipsis" aria-hidden="true">...</span> : <button key={item} type="button" aria-label={`第 ${item} 页`} aria-current={item === currentPage ? "page" : undefined} disabled={actionPending || loading || item === currentPage} onClick={() => { setOffset((item - 1) * limit); setPageInput(String(item)); }} className={`user-page-number ${item === currentPage ? "is-current" : ""}`}>{item}</button>)}<button type="button" aria-label="下一页" disabled={currentPage >= totalPages || actionPending || loading} onClick={() => { const targetPage = currentPage + 1; setOffset((targetPage - 1) * limit); setPageInput(String(targetPage)); }} className="user-page-button">下一页<ChevronRight size={14} /></button><form className="user-jump-form" onSubmit={(event) => { event.preventDefault(); jumpToPage(); }}><label htmlFor="user-page-jump">跳转</label><input id="user-page-jump" type="number" min={1} max={totalPages} value={pageInput} disabled={actionPending || loading} onChange={(event) => setPageInput(event.target.value)} /><button type="submit" disabled={actionPending || loading}>确定</button></form></div></footer>}
+      </section>
+
+      {selected && <div className="user-role-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null); }}><section className="user-role-dialog" role="dialog" aria-modal="true" aria-labelledby="user-role-dialog-title" onMouseDown={(event) => event.stopPropagation()}><header><div><p className="user-eyebrow">ACCESS CONTROL</p><h2 id="user-role-dialog-title">{selected.username} 的角色</h2></div><button type="button" aria-label="关闭角色编辑" className="user-dialog-close" disabled={actionPending || userRolesLoading} onClick={() => setSelected(null)}><X size={18} /></button></header>{userRolesLoading ? <div className="user-dialog-loading"><RefreshCw className="animate-spin text-indigo-500" size={16} />加载角色中…</div> : <><p className="user-dialog-description">选择该用户可以使用的控制面能力，保存后会撤销其旧会话。</p><div className="user-dialog-role-list">{activeRoles.map((role) => <label key={role.code} className="user-dialog-role"><input type="checkbox" aria-label={role.name} disabled={actionPending} checked={selectedRoles.includes(role.code)} onChange={() => toggleRole(role.code)} /><span><strong>{role.name}</strong><small>{role.code} · {role.description || "暂无说明"}</small></span></label>)}</div><footer><button type="button" className="user-secondary-button" disabled={actionPending} onClick={() => setSelected(null)}>取消</button><button type="button" className="user-primary-button" disabled={actionPending} onClick={saveRoles}>{actionPending ? "保存中…" : "保存角色"}</button></footer></>}</section></div>}
       <TextInputDialog key={displayNameTarget?.id ?? "display-name-dialog"} open={displayNameTarget !== null} title="编辑显示名" description={`修改 @${displayNameTarget?.username ?? "用户"} 在平台中显示的名称。`} label="显示名称" initialValue={displayNameTarget?.display_name ?? ""} placeholder="请输入显示名称" confirmLabel="保存修改" maxLength={128} onClose={() => setDisplayNameTarget(null)} onConfirm={updateDisplayName} />
       <PasswordResetDialog key={passwordTarget?.id ?? "password-dialog"} open={passwordTarget !== null} username={passwordTarget?.username ?? "用户"} onClose={() => setPasswordTarget(null)} onConfirm={resetPassword} />
     </div>
