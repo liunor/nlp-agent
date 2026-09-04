@@ -368,6 +368,29 @@ class ResilientChatModel:
         except BaseException as error:
             raise _ReporterFailure(error) from error
 
+    async def _reserve_feature_attempt(
+        self, invocation: ModelInvocation | None
+    ) -> None:
+        """Reserve known feature units before entering the Provider boundary."""
+
+        if invocation is None or not any(invocation.feature_usage.model_dump().values()):
+            return
+        reporter = (
+            self.reporter_slot.reporter
+            if self.reporter_slot is not None
+            else None
+        )
+        reserve = getattr(reporter, "reserve_feature_usage", None)
+        if reserve is None:
+            if self.reporter_slot is not None and getattr(
+                self.reporter_slot, "required", False
+            ):
+                raise UsageReporterUnavailableError(
+                    "Required usage Reporter cannot reserve billable feature usage"
+                )
+            return
+        await reserve(invocation)
+
     def _prepare_invocation(
         self,
         candidate: ModelCandidate,
@@ -489,6 +512,7 @@ class ResilientChatModel:
                 invocation, operation_id = self._prepare_invocation(
                     candidate, attempt, fallback_index
                 )
+                await self._reserve_feature_attempt(invocation)
                 attempt_reported = False
                 try:
                     async with _attempt_span(
@@ -660,6 +684,7 @@ class ResilientChatModel:
                 invocation, operation_id = self._prepare_invocation(
                     candidate, attempt, fallback_index
                 )
+                await self._reserve_feature_attempt(invocation)
                 received = False
                 visible = False
                 first = True

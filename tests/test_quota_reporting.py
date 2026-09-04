@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, insert, select, text
+from sqlalchemy import create_engine, insert, select, text, update
 from sqlalchemy.pool import StaticPool
 
 from core.model_runtime.usage import (
@@ -182,6 +182,45 @@ async def test_durable_reporter_persists_and_prices_search_feature_usage(quota_e
     assert row["image_units"] == 0
     assert row["link_pages"] == 0
     assert row["credits_micro"] == 161
+
+
+@pytest.mark.asyncio
+async def test_pending_feature_usage_is_repriced_after_rate_is_configured(quota_engine):
+    _insert_pricing_rule(quota_engine)
+    with quota_engine.begin() as connection:
+        connection.execute(
+            update(PricingRuleModel)
+            .where(PricingRuleModel.pricing_key == "provider-a/model-a")
+            .values(search_call_credits_micro=None)
+        )
+    reporter = DurableModelUsageReporter(quota_engine)
+    invocation = _invocation(
+        feature_usage=BillableFeatureUsage(search_calls=1)
+    )
+    usage = CanonicalTokenUsage(source="provider")
+
+    await reporter.report(invocation, usage, _outcome())
+    with quota_engine.connect() as connection:
+        pending = connection.execute(
+            select(UsageEventModel.__table__)
+        ).mappings().one()
+    assert pending["usage_status"] == "pending"
+    assert pending["credits_micro"] is None
+
+    with quota_engine.begin() as connection:
+        connection.execute(
+            update(PricingRuleModel)
+            .where(PricingRuleModel.pricing_key == "provider-a/model-a")
+            .values(search_call_credits_micro=123)
+        )
+    await reporter.report(invocation, usage, _outcome())
+
+    with quota_engine.connect() as connection:
+        repriced = connection.execute(
+            select(UsageEventModel.__table__)
+        ).mappings().one()
+    assert repriced["usage_status"] == "exact"
+    assert repriced["credits_micro"] == 123
 
 
 @pytest.mark.asyncio

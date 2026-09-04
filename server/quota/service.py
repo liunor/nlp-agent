@@ -14,6 +14,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from core.model_runtime.usage import BillableFeatureUsage
 from server.quota.contracts import (
     AdmitTurn,
     FinishTurn,
@@ -583,6 +584,307 @@ class QuotaService:
             policy_version=policy.version,
         )
 
+    def reserve_feature_usage(
+        self,
+        *,
+        reservation_id: str,
+        operation_id: str,
+        pricing_key: str,
+        feature_usage: BillableFeatureUsage,
+        now: datetime | None = None,
+    ) -> int:
+        """Add a feature hold to the existing Turn Reservation.
+
+        This deliberately does not create an Agent-step Reservation. The hold
+        is recorded on the Turn's existing Reservation/Ledger and is consumed
+        by the UsageEvent settlement that uses the same operation id.
+        """
+
+        with _GLOBAL_QUOTA_LOCK:
+            with self._engine.begin() as connection:
+                reserved = self.reserve_feature_usage_in_transaction(
+                    connection,
+                    reservation_id=reservation_id,
+                    operation_id=operation_id,
+                    pricing_key=pricing_key,
+                    feature_usage=feature_usage,
+                    now=now,
+                )
+        self.notify_reservation(reservation_id)
+        return reserved
+
+    def reserve_feature_usage_in_transaction(
+        self,
+        connection: Connection,
+        *,
+        reservation_id: str,
+        operation_id: str,
+        pricing_key: str,
+        feature_usage: BillableFeatureUsage,
+        now: datetime | None = None,
+    ) -> int:
+        at = _utc(now)
+        db_now = _db_time(at)
+        prefix = f"reserve-feature:{operation_id}:"
+        reservation = connection.execute(
+            select(QuotaReservationModel)
+            .where(QuotaReservationModel.id == reservation_id)
+            .with_for_update()
+        ).mappings().first()
+        lease_expires_at = _aware(reservation["lease_expires_at"]) if reservation else None
+        if (
+            reservation is None
+            or reservation["status"] not in _ACTIVE_RESERVATION_STATUSES
+            or lease_expires_at is None
+            or lease_expires_at <= at
+        ):
+            raise self._rejection(
+                QuotaErrorCode.RESERVATION_NOT_ACTIVE,
+                f"Reservation {reservation_id!r} is not active",
+            )
+
+        existing = connection.execute(
+            select(QuotaLedgerEntryModel)
+            .where(
+                QuotaLedgerEntryModel.reservation_id == reservation_id,
+                QuotaLedgerEntryModel.entry_type == "reserve",
+                QuotaLedgerEntryModel.idempotency_key.like(f"{prefix}%"),
+            )
+        ).mappings().all()
+        feature_facts = feature_usage.model_dump(mode="json")
+        if existing:
+            metadata = existing[0]["metadata_json"]
+            if (
+                metadata.get("pricing_key") != pricing_key
+                or metadata.get("feature_usage") != feature_facts
+            ):
+                raise self._rejection(
+                    QuotaErrorCode.RESERVATION_CONFLICT,
+                    "Feature reservation replay has different usage facts",
+                )
+            return int(metadata["reserved_micro"])
+
+        feature_micro = self._estimate_feature_micro(
+            connection,
+            pricing_key=pricing_key,
+            feature_usage=feature_usage,
+            at=at,
+        )
+        snapshot = reservation["policy_snapshot_json"] or {}
+        request_limit = snapshot.get("request_limit_micro")
+        request_total = (
+            int(reservation["settled_micro"])
+            + int(reservation["reserved_micro"])
+            + feature_micro
+        )
+        if request_limit is not None and request_total > int(request_limit):
+            raise self._rejection(
+                QuotaErrorCode.REQUEST_LIMIT,
+                "The feature hold exceeds the per-request quota",
+                remaining_micro=max(
+                    0,
+                    int(request_limit)
+                    - int(reservation["settled_micro"])
+                    - int(reservation["reserved_micro"]),
+                ),
+            )
+
+        bucket_rows = self._reservation_buckets(connection, reservation_id)
+        for bucket in bucket_rows:
+            available = self._available(
+                bucket,
+                self._reservation_overdraft(
+                    reservation, bucket["owner_type"], bucket["owner_id"]
+                ),
+                self._additional_capacity_for_bucket(connection, bucket, at),
+            )
+            if feature_micro > available:
+                if bucket["owner_type"] == "workspace":
+                    code = QuotaErrorCode.WORKSPACE_EXHAUSTED
+                else:
+                    code = (
+                        QuotaErrorCode.DAILY_EXHAUSTED
+                        if bucket["bucket_type"] == "daily"
+                        else QuotaErrorCode.WEEKLY_EXHAUSTED
+                    )
+                raise self._rejection(
+                    code,
+                    f"The {bucket['owner_type']} {bucket['bucket_type']} quota is exhausted",
+                    remaining_micro=available,
+                    reset_at=_aware(bucket["period_end"]),
+                    retryable=True,
+                )
+
+        metadata = {
+            "operation_id": operation_id,
+            "pricing_key": pricing_key,
+            "feature_usage": feature_facts,
+            "reserved_micro": feature_micro,
+        }
+        if not bucket_rows:
+            self._insert_ledger(
+                connection,
+                reservation_id=reservation_id,
+                bucket_id=None,
+                entry_type="reserve",
+                amount_micro=feature_micro,
+                reserved_delta_micro=feature_micro,
+                consumed_delta_micro=0,
+                idempotency_key=f"{prefix}none",
+                reason="feature_admission",
+                metadata=metadata,
+                created_at=db_now,
+            )
+        for bucket in bucket_rows:
+            connection.execute(
+                update(QuotaBucketModel)
+                .where(QuotaBucketModel.id == bucket["id"])
+                .values(
+                    reserved_micro=int(bucket["reserved_micro"]) + feature_micro,
+                    version=int(bucket["version"]) + 1,
+                    updated_at=db_now,
+                )
+            )
+            self._insert_ledger(
+                connection,
+                reservation_id=reservation_id,
+                bucket_id=bucket["id"],
+                entry_type="reserve",
+                amount_micro=feature_micro,
+                reserved_delta_micro=feature_micro,
+                consumed_delta_micro=0,
+                idempotency_key=f"{prefix}{bucket['id']}",
+                reason="feature_admission",
+                metadata={**metadata, "bucket_type": bucket["bucket_type"]},
+                created_at=db_now,
+            )
+        connection.execute(
+            update(QuotaReservationModel)
+            .where(QuotaReservationModel.id == reservation_id)
+            .values(
+                reserved_micro=int(reservation["reserved_micro"]) + feature_micro,
+                updated_at=db_now,
+            )
+        )
+        return feature_micro
+
+    def release_feature_usage(
+        self,
+        *,
+        reservation_id: str,
+        operation_id: str,
+        now: datetime | None = None,
+    ) -> int:
+        """Release an unused feature hold after the paid operation did not run."""
+
+        with _GLOBAL_QUOTA_LOCK:
+            with self._engine.begin() as connection:
+                released = self.release_feature_usage_in_transaction(
+                    connection,
+                    reservation_id=reservation_id,
+                    operation_id=operation_id,
+                    now=now,
+                )
+        self.notify_reservation(reservation_id)
+        return released
+
+    def release_feature_usage_in_transaction(
+        self,
+        connection: Connection,
+        *,
+        reservation_id: str,
+        operation_id: str,
+        now: datetime | None = None,
+    ) -> int:
+        db_now = _db_time(_utc(now))
+        reserve_prefix = f"reserve-feature:{operation_id}:"
+        release_prefix = f"release-feature:{operation_id}:"
+        reservation = connection.execute(
+            select(QuotaReservationModel)
+            .where(QuotaReservationModel.id == reservation_id)
+            .with_for_update()
+        ).mappings().first()
+        if reservation is None:
+            raise QuotaDomainError(
+                QuotaErrorCode.RESERVATION_NOT_ACTIVE,
+                f"Reservation {reservation_id!r} does not exist",
+            )
+        prior_release = connection.execute(
+            select(QuotaLedgerEntryModel.id)
+            .where(
+                QuotaLedgerEntryModel.reservation_id == reservation_id,
+                QuotaLedgerEntryModel.entry_type == "release",
+                QuotaLedgerEntryModel.idempotency_key.like(f"{release_prefix}%"),
+            )
+            .limit(1)
+        ).first()
+        if prior_release is not None:
+            return 0
+        reserves = connection.execute(
+            select(QuotaLedgerEntryModel)
+            .where(
+                QuotaLedgerEntryModel.reservation_id == reservation_id,
+                QuotaLedgerEntryModel.entry_type == "reserve",
+                QuotaLedgerEntryModel.idempotency_key.like(f"{reserve_prefix}%"),
+            )
+        ).mappings().all()
+        if not reserves:
+            return 0
+        requested = int(reserves[0]["metadata_json"]["reserved_micro"])
+        released = min(int(reservation["reserved_micro"]), requested)
+        bucket_rows = self._reservation_buckets(connection, reservation_id)
+        if not bucket_rows:
+            self._insert_ledger(
+                connection,
+                reservation_id=reservation_id,
+                bucket_id=None,
+                entry_type="release",
+                amount_micro=-released,
+                reserved_delta_micro=-released,
+                consumed_delta_micro=0,
+                idempotency_key=f"{release_prefix}none",
+                reason="feature_execution_failed",
+                metadata={"operation_id": operation_id, "released_micro": released},
+                created_at=db_now,
+            )
+        for bucket in bucket_rows:
+            bucket_release = min(int(bucket["reserved_micro"]), released)
+            self._insert_ledger(
+                connection,
+                reservation_id=reservation_id,
+                bucket_id=bucket["id"],
+                entry_type="release",
+                amount_micro=-bucket_release,
+                reserved_delta_micro=-bucket_release,
+                consumed_delta_micro=0,
+                idempotency_key=f"{release_prefix}{bucket['id']}",
+                reason="feature_execution_failed",
+                metadata={"operation_id": operation_id, "released_micro": released},
+                created_at=db_now,
+            )
+            connection.execute(
+                update(QuotaBucketModel)
+                .where(QuotaBucketModel.id == bucket["id"])
+                .values(
+                    reserved_micro=max(
+                        0, int(bucket["reserved_micro"]) - bucket_release
+                    ),
+                    version=int(bucket["version"]) + 1,
+                    updated_at=db_now,
+                )
+            )
+        connection.execute(
+            update(QuotaReservationModel)
+            .where(QuotaReservationModel.id == reservation_id)
+            .values(
+                reserved_micro=max(
+                    0, int(reservation["reserved_micro"]) - released
+                ),
+                updated_at=db_now,
+            )
+        )
+        return released
+
     def settle_usage(
         self,
         *,
@@ -739,7 +1041,26 @@ class QuotaService:
             )
 
         bucket_rows = self._reservation_buckets(connection, reservation_id)
-        release_amount = min(int(reservation["reserved_micro"]), credits_micro)
+        feature_reserve = connection.execute(
+            select(QuotaLedgerEntryModel.metadata_json)
+            .where(
+                QuotaLedgerEntryModel.reservation_id == reservation_id,
+                QuotaLedgerEntryModel.entry_type == "reserve",
+                QuotaLedgerEntryModel.idempotency_key.like(
+                    f"reserve-feature:{operation_id}:%"
+                ),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        feature_hold_micro = int(
+            (feature_reserve or {}).get("reserved_micro", 0)
+        )
+        # When a conservative image-unit hold is later replaced by cheaper
+        # exact visual Tokens, release the unused part with this settlement.
+        release_amount = min(
+            int(reservation["reserved_micro"]),
+            max(credits_micro, feature_hold_micro),
+        )
         over_limit = False
         if not bucket_rows:
             self._insert_ledger(
@@ -1730,6 +2051,53 @@ class QuotaService:
             + output_tokens * output_rate
         )
         return (numerator + 1_000_000 - 1) // 1_000_000
+
+    @staticmethod
+    def _estimate_feature_micro(
+        connection: Connection,
+        *,
+        pricing_key: str,
+        feature_usage: BillableFeatureUsage,
+        at: datetime,
+    ) -> int:
+        rows = connection.execute(
+            select(PricingRuleModel)
+            .where(
+                PricingRuleModel.pricing_key == pricing_key,
+                PricingRuleModel.status == "active",
+                PricingRuleModel.effective_from <= _db_time(at),
+                (PricingRuleModel.effective_until.is_(None))
+                | (PricingRuleModel.effective_until > _db_time(at)),
+            )
+            .order_by(PricingRuleModel.effective_from.desc())
+        ).mappings().all()
+        if len(rows) != 1:
+            raise QuotaDomainError(
+                QuotaErrorCode.ADMISSION_DENIED,
+                f"No unique active pricing rule exists for {pricing_key!r}",
+            )
+        row = rows[0]
+        required_rates = (
+            (feature_usage.visual_input_tokens, "visual_input_credits_micro_per_million_tokens"),
+            (feature_usage.image_units, "image_unit_credits_micro"),
+            (feature_usage.search_calls, "search_call_credits_micro"),
+            (feature_usage.link_pages, "link_page_credits_micro"),
+        )
+        for units, field in required_rates:
+            if units and row[field] is None:
+                raise QuotaDomainError(
+                    QuotaErrorCode.ADMISSION_DENIED,
+                    f"Feature usage has no configured price in {field}",
+                )
+        token_numerator = feature_usage.visual_input_tokens * int(
+            row["visual_input_credits_micro_per_million_tokens"] or 0
+        )
+        return (
+            (token_numerator + 1_000_000 - 1) // 1_000_000
+            + feature_usage.image_units * int(row["image_unit_credits_micro"] or 0)
+            + feature_usage.search_calls * int(row["search_call_credits_micro"] or 0)
+            + feature_usage.link_pages * int(row["link_page_credits_micro"] or 0)
+        )
 
     @staticmethod
     def _available(

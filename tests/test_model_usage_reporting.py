@@ -211,6 +211,9 @@ async def test_provider_feature_usage_overrides_image_fallback_and_counts_search
             await resilient.ainvoke([HumanMessage(content="inspect and search")])
 
     invocation, usage, _outcome = reporter.events[0]
+    reserved = reporter.feature_reservations[0]
+    assert reserved.feature_usage.image_units == 2
+    assert reserved.feature_usage.search_calls == 1
     assert usage.input_tokens == 50
     assert invocation.feature_usage.visual_input_tokens == 30
     assert invocation.feature_usage.image_units == 0
@@ -243,6 +246,30 @@ async def test_forced_search_increments_prebound_count_without_provider_count():
 
     invocation, _usage, _outcome = reporter.events[0]
     assert invocation.feature_usage.search_calls == 3
+    assert reporter.feature_reservations[0].feature_usage.search_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_feature_admission_failure_prevents_provider_execution():
+    class RejectingReporter(InMemoryModelUsageReporter):
+        async def reserve_feature_usage(self, invocation):
+            raise RuntimeError("feature quota exhausted")
+
+    reporter = RejectingReporter()
+    slot = ModelUsageReporterSlot(reporter, required=True)
+    fake = FakeRawModel([AIMessage(content="must not run")])
+    resilient = ResilientChatModel(
+        [_candidate("denied-search-cand", fake, native_search=True)],
+        reporter_slot=slot,
+        normalize_response=False,
+    )
+
+    with bind_usage_attribution(_sample_attribution()):
+        with pytest.raises(RuntimeError, match="feature quota exhausted"):
+            await resilient.ainvoke([HumanMessage(content="search")])
+
+    assert fake.calls == 0
+    assert reporter.events == []
 
 
 @pytest.mark.asyncio

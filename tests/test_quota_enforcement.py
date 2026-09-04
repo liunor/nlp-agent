@@ -11,6 +11,7 @@ from sqlalchemy.dialects.mysql import dialect as mysql_dialect
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import StaticPool
 
+from core.model_runtime.usage import BillableFeatureUsage
 from server.quota.contracts import AdmitTurn, FinishTurn, TurnAdmissionResult
 from server.quota.errors import QuotaErrorCode, QuotaRejectedError
 from server.quota.models import (
@@ -122,6 +123,179 @@ def _command(
         estimated_micro=estimated_micro,
         idempotency_key=idempotency_key or f"idempotency-{turn_id}",
     )
+
+
+def _feature_price(engine, *, pricing_key: str = "feature/link-read", link_price: int = 20):
+    with engine.begin() as connection:
+        connection.execute(
+            insert(PricingRuleModel).values(
+                id=str(uuid4()),
+                pricing_key=pricing_key,
+                version="feature-1",
+                effective_from=NOW,
+                effective_until=None,
+                ordinary_input_credits_micro_per_million_tokens=0,
+                cached_input_credits_micro_per_million_tokens=0,
+                cache_write_credits_micro_per_million_tokens=0,
+                output_credits_micro_per_million_tokens=0,
+                reasoning_output_credits_micro_per_million_tokens=None,
+                visual_input_credits_micro_per_million_tokens=1_000_000,
+                image_unit_credits_micro=10,
+                search_call_credits_micro=15,
+                link_page_credits_micro=link_price,
+                status="active",
+                created_by="test",
+                created_at=NOW,
+            )
+        )
+
+
+def test_feature_hold_reuses_turn_reservation_and_is_idempotent(quota_engine):
+    _policy(quota_engine, daily=200, weekly=1_000, request=200)
+    _feature_price(quota_engine)
+    service = QuotaService(quota_engine)
+    admitted = service.admit_turn(
+        _command(turn_id="turn-feature-hold"),
+        role_codes=("student",),
+        now=NOW,
+    )
+
+    first = service.reserve_feature_usage(
+        reservation_id=admitted.reservation_id,
+        operation_id="feature-operation-1",
+        pricing_key="feature/link-read",
+        feature_usage=BillableFeatureUsage(link_pages=1),
+        now=NOW + timedelta(seconds=1),
+    )
+    replay = service.reserve_feature_usage(
+        reservation_id=admitted.reservation_id,
+        operation_id="feature-operation-1",
+        pricing_key="feature/link-read",
+        feature_usage=BillableFeatureUsage(link_pages=1),
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert first == replay == 20
+    with quota_engine.connect() as connection:
+        reservation = connection.execute(
+            select(QuotaReservationModel.__table__)
+        ).mappings().one()
+        feature_reserves = connection.execute(
+            select(QuotaLedgerEntryModel.__table__).where(
+                QuotaLedgerEntryModel.reason == "feature_admission"
+            )
+        ).mappings().all()
+    assert reservation["reserved_micro"] == 80
+    assert len(feature_reserves) == 2
+    assert {row["entry_type"] for row in feature_reserves} == {"reserve"}
+
+
+def test_feature_hold_blocks_paid_tool_before_execution_when_quota_is_insufficient(
+    quota_engine,
+):
+    _policy(quota_engine, daily=100, weekly=1_000, request=100)
+    _feature_price(quota_engine, link_price=50)
+    service = QuotaService(quota_engine)
+    admitted = service.admit_turn(
+        _command(turn_id="turn-feature-denied"),
+        role_codes=("student",),
+        now=NOW,
+    )
+
+    with pytest.raises(QuotaRejectedError) as error:
+        service.reserve_feature_usage(
+            reservation_id=admitted.reservation_id,
+            operation_id="feature-operation-denied",
+            pricing_key="feature/link-read",
+            feature_usage=BillableFeatureUsage(link_pages=1),
+            now=NOW + timedelta(seconds=1),
+        )
+
+    assert error.value.problem.code is QuotaErrorCode.REQUEST_LIMIT
+    with quota_engine.connect() as connection:
+        reservation = connection.execute(
+            select(QuotaReservationModel.__table__)
+        ).mappings().one()
+    assert reservation["reserved_micro"] == 60
+
+
+def test_failed_tool_releases_only_its_feature_hold(quota_engine):
+    _policy(quota_engine, daily=200, weekly=1_000, request=200)
+    _feature_price(quota_engine)
+    service = QuotaService(quota_engine)
+    admitted = service.admit_turn(
+        _command(turn_id="turn-feature-release"),
+        role_codes=("student",),
+        now=NOW,
+    )
+    service.reserve_feature_usage(
+        reservation_id=admitted.reservation_id,
+        operation_id="feature-operation-release",
+        pricing_key="feature/link-read",
+        feature_usage=BillableFeatureUsage(link_pages=1),
+        now=NOW + timedelta(seconds=1),
+    )
+
+    released = service.release_feature_usage(
+        reservation_id=admitted.reservation_id,
+        operation_id="feature-operation-release",
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert released == 20
+    with quota_engine.connect() as connection:
+        reservation = connection.execute(
+            select(QuotaReservationModel.__table__)
+        ).mappings().one()
+        release_rows = connection.execute(
+            select(QuotaLedgerEntryModel.__table__).where(
+                QuotaLedgerEntryModel.reason == "feature_execution_failed"
+            )
+        ).mappings().all()
+    assert reservation["reserved_micro"] == 60
+    assert len(release_rows) == 2
+
+
+def test_feature_settlement_releases_unused_conservative_hold(quota_engine):
+    _policy(quota_engine, daily=200, weekly=1_000, request=200)
+    _feature_price(quota_engine, pricing_key="feature/image-understanding")
+    service = QuotaService(quota_engine)
+    admitted = service.admit_turn(
+        _command(turn_id="turn-feature-exact"),
+        role_codes=("student",),
+        now=NOW,
+    )
+    service.reserve_feature_usage(
+        reservation_id=admitted.reservation_id,
+        operation_id="feature-operation-exact",
+        pricing_key="feature/image-understanding",
+        feature_usage=BillableFeatureUsage(image_units=3),
+        now=NOW + timedelta(seconds=1),
+    )
+
+    service.settle_usage(
+        reservation_id=admitted.reservation_id,
+        operation_id="feature-operation-exact",
+        credits_micro=10,
+        usage_status="exact",
+        pricing_key="feature/image-understanding",
+        pricing_version="feature-1",
+        now=NOW + timedelta(seconds=2),
+    )
+
+    with quota_engine.connect() as connection:
+        reservation = connection.execute(
+            select(QuotaReservationModel.__table__)
+        ).mappings().one()
+        bucket = connection.execute(
+            select(QuotaBucketModel.__table__).where(
+                QuotaBucketModel.bucket_type == "daily"
+            )
+        ).mappings().one()
+    assert reservation["reserved_micro"] == 60
+    assert reservation["settled_micro"] == 10
+    assert bucket["reserved_micro"] == 60
+    assert bucket["consumed_micro"] == 10
 
 
 def test_weekly_quota_bucket_uses_monday_utc_boundary(quota_engine):

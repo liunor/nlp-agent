@@ -61,6 +61,14 @@ class InMemoryModelUsageReporter:
         self._records: dict[
             str, tuple[ModelInvocation, CanonicalTokenUsage, InvocationOutcome]
         ] = {}
+        self._feature_reservations: list[ModelInvocation] = []
+        self._released_feature_reservations: list[ModelInvocation] = []
+
+    async def reserve_feature_usage(self, invocation: ModelInvocation) -> None:
+        self._feature_reservations.append(invocation)
+
+    async def release_feature_usage(self, invocation: ModelInvocation) -> None:
+        self._released_feature_reservations.append(invocation)
 
     async def report(
         self,
@@ -87,3 +95,13 @@ class InMemoryModelUsageReporter:
 
     def clear(self) -> None:
         self._records.clear()
+        self._feature_reservations.clear()
+        self._released_feature_reservations.clear()
+
+    @property
+    def feature_reservations(self) -> list[ModelInvocation]:
+        return list(self._feature_reservations)
+
+    @property
+    def released_feature_reservations(self) -> list[ModelInvocation]:
+        return list(self._released_feature_reservations)

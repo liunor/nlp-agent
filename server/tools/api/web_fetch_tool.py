@@ -6,6 +6,12 @@ import json
 
 from langchain_core.tools import tool
 
+from core.model_runtime.usage import BillableFeatureUsage
+from server.quota.reporting import (
+    begin_billable_tool_usage,
+    cancel_billable_tool_usage,
+    complete_billable_tool_usage,
+)
 from server.tools.web.contracts import WebAccessError, WebFetchInput
 from server.tools.web.fetch import build_fetch_service
 
@@ -16,9 +22,23 @@ async def web_fetch(
 ) -> str:
     """读取指定的公开 http(s) 链接，抽取可引用正文，返回带引用的结构化结果。"""
     request = WebFetchInput(url=url, extract_mode=extract_mode, max_chars=max_chars)
+    billing_invocation = None
+
+    async def reserve_cache_miss() -> None:
+        nonlocal billing_invocation
+        billing_invocation = await begin_billable_tool_usage(
+            tool_name="web_fetch",
+            feature_usage=BillableFeatureUsage(link_pages=1),
+        )
+
     try:
         service = build_fetch_service()
-        response = await service.fetch(request)
+        response = await service.fetch(request, before_download=reserve_cache_miss)
     except WebAccessError as error:
+        await cancel_billable_tool_usage(billing_invocation)
         return json.dumps(error.to_error_dict(), ensure_ascii=False)
+    except BaseException:
+        await cancel_billable_tool_usage(billing_invocation)
+        raise
+    await complete_billable_tool_usage(billing_invocation)
     return response.model_dump_json()

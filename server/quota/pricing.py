@@ -139,9 +139,6 @@ class PricingCatalog:
         pricing_key = invocation.identity.pricing_key
         rule = self._active_rule(pricing_key, outcome.completed_at)
         features = invocation.feature_usage
-        vision_metered = bool(
-            features.visual_input_tokens or features.image_units
-        )
         if features.visual_input_tokens > usage.input_tokens:
             raise ValueError("visual_input_tokens must not exceed input_tokens")
         if features.visual_input_tokens and (
@@ -163,22 +160,27 @@ class PricingCatalog:
                 "link page usage has no configured price"
             )
 
-        if vision_metered:
-            # The confirmed product formula for an image-understanding call is
-            # visual Tokens (or image units) plus output Tokens. It intentionally
-            # excludes every canonical input partition, including any text prompt
-            # bundled into Provider input_tokens.
-            ordinary_input = 0
-            cached_input = 0
-            cache_write_input = 0
-        else:
-            ordinary_input = (
-                usage.input_tokens
-                - usage.cached_input_tokens
-                - usage.cache_write_input_tokens
-            )
-            cached_input = usage.cached_input_tokens
-            cache_write_input = usage.cache_write_input_tokens
+        ordinary_input = (
+            usage.input_tokens
+            - usage.cached_input_tokens
+            - usage.cache_write_input_tokens
+        )
+        cached_input = usage.cached_input_tokens
+        cache_write_input = usage.cache_write_input_tokens
+        # Provider visual Tokens are a subset of input_tokens. Remove exactly
+        # that measured subset across canonical input partitions so remaining
+        # text is still charged and vision is never charged twice. Providers do
+        # not expose the visual cache partition, so use one deterministic order.
+        visual_remaining = features.visual_input_tokens
+        visual_from_ordinary = min(ordinary_input, visual_remaining)
+        ordinary_input -= visual_from_ordinary
+        visual_remaining -= visual_from_ordinary
+        visual_from_cached = min(cached_input, visual_remaining)
+        cached_input -= visual_from_cached
+        visual_remaining -= visual_from_cached
+        cache_write_input -= min(cache_write_input, visual_remaining)
+        # Image-unit fallback has no trustworthy Token split and therefore must
+        # not erase all input Tokens (which would silently exempt text prompts).
         if rule.reasoning_output_credits_micro_per_million_tokens is None:
             ordinary_output = usage.output_tokens
             reasoning_output = 0

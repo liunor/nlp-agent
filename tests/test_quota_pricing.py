@@ -217,7 +217,7 @@ def test_rejects_overlapping_price_versions_for_one_pricing_key():
         ])
 
 
-def test_visual_tokens_replace_model_input_but_keep_output_pricing():
+def test_visual_tokens_replace_only_visual_input_and_keep_text_pricing():
     usage = CanonicalTokenUsage(
         input_tokens=1_000,
         output_tokens=100,
@@ -239,13 +239,39 @@ def test_visual_tokens_replace_model_input_but_keep_output_pricing():
         _outcome(),
     )
 
-    assert priced.ordinary_input_tokens == 0
+    assert priced.ordinary_input_tokens == 200
     assert priced.visual_input_tokens == 800
     assert priced.ordinary_output_tokens == 100
-    assert priced.credits_micro == 1_900
+    assert priced.credits_micro == 3_700
 
 
-def test_image_unit_fallback_replaces_input_and_adds_fixed_units():
+def test_visual_tokens_are_subtracted_across_cached_input_without_double_charge():
+    usage = CanonicalTokenUsage(
+        input_tokens=1_000,
+        cached_input_tokens=500,
+        output_tokens=0,
+        total_tokens=1_000,
+        source="provider",
+    )
+    rule = _rule(
+        ordinary_input_credits_micro_per_million_tokens=1_000_000,
+        cached_input_credits_micro_per_million_tokens=500_000,
+        visual_input_credits_micro_per_million_tokens=2_000_000,
+    )
+
+    priced = PricingCatalog([rule]).price(
+        _invocation(feature_usage=BillableFeatureUsage(visual_input_tokens=800)),
+        usage,
+        _outcome(),
+    )
+
+    assert priced.ordinary_input_tokens == 0
+    assert priced.cached_input_tokens == 200
+    assert priced.visual_input_tokens == 800
+    assert priced.credits_micro == 1_700
+
+
+def test_image_unit_fallback_does_not_erase_model_input_tokens():
     usage = CanonicalTokenUsage(
         input_tokens=1_000,
         output_tokens=100,
@@ -265,9 +291,9 @@ def test_image_unit_fallback_replaces_input_and_adds_fixed_units():
         _outcome(),
     )
 
-    assert priced.ordinary_input_tokens == 0
+    assert priced.ordinary_input_tokens == 1_000
     assert priced.image_units == 2
-    assert priced.credits_micro == 1_200
+    assert priced.credits_micro == 10_200
 
 
 def test_search_call_fee_and_model_tokens_are_combined_without_result_surcharge():
