@@ -411,7 +411,9 @@ class ResilientChatModel:
         )
         feature_usage = current_billable_feature_usage()
         if candidate.preset.native_search.enabled and candidate.preset.native_search.forced:
-            feature_usage = feature_usage.model_copy(update={"search_calls": 1})
+            feature_usage = feature_usage.model_copy(
+                update={"search_calls": feature_usage.search_calls + 1}
+            )
         invocation = ModelInvocation(
             operation_id=operation_id,
             identity=identity,

@@ -218,6 +218,34 @@ async def test_provider_feature_usage_overrides_image_fallback_and_counts_search
 
 
 @pytest.mark.asyncio
+async def test_forced_search_increments_prebound_count_without_provider_count():
+    reporter = InMemoryModelUsageReporter()
+    slot = ModelUsageReporterSlot(reporter)
+    fake = FakeRawModel(
+        [
+            AIMessage(
+                content="done",
+                response_metadata={
+                    "token_usage": {"prompt_tokens": 10, "completion_tokens": 2}
+                },
+            )
+        ]
+    )
+    resilient = ResilientChatModel(
+        [_candidate("forced-search-cand", fake, native_search=True)],
+        reporter_slot=slot,
+        normalize_response=False,
+    )
+
+    with bind_usage_attribution(_sample_attribution()):
+        with bind_billable_feature_usage(BillableFeatureUsage(search_calls=2)):
+            await resilient.ainvoke([HumanMessage(content="search again")])
+
+    invocation, _usage, _outcome = reporter.events[0]
+    assert invocation.feature_usage.search_calls == 3
+
+
+@pytest.mark.asyncio
 async def test_streaming_success_reports_once():
     reporter = InMemoryModelUsageReporter()
     slot = ModelUsageReporterSlot(reporter)

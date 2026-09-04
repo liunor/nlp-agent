@@ -164,8 +164,10 @@ class PricingCatalog:
             )
 
         if vision_metered:
-            # Vision input is priced by exact visual Tokens or by the image-unit
-            # fallback, never a second time as ordinary/cached model input.
+            # The confirmed product formula for an image-understanding call is
+            # visual Tokens (or image units) plus output Tokens. It intentionally
+            # excludes every canonical input partition, including any text prompt
+            # bundled into Provider input_tokens.
             ordinary_input = 0
             cached_input = 0
             cache_write_input = 0
