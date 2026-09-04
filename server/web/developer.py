@@ -30,6 +30,10 @@ def _safe(value: Any, key: str = "") -> Any:
 def _tool_snapshot() -> dict[str, Any]:
     from core.tool_registry import physical_tool_manager
 
+    # The Web process can be remote from the Agent Worker and therefore may
+    # never build an Agent graph. Load local descriptors for the control-plane
+    # view without starting MCP clients in the Web process.
+    physical_tool_manager.ensure_custom_tools()
     descriptors = []
     for descriptor in physical_tool_manager.runtime.catalog.descriptors():
         item = descriptor.model_dump(mode="json", exclude={"factory"})
