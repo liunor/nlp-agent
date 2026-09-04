@@ -192,6 +192,7 @@ def test_mysql_phase4_schema_contains_operations_tables_and_archive_columns():
 def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
     dsn = _mysql_dsn()
     engine = create_engine(dsn.replace("mysql+aiomysql://", "mysql+pymysql://"))
+    at = datetime.now(timezone.utc)
     policy_id = str(uuid4())
     user_id = f"feature-mysql-user-{uuid4()}"
     workspace_id = f"feature-mysql-workspace-{uuid4()}"
@@ -217,7 +218,7 @@ def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
                     max_overdraft_micro=0,
                     allowed_model_profiles=["economy"],
                     unlimited=False,
-                    effective_from=NOW,
+                    effective_from=at,
                     effective_until=None,
                     created_by="feature-integration",
                 )
@@ -230,7 +231,7 @@ def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
                     policy_id=policy_id,
                     priority=1_000,
                     status="active",
-                    effective_from=NOW,
+                    effective_from=at,
                     effective_until=None,
                 )
             )
@@ -239,7 +240,7 @@ def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
                     id=str(uuid4()),
                     pricing_key=pricing_key,
                     version="1",
-                    effective_from=NOW,
+                    effective_from=at,
                     effective_until=None,
                     ordinary_input_credits_micro_per_million_tokens=0,
                     cached_input_credits_micro_per_million_tokens=0,
@@ -252,7 +253,7 @@ def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
                     link_page_credits_micro=0,
                     status="active",
                     created_by="feature-integration",
-                    created_at=NOW,
+                    created_at=at,
                 )
             )
         admitted = service.admit_turn(
@@ -269,7 +270,7 @@ def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
                 pricing_key=pricing_key,
                 idempotency_key=f"idempotency-{turn_id}",
             ),
-            now=NOW,
+            now=at,
         )
         reservation_id = admitted.reservation_id
         invocation = ModelInvocation(
@@ -291,7 +292,7 @@ def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
             ),
             attempt=1,
             fallback_index=0,
-            started_at=NOW,
+            started_at=at,
             feature_usage=BillableFeatureUsage(search_calls=1),
         )
         reporter = DurableModelUsageReporter(engine, quota_service=service)
@@ -300,14 +301,14 @@ def test_mysql_feature_hold_and_usage_event_settle_on_existing_reservation():
             reporter.report(
                 invocation,
                 CanonicalTokenUsage(source="provider"),
-                InvocationOutcome(status="succeeded", completed_at=NOW),
+                InvocationOutcome(status="succeeded", completed_at=at),
             )
         )
         asyncio.run(
             reporter.report(
                 invocation,
                 CanonicalTokenUsage(source="provider"),
-                InvocationOutcome(status="succeeded", completed_at=NOW),
+                InvocationOutcome(status="succeeded", completed_at=at),
             )
         )
 

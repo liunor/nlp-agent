@@ -5,13 +5,7 @@ from __future__ import annotations
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from core.model_runtime.usage import BillableFeatureUsage
 from core.session_context import SessionContext
-from server.quota.reporting import (
-    begin_billable_tool_usage,
-    cancel_billable_tool_usage,
-    complete_billable_tool_usage,
-)
 from server.tools.vision.contracts import (
     ImageAnalyzeInput,
     ImageLanguage,
@@ -35,6 +29,15 @@ async def image_analyze(
     max_chars: int = 20_000,
 ) -> str:
     """识别或理解受控上传目录中的图片，返回不可信标记的结构化 JSON。"""
+
+    # Keep quota/model-runtime initialization outside the tool registration
+    # import path. Sandbox contract discovery imports this module without a DB.
+    from core.model_runtime.usage import BillableFeatureUsage
+    from server.quota.reporting import (
+        begin_billable_tool_usage,
+        cancel_billable_tool_usage,
+        complete_billable_tool_usage,
+    )
 
     request = ImageAnalyzeInput(
         image=image,
