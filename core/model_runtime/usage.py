@@ -16,6 +16,7 @@ from core.observability.context import current_telemetry_context
 
 
 UsageSource = Literal["provider", "estimated", "none"]
+UsageSemantics = Literal["final", "cumulative", "delta", "partial"]
 UsagePurpose = Literal[
     "coordinator",
     "worker",
@@ -32,6 +33,10 @@ StrictPositiveInt = Annotated[int, Field(strict=True, ge=1)]
 
 class MissingUsageAttributionError(RuntimeError):
     """Raised when an LLM invocation cannot resolve mandatory usage attribution."""
+
+
+class UsageReporterUnavailableError(RuntimeError):
+    """Raised when a required model-process usage Reporter is not configured."""
 
 
 class UsageFrozenModel(BaseModel):
@@ -69,6 +74,7 @@ class CanonicalTokenUsage(UsageFrozenModel):
     reasoning_output_tokens: StrictNonNegativeInt = 0
     total_tokens: StrictNonNegativeInt = 0
     source: UsageSource = "none"
+    semantics: UsageSemantics = "final"
     provider_response_id: str | None = None
 
     @model_validator(mode="after")
@@ -94,6 +100,23 @@ class CanonicalTokenUsage(UsageFrozenModel):
         return self
 
 
+class BillableFeatureUsage(UsageFrozenModel):
+    """Non-text usage facts carried beside, never inside, canonical Token usage."""
+
+    visual_input_tokens: StrictNonNegativeInt = 0
+    image_units: StrictNonNegativeInt = 0
+    search_calls: StrictNonNegativeInt = 0
+    link_pages: StrictNonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def validate_vision_fallback(self) -> "BillableFeatureUsage":
+        if self.visual_input_tokens and self.image_units:
+            raise ValueError(
+                "visual_input_tokens and image_units are mutually exclusive"
+            )
+        return self
+
+
 class ModelInvocation(UsageFrozenModel):
     operation_id: str = Field(min_length=1)
     identity: ModelIdentity
@@ -101,6 +124,9 @@ class ModelInvocation(UsageFrozenModel):
     attempt: StrictPositiveInt
     fallback_index: StrictNonNegativeInt
     started_at: datetime
+    feature_usage: BillableFeatureUsage = Field(
+        default_factory=BillableFeatureUsage
+    )
 
     @field_validator("operation_id")
     @classmethod
@@ -156,10 +182,17 @@ _CURRENT_ATTRIBUTION: contextvars.ContextVar[UsageAttributionContext | None] = (
 _CURRENT_PURPOSE: contextvars.ContextVar[UsagePurpose | None] = (
     contextvars.ContextVar("nlp_usage_purpose", default=None)
 )
+_CURRENT_FEATURE_USAGE: contextvars.ContextVar[BillableFeatureUsage | None] = (
+    contextvars.ContextVar("nlp_billable_feature_usage", default=None)
+)
 
 
 def current_usage_attribution() -> UsageAttributionContext | None:
     return _CURRENT_ATTRIBUTION.get()
+
+
+def current_billable_feature_usage() -> BillableFeatureUsage:
+    return _CURRENT_FEATURE_USAGE.get() or BillableFeatureUsage()
 
 
 @contextmanager
@@ -186,6 +219,17 @@ def bind_usage_purpose(purpose: UsagePurpose) -> Iterator[None]:
         if token_attr is not None:
             _CURRENT_ATTRIBUTION.reset(token_attr)
         _CURRENT_PURPOSE.reset(token_purpose)
+
+
+@contextmanager
+def bind_billable_feature_usage(
+    usage: BillableFeatureUsage,
+) -> Iterator[BillableFeatureUsage]:
+    token = _CURRENT_FEATURE_USAGE.set(usage)
+    try:
+        yield usage
+    finally:
+        _CURRENT_FEATURE_USAGE.reset(token)
 
 
 def resolve_usage_attribution() -> UsageAttributionContext:

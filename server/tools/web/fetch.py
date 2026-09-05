@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +33,8 @@ from utils.logger import get_logger
 logger = get_logger("nlp_agent.tools.web_fetch")
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_SHARED_SERVICE_LOCK = threading.Lock()
+_SHARED_SERVICE: WebFetchService | None = None
 
 
 def _host_digest(host: str) -> str:
@@ -63,8 +68,14 @@ class WebFetchService:
         self.config = config
         self.transport = transport
         self.cache = cache if cache is not None else TTLCache(config.fetch.cache_ttl_s)
+        self._cache_locks: dict[str, asyncio.Lock] = {}
 
-    async def fetch(self, request: WebFetchInput) -> WebFetchResponse:
+    async def fetch(
+        self,
+        request: WebFetchInput,
+        *,
+        before_download: Callable[[], Awaitable[None]] | None = None,
+    ) -> WebFetchResponse:
         entry = validate_url(request.url)
         max_chars = min(request.max_chars, self.config.fetch.max_chars)
         key = cache_key(
@@ -73,29 +84,42 @@ class WebFetchService:
         cached = self.cache.get(key)
         if cached is not None:
             logger.debug("web_fetch cache hit", host_digest=_host_digest(entry.host))
-            return WebFetchResponse.model_validate_json(cached)
-
-        download = await self._download(entry, as_markdown=request.extract_mode == "markdown")
-        truncated, text_body, warnings = self._extract(download, max_chars)
-        result = WebFetchResponse(
-            url=entry.normalized,
-            final_url=download["final_url"],
-            title=download["title"],
-            status_code=download["status_code"],
-            content_type=download["content_type"],
-            extractor=download["extractor"],
-            text=f"{UNTRUSTED_CONTENT_BANNER}\n\n{text_body}",
-            truncated=truncated,
-            untrusted=True,
-            citation=Citation(
+            return WebFetchResponse.model_validate_json(cached).model_copy(
+                update={"cache_hit": True}
+            )
+        lock = self._cache_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = self.cache.get(key)
+            if cached is not None:
+                logger.debug("web_fetch cache hit", host_digest=_host_digest(entry.host))
+                return WebFetchResponse.model_validate_json(cached).model_copy(
+                    update={"cache_hit": True}
+                )
+            if before_download is not None:
+                await before_download()
+            download = await self._download(
+                entry, as_markdown=request.extract_mode == "markdown"
+            )
+            truncated, text_body, warnings = self._extract(download, max_chars)
+            result = WebFetchResponse(
+                url=entry.normalized,
+                final_url=download["final_url"],
                 title=download["title"],
-                url=download["final_url"],
-                retrieved_at=datetime.now(timezone.utc),
-                source_provider="web_fetch",
-            ),
-            warnings=warnings,
-        )
-        self.cache.put(key, result.model_dump_json())
+                status_code=download["status_code"],
+                content_type=download["content_type"],
+                extractor=download["extractor"],
+                text=f"{UNTRUSTED_CONTENT_BANNER}\n\n{text_body}",
+                truncated=truncated,
+                untrusted=True,
+                citation=Citation(
+                    title=download["title"],
+                    url=download["final_url"],
+                    retrieved_at=datetime.now(timezone.utc),
+                    source_provider="web_fetch",
+                ),
+                warnings=warnings,
+            )
+            self.cache.put(key, result.model_dump_json())
         logger.info(
             "web_fetch completed",
             host_digest=_host_digest(entry.host),
@@ -241,4 +265,10 @@ def build_fetch_service(
     config = get_web_config()
     if not config.enabled:
         raise WebAccessError("disabled", "web 工具已在配置中禁用")
-    return WebFetchService(config, transport=transport)
+    if transport is not None:
+        return WebFetchService(config, transport=transport)
+    global _SHARED_SERVICE
+    with _SHARED_SERVICE_LOCK:
+        if _SHARED_SERVICE is None or _SHARED_SERVICE.config != config:
+            _SHARED_SERVICE = WebFetchService(config)
+        return _SHARED_SERVICE

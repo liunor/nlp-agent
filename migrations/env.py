@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from server.infrastructure.mysql.base import Base
 from server.infrastructure.mysql import models  # noqa: F401
+from server.quota import models as quota_models  # noqa: F401
 
 
 config = context.config

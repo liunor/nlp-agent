@@ -17,6 +17,7 @@ from core.authorization_audit import record as record_authorization_decision
 
 
 class Permission(StrEnum):
+    QUOTA_USAGE_READ_SELF = "quota:usage:read_self"
     IDENTITY_PROFILE_READ_SELF = "identity:profile:read_self"
     IDENTITY_PROFILE_UPDATE_SELF = "identity:profile:update_self"
     LEARNING_CONTENT_READ_PUBLIC = "learning:content:read_public"
@@ -27,6 +28,7 @@ class Permission(StrEnum):
     LEARNING_PROGRESS_READ_CLASSROOM = "learning:progress:read_classroom"
     LEARNING_FEEDBACK_SUBMIT = "learning:feedback:submit"
     LEARNING_FEEDBACK_READ = "learning:feedback:read"
+    LEARNING_FEEDBACK_WRITE = "learning:feedback:write"
     LEARNING_FEEDBACK_CREATE = "learning:feedback:create"
     CLASSROOM_CREATE = "classroom:classroom:create"
     CLASSROOM_MEMBER_MANAGE = "classroom:member:manage"
@@ -49,6 +51,8 @@ class Permission(StrEnum):
     SYSTEM_PERMISSION_READ = "system:permission:read"
     SYSTEM_AUDIT_READ = "system:audit:read"
     SYSTEM_SENSITIVE_DATA_READ = "system:sensitive_data:read"
+    SYSTEM_QUOTA_READ = "system:quota:read"
+    SYSTEM_QUOTA_MANAGE = "system:quota:manage"
 
 
 class ScopeType(StrEnum):
@@ -100,6 +104,7 @@ _GUEST: Final[frozenset[Permission]] = frozenset(
         Permission.AGENT_TURN_SUBMIT,
         Permission.AGENT_TURN_CANCEL,
         Permission.AGENT_EVENT_REPLAY,
+        Permission.QUOTA_USAGE_READ_SELF,
     }
 )
 _STUDENT: Final[frozenset[Permission]] = _GUEST | {
@@ -119,6 +124,7 @@ _TEACHER: Final[frozenset[Permission]] = _STUDENT | {
 }
 _DEVELOPER: Final[frozenset[Permission]] = _TEACHER | {
     Permission.LEARNING_FEEDBACK_READ,
+    Permission.LEARNING_FEEDBACK_WRITE,
     Permission.SYSTEM_MODEL_PROFILE_MANAGE,
     Permission.SYSTEM_PROMPT_TEMPLATE_MANAGE,
     Permission.SYSTEM_TOOL_CONFIG_MANAGE,
@@ -129,6 +135,8 @@ _DEVELOPER: Final[frozenset[Permission]] = _TEACHER | {
     Permission.SYSTEM_RELEASE_NOTES_MANAGE,
     Permission.SYSTEM_PERMISSION_READ,
     Permission.SYSTEM_AUDIT_READ,
+    Permission.SYSTEM_QUOTA_READ,
+    Permission.SYSTEM_QUOTA_MANAGE,
 }
 
 ROLE_PERMISSIONS: Final[dict[str, frozenset[Permission]]] = {
@@ -158,6 +166,8 @@ HIGH_RISK_TOOL_PERMISSIONS: Final[dict[str, Permission]] = {
 
 
 def required_permission_for_high_risk_tool(tool_name: str) -> Permission:
+    if tool_name.startswith("mcp_"):
+        return Permission.SYSTEM_TOOL_CONFIG_MANAGE
     try:
         return HIGH_RISK_TOOL_PERMISSIONS[tool_name]
     except KeyError as error:
@@ -223,7 +233,10 @@ class AuthorizationService:
             scopes = (
                 frozenset({"system"})
                 if required.value.startswith("system:")
-                or required is Permission.LEARNING_FEEDBACK_READ
+                or required in {
+                    Permission.LEARNING_FEEDBACK_READ,
+                    Permission.LEARNING_FEEDBACK_WRITE,
+                }
                 else frozenset({"own"})
             )
         return ResourcePolicy().allows(principal, frozenset(scopes), resource)

@@ -41,3 +41,13 @@ class OutboxTurnDispatcher:
 
     def active_count(self) -> int:
         return len(self._active)
+
+    @property
+    def client(self) -> Any:
+        """Expose the transport Redis client to lifecycle listeners."""
+        return getattr(self._transport, "client", None)
+
+    @property
+    def config(self) -> Any:
+        """Expose transport configuration to shared Redis listeners."""
+        return getattr(self._transport, "config", None)

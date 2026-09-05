@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { DeveloperWorkspace } from "./DeveloperWorkspace";
 
@@ -31,7 +31,7 @@ const menu = (routePath: string | null) => ({
   status: "active",
 });
 
-const ALL_ROUTES = ["/developer", "/developer/agents", "/developer/tools", "/developer/models", "/developer/mcp", "/developer/skills", "/developer/release-notes", "/developer/automations", "/developer/feedback", "/developer/settings", "/developer/users", "/developer/roles", "/developer/menus", "/developer/audit", "/developer/sessions"];
+const ALL_ROUTES = ["/developer", "/developer/agents", "/developer/tools", "/developer/models", "/developer/mcp", "/developer/skills", "/developer/release-notes", "/developer/automations", "/developer/feedback", "/developer/settings", "/developer/users", "/developer/roles", "/developer/menus"];
 
 const snapshot = {
   runtime: { status: "ok", active_turns: 0, durable_events: 0 },
@@ -76,13 +76,14 @@ describe("DeveloperWorkspace shell access", () => {
     expect(getDeveloperSnapshotMock).not.toHaveBeenCalled();
   });
 
-  it("blocks direct navigation to a menu the role does not have", async () => {
-    listVisibleMenusMock.mockResolvedValue({ items: [menu("/developer/feedback")] });
-    getDeveloperSnapshotMock.mockRejectedValue(new Error("HTTP 403"));
+  it("does not expose Agent session management even when a stale menu row remains", async () => {
+    listVisibleMenusMock.mockResolvedValue({ items: [...ALL_ROUTES.map((route) => menu(route)), menu("/developer/sessions")] });
+    getDeveloperSnapshotMock.mockResolvedValue(snapshot);
 
-    render(<DeveloperWorkspace page="sessions" />);
+    render(<DeveloperWorkspace />);
 
-    expect(await screen.findByText("无权访问该页面")).toBeVisible();
+    expect(await screen.findByText("后端基础工作台")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Agent 会话" })).not.toBeInTheDocument();
   });
 
   it("renders the overview for a fully provisioned developer with snapshot data", async () => {
@@ -96,6 +97,18 @@ describe("DeveloperWorkspace shell access", () => {
     expect(getDeveloperSnapshotMock).toHaveBeenCalledOnce();
   });
 
+  it("keeps authorization audit out of the developer control-plane navigation", async () => {
+    // A stale server-side menu row must not resurrect audit inside the
+    // developer shell while the migration is rolling out.
+    listVisibleMenusMock.mockResolvedValue({ items: [...ALL_ROUTES.map((route) => menu(route)), menu("/developer/audit")] });
+    getDeveloperSnapshotMock.mockResolvedValue(snapshot);
+
+    render(<DeveloperWorkspace />);
+
+    expect(await screen.findByText("后端基础工作台")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "审计日志" })).not.toBeInTheDocument();
+  });
+
   it("keeps data-owned pages usable when the snapshot is denied", async () => {
     listVisibleMenusMock.mockResolvedValue({ items: ALL_ROUTES.map((route) => menu(route)) });
     getDeveloperSnapshotMock.mockRejectedValue(new Error("HTTP 403"));
@@ -106,5 +119,20 @@ describe("DeveloperWorkspace shell access", () => {
     expect(await waitFor(() => screen.getByRole("button", { name: "工作台" }))).toBeVisible();
     expect(getDeveloperSnapshotMock).toHaveBeenCalledOnce();
     expect(listFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it("clears the previous runtime snapshot when a refresh loses inspect permission", async () => {
+    listVisibleMenusMock.mockResolvedValue({ items: ALL_ROUTES.map((route) => menu(route)) });
+    getDeveloperSnapshotMock
+      .mockResolvedValueOnce(snapshot)
+      .mockRejectedValueOnce(new Error("HTTP 403"));
+
+    render(<DeveloperWorkspace page="agents" />);
+
+    expect(await screen.findByRole("heading", { name: "Agent 与 Worker" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
+
+    await waitFor(() => expect(getDeveloperSnapshotMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("无法读取运行时快照")).toBeVisible();
   });
 });

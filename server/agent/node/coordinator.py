@@ -233,6 +233,9 @@ async def coordinator_node(state: AgentState, config: RunnableConfig) -> dict:
                 tokens_before=transform.tokens_before,
                 tokens_after=transform.tokens_after,
                 tokens_saved=max(0, transform.tokens_before - transform.tokens_after),
+                context_window=transform.context_window,
+                input_limit=transform.input_limit,
+                output_reserve=transform.output_reserve,
                 actions=transform.actions,
                 removed_messages=len(transform.removed_message_ids),
             )
@@ -242,9 +245,12 @@ async def coordinator_node(state: AgentState, config: RunnableConfig) -> dict:
         state_modifiers.extend(
             RemoveMessage(id=message_id) for message_id in transform.removed_message_ids
         )
-        for message in transform.messages:
-            if message not in messages:
-                state_modifiers.append(message)
+    # A compression layer may replace a message in place (for example a
+    # micro-compacted ToolMessage or a Snip marker) without removing its ID.
+    # Persist every changed message, not only transforms that also removed IDs.
+    for message in transform.messages:
+        if message not in messages:
+            state_modifiers.append(message)
     messages = transform.messages
     stop_reason = runtime.limit_reached(runtime_budget)
     if stop_reason is not None:

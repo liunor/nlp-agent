@@ -235,11 +235,12 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    expect(screen.getByRole("button", { name: "展开主题 PyTorch 基础" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "张量与形状" })).not.toBeInTheDocument();
     const search = screen.getByRole("searchbox", { name: "搜索教材目录" });
     await user.type(search, "张量");
     expect(screen.getByRole("button", { name: "张量与形状" })).toBeVisible();
     await user.clear(search);
-    await user.click(screen.getByRole("button", { name: "折叠主题 PyTorch 基础" }));
 
     expect(screen.getByRole("button", { name: "展开主题 PyTorch 基础" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "张量与形状" })).not.toBeInTheDocument();
@@ -266,6 +267,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={statusCatalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    await userEvent.setup().click(screen.getByRole("button", { name: "展开主题 PyTorch 基础" }));
     expect(screen.queryByText("已停用")).not.toBeInTheDocument();
     expect(screen.queryByText("已发布")).not.toBeInTheDocument();
     const pointButtons = [...document.querySelectorAll<HTMLButtonElement>(".teacher-book-tree-point-main")];
@@ -280,6 +282,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    await user.click(screen.getByRole("button", { name: "展开主题 PyTorch 基础" }));
     await user.click(screen.getByLabelText("张量与形状选项"));
     await user.click(screen.getByRole("button", { name: "编辑知识点" }));
     const dialog = screen.getByRole("dialog", { name: "编辑教材知识点" });
@@ -297,6 +300,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    await user.click(screen.getByRole("button", { name: "展开主题 PyTorch 基础" }));
     await user.click(screen.getByLabelText("张量与形状选项"));
     await user.click(screen.getByRole("button", { name: "删除知识点" }));
 

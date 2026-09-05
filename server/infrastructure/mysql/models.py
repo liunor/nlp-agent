@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Computed,
     ForeignKey,
@@ -23,6 +24,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampedModel
 from .table_comments import TABLE_COMMENTS
+
+# Quota tables share the same Alembic metadata.  Importing them here keeps
+# metadata-based tooling (including foundation checks) aware of every active
+# MySQL table without requiring callers to know the quota package layout.
+from server.quota import models as _quota_models  # noqa: F401, E402
 
 
 UUID = String(36, collation="ascii_bin")
@@ -61,7 +67,10 @@ class UserModel(TimestampedModel, Base):
     # 但 develop 合并后的模型缺失定义，导致 ``server/user/service.py`` 里的
     # ``UserModel.phone_number`` 查询/赋值会抛 AttributeError。此处补齐保持一致。
     phone_number: Mapped[str | None] = mapped_column(
-        String(20), nullable=True, unique=True, index=True
+        String(20), nullable=True, index=True
+    )
+    phone_number_normalized: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, unique=True, index=True
     )
     registration_source: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="manual"
@@ -121,11 +130,29 @@ class FeedbackThreadModel(TimestampedModel, Base):
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_nlp_feedback_threads_user_id"),
         Index("ix_nlp_feedback_threads_updated_at", "updated_at"),
+        Index("ix_nlp_feedback_threads_status", "status"),
+        Index("ix_nlp_feedback_threads_category", "category"),
+        CheckConstraint(
+            "status IN ('open','under_review','planned','in_progress','complete','closed')",
+            name="status",
+        ),
+        CheckConstraint(
+            "category IN ('feature','ux','bug','other')",
+            name="category",
+        ),
+        CheckConstraint(
+            "priority IN ('low','medium','high')",
+            name="priority",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False)
     developer_read_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    student_read_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="open")
+    category: Mapped[str] = mapped_column(String(16), nullable=False, server_default="other")
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, server_default="medium")
 
 
 class FeedbackMessageModel(TimestampedModel, Base):
@@ -463,6 +490,21 @@ class ConversationModel(TimestampedModel, Base):
     channel: Mapped[str] = mapped_column(String(32), nullable=False, server_default="web")
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     last_message_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # Basis of the last LLM-generated title: the newest completed turn's
+    # ``completed_at``.  NULL until the first summary is written.  The
+    # conditional UPDATE keys on this to reject out-of-order overwrites.
+    title_updated_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # True once the user manually renames the session; the summarizer never
+    # overwrites a manual title.
+    title_is_manual: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
+    # Short-lived lease taken by the background summarizer before it pays for an
+    # LLM call; prevents two workers from generating the same title concurrently.
+    # On LLM failure the lease is extended (exponential backoff) instead of
+    # cleared, so a dead model service does not trigger a retry storm.
+    summary_lease_expires_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # How many LLM calls have been attempted for the first summary.  Capped by
+    # ``MAX_SUMMARY_ATTEMPTS`` in the sweep query; reset to 0 on success.
+    summary_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
 class TurnModel(TimestampedModel, Base):
@@ -1026,6 +1068,7 @@ class AuthCodeModel(Base):
 
     __tablename__ = "nlp_auth_codes"
     __table_args__ = (
+        UniqueConstraint("kind", "subject", name="uq_nlp_auth_codes_kind_subject"),
         Index("ix_nlp_auth_codes_kind_subject", "kind", "subject"),
         Index("ix_nlp_auth_codes_kind_ip_created", "kind", "client_ip", "created_at"),
     )
@@ -1039,5 +1082,23 @@ class AuthCodeModel(Base):
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
 
 
+class SmsSendAuditModel(Base):
+    """Immutable audit record for every SMS send attempt."""
+
+    __tablename__ = "nlp_sms_send_audits"
+    __table_args__ = (
+        Index("ix_nlp_sms_send_audits_phone_created", "phone_number", "created_at"),
+        Index("ix_nlp_sms_send_audits_ip_created", "client_ip", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    phone_number: Mapped[str] = mapped_column(String(16), nullable=False)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False, server_default="sent")
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
 for _table_name, _table_comment in TABLE_COMMENTS.items():
-    Base.metadata.tables[_table_name].comment = _table_comment
+    table = Base.metadata.tables.get(_table_name)
+    if table is not None:
+        table.comment = _table_comment

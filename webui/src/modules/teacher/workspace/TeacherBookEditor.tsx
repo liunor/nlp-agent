@@ -2,14 +2,14 @@ import { AlertCircle, Bold, BookOpenText, ChevronDown, Code2, Eye, EyeOff, FileU
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { api } from "@/platform/http/api";
-import type { CourseTopic, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog } from "@/shared/types";
+import { DEFAULT_QUESTION_TYPES, type CourseTopic, type TeacherBookArchiveImportPreview, type TeacherBookAssetInput, type TeacherBookImportPreview, type TeacherBookNavigationItem, type TeacherBookPage, type TeacherCatalog } from "@/shared/types";
 import { MarkdownContent } from "@/modules/student/components/MarkdownContent";
 import { createUuid } from "@/shared/utils/uuid";
 import { indexMarkdownHeadings } from "@/modules/student/components/knowledgeBook";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { TextInputDialog } from "@/shared/ui/TextInputDialog";
 
-type Props = { workspaceId: string; catalog?: TeacherCatalog; onCatalogChange?: (catalog: TeacherCatalog) => void };
+type Props = { workspaceId: string; catalog?: TeacherCatalog; onCatalogChange?: (catalog: TeacherCatalog) => void; onDirtyChange?: (dirty: boolean) => void };
 
 type MarkdownFormat = "bold" | "italic" | "heading" | "code" | "link" | "list" | "quote";
 
@@ -87,7 +87,7 @@ function withTopicUpdate(catalog: TeacherCatalog, topicId: string, update: (topi
 }
 
 function newKnowledgePoint(name = "未命名知识点", sortOrder = 0) {
-  return { id: createUuid(), name, markdown: "", status: "enabled" as const, sort_order: sortOrder };
+  return { id: createUuid(), name, markdown: "", status: "enabled" as const, sort_order: sortOrder, question_types: [...DEFAULT_QUESTION_TYPES] };
 }
 
 type TeacherBookTreeGroup = { topicId: string; topicName: string; topicStatus: CourseTopic["status"]; items: TeacherBookNavigationItem[] };
@@ -118,7 +118,7 @@ function sortBookTreeGroups(groups: TeacherBookTreeGroup[]): TeacherBookTreeGrou
   }));
 }
 
-export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange }: Props) {
+export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDirtyChange }: Props) {
   const [navigation, setNavigation] = useState<TeacherBookNavigationItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [page, setPage] = useState<TeacherBookPage | null>(null);
@@ -132,7 +132,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange }: Pro
   const [catalogDraft, setCatalogDraft] = useState<TeacherCatalog | null>(catalog ?? null);
   const [directoryCollapsed, setDirectoryCollapsed] = useState(false);
   const [directoryQuery, setDirectoryQuery] = useState("");
-  const [collapsedTopicIds, setCollapsedTopicIds] = useState<string[]>([]);
+  const [collapsedTopicIds, setCollapsedTopicIds] = useState<string[]>(() => (catalog?.topics ?? []).map((topic) => topic.id));
   const [directorySaving, setDirectorySaving] = useState(false);
   const [catalogInput, setCatalogInput] = useState<CatalogInputState | null>(null);
   const [catalogDeleteTarget, setCatalogDeleteTarget] = useState<CatalogDeleteTarget | null>(null);
@@ -143,9 +143,25 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange }: Pro
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [pendingSelectedId, setPendingSelectedId] = useState<string | null>(null);
   const pageRequestId = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const contentHistory = useRef<{ past: string[]; future: string[]; value: string }>({ past: [], future: [], value: "" });
+  const directoryCollapseInitialized = useRef(Boolean(catalog));
+
+  const hasUnsavedChanges = Boolean(page && (content !== page.draft_markdown || editorAssets.length > 0));
+
+  useEffect(() => {
+    onDirtyChange?.(hasUnsavedChanges);
+  }, [hasUnsavedChanges, onDirtyChange]);
+
+  const requestSelect = (nextId: string) => {
+    if (nextId === selectedId || !hasUnsavedChanges) {
+      setSelectedId(nextId);
+      return;
+    }
+    setPendingSelectedId(nextId);
+  };
 
   const replaceEditorContent = useCallback((next: string) => {
     contentHistory.current = { past: [], future: [], value: next };
@@ -189,6 +205,10 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange }: Pro
     try {
       const result = await api.getTeacherBookNavigation(workspaceId);
       setNavigation(result.items);
+      if (!directoryCollapseInitialized.current) {
+        setCollapsedTopicIds(Array.from(new Set(result.items.map((item) => item.topic_id))));
+        directoryCollapseInitialized.current = true;
+      }
       setSelectedId((current) => current || result.items[0]?.knowledge_point_id || "");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -677,7 +697,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange }: Pro
                 </div></details>
               </div>
               {topicExpanded && <div className="teacher-book-tree-topic-items">{group.items.map((item) => { const pointDisabled = item.knowledge_point_status === "disabled"; return <div className={`teacher-book-tree-point ${selectedId === item.knowledge_point_id ? "active" : ""} ${pointDisabled ? "is-disabled" : ""}`} key={item.knowledge_point_id}>
-                <button className="teacher-book-tree-point-main" aria-label={`${item.title}${pointDisabled ? "（已停用）" : ""}`} type="button" onClick={() => setSelectedId(item.knowledge_point_id)}><span>{item.title}</span></button>
+                <button className="teacher-book-tree-point-main" aria-label={`${item.title}${pointDisabled ? "（已停用）" : ""}`} type="button" onClick={() => requestSelect(item.knowledge_point_id)}><span>{item.title}</span></button>
                 <details className="teacher-book-tree-menu"><summary aria-label={`${item.title}选项`}><MoreHorizontal size={15} /></summary><div>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void editKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}><Pencil size={14} />编辑知识点</button>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void toggleKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}>{item.knowledge_point_status === "enabled" ? <EyeOff size={14} /> : <Eye size={14} />}{item.knowledge_point_status === "enabled" ? "停用知识点" : "启用知识点"}</button>
@@ -699,6 +719,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange }: Pro
       </div>
       {catalogInput && <TextInputDialog key={`${catalogInput.kind}-${catalogInput.topicId ?? ""}-${catalogInput.pointId ?? ""}`} open title={catalogInput.title} description={catalogInput.description} label={catalogInput.label} initialValue={catalogInput.value} placeholder={catalogInput.placeholder} confirmLabel={catalogInput.confirmLabel} onClose={() => setCatalogInput(null)} onConfirm={(value) => { void submitCatalogInput(value); }} />}
       {catalogDeleteTarget && <ConfirmDialog open title={`删除${catalogDeleteTarget.kind === "topic" ? "主题" : "知识点"}“${catalogDeleteTarget.name}”？`} description={catalogDeleteTarget.kind === "topic" ? "该主题及其知识点会从当前教材目录移除；已有学习记录不会受影响。" : "该知识点会从当前教材目录移除；已有教材版本和学习记录不会受影响。"} onClose={() => setCatalogDeleteTarget(null)} onConfirm={() => { void confirmCatalogDelete(); }} />}
+      {pendingSelectedId && <ConfirmDialog open title="有未保存的教材修改" description="切换知识点会丢弃当前 Markdown 修改和待入库图片。确定继续切换吗？" confirmLabel="继续切换" cancelLabel="留在当前编辑" onClose={() => setPendingSelectedId(null)} onConfirm={() => { const nextId = pendingSelectedId; setPendingSelectedId(null); setSelectedId(nextId); }} />}
     </div>
   );
 }

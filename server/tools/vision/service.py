@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from statistics import fmean
 from typing import Any
 
@@ -14,6 +15,7 @@ from server.tools.vision.contracts import (
     ConfidenceReport,
     ImageAnalyzeInput,
     ImageAnalyzeResponse,
+    ImageAsset,
     ImageCitation,
     OCRResult,
     VisionError,
@@ -89,10 +91,17 @@ class ImageAnalyzeService:
         self.signal_provider = signal_provider or NullVisionSignalProvider()
         self.result_max_chars = max(500, result_max_chars)
 
-    async def analyze(self, request: ImageAnalyzeInput) -> ImageAnalyzeResponse:
+    async def analyze(
+        self,
+        request: ImageAnalyzeInput,
+        *,
+        before_provider: Callable[[ImageAsset, str, str], Awaitable[None]] | None = None,
+    ) -> ImageAnalyzeResponse:
         asset = await asyncio.to_thread(self.resolver.resolve, request.image)
         signals = await self._detect_signals(asset) if request.task == "auto" else None
         decision = self.router.route(request.task, signals)
+        if before_provider is not None:
+            await before_provider(asset, decision.route, decision.task_executed)
 
         ocr: OCRResult | None = None
         model_result: VisionModelResult | None = None
@@ -256,6 +265,7 @@ def build_image_analyze_service(*, context: SessionContext) -> ImageAnalyzeServi
             model_route=config.vlm.model_route,
             max_image_bytes=config.vlm.max_image_bytes,
             send_ocr_context=config.vlm.send_ocr_context,
+            billing_config=config.vlm,
         ),
         signal_provider=OpenCVSignalProvider(),
         result_max_chars=config.result.max_chars,

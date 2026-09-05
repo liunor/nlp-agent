@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -29,8 +30,12 @@ from server.web.app import create_app  # noqa: E402
 from test_web_api import FakeEngine  # noqa: E402
 
 
-INTEGRATION_USERNAME = "integration"
-INTEGRATION_PASSWORD = "integration-password"
+INTEGRATION_USERNAME = os.environ.get(
+    "PRO_NLP_INTEGRATION_USERNAME", f"integrationtest{uuid.uuid4().hex[:24]}"
+)
+INTEGRATION_PASSWORD = os.environ.get(
+    "PRO_NLP_INTEGRATION_PASSWORD", f"Integration-{uuid.uuid4().hex}!"
+)
 
 
 async def seed_integration_user() -> None:

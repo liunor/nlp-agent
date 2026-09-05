@@ -8,6 +8,7 @@ import json
 import re
 import uuid
 from collections import defaultdict
+from functools import partial
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,11 @@ from gateway.redis_transport import TurnTaskCodec
 from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.quota.contracts import AdmitTurn, QuotaProblem
+from server.quota.errors import QuotaErrorCode, QuotaRejectedError
+from server.quota.operations import QuotaOperationsService
+from server.quota.reaper import QuotaReservationReaper
+from server.session.summary import schedule_summary
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
@@ -124,12 +130,28 @@ class BackendGateway:
             if not dsn:
                 raise RuntimeError("MySQL persistence mode requires NLP_AGENT_DATABASE_URL")
             self._database_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
-            self.repository = MySQLGatewayRepository(dsn, knowledge_point_prompt_budget=max(1, int(gateway_config.get("knowledge_point_prompt_budget", 12_000))))
+            quota_enforcement = runtime_settings.quota_enforcement_enabled
+            self.repository = MySQLGatewayRepository(
+                dsn,
+                knowledge_point_prompt_budget=max(
+                    1, int(gateway_config.get("knowledge_point_prompt_budget", 12_000))
+                ),
+                quota_enforcement=quota_enforcement,
+            )
         else:
             raise RuntimeError("runtime persistence must be mysql; SQLite is migration-CLI only")
+        self._quota_rollout = settings.quota_rollout
+        self.quota_service = getattr(self.repository, "quota_service", None)
         self.sessions = sessions
         self.events = GatewayEventBroker()
-        self._remote_execution = dispatcher is not None or gateway_config.get("transport") == "redis"
+        # Explicit repositories and dispatchers are used by tests and local
+        # integrations; only the fully automatic runtime path should create
+        # the production Redis/MySQL dispatcher.
+        self._remote_execution = (
+            dispatcher is None
+            and repository is None
+            and gateway_config.get("transport") == "redis"
+        )
         self._event_bridge = None
         if dispatcher is None and self._remote_execution:
             redis_config = RedisTransportConfig(
@@ -139,6 +161,11 @@ class BackendGateway:
                 event_channel=str(gateway_config.get("redis_event_channel", "nlp-agent:events")),
                 control_channel=str(gateway_config.get("redis_control_channel", "nlp-agent:control")),
                 reclaim_idle_ms=int(gateway_config.get("redis_reclaim_idle_ms", 60_000)),
+                quota_snapshot_channel=str(
+                    gateway_config.get(
+                        "redis_quota_snapshot_channel", "nlp-agent:quota-snapshot"
+                    )
+                ),
                 cancel_key_prefix=str(
                     gateway_config.get("redis_cancel_key_prefix", "nlp-agent:cancel:")
                 ),
@@ -164,7 +191,14 @@ class BackendGateway:
             )
         else:
             executor = InProcessTurnExecutor(
-                self.engine, self.repository, self._emit_from_engine
+                self.engine,
+                self.repository,
+                self._emit_from_engine,
+                on_turn_completed=(
+                    partial(schedule_summary, self._database_runtime.session_factory)
+                    if self._database_runtime is not None
+                    else None
+                ),
             )
             self.dispatcher = dispatcher or InProcessTurnDispatcher(executor.run)
         self._session_turn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -200,8 +234,17 @@ class BackendGateway:
                 else gateway_config.get("retention_cleanup_interval_s", 3_600)
             ),
         )
+        self.quota_reap_interval_s = max(
+            1.0,
+            float(gateway_config.get("quota_reap_interval_s", 30)),
+        )
+        self.quota_operations_interval_s = max(
+            1.0,
+            float(gateway_config.get("quota_operations_interval_s", 3_600)),
+        )
         self._maintenance_stop = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
+        self._quota_reaper: QuotaReservationReaper | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
         self._accepting = False
@@ -217,6 +260,8 @@ class BackendGateway:
                 return
             if self._database_runtime is not None:
                 await self._database_runtime.start()
+            if self.quota_service is not None:
+                await asyncio.to_thread(self.quota_service.verify_schema)
             if not self._remote_execution:
                 await self.engine.start(self._emit_from_engine)
             if self._event_bridge is not None:
@@ -235,6 +280,14 @@ class BackendGateway:
                 self._event_maintenance_loop(),
                 name="gateway-event-retention",
             )
+            if self.quota_service is not None:
+                self._quota_reaper = QuotaReservationReaper(
+                    self.quota_service,
+                    interval_seconds=self.quota_reap_interval_s,
+                    operations_service=QuotaOperationsService(self.quota_service.engine),
+                    operations_interval_seconds=self.quota_operations_interval_s,
+                )
+                self._quota_reaper.start()
             self._started = True
             self._accepting = True
 
@@ -436,6 +489,40 @@ class BackendGateway:
             guided_blueprint=guided_session.get("guided_blueprint", {}),
         )
         turn_id = str(uuid.uuid4())
+        quota_admission = None
+        reservation_id = None
+        if self.quota_service is not None and self._quota_rollout.enabled_for(
+            context.user_id, context.workspace_id
+        ):
+            from core.model_runtime.factory import get_global_model_factory
+
+            factory = get_global_model_factory()
+            profile_name = request.model_profile or factory.config.default_model_profile
+            if not profile_name:
+                raise QuotaRejectedError(
+                    QuotaProblem(
+                        code=QuotaErrorCode.ADMISSION_DENIED,
+                        reason="额度校验需要明确的模型 Profile",
+                        remaining_micro=0,
+                        retryable=False,
+                    )
+                )
+            identity = factory.profile_identity(profile_name, "coordinator")
+            quota_admission = AdmitTurn(
+                request_id=request.idempotency_key or turn_id,
+                user_id=context.user_id,
+                workspace_id=context.workspace_id,
+                turn_id=turn_id,
+                model_profile=profile_name,
+                model_role="coordinator",
+                estimated_input_tokens=factory.estimate_input_tokens(
+                    profile_name, [enriched_content]
+                ),
+                estimated_output_tokens=identity.max_output_tokens or 0,
+                pricing_key=identity.pricing_key,
+                idempotency_key=request.idempotency_key or turn_id,
+            )
+            reservation_id = self.quota_service.reservation_id_for_turn(turn_id)
         task = TurnTask(
             context=context,
             turn_id=turn_id,
@@ -452,6 +539,7 @@ class BackendGateway:
                 workspace_id=context.workspace_id,
                 authorization_version=principal.authorization_version,
             ),
+            reservation_id=reservation_id,
         )
         turn, duplicate = await asyncio.to_thread(
             self.repository.create_turn,
@@ -475,6 +563,9 @@ class BackendGateway:
             guided_session_status=str(guided_session.get("status") or "active"),
             exercise_state=exercise,
             dispatch_payload=TurnTaskCodec.dumps(task) if self._remote_execution else None,
+            quota_admission=quota_admission,
+            quota_role_codes=tuple(principal.roles),
+            quota_classroom_ids=tuple(principal.classroom_ids),
         )
         resubmitted = bool(
             duplicate
@@ -507,6 +598,11 @@ class BackendGateway:
             exercise_state=task.exercise_state, teaching_materials=task.teaching_materials,
             guided_session_id=task.guided_session_id, exercise_session_id=task.exercise_session_id,
             model_profile=task.model_profile, authorization=task.authorization,
+            reservation_id=(
+                self.quota_service.reservation_id_for_turn(turn.turn_id)
+                if self.quota_service is not None
+                else None
+            ),
         )
         try:
             await self.dispatcher.submit(task)
@@ -518,6 +614,13 @@ class BackendGateway:
                 error_kind="dispatch_failed",
                 error_message=str(error),
             )
+            if self.quota_service is not None and task.reservation_id:
+                await asyncio.to_thread(
+                    self.quota_service.release_reservation,
+                    task.reservation_id,
+                    turn_id=turn.turn_id,
+                    idempotency_key=f"dispatch-failed:{turn.turn_id}",
+                )
             await self._emit(
                 turn.turn_id,
                 context.session_id,
@@ -987,6 +1090,9 @@ class BackendGateway:
             if self._maintenance_task is not None:
                 await asyncio.gather(self._maintenance_task, return_exceptions=True)
                 self._maintenance_task = None
+            if self._quota_reaper is not None:
+                await self._quota_reaper.stop()
+                self._quota_reaper = None
             if self._event_bridge is not None:
                 await self._event_bridge.close()
             await self.dispatcher.close(

@@ -27,6 +27,16 @@ gateway:
   max_events_per_session: 50000
   retention_cleanup_interval_s: 3600
   knowledge_point_prompt_budget: 12000
+  # Phase 2 fail-closed admission/settlement switch. Enable only after the
+  # quota migrations and developer policies have been provisioned.
+  quota_enforcement: false
+  # Optional deterministic rollout targets. User/workspace IDs opt in even
+  # when the global switch is false; a non-zero percentage enables a stable
+  # percentage cohort without enabling every user.
+  quota_enforcement_percentage: 0
+  quota_enforcement_users: []
+  quota_enforcement_workspaces: []
+  quota_reap_interval_s: 30
   transport: in_process
   redis_url: redis://127.0.0.1:6379/0
   redis_turn_stream: nlp-agent:turns
@@ -49,11 +59,6 @@ web:
   host: 127.0.0.1
   port: 8765
   cookie_name: nlp_session
-  cookie_ttl_s: 1800
-  cookie_secure: false
-  auth_idle_timeout_s: 900
-  auth_max_login_attempts: 5
-  auth_rate_window_s: 300
   allowed_hosts: [127.0.0.1, localhost, testserver]
   allowed_origins: [http://127.0.0.1:8765, http://localhost:8765, http://127.0.0.1:5173]
   max_ws_message_bytes: 1048576
@@ -71,8 +76,6 @@ monitor:
   host: 127.0.0.1
   port: 8766
   cookie_name: nlp_monitor_session
-  cookie_ttl_s: 28800
-  cookie_secure: false
   allowed_hosts: [127.0.0.1, localhost, testserver]
   allowed_origins: [http://127.0.0.1:8766, http://localhost:8766, http://127.0.0.1:5174]
   static_dir: webui/monitor-dist
@@ -371,6 +374,11 @@ tools:
       model_route: vision-worker
       max_image_bytes: 6000000
       send_ocr_context: true
+      # Fallback billing tiers when the Provider omits visual Token details.
+      # The current VLM path sends the validated upload bytes without resizing,
+      # so these thresholds apply to the decoded dimensions actually sent.
+      standard_image_max_pixels: 1048576
+      high_image_max_pixels: 4194304
     result:
       max_chars: 20000
       retain_raw_ocr: true

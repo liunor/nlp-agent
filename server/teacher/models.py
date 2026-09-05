@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictTeacherModel(BaseModel):
@@ -26,12 +27,91 @@ class UpdateTeachingGoals(StrictTeacherModel):
     target_level: Literal["beginner", "intermediate", "advanced"] = "beginner"
 
 
+# Teacher notes on individual knowledge points are short classroom observations,
+# not free-form documents.  Bounding each value keeps the annotations blob small
+# and forces the frontend to enforce the same cap before the round-trip.
+MAX_ANALYSIS_NOTE_LENGTH = 2_000
+MAX_ANALYSIS_NOTES = 200
+
+
+def _validate_analysis_notes(notes: dict[str, str]) -> dict[str, str]:
+    if len(notes) > MAX_ANALYSIS_NOTES:
+        raise ValueError(f"备注数量不能超过 {MAX_ANALYSIS_NOTES} 条")
+    for key, value in notes.items():
+        if len(value) > MAX_ANALYSIS_NOTE_LENGTH:
+            raise ValueError(f"知识点“{key}”的备注不能超过 {MAX_ANALYSIS_NOTE_LENGTH} 个字符")
+    return notes
+
+
+class TeacherAnalysisAnnotations(StrictTeacherModel):
+    """Per-workspace teacher bookmarks on the learning-analysis view."""
+
+    workspace_id: str = Field(min_length=1, max_length=128)
+    focused: list[str] = Field(default_factory=list, max_length=200)
+    ignored: list[str] = Field(default_factory=list, max_length=200)
+    notes: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("notes")
+    @classmethod
+    def _notes_within_limit(cls, value: dict[str, str]) -> dict[str, str]:
+        return _validate_analysis_notes(value)
+
+
+class UpdateTeacherAnalysisAnnotations(StrictTeacherModel):
+    focused: list[str] = Field(default_factory=list, max_length=200)
+    ignored: list[str] = Field(default_factory=list, max_length=200)
+    notes: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("notes")
+    @classmethod
+    def _notes_within_limit(cls, value: dict[str, str]) -> dict[str, str]:
+        return _validate_analysis_notes(value)
+
+
+class TeacherAIAnalysisRequest(StrictTeacherModel):
+    workspace_id: str = Field(default="default", min_length=1, max_length=128)
+    course_id: str = Field(default="all", min_length=1, max_length=128)
+    content_scope: str = Field(default="all", min_length=1, max_length=160)
+    start_date: date | None = None
+    end_date: date | None = None
+    period_days: int | None = Field(default=None, ge=1, le=365)
+    force_refresh: bool = False
+
+    @model_validator(mode="after")
+    def _validate_period(self) -> "TeacherAIAnalysisRequest":
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValueError("start_date 和 end_date 必须同时提供")
+        if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
+            raise ValueError("start_date 不能晚于 end_date")
+        return self
+
+
+DEFAULT_QUESTION_TYPES = ("简答", "选择题", "判断题", "填空题", "编程题", "代码阅读题", "计算题", "论述题")
+
+
 class KnowledgePoint(StrictTeacherModel):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=120)
     markdown: str = Field(default="", max_length=20_000)
     status: Literal["enabled", "disabled"] = "enabled"
     sort_order: int = Field(default=0, ge=0, le=10_000)
+    question_types: list[str] = Field(default_factory=lambda: list(DEFAULT_QUESTION_TYPES), min_length=1, max_length=20)
+
+    @field_validator("question_types")
+    @classmethod
+    def _normalize_question_types(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for question_type in value:
+            item = question_type.strip()
+            if not item:
+                continue
+            if len(item) > 80:
+                raise ValueError("题型名称不能超过 80 个字符")
+            if item not in normalized:
+                normalized.append(item)
+        if not normalized:
+            raise ValueError("知识点至少需要启用一种题型")
+        return normalized
 
 
 class CourseTopic(StrictTeacherModel):

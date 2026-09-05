@@ -7,9 +7,10 @@ interface SessionControllerOptions {
   preferences: LearningPreferences;
   persistPreferences: (update: (current: LearningPreferences) => LearningPreferences) => void;
   updateSessionMeta: (sessionId: string, patch: Partial<SessionLearningMeta>) => void;
+  onRequestError: (message: string) => void;
 }
 
-export function useSessionController({ preferences, persistPreferences, updateSessionMeta }: SessionControllerOptions) {
+export function useSessionController({ preferences, persistPreferences, updateSessionMeta, onRequestError }: SessionControllerOptions) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [workspaceId, setWorkspaceId] = useState("default");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -53,7 +54,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
       }
       freshSessionIdsRef.current.add(session.session_id);
       setSessions((current) => current.some((item) => item.session_id === session.session_id) ? current : [session, ...current]);
-      updateSessionMeta(session.session_id, { topic: preferences.context.topic_name, title: "新的学习对话" });
+      updateSessionMeta(session.session_id, { topic: preferences.context.topic_name });
       activeSessionRef.current = session.session_id;
       setActiveSessionId(session.session_id);
       return session.session_id;
@@ -100,6 +101,24 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     }
   }, [persistPreferences, sessions]);
 
+  const renameSessionTitle = useCallback(async (sessionId: string, title: string) => {
+    try {
+      const renamed = await api.renameSession(sessionId, title);
+      setSessions((current) => current.map((session) => session.session_id === sessionId ? { ...session, title: renamed.title, title_is_manual: true } : session));
+      persistPreferences((current) => {
+        const meta = current.sessions[sessionId];
+        if (!meta?.title) return current;
+        const next = { ...meta };
+        delete next.title;
+        return { ...current, sessions: { ...current.sessions, [sessionId]: next } };
+      });
+    } catch (error) {
+      // The sidebar fires rename fire-and-forget; swallow the rejection here so
+      // it never becomes an unhandled promise rejection, and surface the failure.
+      onRequestError(`重命名失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [onRequestError, persistPreferences]);
+
   return {
     sessions,
     setSessions,
@@ -115,5 +134,6 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     createBackendSession,
     startNewChat,
     deleteSession,
+    renameSessionTitle,
   };
 }

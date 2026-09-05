@@ -4,11 +4,13 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import json
 import posixpath
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
+from configs.settings import settings
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
 from server.teacher.archive import (
@@ -18,7 +20,12 @@ from server.teacher.archive import (
     _safe_zip_path,
     _scoped_asset_path,
 )
-from server.teacher.analytics import build_analytics
+from server.teacher.ai_analysis import (
+    build_ai_analysis_material,
+    generate_ai_analysis,
+    learning_analysis_ai_cache,
+)
+from server.teacher.analytics import build_analytics, build_learning_analysis, build_monthly_analytics, filter_period_rows
 from server.teacher.models import (
     ExerciseBlueprint,
     GuidedBlueprint,
@@ -36,7 +43,10 @@ from server.teacher.models import (
     TeacherBookNavigationItem,
     TeacherBookPage,
     TeacherCatalog,
+    TeacherAnalysisAnnotations,
+    TeacherAIAnalysisRequest,
     TeachingGoals,
+    UpdateTeacherAnalysisAnnotations,
     UpdateTeacherBookPage,
     UpdateTeacherCatalog,
     UpdateTeachingGoals,
@@ -71,6 +81,23 @@ class TeacherService:
         goals = TeachingGoals(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
         result = await gateway.update_user_settings(principal, {f"teacher_goals:{workspace_id}": goals})
         return {"goals": goals, "revision": result["revision"], "updated_at": result["updated_at"]}
+
+    @staticmethod
+    def _default_annotations(workspace_id: str) -> dict[str, Any]:
+        return TeacherAnalysisAnnotations(workspace_id=workspace_id).model_dump(mode="json")
+
+    async def analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        settings = await gateway.get_user_settings(principal)
+        key = f"teacher_analysis_annotations:{workspace_id}"
+        value = settings["settings"].get(key) or self._default_annotations(workspace_id)
+        return {"annotations": value, "revision": settings["revision"], "updated_at": settings["updated_at"]}
+
+    async def update_analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, body: UpdateTeacherAnalysisAnnotations) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        annotations = TeacherAnalysisAnnotations(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
+        result = await gateway.update_user_settings(principal, {f"teacher_analysis_annotations:{workspace_id}": annotations})
+        return {"annotations": annotations, "revision": result["revision"], "updated_at": result["updated_at"]}
 
     async def catalog(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
         self.require_teacher(
@@ -531,15 +558,18 @@ class TeacherService:
     @staticmethod
     def _validate_blueprint_links(catalog: TeacherCatalog) -> None:
         points = {
-            (topic.id, point.id)
+            (topic.id, point.id): point
             for topic in catalog.topics
             for point in topic.knowledge_points
         }
         exercise_ids = {blueprint.id: blueprint for blueprint in catalog.exercise_blueprints}
         for blueprint in [*catalog.exercise_blueprints, *catalog.review_blueprints, *catalog.guided_blueprints]:
-            if (blueprint.topic_id, blueprint.knowledge_point_id) not in points:
+            point = points.get((blueprint.topic_id, blueprint.knowledge_point_id))
+            if point is None:
                 raise ValueError("蓝图必须关联其所属主题中的一个知识点")
             if blueprint.status == "enabled" and not isinstance(blueprint, GuidedBlueprint):
+                if blueprint.question_type not in point.question_types:
+                    raise ValueError("蓝图题型必须是其知识点已启用的题型")
                 if not blueprint.rubric:
                     raise ValueError("启用蓝图前必须至少配置一个评分标准")
                 for point in blueprint.rubric:
@@ -600,18 +630,161 @@ class TeacherService:
         )
         return await self.update_catalog(principal, gateway, workspace_id, body)
 
-    async def analytics(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, days: int = 30) -> dict[str, Any]:
+    async def analytics(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        days: int = 30,
+        *,
+        period_start=None,
+        period_end=None,
+    ) -> dict[str, Any]:
         self.require_teacher(
             principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM
         )
-        since = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+        period_days = max(1, days)
+        period_end = period_end or datetime.now(timezone.utc).date()
+        period_start = period_start or period_end - timedelta(days=period_days - 1)
+        period_days = max(1, (period_end - period_start).days + 1)
+        monthly_start = period_end.replace(day=1)
+        for _ in range(4):
+            monthly_start = (monthly_start - timedelta(days=1)).replace(day=1)
+        previous_start = period_start - timedelta(days=period_days)
+        analytics_start = min(period_start, previous_start, monthly_start)
+        monthly_since = datetime.combine(analytics_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
+        since = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         catalog = (await asyncio.to_thread(gateway.repository.get_teaching_catalog, workspace_id))["catalog"]
-        question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=since)
-        evidence_rows = await asyncio.to_thread(gateway.repository.exercise_evidence_stats, workspace_id=workspace_id, since=since)
-        criterion_rows = await asyncio.to_thread(gateway.repository.exercise_criterion_stats, workspace_id=workspace_id, since=since)
+        student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
+        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE)
+        question_rows = [
+            row for row in monthly_question_rows
+            if row.get("day") and period_start.isoformat() <= str(row["day"])[:10] <= period_end.isoformat()
+        ]
         guided_rows = await asyncio.to_thread(gateway.repository.guided_session_stats, workspace_id=workspace_id, since=since)
-        result = build_analytics(question_rows, evidence_rows, criterion_rows, guided_rows, catalog)
-        return {"workspace_id": workspace_id, "period_days": days, **result}
+        analysis_until = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
+        # One broad evidence/criterion fetch feeds both the overview (sliced to
+        # the period just below) and the learning-analysis diagnostics (which
+        # also need the preceding window and month-trend history).  This halves
+        # the read-model queries for the page.  Each returns (rows, truncated)
+        # so a silently dropped tail of old rows can be surfaced.
+        analysis_evidence_rows, evidence_truncated = await asyncio.to_thread(
+            gateway.repository.exercise_evidence_stats,
+            workspace_id=workspace_id,
+            since=monthly_since,
+            until=analysis_until,
+        )
+        analysis_criterion_rows, criterion_truncated = await asyncio.to_thread(
+            gateway.repository.exercise_criterion_stats,
+            workspace_id=workspace_id,
+            since=monthly_since,
+            until=analysis_until,
+        )
+        evidence_rows = filter_period_rows(analysis_evidence_rows, period_start, period_end)
+        criterion_rows = filter_period_rows(analysis_criterion_rows, period_start, period_end)
+        result = build_analytics(
+            question_rows, evidence_rows, criterion_rows, guided_rows, catalog,
+            period_days=period_days,
+            period_start=period_start,
+            period_end=period_end,
+            student_user_ids=student_user_ids,
+        )
+        monthly_statistics = build_monthly_analytics(
+            monthly_question_rows,
+            catalog,
+            period_end=period_end,
+            student_user_ids=student_user_ids,
+        )
+        learning_analysis = build_learning_analysis(
+            question_rows,
+            analysis_evidence_rows,
+            analysis_criterion_rows,
+            catalog,
+            period_start=period_start,
+            period_end=period_end,
+            student_user_ids=student_user_ids,
+        )
+        return {
+            "workspace_id": workspace_id,
+            "period_days": period_days,
+            "monthly_statistics": monthly_statistics,
+            "learning_analysis": learning_analysis,
+            "truncated": evidence_truncated or criterion_truncated,
+            "data_completeness": {
+                "complete": not (evidence_truncated or criterion_truncated),
+                "evidence_truncated": evidence_truncated,
+                "criterion_truncated": criterion_truncated,
+                "message": (
+                    "统计达到数据读取上限，更早的历史记录未能全部纳入分析；"
+                    "当前周期的数据完整，但上期对比与历史趋势可能不完整。"
+                    if (evidence_truncated or criterion_truncated)
+                    else None
+                ),
+            },
+            **result,
+        }
+
+    async def ai_analysis(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        body: TeacherAIAnalysisRequest,
+    ) -> dict[str, Any]:
+        """Generate a cached, evidence-bound DeepSeek report on demand."""
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        end = body.end_date or datetime.now(timezone.utc).date()
+        requested_days = max(1, body.period_days or 30)
+        start = body.start_date or end - timedelta(days=requested_days - 1)
+        overview = await self.analytics(
+            principal,
+            gateway,
+            workspace_id,
+            max(1, (end - start).days + 1),
+            period_start=start,
+            period_end=end,
+        )
+        material = build_ai_analysis_material(
+            overview,
+            course_id=body.course_id,
+            content_scope=body.content_scope,
+        )
+        data_version = hashlib.sha256(
+            json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        cache_key = ":".join(
+            [
+                workspace_id,
+                body.course_id,
+                body.content_scope,
+                start.isoformat(),
+                end.isoformat(),
+                data_version,
+            ]
+        )
+        if not body.force_refresh:
+            cached = learning_analysis_ai_cache.get(cache_key)
+            if cached is not None:
+                cached["cache_hit"] = True
+                return cached
+
+        generated = await generate_ai_analysis(material)
+        response = {
+            **generated,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "model": "DeepSeek",
+            "model_id": generated.get("model_id"),
+            "cache_hit": False,
+            "scope": overview["learning_analysis"]["scope"],
+            "course_id": body.course_id,
+            "content_scope": body.content_scope,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "data_version": data_version,
+        }
+        if generated.get("status") == "completed":
+            learning_analysis_ai_cache.set(cache_key, response)
+        return response
 
 
 teacher_service = TeacherService()

@@ -4,10 +4,22 @@ import { useTranslation } from "react-i18next";
 import novaMarkUrl from "../../../../logo/nova-remove.png";
 
 import { CategoryDialog } from "@/modules/student/components/CategoryDialog";
-import { deriveTitle } from "@/platform/storage/learning-preferences";
 import type { LearningPreferences, SessionLearningMeta, SessionSummary } from "@/shared/types";
 
-export function Sidebar({ sessions, preferences, activeId, open, collapsed, connected, onClose, onCollapse, onExpand, onSelect, onCreate, onMeta, onAddCategory, onRenameCategory, onDeleteCategory, onDelete, onAccount, onSettings }: {
+const DEFAULT_SESSION_TITLE = "新的学习对话";
+
+function displayTitle(session: SessionSummary, meta?: SessionLearningMeta): string {
+  // A fresh manual rename lives on the backend row (``title_is_manual``).  A
+  // legacy manual rename (pre-upgrade) still lives only in ``meta.title``; it
+  // takes priority over an LLM-generated title so "manual rename wins".
+  const backendTitle = session.title?.trim();
+  const legacyTitle = meta?.title?.trim();
+  if (backendTitle && session.title_is_manual) return backendTitle;
+  if (legacyTitle) return legacyTitle;
+  return backendTitle || DEFAULT_SESSION_TITLE;
+}
+
+export function Sidebar({ sessions, preferences, activeId, open, collapsed, connected, onClose, onCollapse, onExpand, onSelect, onCreate, onRename, onMeta, onAddCategory, onRenameCategory, onDeleteCategory, onDelete, onAccount, onSettings }: {
   sessions: SessionSummary[];
   preferences: LearningPreferences;
   activeId: string | null;
@@ -19,6 +31,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
   onExpand: () => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
+  onRename: (id: string, title: string) => void;
   onMeta: (id: string, patch: Partial<SessionLearningMeta>) => void;
   onAddCategory: (name: string) => string;
   onRenameCategory: (id: string, name: string) => void;
@@ -38,7 +51,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
   const visible = useMemo(() => sessions.filter((session) => {
     const meta = preferences.sessions[session.session_id];
     if (!!meta?.archived !== showArchived) return false;
-    const title = meta?.title ?? deriveTitle(session.session_id);
+    const title = displayTitle(session, meta);
     return title.toLowerCase().includes(query.toLowerCase());
   }), [preferences.sessions, query, sessions, showArchived]);
   const grouped = useMemo(() => {
@@ -118,7 +131,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
             {group.id && <details className="category-menu">
               <summary aria-label={`${group.name} 分类菜单`}><MoreHorizontal size={14} /></summary>
               <div>
-                <button type="button" onClick={() => {
+                <button type="button" aria-label="重命名分类" onClick={() => {
                   const name = prompt("重命名分类", group.name);
                   if (name?.trim()) onRenameCategory(group.id!, name.trim());
                 }}><Pencil size={13} />重命名</button>
@@ -128,7 +141,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
           </h3>
           {group.items.map((session) => {
             const meta = preferences.sessions[session.session_id] ?? {};
-            const title = meta.title ?? "新的学习对话";
+            const title = displayTitle(session, meta);
             const isRenaming = renamingSessionId === session.session_id;
             return <div className={`session-item ${activeId === session.session_id ? "active" : ""}`} key={session.session_id}>
               {isRenaming ? (
@@ -144,7 +157,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
       const nextTitle = renameValue.trim();
 
       if (nextTitle) {
-        onMeta(session.session_id, { title: nextTitle });
+        onRename(session.session_id, nextTitle);
       }
 
       setRenamingSessionId(null);
@@ -165,7 +178,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
     const nextTitle = renameValue.trim();
 
     if (nextTitle) {
-      onMeta(session.session_id, { title: nextTitle });
+      onRename(session.session_id, nextTitle);
     }
 
     setRenamingSessionId(null);
@@ -248,7 +261,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
   event.currentTarget.closest("details")?.removeAttribute("open");
   onDelete(
     session.session_id,
-    meta.title ?? "新的学习对话",
+    title,
     isDeletingLastArchivedSession
       ? () => setShowArchived(false)
       : undefined,

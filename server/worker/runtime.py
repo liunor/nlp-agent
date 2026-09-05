@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from functools import partial
+from typing import Any, Mapping
 
 from configs.settings import settings
 from gateway.contracts import GatewayEventType, TurnStatus
@@ -17,7 +19,11 @@ from gateway.state_factory import build_turn_execution_state
 from gateway.turn_execution import InProcessTurnExecutor
 from server.application.turn_reliability import OutboxRelay, TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.session.summary import schedule_summary, summary_sweep_loop
 from server.worker.fencing import FencedTurnExecutor
+from server.quota.notifications import QuotaSnapshotRedisPublisher
+from server.quota.operations import QuotaOperationsService
+from server.quota.reaper import QuotaReservationReaper
 from server.sandbox.manager_rpc import create_sandbox_manager_rpc_client
 from server.sandbox.model_tools import configure_model_sandbox_service
 
@@ -43,6 +49,9 @@ def redis_config() -> RedisTransportConfig:
         event_channel=str(config.get("redis_event_channel", "nlp-agent:events")),
         control_channel=str(config.get("redis_control_channel", "nlp-agent:control")),
         authorization_channel=str(config.get("redis_authorization_channel", "nlp-agent:authorization")),
+        quota_snapshot_channel=str(
+            config.get("redis_quota_snapshot_channel", "nlp-agent:quota-snapshot")
+        ),
         reclaim_idle_ms=int(config.get("redis_reclaim_idle_ms", 60_000)),
         cancel_key_prefix=str(
             config.get("redis_cancel_key_prefix", "nlp-agent:cancel:")
@@ -53,19 +62,55 @@ def redis_config() -> RedisTransportConfig:
         ),
     )
 
+def create_worker_quota_reaper(
+    repository: Any, gateway_config: Mapping[str, Any]
+) -> QuotaReservationReaper | None:
+    """Build the same expiry/maintenance loop for a standalone Worker."""
+    quota_service = getattr(repository, "quota_service", None)
+    if quota_service is None:
+        return None
+    return QuotaReservationReaper(
+        quota_service,
+        interval_seconds=max(
+            1.0,
+            float(gateway_config.get("quota_reap_interval_s", 30)),
+        ),
+        operations_service=QuotaOperationsService(quota_service.engine),
+        operations_interval_seconds=max(
+            1.0,
+            float(gateway_config.get("quota_operations_interval_s", 3_600)),
+        ),
+    )
+
 
 async def run_worker() -> None:
     from redis.asyncio import Redis
+    from server.quota.bootstrap import (
+        configure_usage_reporter,
+        shutdown_usage_reporter,
+    )
 
     database_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
     await database_runtime.start()
+    usage_reporter = configure_usage_reporter(
+        settings.NLP_AGENT_DATABASE_URL.strip(),
+        required=True,
+        quota_enforcement=settings.quota_enforcement_enabled,
+    )
     sandbox_model_service, sandbox_manager = configure_worker_sandbox_service(
         database_runtime.session_factory
     )
     config = redis_config()
     redis = Redis.from_url(config.url, decode_responses=True)
+    quota_snapshot_publisher = QuotaSnapshotRedisPublisher(
+        config.url, channel=config.quota_snapshot_channel
+    )
+    usage_reporter.set_snapshot_notifier(quota_snapshot_publisher)
     gateway_config = settings.gateway_runtime
     repository = build_turn_execution_state(gateway_config)
+    if getattr(repository, "quota_service", None) is not None:
+        repository.quota_service.set_snapshot_notifier(quota_snapshot_publisher)
+        await asyncio.to_thread(repository.quota_service.verify_schema)
     engine = LangGraphAgentEngine()
     publisher = RedisEventPublisher(redis, config)
     reliability = TurnReliabilityService()
@@ -97,6 +142,14 @@ async def run_worker() -> None:
             payload={"status": TurnStatus.CANCELLED.value},
         )
         await publisher.publish(event)
+        quota_service = getattr(repository, "quota_service", None)
+        if quota_service is not None and task.reservation_id is not None:
+            await asyncio.to_thread(
+                quota_service.release_reservation,
+                task.reservation_id,
+                turn_id=task.turn_id,
+                idempotency_key=f"worker-cancelled:{task.turn_id}",
+            )
 
     async def is_terminal(task) -> bool:
         turn = await asyncio.to_thread(repository.get_turn, task.turn_id)
@@ -113,6 +166,11 @@ async def run_worker() -> None:
                     },
                 ),
             )
+            # The turn is already durable as completed, but the original worker
+            # may have died after the DB write and before on_turn_completed
+            # re-armed the summarizer.  schedule_summary is idempotent, so
+            # re-arm it here on the retry path instead of losing the title.
+            schedule_summary(database_runtime.session_factory, task.context.session_id)
         elif turn.status == TurnStatus.CANCELLED:
             terminal_events = ((
                 GatewayEventType.TURN_CANCELLED,
@@ -141,7 +199,14 @@ async def run_worker() -> None:
         return True
 
     await engine.start(emit)
-    executor = InProcessTurnExecutor(engine, repository, emit)
+    executor = InProcessTurnExecutor(
+        engine,
+        repository,
+        emit,
+        on_turn_completed=partial(
+            schedule_summary, database_runtime.session_factory
+        ),
+    )
     fenced_executor = FencedTurnExecutor(
         database_runtime.uow,
         reliability,
@@ -159,6 +224,9 @@ async def run_worker() -> None:
         is_terminal=is_terminal,
         reclaim_pending=False,
     )
+    quota_reaper = create_worker_quota_reaper(repository, gateway_config)
+    if quota_reaper is not None:
+        quota_reaper.start()
 
     async def relay_forever() -> None:
         relay = OutboxRelay(redis, stream=config.task_stream, relay_id=worker_id, authorization_channel=config.authorization_channel)
@@ -170,16 +238,25 @@ async def run_worker() -> None:
             await asyncio.sleep(0.5)
 
     relay_task = asyncio.create_task(relay_forever(), name="mysql-outbox-relay")
+    summary_sweep_task = asyncio.create_task(
+        summary_sweep_loop(database_runtime.session_factory),
+        name="session-summary-sweep",
+    )
     try:
         await worker.run_forever()
     finally:
         relay_task.cancel()
-        await asyncio.gather(relay_task, return_exceptions=True)
+        summary_sweep_task.cancel()
+        await asyncio.gather(relay_task, summary_sweep_task, return_exceptions=True)
+        if quota_reaper is not None:
+            await quota_reaper.stop()
         await worker.close()
         await engine.close()
         await sandbox_model_service.close()
         if sandbox_manager is not None:
             await sandbox_manager.close()
         repository.close()
+        quota_snapshot_publisher.close()
         await redis.aclose()
+        shutdown_usage_reporter(usage_reporter)
         await database_runtime.close()

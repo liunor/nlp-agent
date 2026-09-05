@@ -1,9 +1,10 @@
-import { Activity, AlertTriangle, Bot, Clock3, Database, Gauge, HardDrive, Radio, RefreshCw, Search, Server, TerminalSquare, Timer, Trash2, X, Zap } from "lucide-react";
+import { Activity, AlertTriangle, Bot, Clock3, Database, Gauge, HardDrive, Radio, RefreshCw, Search, Server, ShieldCheck, TerminalSquare, Timer, Trash2, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { authenticate, monitorApi, type ErrorRow, type Overview, type SessionRow, type TelemetryEvent, type Trace, type TraceDetail, type UsageRow } from "./api";
 import { controlPlaneUrl, groupEventsByTrace, groupTracesIntoChains, monitorPageFromLocation, resetMonitorData, telemetryFrame, type MonitorPage, type TraceChain } from "./monitor-helpers";
 import { mergeSandboxCapacitySamples, mergeSandboxLogs, SANDBOX_REFRESH_INTERVAL_MS, SandboxMonitorPage, type SandboxExecution, type SandboxLogEntry, type SandboxOverview, type SandboxRuntime } from "./SandboxMonitorPage";
+import { AuthorizationAuditPage } from "./AuthorizationAuditPage";
 
 type Page = MonitorPage;
 const NAV: Array<{ page: Page; label: string; icon: typeof Gauge }> = [
@@ -14,6 +15,7 @@ const NAV: Array<{ page: Page; label: string; icon: typeof Gauge }> = [
   { page: "events", label: "实时运行流", icon: Radio },
   { page: "sandbox", label: "代码沙箱", icon: TerminalSquare },
   { page: "storage", label: "数据留存", icon: HardDrive },
+  { page: "audit", label: "审计日志", icon: ShieldCheck },
 ];
 function fmt(value: number | null | undefined, suffix = "") { return value == null ? "—" : `${value.toLocaleString()}${suffix}`; }
 function time(value?: string) { return value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value)) : "—"; }
@@ -116,6 +118,7 @@ export function MonitorApp() {
   const navigate = (next: Page) => { const url = new URL(location.href); if (next === "overview") url.searchParams.delete("page"); else url.searchParams.set("page", next); history.pushState({}, "", `${url.pathname}${url.search}${url.hash}`); setPage(next); };
   const pageContent = useMemo(() => {
     if (page === "sandbox") return <SandboxMonitorPage overview={sandboxOverview} logs={sandboxLogs} runtimes={sandboxRuntimes} executions={sandboxExecutions} live={sandboxLive} loading={sandboxLoading} logLoading={sandboxLogLoading} error={sandboxError} onRefresh={() => void loadSandbox(false)} onDrain={(runtimeId) => { if (confirm("确认排空这个运行时？")) void monitorApi.drainSandboxRuntime(runtimeId).then(() => loadSandbox(false)); }} />;
+    if (page === "audit") return <AuthorizationAuditPage />;
     if (!overview) return null;
     if (page === "traces") return <RunList chains={chains} onOpen={setChain} />;
     if (page === "sessions") return <section className="mon-panel"><header><div><h2>活跃 Session</h2><p>请求量、错误、平均响应与 Token</p></div></header><div className="mon-table"><table><thead><tr><th>Session</th><th>用户 / Workspace</th><th>Turn</th><th>错误</th><th>平均响应</th><th>Token</th><th>最后活跃</th></tr></thead><tbody>{sessions.map((row) => <tr key={row.session_id}><td><code>{row.session_id}</code></td><td>{row.user_id}<small>{row.workspace_id} · {row.channel}</small></td><td>{row.turns}</td><td>{row.errors}</td><td>{fmt(row.avg_duration_ms, " ms")}</td><td>{fmt(row.total_tokens)}</td><td>{time(row.last_seen)}</td></tr>)}</tbody></table>{!sessions.length && <Empty text="没有 Session 数据" />}</div></section>;

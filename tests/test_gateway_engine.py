@@ -43,6 +43,38 @@ class StreamingGraph(RecordingGraph):
         }
 
 
+class InternalCompressionStreamingGraph(RecordingGraph):
+    async def astream_events(self, _state, *, config, version):
+        self.configs.append(config)
+        yield {
+            "event": "on_chat_model_start",
+            "metadata": {"langgraph_node": "coordinator"},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "metadata": {
+                "langgraph_node": "coordinator",
+                "compression_internal": True,
+                "model_role": "compression",
+            },
+            "data": {"chunk": AIMessageChunk(content="内部压缩摘要")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "metadata": {"langgraph_node": "coordinator"},
+            "data": {"chunk": AIMessageChunk(content="内部摘要后续片段")},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "metadata": {"langgraph_node": "coordinator"},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "metadata": {"langgraph_node": "coordinator"},
+            "data": {"chunk": AIMessageChunk(content="正常回答")},
+        }
+
+
 @pytest.mark.asyncio
 async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config(monkeypatch):
     async def record_transcript_without_database(*_args, **_kwargs):
@@ -131,3 +163,57 @@ async def test_detached_worker_resume_does_not_mutate_completed_chat_content():
     await engine._invoke([], context, True, "completed-turn")
 
     assert [item[2] for item in emitted] == [GatewayEventType.WORKER_UPDATE]
+
+
+@pytest.mark.asyncio
+async def test_gateway_does_not_emit_internal_compression_streams():
+    engine = LangGraphAgentEngine()
+    engine._app = InternalCompressionStreamingGraph()
+    emitted = []
+
+    async def sink(turn_id, session_id, event_type, payload):
+        emitted.append((turn_id, session_id, event_type, payload))
+
+    engine._event_sink = sink
+    context = SessionContext(
+        session_id="session-1", user_id="alice", workspace_id="w1", channel="web"
+    )
+
+    await engine._invoke([], context, False, "turn-1")
+
+    assert [item[3].get("delta") for item in emitted] == ["正常回答"]
+
+
+@pytest.mark.asyncio
+async def test_engine_model_profile_cache_isolated_by_context_identity(monkeypatch):
+    async def record_transcript_without_database(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "server.agent.session_storage.record_transcript",
+        record_transcript_without_database,
+    )
+    engine = LangGraphAgentEngine()
+    engine._app = RecordingGraph()
+    engine._runtime = CoordinatorRuntime(WorkerEventBus(), engine._invoke)
+    engine._started = True
+    alice = SessionContext(
+        session_id="shared-session",
+        user_id="alice",
+        workspace_id="w1",
+        channel="web",
+    )
+    bob = SessionContext(
+        session_id="shared-session",
+        user_id="bob",
+        workspace_id="w1",
+        channel="web",
+    )
+
+    await engine.run_turn(alice, "alice-turn", "hello", model_profile="qwen")
+    await engine.run_turn(bob, "bob-turn", "hello", model_profile="deepseek")
+
+    assert engine._session_model_profiles[alice.storage_key] == "qwen"
+    assert engine._session_model_profiles[bob.storage_key] == "deepseek"
+    assert len(engine._session_model_profiles) == 2
+    await engine._runtime.close()

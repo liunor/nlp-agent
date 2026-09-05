@@ -4,8 +4,9 @@ import asyncio
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, Security, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
@@ -25,6 +26,7 @@ from server.rbac.service import rbac_service
 from server.web.auth import AuthenticationError, CsrfRejectedError, OriginRejectedError, SameOriginSessionAuth, SessionClaims
 from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 from server.monitor.reset import LocalRuntimeResetter
+from server.quota.usage import UsageReadService
 
 
 def _problem(status_code: int, code: str, title: str) -> JSONResponse:
@@ -61,6 +63,11 @@ def create_monitor_app(
     cookie_secure = database_auth.secure if not auth_injected else auth.secure
     resetter = resetter or LocalRuntimeResetter(runtime)
     rbac_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
+    usage_reader = (
+        UsageReadService(settings.NLP_AGENT_DATABASE_URL.strip())
+        if settings.NLP_AGENT_DATABASE_URL.strip()
+        else None
+    )
 
     async def monitor_db_session() -> AsyncIterator[AsyncSession]:
         async with rbac_runtime.session_factory() as db_session:
@@ -71,10 +78,13 @@ def create_monitor_app(
         app.state.runtime = runtime
         app.state.observability = service
         app.state.rbac_runtime = rbac_runtime
+        app.state.quota_usage_reader = usage_reader
         await rbac_runtime.start()
         try:
             yield
         finally:
+            if usage_reader is not None:
+                usage_reader.close()
             await rbac_runtime.close()
             await runtime.close()
 
@@ -247,6 +257,58 @@ def create_monitor_app(
         )
         return {"ticket": ticket, "expires_in": 60}
 
+    @app.get("/api/v1/audit/authorization", tags=["audit"])
+    async def list_authorization_audit(
+        identity: Principal,
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+        actor_user_id: str | None = None,
+        decision: str | None = Query(default=None, pattern="^(allow|deny)$"),
+        reason_code: str | None = Query(default=None, min_length=1, max_length=64),
+    ):
+        authorization_service.require(identity, Permission.SYSTEM_AUDIT_READ)
+        async with rbac_runtime.session_factory() as session:
+            rows, total = await rbac_service.audit_page(
+                session,
+                limit=limit,
+                offset=offset,
+                actor_user_id=actor_user_id,
+                decision=decision,
+                reason_code=reason_code,
+            )
+        return {
+            "items": [
+                {
+                    "id": row.id,
+                    "actor_user_id": row.actor_user_id,
+                    "target_user_id": row.target_user_id,
+                    "decision": row.decision,
+                    "reason_code": row.reason_code,
+                    "permission_code": row.permission_code,
+                    "resource_type": row.resource_type,
+                    "resource_id": row.resource_id,
+                    "detail": row.detail_json,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(rows) < total,
+        }
+
+    @app.get("/api/v1/audit/authorization/stats", tags=["audit"])
+    async def authorization_audit_stats(
+        identity: Principal,
+        days: int = Query(default=30, ge=1, le=3650),
+    ):
+        authorization_service.require(identity, Permission.SYSTEM_AUDIT_READ)
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+        async with rbac_runtime.session_factory() as session:
+            summary = await rbac_service.audit_summary(session, since=since)
+        return {"period_days": days, "since": since, **summary}
+
     @app.get("/api/v1/observability/overview", tags=["observability"])
     async def overview(identity: Principal, days: int = Query(30, ge=1, le=365)):
         return await service.overview(identity, days)
@@ -265,6 +327,17 @@ def create_monitor_app(
     @app.get("/api/v1/observability/usage", tags=["observability"])
     async def usage(identity: Principal, days: int = Query(30, ge=1, le=365)):
         return {"items": await service.usage(identity, days)}
+
+    @app.get("/api/v1/observability/usage-shadow", tags=["observability"])
+    async def usage_shadow(
+        identity: Principal,
+        days: int = Query(30, ge=1, le=365),
+    ):
+        reader = getattr(app.state, "quota_usage_reader", None)
+        if reader is None:
+            return _problem(503, "usage_unavailable", "Quota usage persistence is unavailable")
+        authorization_service.require(identity, Permission.SYSTEM_RUNTIME_MONITOR)
+        return await asyncio.to_thread(reader.shadow_comparison, days=days)
 
     @app.get("/api/v1/observability/sessions", tags=["observability"])
     async def sessions(identity: Principal, days: int = Query(30, ge=1, le=365), limit: int = Query(100, ge=1, le=500)):

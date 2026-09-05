@@ -18,6 +18,7 @@ const {
   createSessionMock,
   deleteSessionMock,
   sendChatMock,
+  renameSessionMock,
   socketConnectMock,
   socketCloseMock,
   socketEventHandlerRef,
@@ -27,11 +28,12 @@ const {
   createSessionMock: vi.fn(),
   deleteSessionMock: vi.fn(async () => undefined),
   sendChatMock: vi.fn(),
+  renameSessionMock: vi.fn(),
   socketConnectMock: vi.fn(),
   socketCloseMock: vi.fn(),
   socketEventHandlerRef: {
-  current: undefined as ((event: ServerEvent) => void) | undefined,
-},
+    current: undefined as ((event: ServerEvent) => void) | undefined,
+  },
 }));
 
 vi.mock("@/platform/http/api", () => ({
@@ -42,6 +44,7 @@ vi.mock("@/platform/http/api", () => ({
     getSettings: getSettingsMock,
     createSession: createSessionMock,
     deleteSession: deleteSessionMock,
+    renameSession: renameSessionMock,
     login: vi.fn(),
     logout: vi.fn(async () => undefined),
     updateSettings: vi.fn(),
@@ -87,6 +90,7 @@ describe("useStudentWorkspace settings", () => {
     createSessionMock.mockClear();
     deleteSessionMock.mockClear();
     sendChatMock.mockClear();
+    renameSessionMock.mockClear();
   });
 
   it("rolls back optimistic settings and exposes a visible error on network failure", async () => {
@@ -242,6 +246,39 @@ describe("useStudentWorkspace settings", () => {
 
     expect(result.current.preferences.sessions).toEqual({});
     expect(JSON.parse(localStorage.getItem("nlp-agent.learning-preferences.v1") ?? "{}").sessions).toEqual({});
+  });
+
+  it("renames a session through the backend and drops stale local title metadata", async () => {
+    vi.mocked(api.listSessions).mockResolvedValue({ items: [{ session_id: "session-new", user_id: "user", workspace_id: "default", channel: "web" }] });
+    renameSessionMock.mockResolvedValue({ session_id: "session-new", title: "新标题" });
+    localStorage.setItem("nlp-agent.learning-preferences.v1", JSON.stringify({
+      version: 2,
+      context: { topic_id: null, topic_name: "", level: "beginner", mode: "explain" },
+      categories: [],
+      sessions: { "session-new": { title: "旧标题", updatedAt: 1 } },
+    }));
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.renameSessionTitle("session-new", "新标题"); });
+
+    expect(renameSessionMock).toHaveBeenCalledWith("session-new", "新标题");
+    expect(result.current.sessions[0].title).toBe("新标题");
+    const stored = JSON.parse(localStorage.getItem("nlp-agent.learning-preferences.v1") ?? "{}").sessions["session-new"];
+    expect(stored.title).toBeUndefined();
+  });
+
+  it("surfaces a rename failure instead of silently dropping it", async () => {
+    vi.mocked(api.listSessions).mockResolvedValue({ items: [{ session_id: "session-new", user_id: "user", workspace_id: "default", channel: "web", title: "原标题" }] });
+    renameSessionMock.mockRejectedValue(new Error("network down"));
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.renameSessionTitle("session-new", "新标题"); });
+
+    expect(renameSessionMock).toHaveBeenCalledWith("session-new", "新标题");
+    expect(result.current.requestError).toContain("重命名失败");
+    expect(result.current.sessions[0].title).toBe("原标题");
   });
 
   it("starts a new chat without creating a backend session until a message is sent", async () => {

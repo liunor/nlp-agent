@@ -3,7 +3,7 @@
 from alembic import context, op
 import sqlalchemy as sa
 
-from server.rbac.catalog import MENU_CATALOG, menu_id, menu_row, role_id
+from migrations.rbac_seed_data import MENU_CATALOG, menu_id, menu_row, role_id
 
 
 revision = "20260820_25"

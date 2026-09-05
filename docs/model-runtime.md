@@ -117,7 +117,8 @@ model.stream_interrupted
   - `cached_input_tokens + cache_write_input_tokens <= input_tokens`
   - `reasoning_output_tokens <= output_tokens`
   - `total_tokens = input_tokens + output_tokens`
-- **`ModelInvocation`**: 单次 Provider 尝试的事实记录，包含由系统生成的 UUIDv4 `operation_id`、`identity`、`attribution`、`attempt`、`fallback_index` 和带 UTC 时区的 `started_at`。
+- **`BillableFeatureUsage`**: 与 Token 契约并列的功能用量，包含 `visual_input_tokens`, `image_units`, `search_calls`, `link_pages`；视觉 Token 与图片单位互斥。
+- **`ModelInvocation`**: 单次 Provider 尝试的事实记录，包含由系统生成的 UUIDv4 `operation_id`、`identity`、`attribution`、`attempt`、`fallback_index`、`feature_usage` 和带 UTC 时区的 `started_at`。
 - **`InvocationOutcome`**: 尝试结果状态 (`succeeded | failed | interrupted | cancelled`), `finish_reason`, `error_kind`, `completed_at`。
 
 ### 2. 用量上报生命周期
@@ -128,7 +129,14 @@ model.stream_interrupted
 - 若配置了 Reporter 但未绑定归属上下文，在发起 Provider 调用前立即抛出 `MissingUsageAttributionError`。
 - Reporter 写入失败会使模型调用失败，并停止后续 Retry/Fallback；不得静默丢失计量记录。
 
-### 3. 标准化错误分类
+### 3. 识图、搜索与链接读取
+
+- 识图优先读取 Provider 返回的视觉 Token；缺失时按实际送入 VLM 的图片像素和任务复杂度换算为 1/2/3 个 `image_units`。二者只计一种，并继续计模型输出 Token。
+- 原生搜索按 Provider 返回的搜索次数计量；当前强制搜索 preset 在 Provider 不返回次数时按一次调用记录。搜索结果不另建 Token 字段，进入模型的内容只通过现有 `input_tokens` 计价一次。
+- `web_fetch` 每次成功、非缓存的页面读取记录一个 `link_pages`；缓存命中不收页面读取费。页面正文进入后续模型调用时，只通过该模型调用的 `input_tokens` 计价。
+- 单价只来自版本化 PricingRule。模型规则可配置视觉 Token、图片单位和搜索调用价格；纯 OCR 使用 `feature/image-understanding`，链接读取使用 `feature/link-read`。缺少对应价格时 UsageEvent 保持 `pending`，不会按零价结算。
+
+### 4. 标准化错误分类
 
 `classify_model_error()` 产生规范的 `error_kind`：
 - `upstream_provider_quota_exhausted`: 厂商配额不足/欠费（不可重试）

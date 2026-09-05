@@ -37,6 +37,7 @@ from server.web.contracts import (
     parse_command_payload,
 )
 from server.web.protocol import control_event, gateway_event_envelope
+from server.quota.errors import QuotaRejectedError
 
 
 # The gateway repeats these checks at its transport-independent boundary.
@@ -88,11 +89,19 @@ class WebSocketHub:
         event: ServerEventEnvelope,
         *,
         user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         targets = [
             connection
             for connection in tuple(self._connections)
-            if user_id is None or connection.principal.user_id == user_id
+            if (
+                (user_id is None or connection.principal.user_id == user_id)
+                and (
+                    workspace_id is None
+                    or "*" in connection.principal.workspace_ids
+                    or workspace_id in connection.principal.workspace_ids
+                )
+            )
         ]
         if targets:
             await asyncio.gather(
@@ -425,64 +434,122 @@ class WebSocketConnection:
                 )
             )
 
+    @staticmethod
+    async def _wait_for_tasks(tasks: list[asyncio.Task[Any]]) -> None:
+        if not tasks:
+            return
+        waiter = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            # Wait for tasks to finish but don't propagate cancellation further
+            # This ensures proper cleanup happens even when cancelled
+            await waiter
+            # Now raise the cancellation so higher-level logic knows it was cancelled
+            raise
+        except Exception:
+            # Handle any other exceptions during task waiting
+            pass
+
     async def _terminate(self, *, code: int, reason: str) -> None:
         if self._closed:
             return
         self._closed = True
         self._closed_event.set()
-        current = asyncio.current_task()
-        subscriptions = list(self._subscriptions.values())
-        tasks = list(self._subscription_tasks.values())
-        self._subscriptions.clear()
-        self._subscription_tasks.clear()
-        for subscription in subscriptions:
-            await subscription.close()
-        for task in tasks:
-            if task is not current and not task.done():
-                task.cancel()
-        wait_tasks = [task for task in tasks if task is not current]
-        if wait_tasks:
-            await asyncio.gather(*wait_tasks, return_exceptions=True)
-        if self._sender_task is not None and self._sender_task is not current:
-            if not self._sender_task.done():
-                self._sender_task.cancel()
-            await asyncio.gather(self._sender_task, return_exceptions=True)
-        if self._session_guard_task is not None and self._session_guard_task is not current:
-            if not self._session_guard_task.done():
-                self._session_guard_task.cancel()
-            await asyncio.gather(self._session_guard_task, return_exceptions=True)
         try:
-            await asyncio.wait_for(
-                self.websocket.close(code=code, reason=reason),
-                timeout=min(1.0, self.send_timeout_s),
-            )
-        except (asyncio.TimeoutError, RuntimeError, OSError):
-            pass
-        self._fail_queued_frames()
+            current = asyncio.current_task()
+            subscriptions = list(self._subscriptions.values())
+            tasks = list(self._subscription_tasks.values())
+            self._subscriptions.clear()
+            self._subscription_tasks.clear()
+
+            # Close all subscriptions
+            for subscription in subscriptions:
+                try:
+                    await subscription.close()
+                except Exception:
+                    pass  # Ignore errors during subscription cleanup
+
+            # Cancel all subscription tasks
+            for task in tasks:
+                if task is not current and not task.done():
+                    task.cancel()
+
+            # Wait for subscription tasks with protection against cancellation
+            wait_tasks = [task for task in tasks if task is not current]
+            if wait_tasks:
+                try:
+                    await asyncio.shield(self._wait_for_tasks(wait_tasks))
+                except asyncio.CancelledError:
+                    # Even if cancelled, continue with remaining cleanup
+                    pass
+
+            # Cancel and wait for sender task
+            if self._sender_task is not None and self._sender_task is not current:
+                if not self._sender_task.done():
+                    self._sender_task.cancel()
+                try:
+                    await asyncio.shield(self._wait_for_tasks([self._sender_task]))
+                except asyncio.CancelledError:
+                    # Even if cancelled, continue with remaining cleanup
+                    pass
+
+            # Cancel and wait for session guard task
+            if self._session_guard_task is not None and self._session_guard_task is not current:
+                if not self._session_guard_task.done():
+                    self._session_guard_task.cancel()
+                try:
+                    await asyncio.shield(self._wait_for_tasks([self._session_guard_task]))
+                except asyncio.CancelledError:
+                    # Even if cancelled, continue with remaining cleanup
+                    pass
+
+            # Close the WebSocket connection
+            try:
+                await asyncio.wait_for(
+                    self.websocket.close(code=code, reason=reason),
+                    timeout=min(1.0, self.send_timeout_s),
+                )
+            except (asyncio.TimeoutError, RuntimeError, OSError):
+                pass
+        finally:
+            self._fail_queued_frames()
 
     async def close(self, *, code: int = 1000, reason: str = "connection closed") -> None:
         await self._terminate(code=code, reason=reason)
 
 
-def _command_error(error: Exception) -> tuple[str, str]:
+def _command_error(error: Exception) -> tuple[str, str, dict[str, Any]]:
     name = type(error).__name__
+    if isinstance(error, QuotaRejectedError):
+        problem = error.problem
+        return (
+            problem.code.value,
+            problem.reason,
+            {
+                "remaining_micro": problem.remaining_micro,
+                "reset_at": problem.reset_at.isoformat() if problem.reset_at else None,
+                "allowed_model_profiles": list(problem.allowed_model_profiles),
+                "retryable": problem.retryable,
+            },
+        )
     if isinstance(error, ValidationError):
-        return "validation_error", "command payload is invalid"
+        return "validation_error", "command payload is invalid", {}
     if name == "TeachingConfigurationError":
-        return "teaching_configuration_error", str(error)
+        return "teaching_configuration_error", str(error), {}
     if isinstance(error, ValueError):
-        return "invalid_command", str(error)
+        return "invalid_command", str(error), {}
     if isinstance(error, FileNotFoundError):
-        return "not_found", str(error)
+        return "not_found", str(error), {}
     if isinstance(error, PermissionError):
-        return "forbidden", "resource access is forbidden"
+        return "forbidden", "resource access is forbidden", {}
     if name == "TurnConflictError":
-        return "turn_conflict", str(error)
+        return "turn_conflict", str(error), {}
     if name == "ResourceNotFoundError":
-        return "not_found", str(error)
+        return "not_found", str(error), {}
     if name == "GatewayNotStartedError":
-        return "gateway_unavailable", "Backend Gateway is not ready"
-    return "internal_error", "command failed"
+        return "gateway_unavailable", "Backend Gateway is not ready", {}
+    return "internal_error", "command failed", {}
 
 
 async def _dispatch_command(
@@ -695,7 +762,20 @@ async def websocket_endpoint(
         await _receive_commands(websocket, connection, max_message_bytes)
     finally:
         hub.discard(connection)
-        await connection.close()
+        try:
+            await connection.close()
+        except asyncio.CancelledError:
+            # Re-raise cancellation but ensure basic cleanup happens
+            # The connection will be marked as closed in all cases
+            if not connection._closed:
+                connection._closed = True
+                connection._closed_event.set()
+            raise
+        except Exception:
+            # Other exceptions during close are logged but not propagated
+            if not connection._closed:
+                connection._closed = True
+                connection._closed_event.set()
 
 
 async def _receive_commands(
@@ -721,14 +801,14 @@ async def _receive_commands(
                 await connection.close(code=4401, reason="authentication expired")
                 return
             except (json.JSONDecodeError, ValidationError, ValueError, PermissionError, RuntimeError, LookupError, FileNotFoundError) as error:
-                code, message = _command_error(error)
+                code, message, details = _command_error(error)
                 session_id = command.payload.get("session_id") if command is not None else None
                 await connection.send(
                     control_event(
                         "command.error",
                         request_id=request_id,
                         session_id=session_id if isinstance(session_id, str) else None,
-                        payload={"code": code, "message": message},
+                        payload={"code": code, "message": message, **details},
                     )
                 )
     # A browser may cancel an upgrade while the server is yielding to its

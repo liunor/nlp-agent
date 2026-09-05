@@ -229,7 +229,46 @@ async def test_fetch_caches_cleaned_response(monkeypatch):
     first = await service.fetch(WebFetchInput(url="https://example.com/c"))
     second = await service.fetch(WebFetchInput(url="https://example.com/c"))
     assert calls["count"] == 1
+    assert first.cache_hit is False
+    assert second.cache_hit is True
     assert second.text == first.text
+
+
+async def test_fetch_calls_admission_only_for_actual_cache_miss(monkeypatch):
+    calls = {"network": 0, "admission": 0}
+
+    def handler(request):
+        calls["network"] += 1
+        return httpx.Response(
+            200, headers={"content-type": "text/plain"}, text="cached"
+        )
+
+    async def admit():
+        calls["admission"] += 1
+
+    service = _service(monkeypatch, handler, cache_ttl=300)
+    request = WebFetchInput(url="https://example.com/admitted")
+    first = await service.fetch(request, before_download=admit)
+    second = await service.fetch(request, before_download=admit)
+
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert calls == {"network": 1, "admission": 1}
+
+
+def test_production_fetch_factory_reuses_one_process_cache(monkeypatch):
+    config = WebToolsConfig()
+    monkeypatch.setattr(fetch_module, "_SHARED_SERVICE", None)
+    monkeypatch.setattr(
+        "server.tools.web.config.get_web_config",
+        lambda: config,
+    )
+
+    first = fetch_module.build_fetch_service()
+    second = fetch_module.build_fetch_service()
+
+    assert first is second
+    assert first.cache is second.cache
 
 
 async def test_fetch_marks_malicious_instructions_as_data(monkeypatch):

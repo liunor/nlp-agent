@@ -380,7 +380,7 @@ async def _execute_sandbox_loop(
         return execution
 
     async def query_loop() -> WorkerExecutionResultSpec:
-        nonlocal total_tokens_used, tool_uses_count, injection_count
+        nonlocal messages, total_tokens_used, tool_uses_count, injection_count
 
         async def finalize(reason: AgentStopReason) -> str:
             nonlocal total_tokens_used
@@ -467,8 +467,15 @@ async def _execute_sandbox_loop(
                         tokens_before=context_view.tokens_before,
                         tokens_after=context_view.tokens_after,
                         tokens_saved=max(0, context_view.tokens_before - context_view.tokens_after),
+                        context_window=context_view.context_window,
+                        input_limit=context_view.input_limit,
+                        output_reserve=context_view.output_reserve,
                         actions=context_view.actions,
                     )
+            # ContextManager returns the model-facing state for this Worker.
+            # Keep it as the next iteration's source so a later prepare call
+            # does not reprocess the pre-compaction history.
+            messages = context_view.messages
             response = await llm.ainvoke(context_view.messages)
             messages.append(response)
             if getattr(response, "usage_metadata", None):

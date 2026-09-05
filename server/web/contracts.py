@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, field_validator, model_validator
 from core.learning import LearningContext
 from gateway.contracts import EvaluationContext
 
@@ -21,6 +21,10 @@ class CreateSessionBody(StrictModel):
     workspace_id: str = Field(default="default", min_length=1, max_length=128)
 
 
+class RenameSessionBody(StrictModel):
+    title: str = Field(min_length=1, max_length=255)
+
+
 class LoginBody(StrictModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=512)
@@ -29,6 +33,55 @@ class LoginBody(StrictModel):
 
 class FeedbackBody(StrictModel):
     body: str = Field(min_length=1, max_length=2_000)
+    category: Literal["feature", "ux", "bug", "other"] | None = None
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def strip_body(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_category(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or None
+        return value
+
+
+class FeedbackReadBody(StrictModel):
+    read_through_message_id: str = Field(min_length=1, max_length=128)
+
+
+class FeedbackBulkBody(StrictModel):
+    thread_ids: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]] = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+
+FeedbackCategoryValue = Literal["feature", "ux", "bug", "other"]
+FeedbackStatusValue = Literal["open", "under_review", "planned", "in_progress", "complete", "closed"]
+FeedbackPriorityValue = Literal["low", "medium", "high"]
+FeedbackSortValue = Literal["latest", "oldest", "unread"]
+
+
+class FeedbackUpdateBody(StrictModel):
+    status: FeedbackStatusValue | None = None
+    category: FeedbackCategoryValue | None = None
+    priority: FeedbackPriorityValue | None = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "FeedbackUpdateBody":
+        if self.status is None and self.category is None and self.priority is None:
+            raise ValueError("至少提供一个反馈字段")
+        return self
+
+
+class FeedbackReplyBody(StrictModel):
+    body: str = Field(min_length=1, max_length=2_000)
 
     @field_validator("body", mode="before")
     @classmethod
@@ -36,12 +89,10 @@ class FeedbackBody(StrictModel):
         return value.strip() if isinstance(value, str) else value
 
 
-class FeedbackReadBody(StrictModel):
-    read_through_message_id: str = Field(min_length=1, max_length=128)
-
-
 class ReplaceUserRolesBody(StrictModel):
-    role_codes: set[str] = Field(min_length=1, max_length=16)
+    # An empty selection is intentional: the service converts it to the
+    # least-privilege guest role instead of leaving an account roleless.
+    role_codes: set[str] = Field(max_length=4)
 
 
 class ReplaceRolePermissionsBody(StrictModel):
@@ -141,6 +192,10 @@ class WorkerProfileBody(StrictModel):
     profile: dict[str, Any]
 
 
+class ModelConfigBody(StrictModel):
+    config: dict[str, Any]
+
+
 class ReleaseNoteBody(StrictModel):
     version: str = Field(pattern=r"^\d+\.\d+\.\d+$", max_length=32)
     released_at: datetime
@@ -148,6 +203,152 @@ class ReleaseNoteBody(StrictModel):
         min_length=1, max_length=200
     )
     status: Literal["draft", "published"] = "published"
+
+
+class QuotaPolicyBody(StrictModel):
+    code: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,127}$")
+    version: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=255)
+    request_limit_micro: StrictInt | None = Field(default=None, ge=0)
+    daily_limit_micro: StrictInt | None = Field(default=None, ge=0)
+    weekly_limit_micro: StrictInt | None = Field(default=None, ge=0)
+    concurrency_limit: StrictInt | None = Field(default=None, ge=0)
+    max_overdraft_micro: StrictInt = Field(default=0, ge=0)
+    allowed_model_profiles: list[str] = Field(default_factory=list, max_length=128)
+    unlimited: bool = False
+    effective_from: datetime
+    effective_until: datetime | None = None
+    # Publishing is a separate audited action.  Accepting ``active`` here
+    # would let a caller bypass the publish workflow and its validation.
+    status: Literal["draft"] = "draft"
+
+
+class QuotaPolicyUpdateBody(StrictModel):
+    code: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]{0,127}$")
+    version: str | None = Field(default=None, min_length=1, max_length=64)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    request_limit_micro: StrictInt | None = Field(default=None, ge=0)
+    daily_limit_micro: StrictInt | None = Field(default=None, ge=0)
+    weekly_limit_micro: StrictInt | None = Field(default=None, ge=0)
+    concurrency_limit: StrictInt | None = Field(default=None, ge=0)
+    max_overdraft_micro: StrictInt | None = Field(default=None, ge=0)
+    allowed_model_profiles: list[str] | None = Field(default=None, max_length=128)
+    unlimited: bool | None = None
+    effective_from: datetime | None = None
+    effective_until: datetime | None = None
+
+
+class QuotaBindingBody(StrictModel):
+    subject_type: Literal["default", "role", "user", "workspace", "classroom"]
+    subject_id: str = Field(min_length=1, max_length=128)
+    policy_id: str = Field(min_length=1, max_length=36)
+    priority: StrictInt = Field(default=0, ge=0)
+    effective_from: datetime
+    effective_until: datetime | None = None
+
+
+class QuotaGrantBody(StrictModel):
+    owner_type: Literal["user", "workspace", "classroom"]
+    owner_id: str = Field(min_length=1, max_length=128)
+    bucket_type: Literal["daily", "weekly"]
+    period_start: datetime
+    period_end: datetime
+    allocated_micro: StrictInt = Field(ge=0)
+    source_type: Literal["role", "purchase", "grant", "adjustment", "reset"]
+    source_id: str | None = Field(default=None, max_length=128)
+    reason: str = Field(min_length=1, max_length=255)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    effective_from: datetime
+    expires_at: datetime | None = None
+
+
+class QuotaAdjustmentBody(StrictModel):
+    owner_type: Literal["user", "workspace", "classroom"]
+    owner_id: str = Field(min_length=1, max_length=128)
+    bucket_type: Literal["daily", "weekly"]
+    period_start: datetime
+    period_end: datetime
+    amount_micro: StrictInt
+    reason: str = Field(min_length=1, max_length=255)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class QuotaGrantRevokeBody(StrictModel):
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class QuotaPricingRuleBody(StrictModel):
+    pricing_key: str = Field(min_length=1, max_length=255)
+    version: str = Field(min_length=1, max_length=64)
+    effective_from: datetime
+    effective_until: datetime | None = None
+    ordinary_input_credits_micro_per_million_tokens: StrictInt = Field(ge=0)
+    cached_input_credits_micro_per_million_tokens: StrictInt = Field(ge=0)
+    cache_write_credits_micro_per_million_tokens: StrictInt = Field(ge=0)
+    output_credits_micro_per_million_tokens: StrictInt = Field(ge=0)
+    reasoning_output_credits_micro_per_million_tokens: StrictInt | None = Field(
+        default=None, ge=0
+    )
+    visual_input_credits_micro_per_million_tokens: StrictInt | None = Field(
+        default=None, ge=0
+    )
+    image_unit_credits_micro: StrictInt | None = Field(default=None, ge=0)
+    search_call_credits_micro: StrictInt | None = Field(default=None, ge=0)
+    link_page_credits_micro: StrictInt | None = Field(default=None, ge=0)
+
+
+class QuotaBillingStatementBody(StrictModel):
+    provider: str = Field(min_length=1, max_length=128)
+    statement_id: str = Field(min_length=1, max_length=255)
+    operation_id: str = Field(min_length=1, max_length=128)
+    billed_at: datetime
+    billed_credits_micro: StrictInt | None = Field(default=None, ge=0)
+    billed_tokens: dict[str, StrictInt] = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class QuotaBillingReconcileBody(StrictModel):
+    statements: list[QuotaBillingStatementBody] = Field(min_length=1, max_length=10_000)
+
+
+class QuotaCreditOperationBody(StrictModel):
+    owner_type: Literal["user", "workspace", "classroom"]
+    owner_id: str = Field(min_length=1, max_length=128)
+    bucket_type: Literal["daily", "weekly"]
+    period_start: datetime
+    period_end: datetime
+    amount_micro: StrictInt = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=255)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    effective_from: datetime
+    expires_at: datetime | None = None
+
+
+class QuotaRoleCreditOperationBody(StrictModel):
+    role_code: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
+    bucket_type: Literal["daily", "weekly"]
+    period_start: datetime
+    period_end: datetime
+    amount_micro: StrictInt = Field(ge=0)
+    reason: str = Field(min_length=1, max_length=255)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    effective_from: datetime
+    expires_at: datetime | None = None
+
+
+class QuotaBillingRepairBody(StrictModel):
+    reason: str = Field(min_length=1, max_length=255)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class QuotaUsageArchiveBody(StrictModel):
+    before: datetime
+    batch_size: StrictInt = Field(default=10_000, ge=1, le=100_000)
+
+
+class QuotaAlertStatusBody(StrictModel):
+    status: Literal["acknowledged", "resolved"]
+    reason: str = Field(min_length=1, max_length=255)
 
 
 class CommandEnvelope(StrictModel):

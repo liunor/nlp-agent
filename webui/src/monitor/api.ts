@@ -8,6 +8,7 @@ export interface SessionRow { session_id: string; workspace_id: string; user_id:
 export interface ErrorRow { error_kind: string; kind: string; name: string; count: number; last_seen: string; sample_trace_id: string; }
 export type { SandboxExecution, SandboxLogEntry, SandboxOverview, SandboxRuntime } from "./SandboxMonitorPage";
 import type { SandboxExecution, SandboxLogEntry, SandboxOverview, SandboxRuntime } from "./SandboxMonitorPage";
+import type { AuthorizationAuditListResponse, AuthorizationAuditSummary } from "@/shared/types";
 
 let csrf = "";
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -19,6 +20,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export async function authenticate() { const result = await request<{ csrf_token: string }>("/auth/session"); csrf = result.csrf_token; }
 export const monitorApi = {
   createWsTicket: () => request<{ ticket: string; expires_in: number }>("/auth/ws-ticket", { method: "POST", body: "{}" }),
+  authorizationAudit: (params: { limit?: number; offset?: number; actorUserId?: string; decision?: string; reasonCode?: string } = {}) => {
+    const query = new URLSearchParams();
+    query.set("limit", String(params.limit ?? 50));
+    query.set("offset", String(params.offset ?? 0));
+    if (params.actorUserId) query.set("actor_user_id", params.actorUserId);
+    if (params.decision) query.set("decision", params.decision);
+    if (params.reasonCode) query.set("reason_code", params.reasonCode);
+    return request<AuthorizationAuditListResponse>(`/audit/authorization?${query.toString()}`);
+  },
+  authorizationAuditStats: (days = 30) => request<AuthorizationAuditSummary>(`/audit/authorization/stats?days=${days}`),
   overview: (days: number) => request<Overview>(`/observability/overview?days=${days}`),
   traces: (limit = 200) => request<{ items: Trace[] }>(`/observability/traces?limit=${limit}`),
   trace: (id: string) => request<TraceDetail>(`/observability/traces/${encodeURIComponent(id)}`),

@@ -6,7 +6,6 @@ import asyncio
 import json
 import shutil
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +22,7 @@ from server.agent.session_storage import (
     get_session_transcript_path,
 )
 from server.agent.node.session_storage import DATA_DIR
+from server.session.title_text import clean_title
 from server.infrastructure.mysql.models import (
     AgentCheckpointModel,
     ConversationMessageModel,
@@ -41,6 +41,48 @@ from server.infrastructure.mysql.models import (
     TurnEventModel,
     TurnModel,
 )
+
+# Short sidebar fallback title derived from a session's first user question.
+# The LLM summarizer writes the authoritative topic on the conversation row;
+# until that lands (or when it fails), the sidebar shows the original question
+# instead of the generic "new conversation" label.  This is derived from the
+# turn text already stored on the session, so nothing is persisted separately.
+def _first_question_title(input_text: str | None) -> str:
+    if not input_text:
+        return ""
+    return clean_title(input_text, ellipsis=True)
+
+
+async def _first_question_titles(
+    session: AsyncSession, conversation_ids: list[str]
+) -> dict[str, str]:
+    """Map conversation id -> derived first-question title (earliest turn).
+
+    Only the earliest turn per conversation is fetched (a window function),
+    rather than streaming every turn for every untitled session into Python.
+    """
+    row_number = func.row_number().over(
+        partition_by=TurnModel.conversation_id,
+        order_by=(TurnModel.created_at, TurnModel.id),
+    ).label("rn")
+    earliest = (
+        select(TurnModel.conversation_id, TurnModel.input_text, row_number)
+        .where(TurnModel.conversation_id.in_(conversation_ids))
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(earliest.c.conversation_id, earliest.c.input_text).where(
+                earliest.c.rn == 1
+            )
+        )
+    ).all()
+    titles: dict[str, str] = {}
+    for conversation_id, input_text in rows:
+        title = _first_question_title(input_text)
+        if title:
+            titles[conversation_id] = title
+    return titles
 
 
 class DatabaseSessionService:
@@ -72,6 +114,7 @@ class DatabaseSessionService:
             "user_id": row.owner_user_id,
             "workspace_id": row.workspace_id,
             "channel": row.channel,
+            "title_is_manual": bool(row.title_is_manual),
         }
 
     @staticmethod
@@ -166,67 +209,21 @@ class DatabaseSessionService:
                     )
                 ).all()
             )
+            empty_ids = [row.id for row in rows if not row.title]
+            first_titles = (
+                await _first_question_titles(session, empty_ids) if empty_ids else {}
+            )
+        items = []
+        for row in rows:
+            item = self._summary(row)
+            item["title"] = row.title or first_titles.get(row.id, "")
+            items.append(item)
         return {
-            "items": [self._summary(row) for row in rows],
+            "items": items,
             "total": total,
             "offset": page_offset,
             "limit": page_limit,
             "has_more": page_offset + len(rows) < total,
-        }
-
-    async def stats(self, principal: AuthenticatedPrincipal) -> dict[str, Any]:
-        authorization_service.require(principal, Permission.AGENT_SESSION_READ)
-        scope = self._scope(principal)
-        active = scope.where(ConversationModel.status == "active")
-        scope_ids = scope.with_only_columns(ConversationModel.id).order_by(None)
-        turn_scope = select(TurnModel).where(
-            TurnModel.conversation_id.in_(scope_ids)
-        )
-        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
-        async with self._sessions() as session:
-            sessions_total = int(
-                await session.scalar(
-                    select(func.count()).select_from(scope.order_by(None).subquery())
-                )
-                or 0
-            )
-            sessions_active = int(
-                await session.scalar(
-                    select(func.count()).select_from(active.order_by(None).subquery())
-                )
-                or 0
-            )
-            turns_total = int(
-                await session.scalar(
-                    select(func.count()).select_from(turn_scope.order_by(None).subquery())
-                )
-                or 0
-            )
-            turns_last_24h = int(
-                await session.scalar(
-                    select(func.count()).select_from(
-                        turn_scope.where(TurnModel.created_at >= since)
-                        .order_by(None)
-                        .subquery()
-                    )
-                )
-                or 0
-            )
-            last_activity = await session.scalar(
-                select(func.max(func.coalesce(
-                    ConversationModel.last_message_at,
-                    ConversationModel.updated_at,
-                    ConversationModel.created_at,
-                ))).where(
-                    ConversationModel.id.in_(scope_ids)
-                )
-            )
-        return {
-            "sessions_total": sessions_total,
-            "sessions_active": sessions_active,
-            "turns_total": turns_total,
-            "turns_last_24h": turns_last_24h,
-            "last_activity_at": last_activity,
         }
 
     async def messages(
@@ -275,6 +272,27 @@ class DatabaseSessionService:
                 .values(last_message_at=func.utc_timestamp(6))
             )
         return context
+
+    async def rename(
+        self, principal: AuthenticatedPrincipal, session_id: str, title: str
+    ) -> dict[str, str]:
+        context = await self.resolve(principal, session_id)
+        authorization_service.require(
+            principal, Permission.AGENT_SESSION_UPDATE, workspace_id=context.workspace_id
+        )
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("title must not be empty")
+        async with self._sessions.begin() as session:
+            await session.execute(
+                update(ConversationModel)
+                .where(
+                    ConversationModel.id == session_id,
+                    ConversationModel.owner_user_id == principal.user_id,
+                )
+                .values(title=title[:255], title_is_manual=True)
+            )
+        return {"session_id": session_id, "title": title[:255]}
 
     async def delete(
         self, principal: AuthenticatedPrincipal, session_id: str
@@ -421,22 +439,6 @@ class LocalSessionService:
             "has_more": page_offset + len(items) < len(output),
         }
 
-    async def stats(self, principal: AuthenticatedPrincipal) -> dict[str, Any]:
-        page = await self.list_page(principal, limit=200)
-        active_values = [
-            item.get("last_active")
-            for item in page["items"]
-            if item.get("last_active") is not None
-        ]
-        last_active = max(active_values, default=None)
-        return {
-            "sessions_total": page["total"],
-            "sessions_active": page["total"],
-            "turns_total": None,
-            "turns_last_24h": None,
-            "last_activity_at": last_active,
-        }
-
     async def messages(
         self, principal: AuthenticatedPrincipal, session_id: str
     ) -> list[dict[str, Any]]:
@@ -472,6 +474,25 @@ class LocalSessionService:
                 metadata["last_active"] = time.time()
                 await asyncio.to_thread(_save_sessions_index, index)
         return context
+
+    async def rename(
+        self, principal: AuthenticatedPrincipal, session_id: str, title: str
+    ) -> dict[str, str]:
+        context = await self.resolve(principal, session_id)
+        authorization_service.require(
+            principal, Permission.AGENT_SESSION_UPDATE, workspace_id=context.workspace_id
+        )
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("title must not be empty")
+        async with self._lock:
+            index = await asyncio.to_thread(_load_sessions_index)
+            metadata = index.get("sessions", {}).get(session_id)
+            if metadata is None:
+                raise FileNotFoundError(session_id)
+            metadata["title"] = title[:255]
+            await asyncio.to_thread(_save_sessions_index, index)
+        return {"session_id": session_id, "title": title[:255]}
 
     async def delete(
         self, principal: AuthenticatedPrincipal, session_id: str

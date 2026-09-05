@@ -7,6 +7,8 @@ const { monitorApi } = vi.hoisted(() => ({
     traces: vi.fn().mockResolvedValue({ items: [] }), usage: vi.fn().mockResolvedValue({ items: [] }),
     sessions: vi.fn().mockResolvedValue({ items: [] }), errors: vi.fn().mockResolvedValue({ items: [] }),
     events: vi.fn().mockResolvedValue({ items: [] }), storage: vi.fn().mockResolvedValue({}),
+    authorizationAudit: vi.fn().mockResolvedValue({ items: [], total: 0, offset: 0, limit: 50, has_more: false }),
+    authorizationAuditStats: vi.fn().mockResolvedValue({ period_days: 30, since: "2026-08-01T00:00:00", total: 0, by_decision: {}, top_reasons: [] }),
   },
 }));
 
@@ -39,5 +41,17 @@ describe("MonitorApp navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行记录" }));
 
     expect(location.search).toBe("?page=traces");
+  });
+
+  it("opens authorization audit inside the monitor plane", async () => {
+    history.replaceState({}, "", "/monitor");
+
+    render(<MonitorApp />);
+
+    await screen.findByRole("heading", { name: "Token 与缓存" });
+    fireEvent.click(screen.getByRole("button", { name: "审计日志" }));
+
+    expect(await screen.findByRole("heading", { name: "审计日志", level: 2 })).toBeVisible();
+    expect(monitorApi.authorizationAudit).toHaveBeenCalledWith({ limit: 50, offset: 0 });
   });
 });

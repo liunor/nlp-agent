@@ -12,6 +12,7 @@ from core.model_runtime.reporters import (
     UsageEventConflictError,
 )
 from core.model_runtime.usage import (
+    BillableFeatureUsage,
     CanonicalTokenUsage,
     InvocationOutcome,
     MissingUsageAttributionError,
@@ -19,8 +20,10 @@ from core.model_runtime.usage import (
     ModelInvocation,
     UsageAttributionContext,
     bind_usage_attribution,
+    bind_billable_feature_usage,
     bind_usage_purpose,
     current_usage_attribution,
+    current_billable_feature_usage,
     resolve_usage_attribution,
     system_usage_attribution,
 )
@@ -89,6 +92,20 @@ def test_canonical_token_usage_provider_all_zero_allowed():
     )
     assert usage.source == "provider"
     assert usage.total_tokens == 0
+
+
+def test_billable_feature_usage_is_separate_and_context_scoped():
+    feature_usage = BillableFeatureUsage(image_units=2, search_calls=1)
+
+    with bind_billable_feature_usage(feature_usage):
+        assert current_billable_feature_usage() == feature_usage
+
+    assert current_billable_feature_usage() == BillableFeatureUsage()
+
+
+def test_billable_feature_usage_rejects_visual_token_and_unit_double_counting():
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        BillableFeatureUsage(visual_input_tokens=10, image_units=1)
 
 
 def test_canonical_token_usage_rejects_source_none_with_tokens():

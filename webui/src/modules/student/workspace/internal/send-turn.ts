@@ -1,6 +1,5 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
-import { deriveTitle } from "@/platform/storage/learning-preferences";
 import { StudentSocket } from "@/platform/realtime/client";
 import type { ChatAttachment, ChatMessage, LearningPreferences, SessionLearningMeta, UserSettings } from "@/shared/types";
 import { createUuid } from "@/shared/utils/uuid";
@@ -65,11 +64,8 @@ export function useTurnSender({
       createdAt: new Date().toISOString(),
     }]);
     const currentMeta = preferences.sessions[sessionId];
-    if (!currentMeta?.title || currentMeta.title === "新的学习对话") {
-      updateSessionMeta(sessionId, {
-        title: deriveTitle(content || attachments?.[0]?.displayName || "图片分析"),
-        topic: preferences.context.topic_name,
-      });
+    if (!currentMeta?.topic) {
+      updateSessionMeta(sessionId, { topic: preferences.context.topic_name });
     }
     socketRef.current?.setSession(sessionId);
     socketRef.current?.sendChat(

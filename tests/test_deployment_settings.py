@@ -48,6 +48,7 @@ def test_compose_runs_mysql_migrations_before_application_services_start():
     migrate = compose["services"]["nova-migrate"]
 
     assert mysql["image"] == "mysql:8.4"
+    assert "ports" not in mysql
     assert mysql["healthcheck"]
     assert migrate["command"] == [".venv/bin/python", "-m", "alembic", "upgrade", "head"]
     assert migrate["depends_on"]["mysql"]["condition"] == "service_healthy"

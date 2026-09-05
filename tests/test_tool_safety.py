@@ -6,6 +6,7 @@ import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
+from core.rbac import Permission, required_permission_for_high_risk_tool
 from core.tool_runtime import (
     ToolDescriptor,
     ToolGrantRequest,
@@ -29,6 +30,13 @@ class ValueInput(BaseModel):
 def test_tool_risk_defines_critical_for_fail_closed_registration() -> None:
     assert {item.value for item in ToolRisk} >= {"low", "medium", "high", "critical"}
     assert ToolRisk.CRITICAL in {ToolRisk.HIGH, ToolRisk.CRITICAL}
+
+
+def test_high_risk_mcp_tools_use_the_tool_config_permission() -> None:
+    assert (
+        required_permission_for_high_risk_tool("mcp_github_delete")
+        == Permission.SYSTEM_TOOL_CONFIG_MANAGE
+    )
 
 
 def make_descriptor(

@@ -26,6 +26,9 @@ const thread = (id: string, name: string): FeedbackThreadSummary => ({
   display_name: name,
   unread_count: 1,
   updated_at: "2026-08-26T00:00:00+00:00",
+  status: "open",
+  category: "other",
+  priority: "medium",
   latest: { id: `${id}-m`, sender_type: "student", body: "你好", created_at: "2026-08-26T00:00:00+00:00" },
 });
 
@@ -90,6 +93,25 @@ describe("Developer feedback list", () => {
     expect(screen.getByText((_, element) => element?.textContent === "共 25 条 · 第 1/2 页")).toBeVisible();
     expect(screen.getByRole("button", { name: "上一页" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "下一页" })).toBeEnabled();
+  });
+
+  it("shows only the people list first and loads the opinion after selection", async () => {
+    vi.useRealTimers();
+    getFeedbackMock.mockResolvedValue({
+      ...thread("t1", "alice"),
+      messages: [{ id: "t1-m", sender_type: "student", body: "具体意见", created_at: "2026-08-26T00:00:00+00:00" }],
+    });
+    render(<Harness />);
+    await flush();
+
+    expect(screen.getByText("alice")).toBeVisible();
+    expect(screen.getByText("选择一位学生查看反馈")).toBeVisible();
+    expect(getFeedbackMock).not.toHaveBeenCalled();
+    expect(screen.queryByText("具体意见")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看 alice 的反馈" }));
+    expect(await screen.findByText("具体意见")).toBeVisible();
+    expect(getFeedbackMock).toHaveBeenCalledWith("t1");
   });
 
   it("loads the next page through the offset change", async () => {
@@ -232,5 +254,130 @@ describe("Developer feedback list", () => {
     // t1 left the page, but paging must neither reselect bob nor mark it read.
     expect(getFeedbackMock).toHaveBeenCalledTimes(1);
     expect(markFeedbackReadMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the shared page dialog and keeps deletion in the detail pane", async () => {
+    vi.useRealTimers();
+    const onDelete = vi.fn(async () => {});
+    const refresh = vi.fn(async () => {});
+    const nativeConfirm = vi.fn();
+    vi.stubGlobal("confirm", nativeConfirm);
+    getFeedbackMock.mockResolvedValue({
+      ...thread("t1", "alice"),
+      messages: [{ id: "t1-m", sender_type: "student", body: "你好", created_at: "2026-08-26T00:00:00+00:00" }],
+    });
+
+    render(<Feedback
+      threads={[thread("t1", "alice")]}
+      total={1}
+      pageSize={20}
+      offset={0}
+      search=""
+      loadError=""
+      selectedId="t1"
+      onSelect={vi.fn()}
+      onSearchChange={vi.fn()}
+      onOffsetChange={vi.fn()}
+      onDelete={onDelete}
+      refresh={refresh}
+    />);
+
+    expect(await screen.findByText("你好")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "删除 alice 的反馈" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除当前反馈" }));
+    expect(screen.getByRole("alertdialog", { name: "删除这条反馈？" })).toBeVisible();
+    expect(nativeConfirm).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith("t1"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "删除这条反馈？" })).not.toBeInTheDocument());
+    vi.unstubAllGlobals();
+  });
+
+  it("supports single read and bulk read/delete from compact inbox rows", async () => {
+    vi.useRealTimers();
+    const onMarkRead = vi.fn(async () => {});
+    const onBulkMarkRead = vi.fn(async () => {});
+    const onBulkDelete = vi.fn(async () => {});
+    const items = [thread("t1", "alice"), thread("t2", "bob")];
+
+    render(<Feedback
+      threads={items}
+      total={2}
+      pageSize={20}
+      offset={0}
+      search=""
+      loadError=""
+      selectedId={null}
+      onSelect={vi.fn()}
+      onSearchChange={vi.fn()}
+      onOffsetChange={vi.fn()}
+      onMarkRead={onMarkRead}
+      onBulkMarkRead={onBulkMarkRead}
+      onBulkDelete={onBulkDelete}
+      refresh={vi.fn(async () => {})}
+    />);
+
+    fireEvent.click(screen.getByRole("button", { name: "标记 alice 已读" }));
+    await waitFor(() => expect(onMarkRead).toHaveBeenCalledWith("t1"));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "全选当前页" }));
+    expect(screen.getByRole("checkbox", { name: "选择 alice 的反馈" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "选择 bob 的反馈" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "批量已读" }));
+    await waitFor(() => expect(onBulkMarkRead).toHaveBeenCalledWith(["t1", "t2"]));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "全选当前页" }));
+    expect(screen.getByRole("checkbox", { name: "选择 alice 的反馈" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "选择 bob 的反馈" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "批量删除" }));
+    expect(screen.getByRole("alertdialog", { name: "删除选中的反馈？" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "删除选中反馈" }));
+    await waitFor(() => expect(onBulkDelete).toHaveBeenCalledWith(["t1", "t2"]));
+  });
+
+  it("loads older detail messages on demand instead of rendering the whole thread", async () => {
+    vi.useRealTimers();
+    getFeedbackMock
+      .mockResolvedValueOnce({
+        ...thread("t1", "alice"),
+        messages: [
+          { id: "m2", sender_type: "developer", body: "第二条", created_at: "2026-08-26T00:01:00+00:00" },
+          { id: "m3", sender_type: "student", body: "第三条", created_at: "2026-08-26T00:02:00+00:00" },
+        ],
+        message_total: 3,
+        message_offset: 0,
+        message_limit: 2,
+        message_has_more: true,
+      })
+      .mockResolvedValueOnce({
+        ...thread("t1", "alice"),
+        messages: [{ id: "m1", sender_type: "student", body: "第一条", created_at: "2026-08-26T00:00:00+00:00" }],
+        message_total: 3,
+        message_offset: 2,
+        message_limit: 2,
+        message_has_more: false,
+      });
+    render(<Feedback
+      threads={[thread("t1", "alice")]}
+      total={1}
+      pageSize={20}
+      offset={0}
+      search=""
+      loadError=""
+      selectedId="t1"
+      onSelect={vi.fn()}
+      onSearchChange={vi.fn()}
+      onOffsetChange={vi.fn()}
+      refresh={vi.fn(async () => {})}
+    />);
+
+    expect(await screen.findByText("第二条")).toBeVisible();
+    expect(screen.queryByText("第一条")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /加载更早消息/ }));
+    expect(await screen.findByText("第一条")).toBeVisible();
+    expect(getFeedbackMock).toHaveBeenLastCalledWith("t1", { limit: 2, offset: 2 });
+    expect(screen.queryByRole("button", { name: /加载更早消息/ })).not.toBeInTheDocument();
   });
 });

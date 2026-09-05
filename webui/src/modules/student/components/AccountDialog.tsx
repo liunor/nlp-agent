@@ -1,6 +1,8 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { LogOut, Settings, ShieldCheck, UserRound, X } from "lucide-react";
+import { useState } from "react";
 
+import { ProfileDialog } from "@/modules/profile/ProfileDialog";
 import type { AuthSession } from "@/shared/types";
 
 export function AccountDialog({
@@ -17,8 +19,12 @@ export function AccountDialog({
   const username = session?.username || session?.display_name || session?.user_id || "Nova 学习者";
   const displayName = session?.display_name || session?.username || "Nova 学习者";
   const roles = session?.roles?.join("、") || "student";
-  return <Dialog.Root open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }}>
-    <Dialog.Portal>
+  // Profile settings open as an in-platform overlay instead of navigating to a
+  // separate page, so the user never leaves the current workspace.
+  const [profileOpen, setProfileOpen] = useState(false);
+  return <>
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }}>
+      <Dialog.Portal>
       <Dialog.Overlay className="account-dialog-overlay" />
       <Dialog.Content className="account-dialog-content" aria-describedby="account-dialog-description">
         <button className="login-dialog-close" type="button" onClick={onClose} aria-label="关闭账户管理"><X size={18} /></button>
@@ -30,9 +36,19 @@ export function AccountDialog({
           <div><dt>名称</dt><dd>{displayName}</dd></div>
           <div><dt>角色</dt><dd><ShieldCheck size={15} />{roles}</dd></div>
         </dl>
-        <button className="account-dialog-profile" type="button" onClick={() => { onClose(); window.location.href = "/profile"; }}><Settings size={16} />个人设置</button>
+        <button className="account-dialog-profile" type="button" onClick={() => { onClose(); setProfileOpen(true); }}><Settings size={16} />个人设置</button>
         <button className="account-dialog-logout" type="button" onClick={() => void onLogout()}><LogOut size={16} />退出登录</button>
       </Dialog.Content>
-    </Dialog.Portal>
-  </Dialog.Root>;
+      </Dialog.Portal>
+    </Dialog.Root>
+    {/* Mounted only while open: closing unmounts the dialog, which resets
+        its tab / inputs / messages for the next open. */}
+    {profileOpen && (
+      <ProfileDialog
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        sessionRoles={session?.roles}
+      />
+    )}
+  </>;
 }
