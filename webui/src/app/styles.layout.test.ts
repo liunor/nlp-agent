@@ -57,6 +57,17 @@ describe("sandbox titlebar layout", () => {
     expect(tabRules.slice(1).every((rule) => rule.includes("padding-right: 124px"))).toBe(true);
   });
 
+  it("keeps the dock resize handle and add-tool picker above the learning panel", () => {
+    const handleRule = stylesheet.match(/\.tool-dock-resize-handle\s*\{([^}]*)\}/)?.[1] ?? "";
+    const dockLearningRule = stylesheet.match(/\.tool-dock \.learning-panel\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    // The handle stays fully inside the dock so overflow:hidden no longer clips it to ~4px.
+    expect(handleRule).toContain("left: 0");
+    expect(handleRule).not.toContain("left: -4px");
+    // The panel must not leak its floating-rail z-index above the dock chrome.
+    expect(dockLearningRule).toContain("z-index: auto");
+  });
+
   it("lets a narrow knowledge-book toolbar scroll instead of overlapping its controls", () => {
     const toolbarRule = stylesheet.match(/\.knowledge-book-toolbar\s*\{([^}]*)\}/)?.[1] ?? "";
     const brandRule = stylesheet.match(/\.knowledge-book-brand\s*\{([^}]*)\}/)?.[1] ?? "";
