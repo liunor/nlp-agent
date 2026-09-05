@@ -53,6 +53,19 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(screen.getByRole("button", { name: "刷新" }).closest(".teacher-brand")).toBeVisible();
   });
 
+  it("renders learning metrics and weak topics on the overview homepage", async () => {
+    history.replaceState({}, "", "/teacher"); render(<TeacherWorkspace />);
+
+    expect(await screen.findByText("学生")).toBeVisible();
+    expect(screen.getByText("会话")).toBeVisible();
+    expect(screen.getByText("提问")).toBeVisible();
+    expect(screen.getByText("练习通过率")).toBeVisible();
+    expect(screen.getByText("66.67%")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "弱知识点" })).toBeVisible();
+    expect(screen.getByText("Transformer")).toBeVisible();
+    expect(screen.getByText("中风险")).toBeVisible();
+  });
+
   it("places the knowledge book entry between home and topic management", async () => {
     history.replaceState({}, "", "/teacher");
     render(<TeacherWorkspace />);

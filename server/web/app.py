@@ -344,14 +344,6 @@ def _public_learning_topic(topic: dict[str, Any]) -> dict[str, Any]:
     return public_topic
 
 
-def require_explicit_classroom_membership(
-    principal: AuthenticatedPrincipal, classroom_id: str
-) -> None:
-    """Require object-level classroom scope for every non-admin teacher."""
-    if not principal.is_admin and classroom_id not in principal.classroom_ids:
-        raise HTTPException(status_code=403, detail="当前教师无权查看该课堂")
-
-
 def _rbac_http_error(error: Exception) -> HTTPException:
     """Translate RBAC domain failures into stable API error contracts."""
     if isinstance(error, KeyError):
@@ -3358,44 +3350,6 @@ def create_app(
     ):
         return await teacher_service.analytics(
             principal, request.app.state.gateway, workspace_id, days
-        )
-
-    @app.get("/api/v1/teacher/quota/classroom", tags=["teacher", "quota"])
-    async def teacher_classroom_quota(
-        request: Request,
-        principal: Principal,
-        classroom_id: str = Query(..., min_length=1, max_length=128),
-        workspace_id: str = Query(default="default", min_length=1, max_length=128),
-        days: int = Query(default=30, ge=1, le=365),
-    ):
-        teacher_service.require_teacher(
-            principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM
-        )
-        require_explicit_classroom_membership(principal, classroom_id)
-        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
-        if factory is None:
-            if not principal.is_admin:
-                raise HTTPException(status_code=503, detail="课堂权限数据暂不可用")
-        else:
-            async with factory() as session:
-                classroom = await session.scalar(
-                    select(ClassroomModel).where(
-                        ClassroomModel.id == classroom_id,
-                        ClassroomModel.status == "active",
-                    )
-                )
-            if classroom is None:
-                raise HTTPException(status_code=404, detail="课堂不存在")
-            if classroom.workspace_id != workspace_id:
-                raise HTTPException(status_code=403, detail="课堂不属于当前工作区")
-        operations = quota_operations_for(request)
-        end = datetime.now(timezone.utc)
-        return await asyncio.to_thread(
-            operations.classroom_usage,
-            classroom_id,
-            workspace_id=workspace_id,
-            start=end - timedelta(days=days),
-            end=end,
         )
 
     @app.get("/api/v1/teacher/{resource}", tags=["teacher"])

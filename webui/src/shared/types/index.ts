@@ -878,28 +878,6 @@ export interface ClassroomSummary {
   status: string;
 }
 
-export interface QuotaClassroomUsage {
-  classroom_id: string;
-  from: string;
-  to: string;
-  students: number;
-  active_student_ids: string[];
-  events: number;
-  priced_events: number;
-  priced_credits_micro: number;
-  pending_events: number;
-  unavailable_events: number;
-  tokens: Record<string, number>;
-  by_user: Array<{
-    user_id: string;
-    events: number;
-    priced_credits_micro: number;
-    pending_events: number;
-    unavailable_events: number;
-    total_tokens: number;
-  }>;
-}
-
 export interface JoinRequest {
   id: string;
   class_id: string;

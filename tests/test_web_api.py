@@ -9,7 +9,6 @@ import zipfile
 
 import pytest
 from argon2 import PasswordHasher
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
 from starlette.websockets import WebSocketDisconnect
@@ -19,7 +18,7 @@ from core.session_context import SessionContext
 from gateway.contracts import GatewayEventType
 from gateway.core import BackendGateway
 from gateway.repository import GatewayRepository
-from server.web.app import create_app, require_explicit_classroom_membership
+from server.web.app import create_app
 from server.web.auth import SameOriginSessionAuth
 from server.web.contracts import ServerEventEnvelope
 from server.web.websocket import WebSocketConnection, WebSocketHub
@@ -373,20 +372,6 @@ def test_student_cannot_call_teacher_or_developer_control_planes(student_web_app
         logged_out = client.delete("/api/v1/auth/session", headers=write_headers(csrf))
         assert logged_out.status_code == 204
         assert client.get("/api/v1/sessions").status_code == 401
-
-
-def test_classroom_quota_requires_explicit_membership_for_non_admins():
-    principal = AuthenticatedPrincipal(
-        user_id="teacher-1",
-        workspace_ids=frozenset({"workspace-1"}),
-        classroom_ids=frozenset(),
-        roles=frozenset({"teacher"}),
-    )
-
-    with pytest.raises(HTTPException) as error:
-        require_explicit_classroom_membership(principal, "classroom-1")
-
-    assert error.value.status_code == 403
 
 
 def test_learning_release_notes_route_requests_only_published(web_app, monkeypatch):
