@@ -133,4 +133,38 @@ it("clears the expired-auth state after re-login succeeds", async () => {
   expect(api.login).toHaveBeenCalledWith("user", "password");
   expect(screen.getByTestId("authenticated")).toHaveTextContent("true");
 });
+  it("marks the session expired when expires_at is reached", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_900_000_000_000);
+
+    vi.mocked(ensureAuth).mockResolvedValue({
+      ...session,
+      expires_at: 1_900_000_060,
+    });
+
+    const view = render(
+      <AuthProvider>
+        <Consumer />
+      </AuthProvider>,
+    );
+
+    try {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId("authenticated")).toHaveTextContent("true");
+      expect(screen.getByTestId("expired")).toHaveTextContent("false");
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+
+      expect(screen.getByTestId("expired")).toHaveTextContent("true");
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
 });

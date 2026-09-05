@@ -59,7 +59,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   };
 }, []);
+      useEffect(() => {
+    if (!user || isAuthExpired) return undefined;
 
+    const expiresAtMs = user.expires_at * 1000;
+    if (!Number.isFinite(expiresAtMs)) return undefined;
+
+    const expiresInMs = expiresAtMs - Date.now();
+    if (expiresInMs <= 0) return undefined;
+
+    const maxTimeoutMs = 2_147_483_647;
+    let timeoutId: number;
+
+    const scheduleExpiration = () => {
+      const remainingMs = expiresAtMs - Date.now();
+
+      if (remainingMs <= 0) {
+        setIsAuthExpired(true);
+        setError("");
+        return;
+      }
+
+      timeoutId = window.setTimeout(
+        scheduleExpiration,
+        Math.min(remainingMs, maxTimeoutMs),
+      );
+    };
+
+    timeoutId = window.setTimeout(
+      scheduleExpiration,
+      Math.min(expiresInMs, maxTimeoutMs),
+    );
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isAuthExpired, user]);
   const login = useCallback(async (username: string, password: string) => {
     setError("");
     try {
