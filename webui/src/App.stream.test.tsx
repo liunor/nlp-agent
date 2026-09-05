@@ -77,6 +77,7 @@ const stream = vi.hoisted(() => {
 
 vi.mock("@/platform/realtime/client", () => ({ StudentSocket: stream.StudentSocket }));
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn().mockResolvedValue({}),
   uploadAttachment: stream.uploadAttachment,
   api: {

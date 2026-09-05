@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { api, ensureAuth } from "@/platform/http/api";
+import { api, AUTH_EXPIRED_EVENT, ensureAuth } from "@/platform/http/api";
 import type { AuthSession } from "@/shared/types";
 
 interface AuthContextValue {
@@ -8,6 +8,7 @@ interface AuthContextValue {
   roles: string[];
   isAuthenticated: boolean;
   isLoading: boolean;
+  isAuthExpired: boolean;
   login: (username: string, password: string) => Promise<AuthSession>;
   logout: () => Promise<void>;
   error: string;
@@ -24,6 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthSession | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [isAuthExpired, setIsAuthExpired] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -45,15 +47,62 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+  useEffect(() => {
+  const handleAuthExpired = () => {
+    setIsAuthExpired(true);
+    setError("");
+  };
 
+  window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+
+  return () => {
+    window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  };
+}, []);
+      useEffect(() => {
+    if (!user || isAuthExpired) return undefined;
+
+    const expiresAtMs = user.expires_at * 1000;
+    if (!Number.isFinite(expiresAtMs)) return undefined;
+
+    const expiresInMs = expiresAtMs - Date.now();
+    if (expiresInMs <= 0) return undefined;
+
+    const maxTimeoutMs = 2_147_483_647;
+    let timeoutId: number;
+
+    const scheduleExpiration = () => {
+      const remainingMs = expiresAtMs - Date.now();
+
+      if (remainingMs <= 0) {
+        setIsAuthExpired(true);
+        setError("");
+        return;
+      }
+
+      timeoutId = window.setTimeout(
+        scheduleExpiration,
+        Math.min(remainingMs, maxTimeoutMs),
+      );
+    };
+
+    timeoutId = window.setTimeout(
+      scheduleExpiration,
+      Math.min(expiresInMs, maxTimeoutMs),
+    );
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isAuthExpired, user]);
   const login = useCallback(async (username: string, password: string) => {
     setError("");
     try {
       const session = await api.login(username, password);
       setUser(session);
+      setIsAuthExpired(false);
       return session;
     } catch (reason) {
-      setUser(null);
       setError(reason instanceof Error ? reason.message : "登录失败");
       throw reason;
     }
@@ -79,10 +128,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     roles: user?.roles ?? [],
     isAuthenticated: user !== null,
     isLoading,
+    isAuthExpired,
     login,
     logout,
     error,
-  }), [error, isLoading, login, logout, user]);
+  }), [error, isAuthExpired, isLoading, login, logout, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

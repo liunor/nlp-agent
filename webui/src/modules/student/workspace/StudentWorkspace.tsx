@@ -17,12 +17,10 @@ import { Sidebar, SidebarToggle } from "@/modules/student/components/Sidebar";
 import { ToolDock, type ToolDockTabDropPosition, type ToolDockTool } from "@/modules/student/components/ToolDock";
 import { useStudentWorkspace } from "@/modules/student/workspace/public";
 import { useSessionScrollRestoration } from "@/modules/student/workspace/hooks/useSessionScrollRestoration";
-import { useOptionalAuth } from "@/platform/auth/AuthContext";
 import type { CourseTopic, TeacherCatalog } from "@/shared/types";
 
 export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigateTo?: (path: string) => void; onOpenInSandbox?: (code: string, language: string) => void } = {}) {
   const workspace = useStudentWorkspace();
-  const globalAuth = useOptionalAuth();
   const learningContext = workspace.preferences.context;
   const setLearningContext = workspace.setLearningContext;
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -134,15 +132,14 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
         </div>
       </section>
     </main>
-    <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} onAuthenticate={async (username, password) => {
-      if (globalAuth) {
-        await globalAuth.login(username, password);
-      } else {
-        await api.login(username, password);
+    <LoginDialog
+      open={loginOpen}
+      onClose={() => setLoginOpen(false)}
+      onAuthenticate={async (username, password) => {
+        await workspace.authenticate(username, password);
         workspace.retryAuthentication();
-      }
-    }} />
-  </div>;
+      }}
+    />  </div>;
 
   const updateContext = (context: typeof workspace.preferences.context) => {
     if ((context.mode === "practice" || context.mode === "review") && context.topic_id) {
@@ -235,7 +232,8 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
 
     workspace.deleteCategory(target.id);
   }}
-  />
+    />
+
 {archived.length > 0 && <span className="sr-only">已归档 {archived.length} 个学习对话</span>}
   </div>;
 }
