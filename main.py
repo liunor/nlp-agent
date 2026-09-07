@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
+from core.cli_banner import print_startup_banner
 from gateway.contracts import GatewayEventType, SubmitTurnRequest
 from gateway.core import BackendGateway
 
@@ -19,8 +20,8 @@ def check_config() -> bool:
     from configs.settings import settings
 
     config = settings.planner_llm
-    print(f"Coordinator: {config['model_id']} ({config['base_url']})")
-    print(f"Worker:      {settings.tool_llm['model_id']}")
+    # Model and key status are shown by the startup banner; fail fast here only
+    # when the selected provider key is genuinely missing.
     if not config.get("api_key_configured"):
         env_name = config.get("api_key_env", "the selected Provider API key")
         print(f"Missing {env_name}; create .env in the project root.")
@@ -194,6 +195,15 @@ async def main() -> None:
 
 if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else "chat"
+    _banner_kind = {
+        "serve": "serve", "web": "serve",
+        "monitor": "monitor", "observe": "monitor",
+        "worker": "worker",
+        "sandbox-manager": "sandbox-manager", "sandbox_manager": "sandbox-manager",
+        "chat": "chat", "--chat": "chat", "-c": "chat",
+    }.get(command)
+    if _banner_kind is not None:
+        print_startup_banner(_banner_kind)
     if command in {"serve", "web"}:
         from server.web.__main__ import run
 
