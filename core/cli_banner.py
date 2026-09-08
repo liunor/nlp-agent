@@ -145,7 +145,7 @@ def _snapshot_rows(kind: str) -> list[tuple[str, str, str | None]]:
             rows.append(("数据库", db, None))
         gateway = settings.gateway_runtime
         transport = gateway.get("transport", "in_process")
-        redis = gateway.get("redis_url", "")
+        redis = mask_dsn(gateway.get("redis_url", "") or "")
         rows.append(("传输", f"{transport} · Redis {redis}" if redis else transport, None))
         rows.append(
             ("配额", "启用" if settings.quota_enforcement_enabled else "关闭",
@@ -168,9 +168,10 @@ def _snapshot_rows(kind: str) -> list[tuple[str, str, str | None]]:
             rows.append(("数据库", db, None))
     elif kind == "worker":
         gateway = settings.gateway_runtime
-        redis = gateway.get("redis_url", "")
+        transport = gateway.get("transport", "redis")
+        redis = mask_dsn(gateway.get("redis_url", "") or "")
         rows.append(("角色", "worker（消费 turn 队列）", None))
-        rows.append(("传输", f"{gateway.get('transport', 'redis')} · Redis {redis}" if redis else gateway.get("transport", "redis"), None))
+        rows.append(("传输", f"{transport} · Redis {redis}" if redis else transport, None))
     elif kind == "sandbox-manager":
         mode = getattr(settings, "NLP_AGENT_SANDBOX_RUNTIME_MODE", "disabled")
         backend = getattr(settings, "NLP_AGENT_SANDBOX_RUNTIME_BACKEND", "runsc")
@@ -195,10 +196,19 @@ def print_startup_banner(kind: str) -> None:
     print()
 
     rows = _snapshot_rows(kind)
+    if not rows:
+        print()
+        return
     label_width = max(_display_width(label) for label, _, _ in rows)
+    value_width = max(_display_width(value) for _, value, _ in rows)
+    inner_width = label_width + value_width + 4  # │ + two 2-space gaps
+    divider = _paint("│", "dim", color)
+    print(_paint("  ┌" + "─" * inner_width + "┐", "dim", color))
     for label, value, style in rows:
         code = {"ok": "green", "warn": "yellow"}.get(style)
         label_text = _paint(label + " " * (label_width - _display_width(label)), "dim", color)
         value_text = _paint(value, code, color)
-        print(f"  {label_text}  {value_text}")
+        pad = " " * (value_width - _display_width(value))
+        print(f"  {divider} {label_text}  {value_text}{pad} {divider}")
+    print(_paint("  └" + "─" * inner_width + "┘", "dim", color))
     print()

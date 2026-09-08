@@ -16,6 +16,13 @@ def test_mask_dsn_hides_password():
     assert "/nlp_agent" in masked
 
 
+def test_mask_dsn_hides_redis_password():
+    masked = mask_dsn("redis://:s3cr3t@redis.example.com:6379/0")
+    assert "s3cr3t" not in masked
+    assert ":***@" in masked
+    assert "redis.example.com:6379" in masked
+
+
 def test_mask_dsn_no_credentials():
     assert mask_dsn("sqlite:///x.db") == "sqlite:///x.db"
     assert mask_dsn("") == ""
@@ -41,3 +48,12 @@ def test_banner_plaintext_without_color(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "\x1b[" not in out
     assert "Nova" in out
+
+
+def test_banner_snapshot_is_boxed(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    print_startup_banner("chat")
+    out = capsys.readouterr().out
+    assert "┌" in out and "└" in out
+    # Every box side aligns: each border line starts with a "│" gutter.
+    assert "│" in out
