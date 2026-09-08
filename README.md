@@ -1,7 +1,7 @@
 # Nova
 
 <p align="center">
-  <img src="webui/logo/nova.png" alt="Nova" width="210">
+  <img src="webui/logo/nova.png" alt="Nova" width="180">
 </p>
 
 <p align="center">
@@ -10,7 +10,16 @@
 </p>
 
 <p align="center">
-  Python · FastAPI · LangGraph · MySQL · Redis · React · TypeScript
+  <a href="README.en.md">English</a> · <a href="#快速开始">快速开始</a> · <a href="CONTRIBUTING.md">贡献</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/license/liunor/nlp-agent" alt="license">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="python">
+  <img src="https://img.shields.io/github/actions/workflow/status/liunor/nlp-agent/ci.yml?branch=develop" alt="ci">
+  <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="fastapi">
+  <img src="https://img.shields.io/badge/LangGraph-orange" alt="langgraph">
+  <img src="https://img.shields.io/badge/React-20232A?logo=react&logoColor=61DAFB" alt="react">
 </p>
 
 ---
@@ -18,10 +27,10 @@
 ## 目录
 
 - [Nova 是什么](#nova-是什么)
+- [功能预览](#功能预览)
 - [核心特性](#核心特性)
 - [系统架构](#系统架构)
 - [四个核心模块](#四个核心模块)
-- [关键子系统](#关键子系统)
 - [技术栈](#技术栈)
 - [仓库结构](#仓库结构)
 - [快速开始](#快速开始)
@@ -29,7 +38,8 @@
 - [配置说明](#配置说明)
 - [测试与评测](#测试与评测)
 - [开发流程](#开发流程)
-- [文档索引](#文档索引)
+- [贡献](#贡献)
+- [许可证](#许可证)
 
 ---
 
@@ -50,6 +60,22 @@ Nova 是一个面向**自然语言处理（NLP）学习与教学场景**的智�
 Nova 当前主要用于内网演示与教学实践，采用「教师拥有教学内容、服务端分配练习、
 快照保证可复现」的设计，把教学模式（讲解/练习/复习/苏格拉底引导）沉淀为可控的
 Prompt 运行时。
+
+---
+
+## 功能预览
+
+| 学习者 | 开发者控制台 |
+| --- | --- |
+| <img src="docs/assets/screenshot-learner.png" alt="学习者对话页面" width="640"> | <img src="docs/assets/screenshot-developer.png" alt="开发者控制台" width="640"> |
+
+| 教师分析 | 运行监控 |
+| --- | --- |
+| <img src="docs/assets/screenshot-teacher.png" alt="教师分析页面" width="640"> | <img src="docs/assets/screenshot-monitor.png" alt="运行监控页面" width="640"> |
+
+对话与流式输出的动态演示：
+
+![对话流式演示](docs/assets/demo-chat.gif)
 
 ---
 
@@ -126,29 +152,6 @@ Prompt 运行时。
 
 学习者与教师、开发者共享同一 FastAPI/WebUI 源（同源 Cookie 鉴权）；运行监控
 是一个**独立构建、独立进程**的只读平台，避免监控流量干扰学生对话。
-
----
-
-## 关键子系统
-
-Nova 的复杂度被拆解为相互独立、各有边界的子系统，各有一份设计文档：
-
-| 子系统 | 职责 | 文档 |
-| --- | --- | --- |
-| 模型运行时 | 五层配置、Provider Registry、类型化路由与 Preset、重试/熔断 | [model-runtime.md](docs/model-runtime.md) |
-| Backend Gateway | 生命周期唯一所有者、持久流式、优雅关闭 | [backend-gateway.md](docs/backend-gateway.md) |
-| Web API | 鉴权、Cookie、CSRF、WebSocket 协议 | [web-api.md](docs/web-api.md) |
-| 会话与上下文 | `SessionContext`、分层状态、路径安全 | [session-context.md](docs/session-context.md) |
-| 工具运行时 | 统一目录、权限、来源冲突 fail-closed | [tool-runtime.md](docs/tool-runtime.md) |
-| 工具可靠性 | 重试契约、并发锁、高风险授权、审计 | [tool-reliability.md](docs/tool-reliability.md) |
-| 图片理解 | OCR + VLM 端到端流程 | [image-understanding.md](docs/image-understanding.md) |
-| 作用域记忆 | 分层记忆、无 RAG、Curator | [memory-runtime.md](docs/memory-runtime.md) |
-| 可观测性 | 本地链路 Trace、MySQL 仓 | [observability.md](docs/observability.md) |
-| Redis/Worker 部署 | 队列投递、租约、事件恢复 | [redis-worker-deployment.md](docs/redis-worker-deployment.md) |
-| 沙箱运行时 | 隔离执行、暖池、制品、快照 | [sandbox-phase5.md](docs/sandbox-phase5.md) |
-| 教学流程 | 主题/知识点/蓝图/评分生命周期 | [specs/learning-teaching-workflow.md](docs/specs/learning-teaching-workflow.md) |
-| 评测系统 | 工具路由 / 编排 / 引导 / 蓝图多轮 | [evaluation-system.md](docs/evaluation-system.md) |
-| 数据库迁移 | Alembic 独占 schema、编写规约 | [migrations.md](docs/migrations.md) |
 
 ---
 
@@ -455,8 +458,15 @@ feature/*  ──PR──►  develop  ──PR──►  main
 - `main`：受保护的可发布分支，只接受来自 `develop` 的 PR
 
 CI（GitHub Actions）包含后端测试与静态检查、前端 lint/测试/构建、Docker 构建校验
-三个任务。更完整的约定见 [git-flow 开发流程.md](git-flow 开发流程.md) 与
+三个任务。更完整的约定见 [git-flow 开发流程.md](git-flow%20开发流程.md) 与
 [docs/ci-cd.md](docs/ci-cd.md)。
+
+---
+
+## 贡献
+
+欢迎参与！无论是修复文档错字、补充测试，还是新增功能，请先阅读
+[CONTRIBUTING.md](CONTRIBUTING.md)，了解分支模型、提交规范与 PR 流程。
 
 ---
 
@@ -473,6 +483,12 @@ CI（GitHub Actions）包含后端测试与静态检查、前端 lint/测试/构
 - 沙箱：[sandbox-phase5.md](docs/sandbox-phase5.md)
 - 评测：[evaluation-system.md](docs/evaluation-system.md)
 - 决策：[docs/adr/](docs/adr/)（蓝图快照、服务端分配蓝图、主题生命周期）
+
+---
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。
 
 ---
 
