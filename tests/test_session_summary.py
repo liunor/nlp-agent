@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from core.model_runtime.usage import current_usage_attribution
 from server.session.summary import (
     MAX_SUMMARY_ATTEMPTS,
     _backoff_summary,
@@ -26,6 +27,7 @@ from server.session.summary import (
     _decide,
     _render_turns,
     _select_turns,
+    _SummaryState,
     build_conversation_text,
     generate_and_store_summary,
 )
@@ -101,7 +103,7 @@ async def test_build_conversation_text_uses_first_turn(monkeypatch):
     factory = _SessionFactory()
 
     async def fake_load_state(session, session_id):
-        return None, False, turns, 0
+        return _SummaryState(None, False, turns, 0, "workspace-1", "user-1")
 
     monkeypatch.setattr("server.session.summary._load_state", fake_load_state)
 
@@ -134,9 +136,11 @@ class _FakeLLM:
     def __init__(self, title: str = "注意力机制入门"):
         self.title = title
         self.invocations: list = []
+        self.attributions: list = []
 
     async def ainvoke(self, messages, **kwargs):
         self.invocations.append((messages, kwargs))
+        self.attributions.append(current_usage_attribution())
         return SimpleNamespace(content=self.title)
 
 
@@ -185,11 +189,20 @@ def _patch_env(
     title_is_manual=False,
     claim_rowcount=1,
     summary_attempts=0,
+    workspace_id="workspace-1",
+    owner_user_id="user-1",
 ):
     factory = _SessionFactory(claim_rowcount=claim_rowcount)
 
     async def fake_load_state(session, session_id):
-        return title_updated_at, title_is_manual, turns, summary_attempts
+        return _SummaryState(
+            title_updated_at,
+            title_is_manual,
+            turns,
+            summary_attempts,
+            workspace_id,
+            owner_user_id,
+        )
 
     monkeypatch.setattr("server.session.summary._load_state", fake_load_state)
     monkeypatch.setattr("server.session.summary.get_utility_llm", lambda: llm)
@@ -214,6 +227,28 @@ async def test_generate_and_store_writes_title(monkeypatch):
     assert params["id"] == "session-1"
     assert params["title"] == "注意力机制入门"
     assert params["basis"] == turns[0].completed_at
+    attribution = llm.attributions[0]
+    assert attribution is not None
+    assert attribution.request_id == "session-summary:session-1:1"
+    assert attribution.user_id == "user-1"
+    assert attribution.workspace_id == "workspace-1"
+    assert attribution.conversation_id == "session-1"
+    assert attribution.turn_id is None
+    assert attribution.purpose == "other"
+    assert current_usage_attribution() is None
+
+
+@pytest.mark.asyncio
+async def test_generate_skips_when_usage_identity_is_missing(monkeypatch):
+    turns = _make_turns(1, datetime(2026, 1, 1))
+    llm = _FakeLLM()
+    factory = _patch_env(
+        monkeypatch, turns, None, llm, owner_user_id=None
+    )
+
+    assert await generate_and_store_summary("session-1", factory) is False
+    assert llm.invocations == []
+    assert factory.session.writes == []
 
 
 @pytest.mark.asyncio

@@ -44,6 +44,8 @@ gateway:
   redis_event_channel: nlp-agent:events
   redis_control_channel: nlp-agent:control
   redis_reclaim_idle_ms: 60000
+  # Keep XREADGROUP comfortably below redis-py 8's 5-second socket timeout.
+  redis_poll_block_ms: 2000
   redis_cancel_key_prefix: "nlp-agent:cancel:"
   redis_cancel_ttl_s: 604800
   redis_dead_letter_stream: nlp-agent:turns:dead

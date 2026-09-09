@@ -35,14 +35,16 @@ class DeepSeekChatModel(ChatDeepSeek):
         messages = self._convert_input(input_).to_messages()
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         payload_messages = payload.get("messages", [])
+        replay_all_reasoning = bool(payload.get("tools"))
         for index, message in enumerate(messages):
             if not isinstance(message, AIMessage) or index >= len(payload_messages):
                 continue
             reasoning = message.additional_kwargs.get("reasoning_content")
-            # DeepSeek requires CoT replay for assistant messages that initiated
-            # tool calls. For plain completed turns the field is ignored and is
-            # deliberately omitted to keep request prefixes stable.
-            if reasoning and message.tool_calls:
+            # Function-calling requests must replay the reasoning from every
+            # preceding assistant turn, including turns that did not call a
+            # tool. Without tools, retain the narrower replay used by existing
+            # tool-call histories so plain request prefixes remain stable.
+            if reasoning and (replay_all_reasoning or message.tool_calls):
                 payload_messages[index]["reasoning_content"] = reasoning
         return payload
 

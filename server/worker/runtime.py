@@ -53,6 +53,7 @@ def redis_config() -> RedisTransportConfig:
             config.get("redis_quota_snapshot_channel", "nlp-agent:quota-snapshot")
         ),
         reclaim_idle_ms=int(config.get("redis_reclaim_idle_ms", 60_000)),
+        poll_block_ms=int(config.get("redis_poll_block_ms", 2_000)),
         cancel_key_prefix=str(
             config.get("redis_cancel_key_prefix", "nlp-agent:cancel:")
         ),

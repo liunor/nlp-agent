@@ -19,6 +19,7 @@ class FakeRedis:
         self.publish_error = None
         self.claim_failures = 0
         self.get_results = []
+        self.read_blocks = []
 
     async def xadd(self, stream, fields):
         self.streams.append((stream, fields))
@@ -54,6 +55,7 @@ class FakeRedis:
         return True
 
     async def xreadgroup(self, group, consumer, streams, count, block):
+        self.read_blocks.append(block)
         return self.reads.pop(0) if self.reads else []
 
     async def xack(self, stream, group, message_id):
@@ -81,6 +83,22 @@ def test_turn_task_codec_preserves_worker_payload():
 
     assert restored == task
     assert restored.model_profile == "qwen"
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_configured_poll_block_and_preserves_explicit_zero():
+    redis = FakeRedis()
+    config = RedisTransportConfig(
+        task_stream="turns", task_group="workers", poll_block_ms=1_234
+    )
+    worker = RedisWorkerRuntime(
+        redis, config, lambda _task: None,
+        consumer_name="worker-1", reclaim_pending=False,
+    )
+
+    assert await worker.run_once() == 0
+    assert await worker.run_once(block_ms=0) == 0
+    assert redis.read_blocks == [1_234, 0]
 
 
 def test_turn_task_codec_rejects_unknown_protocol_version():

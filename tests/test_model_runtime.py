@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 import core.coordinator_runtime as coordinator_runtime_module
 import core.model_runtime.runtime as model_runtime_module
@@ -506,6 +506,47 @@ def test_deepseek_replays_reasoning_only_for_tool_call_messages():
     ])
     assert "reasoning_content" not in payload["messages"][1]
     assert payload["messages"][3]["reasoning_content"] == "needed"
+
+
+def test_deepseek_replays_all_reasoning_when_tools_in_payload():
+    model = DeepSeekChatModel(
+        model="deepseek-v4-pro", api_base="https://api.deepseek.com",
+        api_key="test", max_retries=0,
+    )
+    plain = AIMessage(
+        content="answer", additional_kwargs={"reasoning_content": "first-turn"}
+    )
+    tool = AIMessage(
+        content="", additional_kwargs={"reasoning_content": "tool-turn"},
+        tool_calls=[{
+            "id": "call-1", "name": "lookup", "args": {"q": "x"},
+            "type": "tool_call",
+        }],
+    )
+    payload = model._get_request_payload(
+        [
+            HumanMessage(content="one"),
+            plain,
+            HumanMessage(content="two"),
+            tool,
+            ToolMessage(content="result", tool_call_id="call-1"),
+        ],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a value",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            },
+        }],
+    )
+
+    assert payload["messages"][1]["reasoning_content"] == "first-turn"
+    assert payload["messages"][3]["reasoning_content"] == "tool-turn"
 
 
 @pytest.mark.asyncio

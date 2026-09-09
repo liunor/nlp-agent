@@ -29,6 +29,7 @@ class RedisTransportConfig:
     authorization_channel: str = "nlp-agent:authorization"
     quota_snapshot_channel: str = "nlp-agent:quota-snapshot"
     reclaim_idle_ms: int = 60_000
+    poll_block_ms: int = 2_000
     cancel_key_prefix: str = "nlp-agent:cancel:"
     cancel_ttl_s: int = 604_800
     dead_letter_stream: str = "nlp-agent:turns:dead"
@@ -129,8 +130,11 @@ class RedisWorkerRuntime:
                 raise
         self._group_ready = True
 
-    async def run_once(self, *, block_ms: int = 5000) -> int:
+    async def run_once(self, *, block_ms: int | None = None) -> int:
         await self._ensure_group()
+        effective_block_ms = (
+            self.config.poll_block_ms if block_ms is None else block_ms
+        )
         batches = []
         if self._reclaim_pending and hasattr(self._redis, "xautoclaim"):
             claimed = await self._redis.xautoclaim(
@@ -149,7 +153,7 @@ class RedisWorkerRuntime:
                 self.consumer_name,
                 {self.config.task_stream: ">"},
                 count=1,
-                block=block_ms,
+                block=effective_block_ms,
             )
         processed = 0
         for _stream, messages in batches:
