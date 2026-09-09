@@ -34,6 +34,12 @@ class RedisTransportConfig:
     cancel_ttl_s: int = 604_800
     dead_letter_stream: str = "nlp-agent:turns:dead"
 
+    def __post_init__(self) -> None:
+        if not 1 <= self.poll_block_ms <= 4_000:
+            raise ValueError(
+                "poll_block_ms must be between 1 and 4000 milliseconds"
+            )
+
 
 class RedisTurnDispatcher:
     """Web-side task port backed by Redis Streams and a cancellation channel."""

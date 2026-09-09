@@ -101,6 +101,16 @@ async def test_worker_uses_configured_poll_block_and_preserves_explicit_zero():
     assert redis.read_blocks == [1_234, 0]
 
 
+@pytest.mark.parametrize("poll_block_ms", [0, 4_001, 5_000])
+def test_redis_transport_rejects_unsafe_poll_block_ms(poll_block_ms):
+    with pytest.raises(ValueError, match="between 1 and 4000 milliseconds"):
+        RedisTransportConfig(poll_block_ms=poll_block_ms)
+
+
+def test_redis_transport_accepts_maximum_safe_poll_block_ms():
+    assert RedisTransportConfig(poll_block_ms=4_000).poll_block_ms == 4_000
+
+
 def test_turn_task_codec_rejects_unknown_protocol_version():
     with pytest.raises(ValueError, match="unsupported turn task version"):
         TurnTaskCodec.loads('{"version":2}')

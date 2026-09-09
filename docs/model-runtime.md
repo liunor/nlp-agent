@@ -83,7 +83,7 @@ Fallback 在配置加载时验证 streaming/tool-call 能力。上下文预算�
 
 ## DeepSeek 工具调用
 
-DeepSeek thinking 模式下，包含工具调用的 Assistant 消息必须回传 `reasoning_content`。`DeepSeekChatModel` 只为此类消息注入 reasoning；普通完成轮次不回传，从而保持请求前缀稳定。
+DeepSeek thinking 模式下，只要当前请求携带 `tools` 参数，`DeepSeekChatModel` 就会回传所有历史 Assistant 消息的 `reasoning_content`，包括此前未调用工具的普通完成轮次，以满足多轮 Function Calling 的上下文约束。当前请求不携带 `tools` 时，仍只为包含 `tool_calls` 的历史 Assistant 消息注入 reasoning，普通完成轮次不回传，从而保持请求前缀稳定。
 
 工具调用仍使用 LangChain 标准 `AIMessage.tool_calls` 与 `AIMessageChunk.tool_call_chunks`，后续由 Tool Runtime 执行 Pydantic 参数校验。模型层不会修复或猜测可执行参数。
 
