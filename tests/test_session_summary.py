@@ -248,7 +248,14 @@ async def test_generate_skips_when_usage_identity_is_missing(monkeypatch):
 
     assert await generate_and_store_summary("session-1", factory) is False
     assert llm.invocations == []
-    assert factory.session.writes == []
+    assert len(factory.session.writes) == 2
+    backoff_writes = [
+        params
+        for _statement, params in factory.session.writes
+        if params and "until" in params
+    ]
+    assert len(backoff_writes) == 1
+    assert backoff_writes[0]["id"] == "session-1"
 
 
 @pytest.mark.asyncio

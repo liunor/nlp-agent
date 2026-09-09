@@ -288,19 +288,26 @@ async def generate_and_store_summary(
                 extra={"session_id": session_id},
             )
             return False
-        if not state.owner_user_id or not state.workspace_id:
-            logger.error(
-                "session summary is missing usage attribution identity",
-                session_id=session_id,
-            )
-            return False
-
         now = _utcnow()
         async with session_factory.begin() as session:
             if not await _claim_summary(
                 session, session_id, now=now, lease_s=SUMMARY_LEASE_S
             ):
                 return False
+
+        if not state.owner_user_id or not state.workspace_id:
+            logger.error(
+                "session summary is missing usage attribution identity",
+                session_id=session_id,
+            )
+            async with session_factory.begin() as session:
+                await _backoff_summary(
+                    session,
+                    session_id,
+                    now=_utcnow(),
+                    attempts_so_far=state.summary_attempts,
+                )
+            return False
 
         title: str | None = None
         try:
