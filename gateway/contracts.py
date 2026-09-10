@@ -24,6 +24,10 @@ class TurnStatus(str, Enum):
     INTERRUPTED = "interrupted"
 
 
+class TurnClaimMismatchError(RuntimeError):
+    """A stale Worker attempted to mutate a Turn owned by another generation."""
+
+
 class GatewayEventType(str, Enum):
     TURN_ACCEPTED = "turn.accepted"
     TURN_STARTED = "turn.started"

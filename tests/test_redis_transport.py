@@ -555,3 +555,47 @@ async def test_worker_dead_letters_poison_message_before_ack():
     assert redis.streams[0][0] == "turns:dead"
     assert redis.streams[0][1]["source_message_id"] == "1-0"
     assert redis.acks == [("turns", "workers", "1-0")]
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_worker_dead_letters_delivery_whose_mysql_turn_is_missing(cancelled):
+    redis = FakeRedis()
+    config = RedisTransportConfig(
+        task_stream="turns",
+        task_group="workers",
+        dead_letter_stream="turns:dead",
+        cancel_key_prefix="cancel:",
+    )
+    task = TurnTask(
+        context=SessionContext(session_id="session-1"),
+        turn_id="missing-turn",
+        content="hello",
+        learning_context=None,
+        learning_progress=None,
+        exercise_state=None,
+        teaching_materials=TeachingMaterials(),
+        guided_session_id=None,
+        exercise_session_id=None,
+    )
+    redis.values["cancel:missing-turn"] = "1" if cancelled else None
+    redis.autoclaimed.append(
+        [("9-0", {"payload": TurnTaskCodec.dumps(task)})]
+    )
+
+    def missing(_task):
+        raise LookupError("turn state is unavailable: missing-turn")
+
+    worker = RedisWorkerRuntime.for_fenced_mysql(
+        redis,
+        config,
+        lambda _task: pytest.fail("missing turn must not execute"),
+        consumer_name="worker-1",
+        cancel_pending=missing,
+        is_terminal=missing,
+    )
+
+    assert await worker.run_once(block_ms=0) == 1
+    assert redis.streams[0][0] == "turns:dead"
+    assert redis.streams[0][1]["source_message_id"] == "9-0"
+    assert redis.streams[0][1]["error_kind"] == "LookupError"
+    assert redis.acks == [("turns", "workers", "9-0")]

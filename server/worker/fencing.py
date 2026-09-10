@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,17 @@ class TurnExecutionContext:
 
     def require_high_risk_tool(self, tool_name: str) -> None:
         self.require(required_permission_for_high_risk_tool(tool_name))
+
+
+_current_turn_execution_context: ContextVar[TurnExecutionContext | None] = ContextVar(
+    "current_turn_execution_context", default=None
+)
+
+
+def current_turn_execution_context() -> TurnExecutionContext | None:
+    """Return the lease identity inherited by this execution and child tasks."""
+
+    return _current_turn_execution_context.get()
 
 
 class FencedTurnExecutor:
@@ -102,17 +114,15 @@ class FencedTurnExecutor:
         heartbeat = asyncio.create_task(
             self._heartbeat(task.turn_id, generation), name=f"turn-lease:{task.turn_id}"
         )
+        execution_context = TurnExecutionContext(
+            turn_id=task.turn_id,
+            claim_generation=generation,
+            worker_id=self._worker_id,
+            principal=principal,
+            workspace_id=task.authorization.workspace_id,
+        )
         execution = asyncio.create_task(
-            self._execute(
-                task,
-                TurnExecutionContext(
-                    turn_id=task.turn_id,
-                    claim_generation=generation,
-                    worker_id=self._worker_id,
-                    principal=principal,
-                    workspace_id=task.authorization.workspace_id,
-                ),
-            ),
+            self._execute_with_context(task, execution_context),
             name=f"turn-execution:{task.turn_id}",
         )
         try:
@@ -145,6 +155,15 @@ class FencedTurnExecutor:
                 self._consume_task(execution)
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _execute_with_context(
+        self, task: TurnTask, context: TurnExecutionContext
+    ) -> Any:
+        token = _current_turn_execution_context.set(context)
+        try:
+            return await self._execute(task, context)
+        finally:
+            _current_turn_execution_context.reset(token)
 
     @staticmethod
     def _consume_task(task: asyncio.Future[Any]) -> None:

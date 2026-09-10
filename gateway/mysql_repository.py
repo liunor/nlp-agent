@@ -25,6 +25,7 @@ from gateway.contracts import (
     GatewayEventType,
     KnowledgeBookRevisionConflictError,
     TeachingConfigurationError,
+    TurnClaimMismatchError,
     TurnRecord,
     TurnStatus,
 )
@@ -179,16 +180,21 @@ class MySQLGatewayRepository:
             )
         return record, False
 
-    def update_turn(self, turn_id: str, status: TurnStatus, *, final_text=None, error_kind=None, error_message=None, exercise_state=None, dispatch_payload: str | None = None) -> TurnRecord:
+    def update_turn(self, turn_id: str, status: TurnStatus, *, final_text=None, error_kind=None, error_message=None, exercise_state=None, dispatch_payload: str | None = None, expected_claim_generation: int | None = None) -> TurnRecord:
         terminal = status in {TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.INTERRUPTED}
         preserve_terminal = False
         with self._runtime_begin() as c:
             current = c.execute(
-                text("SELECT status,error_kind FROM nlp_turns WHERE id=:id FOR UPDATE"),
+                text("SELECT status,error_kind,claim_generation FROM nlp_turns WHERE id=:id FOR UPDATE"),
                 {"id": turn_id},
             ).mappings().first()
             if current is None:
                 raise KeyError(turn_id)
+            if (
+                expected_claim_generation is not None
+                and int(current["claim_generation"]) != expected_claim_generation
+            ):
+                raise TurnClaimMismatchError(turn_id)
             retrying_dispatch_failure = (
                 current["status"] == TurnStatus.FAILED.value
                 and current["error_kind"] == "dispatch_failed"
@@ -256,12 +262,22 @@ class MySQLGatewayRepository:
             row = c.execute(text("SELECT * FROM nlp_turns WHERE user_id=:u AND conversation_id=:s AND idempotency_key=:k"), {"u": user_id, "s": session_id, "k": idempotency_key}).mappings().first()
         return self._record(dict(row)) if row else None
 
-    def append_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None) -> GatewayEvent:
+    def append_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None, expected_claim_generation: int | None = None) -> GatewayEvent:
         with self._runtime_begin() as c:
-            c.execute(text("SELECT id FROM nlp_turns WHERE id=:id FOR UPDATE"), {"id": turn_id})
+            current_generation = c.execute(
+                text("SELECT claim_generation FROM nlp_turns WHERE id=:id FOR UPDATE"),
+                {"id": turn_id},
+            ).scalar_one_or_none()
+            if current_generation is None:
+                raise KeyError(turn_id)
+            if (
+                expected_claim_generation is not None
+                and int(current_generation) != expected_claim_generation
+            ):
+                raise TurnClaimMismatchError(turn_id)
             sequence = int(c.execute(text("SELECT COALESCE(MAX(sequence),0)+1 FROM nlp_turn_events WHERE turn_id=:id"), {"id": turn_id}).scalar_one())
             event_id = str(uuid.uuid4())
-            c.execute(text("INSERT INTO nlp_turn_events(id,turn_id,sequence,claim_generation,event_type,payload_json) SELECT :event,:turn,:seq,claim_generation,:type,:payload FROM nlp_turns WHERE id=:turn"), {"event": event_id, "turn": turn_id, "seq": sequence, "type": event_type.value, "payload": json.dumps(payload or {})})
+            c.execute(text("INSERT INTO nlp_turn_events(id,turn_id,sequence,claim_generation,event_type,payload_json) VALUES(:event,:turn,:seq,:generation,:type,:payload)"), {"event": event_id, "turn": turn_id, "seq": sequence, "generation": int(current_generation), "type": event_type.value, "payload": json.dumps(payload or {})})
         return GatewayEvent(event_id=event_id, turn_id=turn_id, session_id=session_id, sequence=sequence, type=event_type, payload=payload or {})
 
     def events_after(self, turn_id: str, *, after_sequence: int = 0, limit: int = 500) -> list[GatewayEvent]:
@@ -269,9 +285,9 @@ class MySQLGatewayRepository:
             rows = c.execute(text("SELECT e.*, t.conversation_id FROM nlp_turn_events e JOIN nlp_turns t ON t.id=e.turn_id WHERE e.turn_id=:id AND e.sequence>:after ORDER BY e.sequence LIMIT :limit"), {"id": turn_id, "after": max(0, after_sequence), "limit": min(max(1, limit), 2000)}).mappings().all()
         return [GatewayEvent(event_id=r["id"], turn_id=turn_id, session_id=r["conversation_id"], sequence=r["sequence"], type=GatewayEventType(r["event_type"]), created_at=r["created_at"], payload=self._json(r["payload_json"])) for r in rows]
 
-    def ensure_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None) -> GatewayEvent:
+    def ensure_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None, expected_claim_generation: int | None = None) -> GatewayEvent:
         existing = next((e for e in self.events_after(turn_id, limit=2000) if e.type == event_type), None)
-        return existing or self.append_event(turn_id=turn_id, session_id=session_id, event_type=event_type, payload=payload)
+        return existing or self.append_event(turn_id=turn_id, session_id=session_id, event_type=event_type, payload=payload, expected_claim_generation=expected_claim_generation)
 
     def list_turns(self, session_id: str, *, limit: int = 100) -> list[TurnRecord]:
         with self._engine.connect() as c:

@@ -19,7 +19,10 @@ from server.application.turn_reliability import (
 
 @pytest.mark.asyncio
 async def test_fenced_executor_claims_turn_before_invoking_agent(monkeypatch) -> None:
-    from server.worker.fencing import FencedTurnExecutor
+    from server.worker.fencing import (
+        FencedTurnExecutor,
+        current_turn_execution_context,
+    )
 
     session = AsyncMock()
     unit_of_work = AsyncMock()
@@ -29,7 +32,11 @@ async def test_fenced_executor_claims_turn_before_invoking_agent(monkeypatch) ->
     factory.begin.return_value = unit_of_work
     reliability = AsyncMock()
     reliability.claim_turn.return_value = 4
-    execute = AsyncMock()
+    observed_context = None
+
+    async def execute(_task, _context):
+        nonlocal observed_context
+        observed_context = current_turn_execution_context()
     principal = AuthenticatedPrincipal(
         user_id="user-1", workspace_ids=frozenset({"default"}),
         permissions=frozenset({Permission.AGENT_TURN_SUBMIT}), authorization_version=3,
@@ -63,8 +70,8 @@ async def test_fenced_executor_claims_turn_before_invoking_agent(monkeypatch) ->
         workspace_id="default",
     )
     unit_of_work.commit.assert_awaited_once()
-    execute.assert_awaited_once()
-    execution = execute.await_args.args[1]
+    execution = observed_context
+    assert execution is not None
     assert execution.turn_id == "turn-1"
     assert execution.claim_generation == 4
     assert execution.operation_id == "turn.execution"

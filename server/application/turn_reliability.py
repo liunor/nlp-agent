@@ -127,15 +127,38 @@ class TurnReliabilityService:
 
     async def recover_stuck_turns(self, session: AsyncSession, *, max_retries: int = 3) -> list[str]:
         now = utc_now()
-        turns = (await session.scalars(select(TurnModel).where(TurnModel.status == "running", TurnModel.lease_expires_at < now).with_for_update(skip_locked=True))).all()
+        recoverable = or_(
+            TurnModel.lease_expires_at < now,
+            # Older recovery code could leave this impossible running state.
+            # Treat it as abandoned so deploying the fix repairs existing rows.
+            TurnModel.claimed_by.is_(None) & TurnModel.lease_expires_at.is_(None),
+        )
+        turns = (
+            await session.scalars(
+                select(TurnModel)
+                .where(TurnModel.status == "running", recoverable)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
         recovered: list[str] = []
         for turn in turns:
             if turn.claim_generation >= max_retries * 2:
                 turn.status = "failed"
+                turn.error_kind = "turn_lease_recovery_exhausted"
+                turn.error_message = "turn lease recovery limit exceeded"
+                turn.completed_at = now
+                turn.claimed_by = None
+                turn.heartbeat_at = None
+                turn.lease_expires_at = None
                 session.add(DeadLetterModel(id=str(uuid.uuid4()), turn_id=turn.id, outbox_id=None, reason="turn lease recovery limit exceeded", payload_json={"generation": turn.claim_generation}))
                 continue
             turn.claim_generation += 1  # recovery invalidates the old owner before a new Worker claim.
+            # Recovery must return the turn to a state claim_turn can acquire.
+            # ``running`` with no owner and no lease is otherwise a permanent
+            # zombie because it is neither fresh nor detectably expired.
+            turn.status = "accepted"
             turn.claimed_by = None
+            turn.heartbeat_at = None
             turn.lease_expires_at = None
             session.add(TurnEventModel(id=str(uuid.uuid4()), turn_id=turn.id, sequence=(await self._next_sequence(session, turn.id)), claim_generation=turn.claim_generation, event_type="turn.handover", payload_json={"reason": "lease_expired"}))
             original = await session.scalar(

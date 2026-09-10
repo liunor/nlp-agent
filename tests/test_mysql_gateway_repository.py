@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 
 from core.learning import ExerciseState, LearningContext, LearningProgress
 from gateway.contracts import GatewayEventType, TurnStatus
+from gateway.contracts import TurnClaimMismatchError
 from gateway.mysql_repository import MySQLGatewayRepository
 
 
@@ -228,6 +229,7 @@ def test_update_turn_preserves_cancelled_status_in_mysql_adapter() -> None:
     current.mappings.return_value.first.return_value = {
         "status": "cancelled",
         "error_kind": None,
+        "claim_generation": 1,
     }
     connection.execute.return_value = current
     repository._runtime_begin = MagicMock(return_value=transaction)
@@ -239,6 +241,50 @@ def test_update_turn_preserves_cancelled_status_in_mysql_adapter() -> None:
     assert result is sentinel.cancelled_record
     assert connection.execute.call_count == 1
     assert "UPDATE nlp_turns" not in str(connection.execute.call_args.args[0])
+
+
+def test_update_turn_rejects_a_stale_claim_generation() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    transaction = MagicMock()
+    connection = transaction.__enter__.return_value
+    current = MagicMock()
+    current.mappings.return_value.first.return_value = {
+        "status": "running",
+        "error_kind": None,
+        "claim_generation": 2,
+    }
+    connection.execute.return_value = current
+    repository._runtime_begin = MagicMock(return_value=transaction)
+
+    with pytest.raises(TurnClaimMismatchError, match="turn-1"):
+        repository.update_turn(
+            "turn-1",
+            TurnStatus.COMPLETED,
+            expected_claim_generation=1,
+        )
+
+    assert connection.execute.call_count == 1
+
+
+def test_append_event_rejects_a_stale_claim_generation() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    transaction = MagicMock()
+    connection = transaction.__enter__.return_value
+    generation = MagicMock()
+    generation.scalar_one_or_none.return_value = 2
+    connection.execute.return_value = generation
+    repository._runtime_begin = MagicMock(return_value=transaction)
+
+    with pytest.raises(TurnClaimMismatchError, match="turn-1"):
+        repository.append_event(
+            turn_id="turn-1",
+            session_id="session-1",
+            event_type=GatewayEventType.MESSAGE_DELTA,
+            payload={"delta": "stale"},
+            expected_claim_generation=1,
+        )
+
+    assert connection.execute.call_count == 1
 
 
 def test_create_turn_retries_the_complete_mysql_transaction_after_deadlock() -> None:

@@ -205,15 +205,25 @@ class RedisWorkerRuntime:
                     await self._ack(message_id)
                     processed += 1
                     continue
-                if await self._redis.get(
-                    f"{self.config.cancel_key_prefix}{task.turn_id}"
-                ):
-                    if self._cancel_pending is not None:
-                        await self._call(self._cancel_pending, task)
+                try:
+                    cancel_requested = await self._redis.get(
+                        f"{self.config.cancel_key_prefix}{task.turn_id}"
+                    )
+                    if cancel_requested:
+                        if self._cancel_pending is not None:
+                            await self._call(self._cancel_pending, task)
+                        terminal = False
+                    else:
+                        terminal = await self._call_predicate(self._is_terminal, task)
+                except LookupError as error:
+                    # Redis can outlive the authoritative MySQL row. Retrying
+                    # such a delivery can never succeed, so retain evidence in
+                    # the dead-letter stream and ACK the poison message.
+                    await self._dead_letter(message_id, fields, error)
                     await self._ack(message_id)
                     processed += 1
                     continue
-                if await self._call_predicate(self._is_terminal, task):
+                if cancel_requested or terminal:
                     await self._ack(message_id)
                     processed += 1
                     continue

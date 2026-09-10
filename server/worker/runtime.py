@@ -20,7 +20,7 @@ from gateway.turn_execution import InProcessTurnExecutor
 from server.application.turn_reliability import OutboxRelay, TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
 from server.session.summary import schedule_summary, summary_sweep_loop
-from server.worker.fencing import FencedTurnExecutor
+from server.worker.fencing import FencedTurnExecutor, current_turn_execution_context
 from server.quota.notifications import QuotaSnapshotRedisPublisher
 from server.quota.operations import QuotaOperationsService
 from server.quota.reaper import QuotaReservationReaper
@@ -118,13 +118,18 @@ async def run_worker() -> None:
     worker_id = f"{socket.gethostname()}-{id(redis)}"
 
     async def emit(turn_id: str, session_id: str, event_type: GatewayEventType, payload: dict) -> None:
-        event = await asyncio.to_thread(
-            repository.append_event,
-            turn_id=turn_id,
-            session_id=session_id,
-            event_type=event_type,
-            payload=payload,
-        )
+        execution_context = current_turn_execution_context()
+        event_arguments: dict[str, Any] = {
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "event_type": event_type,
+            "payload": payload,
+        }
+        if execution_context is not None and execution_context.turn_id == turn_id:
+            event_arguments["expected_claim_generation"] = (
+                execution_context.claim_generation
+            )
+        event = await asyncio.to_thread(repository.append_event, **event_arguments)
         await publisher.publish(event)
 
     async def cancel_pending(task) -> None:

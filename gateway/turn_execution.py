@@ -76,7 +76,13 @@ class InProcessTurnExecutor:
         self._accepts_model_profile = "model_profile" in parameters
 
     async def run(self, task: TurnTask, execution_context: Any | None = None) -> None:
-        await asyncio.to_thread(self._repository.update_turn, task.turn_id, TurnStatus.RUNNING)
+        fence = self._fence(execution_context)
+        await asyncio.to_thread(
+            self._repository.update_turn,
+            task.turn_id,
+            TurnStatus.RUNNING,
+            **fence,
+        )
         await self._emit(task.turn_id, task.context.session_id, GatewayEventType.TURN_STARTED, {"status": TurnStatus.RUNNING.value})
         quota_heartbeat_task: asyncio.Task[None] | None = None
         try:
@@ -111,15 +117,24 @@ class InProcessTurnExecutor:
                 ),
             )
             with bind_usage_attribution(attribution):
-                final_text, updated = await self._run_turn_with_timeout(task)
+                final_text, updated = await self._run_turn_with_timeout(
+                    task, execution_context
+                )
                 updated_status = getattr(updated, "status", TurnStatus.COMPLETED)
                 if updated_status != TurnStatus.COMPLETED:
-                    await self._emit_terminal_for_state(task, updated)
+                    await self._emit_terminal_for_state(
+                        task, updated, execution_context=execution_context
+                    )
                     await self._finish_quota(task)
                     return
         except asyncio.CancelledError:
             await self._engine.cancel_turn(task.context, task.turn_id)
-            updated = await asyncio.to_thread(self._repository.update_turn, task.turn_id, TurnStatus.CANCELLED)
+            updated = await asyncio.to_thread(
+                self._repository.update_turn,
+                task.turn_id,
+                TurnStatus.CANCELLED,
+                **fence,
+            )
             if getattr(updated, "status", TurnStatus.CANCELLED) == TurnStatus.CANCELLED:
                 await asyncio.to_thread(
                     self._repository.ensure_event,
@@ -127,11 +142,12 @@ class InProcessTurnExecutor:
                     session_id=task.context.session_id,
                     event_type=GatewayEventType.TURN_CANCELLED,
                     payload={"status": TurnStatus.CANCELLED.value},
+                    **fence,
                 )
             await self._finish_quota(task)
             raise
         except Exception as error:
-            await self._converge_failed_turn(task, error)
+            await self._converge_failed_turn(task, error, execution_context)
             return
         finally:
             if quota_heartbeat_task is not None:
@@ -144,7 +160,7 @@ class InProcessTurnExecutor:
             self._on_turn_completed(task.context.session_id)
 
     async def _converge_failed_turn(
-        self, task: TurnTask, error: BaseException
+        self, task: TurnTask, error: BaseException, execution_context: Any | None = None
     ) -> None:
         updated = await asyncio.to_thread(
             self._repository.update_turn,
@@ -152,8 +168,14 @@ class InProcessTurnExecutor:
             TurnStatus.FAILED,
             error_kind=type(error).__name__,
             error_message=str(error),
+            **self._fence(execution_context),
         )
-        await self._emit_terminal_for_state(task, updated, fallback_error=error)
+        await self._emit_terminal_for_state(
+            task,
+            updated,
+            fallback_error=error,
+            execution_context=execution_context,
+        )
         await self._finish_quota(task)
 
     async def _emit_terminal_for_state(
@@ -162,6 +184,7 @@ class InProcessTurnExecutor:
         updated: Any,
         *,
         fallback_error: BaseException | None = None,
+        execution_context: Any | None = None,
     ) -> None:
         updated_status = getattr(updated, "status", TurnStatus.FAILED)
         if updated_status == TurnStatus.FAILED:
@@ -190,6 +213,7 @@ class InProcessTurnExecutor:
                 session_id=task.context.session_id,
                 event_type=GatewayEventType.TURN_CANCELLED,
                 payload={"status": TurnStatus.CANCELLED.value},
+                **self._fence(execution_context),
             )
         elif updated_status == TurnStatus.COMPLETED:
             final_text = getattr(updated, "final_text", "") or ""
@@ -206,7 +230,9 @@ class InProcessTurnExecutor:
                 {"status": TurnStatus.COMPLETED.value, "content": final_text},
             )
 
-    async def _run_turn_workflow(self, task: TurnTask) -> tuple[str, Any]:
+    async def _run_turn_workflow(
+        self, task: TurnTask, execution_context: Any | None = None
+    ) -> tuple[str, Any]:
         final_text = await self._run_engine(task)
         final_text, exercise_state = await self._finalize_learning(task, final_text)
         updated = await asyncio.to_thread(
@@ -215,12 +241,16 @@ class InProcessTurnExecutor:
             TurnStatus.COMPLETED,
             final_text=final_text,
             exercise_state=exercise_state,
+            **self._fence(execution_context),
         )
         return final_text, updated
 
-    async def _run_turn_with_timeout(self, task: TurnTask) -> tuple[str, Any]:
+    async def _run_turn_with_timeout(
+        self, task: TurnTask, execution_context: Any | None = None
+    ) -> tuple[str, Any]:
         execution = asyncio.create_task(
-            self._run_turn_workflow(task), name=f"turn-workflow:{task.turn_id}"
+            self._run_turn_workflow(task, execution_context),
+            name=f"turn-workflow:{task.turn_id}",
         )
         try:
             done, _pending = await asyncio.wait(
@@ -235,6 +265,15 @@ class InProcessTurnExecutor:
             return execution.result()
         await self._cancel_and_drain(task, execution)
         raise TurnExecutionTimeoutError(self._turn_timeout_s)
+
+    @staticmethod
+    def _fence(execution_context: Any | None) -> dict[str, int]:
+        generation = getattr(execution_context, "claim_generation", None)
+        return (
+            {"expected_claim_generation": int(generation)}
+            if generation is not None
+            else {}
+        )
 
     async def _cancel_and_drain(
         self,

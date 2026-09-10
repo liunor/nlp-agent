@@ -102,6 +102,47 @@ class CancelledAfterExecutionRepository:
         return None
 
 
+class ClaimAwareRepository:
+    def __init__(self):
+        self.updates = []
+
+    def update_turn(self, _turn_id, status, **changes):
+        self.updates.append((status, changes))
+        return SimpleNamespace(status=status)
+
+
+@pytest.mark.asyncio
+async def test_turn_state_mutations_are_fenced_by_claim_generation():
+    repository = ClaimAwareRepository()
+
+    async def emit(_turn_id, _session_id, _event_type, _payload):
+        return None
+
+    executor = InProcessTurnExecutor(SuccessfulEngine(), repository, emit)
+    task = TurnTask(
+        context=SessionContext(session_id="session-1"),
+        turn_id="turn-1",
+        content="hello",
+        learning_context=None,
+        learning_progress=None,
+        exercise_state=None,
+        teaching_materials=TeachingMaterials(),
+        guided_session_id=None,
+        exercise_session_id=None,
+    )
+
+    await executor.run(task, SimpleNamespace(claim_generation=7))
+
+    assert [status for status, _changes in repository.updates] == [
+        TurnStatus.RUNNING,
+        TurnStatus.COMPLETED,
+    ]
+    assert all(
+        changes["expected_claim_generation"] == 7
+        for _status, changes in repository.updates
+    )
+
+
 @pytest.mark.asyncio
 async def test_learning_finalization_failure_moves_running_turn_to_failed():
     repository = FailingLearningRepository()
