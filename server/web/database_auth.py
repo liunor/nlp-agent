@@ -178,6 +178,12 @@ class DatabaseSessionAuth:
     def csrf_hash(token: str) -> str:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def csrf_token_for_session(token: str) -> str:
+        """Derive a stable, domain-separated CSRF token for one browser session."""
+
+        return hashlib.sha256(f"nlp-agent:csrf:{token}".encode("ascii")).hexdigest()
+
     @classmethod
     def token_fingerprint(cls, token: str | None) -> bytes | None:
         if not token:
@@ -255,7 +261,7 @@ class DatabaseSessionAuth:
                     .values(revoked_at=_utc_now())
                 )
             token = secrets.token_urlsafe(32)
-            csrf_token = secrets.token_urlsafe(32)
+            csrf_token = self.csrf_token_for_session(token)
             expires_at = now + timedelta(seconds=self.ttl_s)
             row = SessionModel(
                 id=str(uuid.uuid4()),
@@ -353,17 +359,26 @@ class DatabaseSessionAuth:
             )
         )
 
-    async def rotate_csrf(
+    async def restore_csrf(
         self,
         factory: async_sessionmaker[AsyncSession],
         claims: DatabaseSessionClaims,
+        session_token: str | None,
     ) -> str:
+        if not session_token or not hmac.compare_digest(
+            self.token_hash(session_token), claims.token_hash
+        ):
+            raise AuthenticationError("authentication cookie is invalid")
+        csrf_token = self.csrf_token_for_session(session_token)
+        csrf_hash = self.csrf_hash(csrf_token)
         async with factory.begin() as session:
             row = await self._active_row(session, claims.token_hash)
             if row is None or row.id != claims.session_id:
                 raise AuthenticationError("authentication cookie is invalid")
-            csrf_token = secrets.token_urlsafe(32)
-            row.csrf_hash = self.csrf_hash(csrf_token)
+            # Upgrade sessions issued before stable per-session CSRF tokens;
+            # repeated restores and other tabs must not invalidate each other.
+            if not hmac.compare_digest(row.csrf_hash, csrf_hash):
+                row.csrf_hash = csrf_hash
             row.last_seen_at = _utc_now()
             return csrf_token
 

@@ -12,11 +12,15 @@ from langchain_core.exceptions import OutputParserException
 from pydantic import ValidationError
 
 from core.model_runtime.factory import ModelFactory, get_global_model_factory
+from core.model_runtime.runtime import StructuredOutputParseError, classify_model_error
 from core.model_runtime.usage import (
     BillableFeatureUsage,
     bind_billable_feature_usage,
     bind_usage_purpose,
+    UsageReporterUnavailableError,
 )
+from server.quota.errors import QuotaDomainError
+from server.quota.pricing import PricingError
 from core.tool_config import VisionVLMConfig
 from server.tools.vision.contracts import (
     UNTRUSTED_IMAGE_BANNER,
@@ -163,7 +167,11 @@ class ModelRuntimeVLMProvider:
                 response = await structured_model.ainvoke(messages)
         except asyncio.CancelledError:
             raise
-        except OutputParserException as error:
+        except (QuotaDomainError, PricingError, UsageReporterUnavailableError):
+            # Admission/accounting failures are not provider outages and must
+            # never authorize the OCR fallback to bypass a rejected request.
+            raise
+        except (OutputParserException, StructuredOutputParseError) as error:
             logger.warning(
                 "vision structured response validation failed",
                 model_route=self.model_route,
@@ -182,10 +190,20 @@ class ModelRuntimeVLMProvider:
                 model_route=self.model_route,
                 **_safe_error_metadata(error),
             )
-            raise VisionError(
-                VisionErrorCode.PROVIDER_UNAVAILABLE,
-                "视觉模型 provider 当前不可用",
-            ) from None
+            kind = classify_model_error(error).kind
+            code, message = {
+                "upstream_provider_quota_exhausted": (
+                    VisionErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+                    "视觉模型额度不足或受免费额度限制，请管理员检查百炼的模型额度与计费配置；配置恢复前不要重试",
+                ),
+                "upstream_auth_failed": (
+                    VisionErrorCode.PROVIDER_AUTH_FAILED,
+                    "视觉模型鉴权或权限检查失败，请管理员检查 API Key 和模型访问权限；配置恢复前不要重试",
+                ),
+                "upstream_timeout": (VisionErrorCode.PROVIDER_TIMEOUT, "视觉模型请求超时，本次模型调用已结束"),
+                "upstream_rate_limited": (VisionErrorCode.PROVIDER_RATE_LIMITED, "视觉模型触发限流，请稍后再试"),
+            }.get(kind, (VisionErrorCode.PROVIDER_UNAVAILABLE, "视觉模型 provider 当前不可用"))
+            raise VisionError(code, message) from None
 
         try:
             return VisionModelResult.model_validate(response)
@@ -235,6 +253,10 @@ class ModelRuntimeVLMProvider:
         ]
         if question:
             prompt.append(f"User question: {question.strip()}")
+            prompt.append(
+                "Answer the user question directly in the answer field; keep summary "
+                "as a concise synopsis of that answer."
+            )
         if self.send_ocr_context and ocr_context is not None:
             serialized_ocr = json.dumps(
                 ocr_context.model_dump(mode="json"),

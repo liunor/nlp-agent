@@ -324,6 +324,7 @@ def test_login_sets_httponly_cookie_reports_expiry_and_refreshes_on_activity(web
         body = response.json()
         assert body["csrf_token"]
         assert body["expires_at"] > time.time()
+        csrf = body["csrf_token"]
 
         set_cookie = response.headers.get("set-cookie", "")
         assert set_cookie.startswith("nlp_session=")
@@ -336,8 +337,19 @@ def test_login_sets_httponly_cookie_reports_expiry_and_refreshes_on_activity(web
         refreshed = client.get("/api/v1/auth/session")
         assert refreshed.status_code == 200
         assert refreshed.json()["user_id"] == "nova"
+        assert refreshed.json()["csrf_token"] == csrf
+        restored_again = client.get("/api/v1/auth/session")
+        assert restored_again.status_code == 200
+        assert restored_again.json()["csrf_token"] == csrf
         refreshed_cookie = refreshed.headers.get("set-cookie", "")
         assert "Max-Age=86400" in refreshed_cookie
+
+        created = client.post(
+            "/api/v1/sessions",
+            json={"workspace_id": "default"},
+            headers=write_headers(csrf),
+        )
+        assert created.status_code == 201
 
 
 def test_student_cannot_call_teacher_or_developer_control_planes(student_web_app):

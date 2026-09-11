@@ -227,3 +227,16 @@ async def test_quality_score_is_between_0_and_1(provider):
 
 def test_provider_id(provider):
     assert provider.id == "opencv-signals"
+
+
+async def test_dark_photo_texture_does_not_supply_text_layout_evidence(provider, router):
+    # A gray wall and fragmented foreground texture can form several aligned
+    # component clusters. They must not turn a photograph into a table/document.
+    rng = np.random.default_rng(42)
+    img = np.full((420, 600, 3), 75, dtype=np.uint8)
+    img[50:390, 150:450] = rng.integers(20, 180, (340, 300, 3), dtype=np.uint8)
+    _, buffer = cv2.imencode(".png", img)
+    signals = await provider.detect(_create_asset(buffer.tobytes(), 600, 420))
+    assert not signals.has_text_layout
+    assert signals.image_category != "document"
+    assert router.route("auto", signals).task_executed == "describe"

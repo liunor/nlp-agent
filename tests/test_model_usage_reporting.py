@@ -654,6 +654,7 @@ async def test_structured_output_success_and_parse_error():
     assert reporter.events[1][2].status == "failed"
     assert reporter.events[1][1].input_tokens == 12
     assert reporter.events[1][2].error_kind == "structured_output_parse_error"
+    assert cand.circuit.failures == 0
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ from server.user.controller import _user_response_with_roles
 from server.user.schemas import UserCreate, UserCreateWithRole, UserRegister
 from server.user.service import UserService
 from server.web.auth import AuthenticationError, OriginRejectedError
-from server.web.database_auth import DatabaseSessionAuth
+from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 
 
 def test_database_session_credentials_are_stored_as_one_way_digests() -> None:
@@ -29,6 +29,50 @@ def test_database_session_credentials_are_stored_as_one_way_digests() -> None:
     assert auth.csrf_hash(csrf) != csrf
     assert auth.token_hash(token) == auth.token_hash(token)
     assert auth.csrf_hash(csrf) == auth.csrf_hash(csrf)
+
+
+@pytest.mark.asyncio
+async def test_restored_csrf_is_stable_and_upgrades_legacy_session_hash() -> None:
+    auth = DatabaseSessionAuth(cookie_name="nlp_session", ttl_s=3600)
+    token = "opaque-session-token"
+    stable_csrf = auth.csrf_token_for_session(token)
+    row = type(
+        "SessionRow",
+        (),
+        {
+            "id": "session-1",
+            "csrf_hash": auth.csrf_hash("legacy-random-csrf"),
+            "last_seen_at": None,
+        },
+    )()
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Factory:
+        def begin(self):
+            return Transaction()
+
+    claims = DatabaseSessionClaims(
+        user_id="user-1",
+        workspace_id="workspace-1",
+        session_id=row.id,
+        token_hash_value=auth.token_hash(token),
+        csrf_hash_value=row.csrf_hash,
+        expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1),
+        authorization_version=1,
+    )
+    auth._active_row = AsyncMock(return_value=row)
+
+    first = await auth.restore_csrf(Factory(), claims, token)
+    second = await auth.restore_csrf(Factory(), claims, token)
+
+    assert first == second == stable_csrf
+    assert row.csrf_hash == auth.csrf_hash(stable_csrf)
 
 
 @pytest.mark.asyncio

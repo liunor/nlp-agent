@@ -15,8 +15,13 @@ export class ApiError extends Error {
 }
 
 let csrfToken = "";
+let authRequest: Promise<AuthSession> | null = null;
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  retryCsrf = true,
+): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) {
@@ -33,6 +38,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: "include",
   });
   if (!response.ok) {
+    const problem = await response.json().catch(() => ({})) as { detail?: string; title?: string; code?: string };
+    if (
+      response.status === 403 &&
+      problem.code === "csrf_rejected" &&
+      retryCsrf &&
+      !["GET", "HEAD", "OPTIONS"].includes(method) &&
+      path !== "/auth/session"
+    ) {
+      await ensureAuth();
+      return request<T>(path, init, false);
+    }
     if (
   response.status === 401 &&
   csrfToken &&
@@ -44,17 +60,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
   }
 }
-    const problem = await response.json().catch(() => ({})) as { detail?: string; title?: string; code?: string };
     throw new ApiError(problem.detail ?? problem.title ?? `HTTP ${response.status}`, response.status, problem.code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-export async function ensureAuth(): Promise<AuthSession> {
-  const session = await request<AuthSession>("/auth/session");
-  csrfToken = session.csrf_token;
-  return session;
+export function ensureAuth(): Promise<AuthSession> {
+  if (authRequest) return authRequest;
+  const pending = request<AuthSession>("/auth/session")
+    .then((session) => {
+      csrfToken = session.csrf_token;
+      return session;
+    })
+    .finally(() => {
+      if (authRequest === pending) authRequest = null;
+    });
+  authRequest = pending;
+  return pending;
 }
 
 export interface UploadResponse {

@@ -1087,7 +1087,11 @@ def create_app(
             factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
             if factory is None:
                 raise AuthenticationError("database authentication is unavailable")
-            csrf_token = await database_auth.rotate_csrf(factory, claims)
+            csrf_token = await database_auth.restore_csrf(
+                factory,
+                claims,
+                request.cookies.get(database_auth.cookie_name),
+            )
             claims = DatabaseSessionClaims(**{**claims.__dict__, "csrf_token": csrf_token})
         principal = await resolve_principal(request, claims)
         username, display_name = await account_identity(request, claims, principal)

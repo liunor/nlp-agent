@@ -19,6 +19,33 @@ class SuccessfulEngine:
         return None
 
 
+@pytest.mark.parametrize("explicit_timeout,expected", [(None, 270), (3, 3)])
+async def test_image_turn_deadline_reaches_engine_and_respects_explicit_override(explicit_timeout, expected):
+    from core.agent_runtime import configured_budget
+    from core.vision_execution import current_image_turn
+
+    observed = []
+    class Engine(SuccessfulEngine):
+        async def run_turn(self, _context, _turn_id, _content):
+            observed.append((current_image_turn().image_count, configured_budget("coordinator").max_duration_s))
+            return "four image results"
+
+    async def emit(*args):
+        pass
+
+    task = TurnTask(
+        context=SessionContext(session_id="images"), turn_id="turn-images",
+        content="---附件---\n" + "\n".join(f"[图片] {i}.png\n路径: {i}.png" for i in range(4)) + "\n---附件结束---",
+        learning_context=None, learning_progress=None, exercise_state=None,
+        teaching_materials=TeachingMaterials(), guided_session_id=None, exercise_session_id=None,
+    )
+    executor = InProcessTurnExecutor(Engine(), ClaimAwareRepository(), emit, turn_timeout_s=explicit_timeout)
+    text, _ = await executor._run_turn_with_timeout(task)
+    assert text == "four image results"
+    assert observed == [(4, expected)]
+    assert current_image_turn() is None
+
+
 class HangingEngine:
     def __init__(self):
         self.cancelled = []

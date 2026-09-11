@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from statistics import fmean
 from typing import Any
@@ -37,6 +38,17 @@ from server.tools.vision.safety import ImageSafetyLimits
 
 
 _TRUNCATION_MARKER = "\n\n[输出已截断]"
+_SERVICE_TIMEOUT_S = 85.0
+_OCR_TIMEOUT_S = 20.0
+_VLM_TIMEOUT_S = 75.0
+_DEGRADABLE_ERRORS = frozenset({
+    VisionErrorCode.PROVIDER_UNAVAILABLE,
+    VisionErrorCode.INVALID_PROVIDER_RESPONSE,
+    VisionErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+    VisionErrorCode.PROVIDER_AUTH_FAILED,
+    VisionErrorCode.PROVIDER_TIMEOUT,
+    VisionErrorCode.PROVIDER_RATE_LIMITED,
+})
 
 
 def _bounded(text: str, limit: int) -> tuple[str, bool]:
@@ -97,24 +109,52 @@ class ImageAnalyzeService:
         *,
         before_provider: Callable[[ImageAsset, str, str], Awaitable[None]] | None = None,
     ) -> ImageAnalyzeResponse:
+        deadline = time.monotonic() + _SERVICE_TIMEOUT_S
         asset = await asyncio.to_thread(self.resolver.resolve, request.image)
         signals = await self._detect_signals(asset) if request.task == "auto" else None
-        decision = self.router.route(request.task, signals)
+        decision = self.router.route(
+            request.task,
+            signals,
+            has_question=bool((request.question or "").strip()),
+        )
         if before_provider is not None:
             await before_provider(asset, decision.route, decision.task_executed)
 
         ocr: OCRResult | None = None
         model_result: VisionModelResult | None = None
+        warnings: list[str] = []
+        executed_task, executed_route = decision.task_executed, decision.route
         if decision.route in {"ocr", "fusion"}:
-            ocr = await self._extract_ocr(asset, request.language)
+            try:
+                ocr = await self._provider_with_timeout(
+                    self._extract_ocr(asset, request.language),
+                    min(_OCR_TIMEOUT_S, deadline - time.monotonic()),
+                )
+            except VisionError as error:
+                if decision.route != "fusion" or error.code not in _DEGRADABLE_ERRORS:
+                    raise
+                warnings.append(f"基础 OCR 不可用（{error.code.value}），继续使用视觉模型识别。")
+                executed_route = "vlm"
         if decision.route in {"vlm", "fusion"}:
-            model_result = await self._analyze_vlm(
-                asset,
-                task=decision.task_executed,
-                question=request.question,
-                language=request.language,
-                ocr_context=ocr,
-            )
+            try:
+                model_result = await self._provider_with_timeout(
+                    self._analyze_vlm(
+                        asset,
+                        task=decision.task_executed,
+                        question=request.question,
+                        language=request.language,
+                        ocr_context=ocr,
+                    ),
+                    min(_VLM_TIMEOUT_S, deadline - time.monotonic()),
+                )
+            except VisionError as error:
+                if ocr is None or error.code not in _DEGRADABLE_ERRORS:
+                    raise
+                warnings.append(
+                    f"{error.message}（{error.code.value}）。已保留基础 OCR 结果；"
+                    "语义描述、结构提取或问题解答未完成。"
+                )
+                executed_task, executed_route = "ocr", "ocr"
 
         raw_summary, raw_markdown = self._content_for(ocr, model_result)
         max_chars = min(request.max_chars, self.result_max_chars)
@@ -128,7 +168,8 @@ class ImageAnalyzeService:
                 _with_safety_banner(raw_markdown), max_chars
             )
 
-        warnings = list(model_result.warnings if model_result else [])
+        degraded = bool(warnings)
+        warnings.extend(model_result.warnings if model_result else [])
         truncated = summary_truncated or markdown_truncated
         if truncated:
             warnings.append(f"文本输出超过 {max_chars} 字符，已截断")
@@ -154,8 +195,9 @@ class ImageAnalyzeService:
         return ImageAnalyzeResponse(
             input=asset.reference,
             task_requested=request.task,
-            task_executed=decision.task_executed,
-            route=decision.route,
+            task_executed=executed_task,
+            route=executed_route,
+            degraded=degraded,
             summary=summary,
             markdown=markdown,
             ocr=ocr,
@@ -174,6 +216,15 @@ class ImageAnalyzeService:
             truncated=truncated,
             untrusted=True,
         )
+
+    @staticmethod
+    async def _provider_with_timeout(call: Awaitable[Any], timeout_s: float) -> Any:
+        try:
+            return await asyncio.wait_for(call, timeout=max(0, timeout_s))
+        except TimeoutError:
+            raise VisionError(
+                VisionErrorCode.PROVIDER_TIMEOUT, "图片识别组件处理超时"
+            ) from None
 
     async def _detect_signals(self, asset: Any) -> VisionSignals:
         value = await self.signal_provider.detect(asset)
@@ -225,9 +276,10 @@ class ImageAnalyzeService:
         model_result: VisionModelResult | None,
     ) -> tuple[str, str]:
         if model_result is not None:
+            primary = model_result.answer or model_result.summary
             return (
-                model_result.summary or "图片分析完成，但没有可显示的摘要。",
-                model_result.markdown or model_result.summary,
+                primary or "图片分析完成，但没有可显示的摘要。",
+                model_result.markdown or primary,
             )
         if ocr is not None:
             text = ocr.text.strip()

@@ -12,6 +12,7 @@ from typing import Any
 
 from gateway.contracts import GatewayEventType, TurnStatus
 from core.agent_runtime import configured_budget
+from core.vision_execution import attached_image_names, bind_image_turn, image_turn_timeout
 from core.rbac import Permission
 from gateway.dispatch import TurnTask
 from gateway.engine import AgentEngine
@@ -62,6 +63,7 @@ class InProcessTurnExecutor:
         self._emit = emit
         self._on_turn_completed = on_turn_completed
         self._abandoned_tasks: set[asyncio.Task[Any]] = set()
+        self._explicit_turn_timeout = turn_timeout_s is not None
         self._turn_timeout_s = float(
             turn_timeout_s
             if turn_timeout_s is not None
@@ -249,13 +251,18 @@ class InProcessTurnExecutor:
     async def _run_turn_with_timeout(
         self, task: TurnTask, execution_context: Any | None = None
     ) -> tuple[str, Any]:
-        execution = asyncio.create_task(
-            self._run_turn_workflow(task, execution_context),
-            name=f"turn-workflow:{task.turn_id}",
+        image_count = len(attached_image_names(task.content))
+        timeout_s = self._turn_timeout_s if self._explicit_turn_timeout else image_turn_timeout(
+            self._turn_timeout_s, image_count
         )
+        with bind_image_turn(image_count, timeout_s):
+            execution = asyncio.create_task(
+                self._run_turn_workflow(task, execution_context),
+                name=f"turn-workflow:{task.turn_id}",
+            )
         try:
             done, _pending = await asyncio.wait(
-                {execution}, timeout=self._turn_timeout_s
+                {execution}, timeout=timeout_s
             )
         except asyncio.CancelledError:
             # The outer executor owns the external-cancellation signal and
@@ -265,7 +272,7 @@ class InProcessTurnExecutor:
         if done:
             return execution.result()
         await self._cancel_and_drain(task, execution)
-        raise TurnExecutionTimeoutError(self._turn_timeout_s)
+        raise TurnExecutionTimeoutError(timeout_s)
 
     @staticmethod
     def _fence(execution_context: Any | None) -> dict[str, int]:

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, AIMessageChunk, message_chunk_to_message
 
 from core.model_runtime.contracts import (
@@ -70,6 +71,10 @@ class ModelRuntimeExhaustedError(RuntimeError):
 
 class EmptyModelResponseError(RuntimeError):
     pass
+
+
+class StructuredOutputParseError(ValueError):
+    """A provider responded, but its structured payload failed local parsing."""
 
 
 class ModelFinishReasonError(RuntimeError):
@@ -195,6 +200,8 @@ def _finalize_stream_usage(
 
 
 def classify_model_error(error: BaseException) -> ErrorDecision:
+    if isinstance(error, (StructuredOutputParseError, OutputParserException)):
+        return ErrorDecision(False, "structured_output_parse_error")
     if isinstance(error, EmptyModelResponseError):
         return ErrorDecision(True, "upstream_empty_response")
     if isinstance(error, ModelFinishReasonError):
@@ -260,6 +267,7 @@ def classify_model_error(error: BaseException) -> ErrorDecision:
         return ErrorDecision(False, "upstream_provider_quota_exhausted")
 
     quota_markers = (
+        "allocationquota.freetieronly",
         "insufficient_quota",
         "quota_exceeded",
         "insufficient balance",
@@ -774,7 +782,7 @@ class ResilientChatModel:
                                 finish_reason=finish_reason,
                                 error_kind="structured_output_parse_error",
                             )
-                            raise parsing_error
+                            raise StructuredOutputParseError(str(parsing_error)) from parsing_error
 
                         attempt_reported = True
                         await self._report_attempt_guarded(
@@ -808,7 +816,8 @@ class ResilientChatModel:
                 except BaseException as error:
                     last_error = error
                     decision = classify_model_error(error)
-                    candidate.circuit.fail(candidate.preset.circuit_breaker)
+                    if decision.kind != "structured_output_parse_error":
+                        candidate.circuit.fail(candidate.preset.circuit_breaker)
                     if not attempt_reported:
                         await self._report_attempt(
                             invocation=invocation,
@@ -1012,7 +1021,8 @@ class ResilientChatModel:
                 except BaseException as error:
                     last_error = error
                     decision = classify_model_error(error)
-                    candidate.circuit.fail(candidate.preset.circuit_breaker)
+                    if decision.kind != "structured_output_parse_error":
+                        candidate.circuit.fail(candidate.preset.circuit_breaker)
                     partial_usage = _finalize_stream_usage(
                         latest_usage,
                         delta_usage,

@@ -75,6 +75,7 @@ from core.worker_lifecycle import (
     classify_worker_error,
 )
 from core.worker_protocol import WorkerCommand, WorkerWaitMode
+from core.vision_execution import current_image_turn
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
@@ -86,7 +87,7 @@ from server.agent.llm_factory import (
     worker_model_uses_native_search,
 )
 from core.tool_registry import physical_tool_manager
-from core.tool_runtime import ToolGrantSnapshot, ToolSet
+from core.tool_runtime import ToolExecutionResult, ToolGrantSnapshot, ToolSet
 from core.session_context import SessionContext
 from core.agent_runtime import (
     AgentStopReason,
@@ -174,6 +175,7 @@ def _aligned_worker_timeouts(
     max_duration_s: float,
     wait_timeout_s: float,
     join: bool,
+    expected_image_calls: int = 1,
 ) -> tuple[float, float]:
     """Keep a Worker alive long enough for its slowest granted tool.
 
@@ -196,20 +198,32 @@ def _aligned_worker_timeouts(
         )
         worst_tool_runtime_s = max(
             worst_tool_runtime_s,
-            descriptor.timeout_s * retry.max_attempts + retry_delays_s,
+            (descriptor.timeout_s * retry.max_attempts + retry_delays_s)
+            * (
+                (max(1, expected_image_calls) + max(1, descriptor.max_concurrency) - 1)
+                // max(1, descriptor.max_concurrency)
+                if descriptor.name == "image_analyze" else 1
+            ),
         )
 
     required_duration_s = worst_tool_runtime_s + _TOOL_RUNTIME_OVERHEAD_S
-    if required_duration_s <= max_duration_s:
+    visual = toolset.has("image_analyze")
+    if required_duration_s <= max_duration_s and not visual:
         return max_duration_s, wait_timeout_s
     if required_duration_s > 1_800:
         raise ValueError("granted tool timeouts exceed the Worker duration limit")
 
+    required_duration_s = max(max_duration_s, required_duration_s)
+    if visual and (turn := current_image_turn()) is not None and join:
+        required_duration_s = min(required_duration_s, turn.worker_remaining_s() - _JOIN_COMPLETION_GRACE_S)
+        required_duration_s = max(0.1, required_duration_s)
     aligned_wait_s = wait_timeout_s
     if join:
         aligned_wait_s = max(
             wait_timeout_s, required_duration_s + _JOIN_COMPLETION_GRACE_S
         )
+        if visual and (turn := current_image_turn()) is not None:
+            aligned_wait_s = min(aligned_wait_s, turn.worker_remaining_s())
         if aligned_wait_s > 600:
             raise ValueError("granted tool timeouts exceed the Worker join-wait limit")
     return required_duration_s, aligned_wait_s
@@ -356,6 +370,14 @@ async def _execute_sandbox_loop(
     total_tokens_used = 0
     tool_uses_count = 0
     injection_count = 0
+    image_results: dict[str, ToolExecutionResult] = {}
+
+    def image_partial_output() -> str:
+        limit = max(512, budget.max_tool_result_chars // max(1, len(image_results)))
+        return "图片处理结果（逐图核验成功、降级和失败状态；未完成部分不可编造）：\n" + "\n\n".join(
+            f"图片 {index}: {name}\n{item.to_model_content(max_chars=limit)}"
+            for index, (name, item) in enumerate(image_results.items(), 1)
+        )
     fallback_context, fallback_output = settings.get_context_limits(model_name or None)
     context_window = getattr(llm, "context_window_tokens", fallback_context)
     output_reserve = getattr(llm, "max_output_tokens", fallback_output)
@@ -594,7 +616,17 @@ async def _execute_sandbox_loop(
             calls = [(call["name"], call["args"]) for call in response.tool_calls]
             for name, _arguments in calls:
                 worker_logger.info("发起工具调用", tool_name=name)
-            tool_results = await toolset.execute_many(calls, tool_config)
+            if calls and all(name == "image_analyze" for name, _ in calls):
+                from server.tools.vision.batch import execute_image_batch
+
+                remaining_s = budget.max_duration_s - (time.time() - start_time)
+                tool_results = await execute_image_batch(
+                    toolset, calls, tool_config, timeout_s=max(0, remaining_s - 20),
+                )
+                for call, item in zip(response.tool_calls, tool_results, strict=True):
+                    image_results[str(call["args"].get("image", ""))] = item
+            else:
+                tool_results = await toolset.execute_many(calls, tool_config)
             for tool_call, execution in zip(response.tool_calls, tool_results, strict=True):
                 descriptor = toolset.descriptor(tool_call["name"])
                 persist_result = descriptor.persist_result if descriptor else True
@@ -630,6 +662,18 @@ async def _execute_sandbox_loop(
                     session_id, worker_id, [persisted_tool_msg]
                 )
 
+            if image_results and any(
+                item.error and item.error.code in {
+                    "image_batch_deadline", "provider_quota_exhausted", "provider_auth_failed",
+                }
+                for item in tool_results
+            ):
+                return result(
+                    status="failed", summary="部分图片未完成，已返回逐图结果。",
+                    termination_reason="unrecoverable_error", output=image_partial_output(),
+                    error=WorkerErrorSpec(category="tool", message="图片处理需要恢复服务或下一轮继续", retryable=False),
+                )
+
         final_output = await finalize(AgentStopReason.MAX_ITERATIONS)
         return result(
             status="failed",
@@ -660,8 +704,8 @@ async def _execute_sandbox_loop(
             status="timed_out",
             summary=f"Worker attempt timed out after {budget.max_duration_s:g} seconds.",
             termination_reason="timeout",
-            output=exhaustion_fallback(AgentStopReason.MODEL_TIMEOUT),
-            error=WorkerErrorSpec(category="timeout", message=str(error) or "timeout", retryable=True),
+            output=image_partial_output() if image_results else exhaustion_fallback(AgentStopReason.MODEL_TIMEOUT),
+            error=WorkerErrorSpec(category="timeout", message=str(error) or "timeout", retryable=not bool(image_results)),
         )
     except Exception as error:
         category, retryable = classify_worker_error(error)
@@ -670,11 +714,11 @@ async def _execute_sandbox_loop(
             status="failed",
             summary=f"Worker attempt failed: {error}",
             termination_reason="unrecoverable_error",
-            output=exhaustion_fallback(AgentStopReason.MODEL_ERROR),
+            output=image_partial_output() if image_results else exhaustion_fallback(AgentStopReason.MODEL_ERROR),
             error=WorkerErrorSpec(
                 category=category,
                 message=str(error),
-                retryable=retryable,
+                retryable=retryable and not bool(image_results),
             ),
         )
 
@@ -935,7 +979,12 @@ async def spawn_worker(
             max_duration_s=max_duration_s,
             wait_timeout_s=wait_timeout_s,
             join=join,
+            expected_image_calls=(current_image_turn().image_count if current_image_turn() else 1),
         )
+        if toolset.has("image_analyze"):
+            # A whole-Worker retry repeats successful/paid image calls. Each
+            # image reports its own failure or partial result instead.
+            max_attempts = 1
         worker_budget, worker_retry = _build_profile_execution_policies(
             profile,
             runtime_settings=runtime_settings,
