@@ -9,6 +9,7 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage
 from langchain_deepseek import ChatDeepSeek
 
+from core.model_runtime.network import model_http_client_kwargs
 from core.model_runtime.contracts import (
     ModelDefinition,
     ModelPresetConfig,
@@ -35,14 +36,16 @@ class DeepSeekChatModel(ChatDeepSeek):
         messages = self._convert_input(input_).to_messages()
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         payload_messages = payload.get("messages", [])
+        replay_all_reasoning = bool(payload.get("tools"))
         for index, message in enumerate(messages):
             if not isinstance(message, AIMessage) or index >= len(payload_messages):
                 continue
             reasoning = message.additional_kwargs.get("reasoning_content")
-            # DeepSeek requires CoT replay for assistant messages that initiated
-            # tool calls. For plain completed turns the field is ignored and is
-            # deliberately omitted to keep request prefixes stable.
-            if reasoning and message.tool_calls:
+            # Function-calling requests must replay the reasoning from every
+            # preceding assistant turn, including turns that did not call a
+            # tool. Without tools, retain the narrower replay used by existing
+            # tool-call histories so plain request prefixes remain stable.
+            if reasoning and (replay_all_reasoning or message.tool_calls):
                 payload_messages[index]["reasoning_content"] = reasoning
         return payload
 
@@ -143,6 +146,7 @@ class DeepSeekAdapter:
             "default_headers": provider.default_headers or None,
             "extra_body": {"thinking": thinking},
         }
+        kwargs.update(model_http_client_kwargs(provider.base_url, timeout))
         effort = self._effort(preset)
         if effort:
             kwargs["reasoning_effort"] = effort

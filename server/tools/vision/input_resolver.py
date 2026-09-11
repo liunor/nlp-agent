@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -15,7 +16,9 @@ from server.tools.vision.safety import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_UPLOADS_ROOT = PROJECT_ROOT / ".data" / "uploads"
+DEFAULT_UPLOADS_ROOT = Path(
+    os.environ.get("NLP_AGENT_UPLOADS_ROOT", str(PROJECT_ROOT / ".data" / "uploads"))
+)
 
 
 def session_uploads_root(

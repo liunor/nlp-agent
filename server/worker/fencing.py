@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,7 +12,11 @@ from core.rbac import Permission, authorization_service
 from core.rbac import required_permission_for_high_risk_tool
 from core.identity import AuthenticatedPrincipal
 from server.rbac.service import rbac_service
-from server.application.turn_reliability import TurnReliabilityService
+from server.application.turn_reliability import (
+    CancelledTurnClaim,
+    TurnCancellationRequested,
+    TurnReliabilityService,
+)
 
 
 @dataclass(frozen=True)
@@ -35,8 +40,21 @@ class TurnExecutionContext:
         self.require(required_permission_for_high_risk_tool(tool_name))
 
 
+_current_turn_execution_context: ContextVar[TurnExecutionContext | None] = ContextVar(
+    "current_turn_execution_context", default=None
+)
+
+
+def current_turn_execution_context() -> TurnExecutionContext | None:
+    """Return the lease identity inherited by this execution and child tasks."""
+
+    return _current_turn_execution_context.get()
+
+
 class FencedTurnExecutor:
     """Claim, heartbeat and execute one Turn without exposing lease mechanics."""
+
+    _CANCEL_DRAIN_TIMEOUT_S = 0.25
 
     def __init__(
         self,
@@ -63,6 +81,9 @@ class FencedTurnExecutor:
                 user_id=task.context.user_id,
                 workspace_id=task.context.workspace_id,
             )
+            if isinstance(generation, CancelledTurnClaim):
+                await unit_of_work.commit()
+                raise TurnCancellationRequested(task.turn_id)
             if generation is None:
                 return False
             if task.authorization is None:
@@ -93,17 +114,15 @@ class FencedTurnExecutor:
         heartbeat = asyncio.create_task(
             self._heartbeat(task.turn_id, generation), name=f"turn-lease:{task.turn_id}"
         )
+        execution_context = TurnExecutionContext(
+            turn_id=task.turn_id,
+            claim_generation=generation,
+            worker_id=self._worker_id,
+            principal=principal,
+            workspace_id=task.authorization.workspace_id,
+        )
         execution = asyncio.create_task(
-            self._execute(
-                task,
-                TurnExecutionContext(
-                    turn_id=task.turn_id,
-                    claim_generation=generation,
-                    worker_id=self._worker_id,
-                    principal=principal,
-                    workspace_id=task.authorization.workspace_id,
-                ),
-            ),
+            self._execute_with_context(task, execution_context),
             name=f"turn-execution:{task.turn_id}",
         )
         try:
@@ -121,8 +140,41 @@ class FencedTurnExecutor:
         finally:
             if not execution.done():
                 execution.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(execution), timeout=self._CANCEL_DRAIN_TIMEOUT_S
+                    )
+                except asyncio.TimeoutError:
+                    execution.add_done_callback(self._consume_task)
+                except asyncio.CancelledError:
+                    if not execution.done():
+                        execution.add_done_callback(self._consume_task)
+                else:
+                    self._consume_task(execution)
+            else:
+                self._consume_task(execution)
             heartbeat.cancel()
-            await asyncio.gather(execution, heartbeat, return_exceptions=True)
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _execute_with_context(
+        self, task: TurnTask, context: TurnExecutionContext
+    ) -> Any:
+        token = _current_turn_execution_context.set(context)
+        try:
+            return await self._execute(task, context)
+        finally:
+            _current_turn_execution_context.reset(token)
+
+    @staticmethod
+    def _consume_task(task: asyncio.Future[Any]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
 
     async def _heartbeat(self, turn_id: str, generation: int) -> None:
         while True:
@@ -137,4 +189,4 @@ class FencedTurnExecutor:
                 )
                 await unit_of_work.commit()
                 if not active:
-                    raise PermissionError("turn cancellation requested")
+                    raise TurnCancellationRequested(turn_id)

@@ -151,6 +151,9 @@ class UsageEventModel(Base):
     cached_input_tokens: Mapped[int] = mapped_column(
         BIGINT(unsigned=True), nullable=False
     )
+    cache_miss_input_tokens: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, default=0, server_default="0"
+    )
     cache_write_input_tokens: Mapped[int] = mapped_column(
         BIGINT(unsigned=True), nullable=False
     )

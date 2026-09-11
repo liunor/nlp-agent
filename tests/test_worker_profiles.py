@@ -277,6 +277,40 @@ def test_pinned_coordinator_and_worker_prompt_versions_exist():
     assert "{{today}}" in template
 
 
+def test_worker_kv_cache_prefix_excludes_every_runtime_field():
+    from server.tools.worker_tool import _build_worker_initial_messages
+
+    first = _build_worker_initial_messages(
+        "first profile SOP",
+        "first task directive",
+        current_time="2026-09-08 08:00:00 Tuesday",
+    )
+    second = _build_worker_initial_messages(
+        "second profile SOP",
+        "second task directive",
+        current_time="2026-09-08 09:00:00 Tuesday",
+    )
+
+    assert first[0].content == second[0].content
+    for dynamic_value in (
+        "first profile SOP",
+        "second profile SOP",
+        "first task directive",
+        "second task directive",
+        "2026-09-08 08:00:00 Tuesday",
+        "2026-09-08 09:00:00 Tuesday",
+    ):
+        assert dynamic_value not in str(first[0].content)
+        assert dynamic_value not in str(second[0].content)
+
+    assert "first profile SOP" in str(first[1].content)
+    assert "second profile SOP" in str(second[1].content)
+    assert "2026-09-08 08:00:00 Tuesday" in str(first[2].content)
+    assert "2026-09-08 09:00:00 Tuesday" in str(second[2].content)
+    assert "first task directive" in str(first[3].content)
+    assert "second task directive" in str(second[3].content)
+
+
 def test_coordinator_prompt_v1_5_teaches_academic_search_routing():
     root = Path(__file__).resolve().parents[1]
     prompt = (root / "core" / "prompt_runtime" / "templates" / "coordinator.v1.5.md").read_text(encoding="utf-8")

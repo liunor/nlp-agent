@@ -47,6 +47,11 @@ class StreamingGraph(RecordingGraph):
         }
 
 
+class StreamingGraphWithHangingCheckpoint(StreamingGraph):
+    async def aget_state(self, _config):
+        await asyncio.Event().wait()
+
+
 class ToolThenPublicStreamingGraph(RecordingGraph):
     async def astream_events(self, _state, *, config, version):
         self.configs.append(config)
@@ -153,6 +158,81 @@ async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config(monk
     assert configurable["telemetry_trace_id"]
     assert configurable["telemetry_span_id"]
     await engine._runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["error", "hang"])
+async def test_engine_does_not_turn_generated_answer_into_failure_when_transcript_persistence_fails(
+    monkeypatch, failure
+):
+    async def unreliable_record_transcript(*_args, **_kwargs):
+        if failure == "hang":
+            await asyncio.Event().wait()
+        raise RuntimeError("transcript persistence unavailable")
+
+    monkeypatch.setattr(
+        "server.agent.session_storage.record_transcript",
+        unreliable_record_transcript,
+    )
+    engine = LangGraphAgentEngine()
+    engine._app = StreamingGraph()
+    engine._runtime = CoordinatorRuntime(WorkerEventBus(), engine._invoke)
+    engine._started = True
+    context = SessionContext(
+        session_id="transcript-failure-session",
+        user_id="alice",
+        workspace_id="w1",
+        channel="web",
+    )
+
+    try:
+        result = await asyncio.wait_for(
+            engine.run_turn(context, "transcript-failure-turn", "hello"),
+            timeout=0.75,
+        )
+        assert result == "done"
+    finally:
+        await engine._runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_engine_does_not_read_checkpoint_after_every_plain_model_stream_event():
+    engine = LangGraphAgentEngine()
+    engine._app = StreamingGraphWithHangingCheckpoint()
+    context = SessionContext(
+        session_id="checkpoint-hang-session",
+        user_id="alice",
+        workspace_id="w1",
+        channel="web",
+    )
+
+    await asyncio.wait_for(
+        engine._invoke([], context, False, "checkpoint-hang-turn"),
+        timeout=0.75,
+    )
+
+
+@pytest.mark.asyncio
+async def test_engine_returns_streamed_answer_when_final_checkpoint_read_hangs():
+    engine = LangGraphAgentEngine()
+    engine._app = StreamingGraphWithHangingCheckpoint()
+    engine._runtime = CoordinatorRuntime(WorkerEventBus(), engine._invoke)
+    engine._started = True
+    context = SessionContext(
+        session_id="checkpoint-final-hang-session",
+        user_id="alice",
+        workspace_id="w1",
+        channel="web",
+    )
+
+    try:
+        result = await asyncio.wait_for(
+            engine.run_turn(context, "checkpoint-final-hang-turn", "hello"),
+            timeout=0.75,
+        )
+        assert result == "late answer"
+    finally:
+        await engine._runtime.close()
 
 
 @pytest.mark.asyncio

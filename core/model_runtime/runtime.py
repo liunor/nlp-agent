@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, AIMessageChunk, message_chunk_to_message
 
 from core.model_runtime.contracts import (
@@ -43,6 +44,8 @@ from core.observability.runtime import global_telemetry
 from utils.logger import get_logger
 
 
+_FINISH_USAGE_DRAIN_S = 0.25
+_STREAM_CANCEL_DRAIN_S = 0.25
 logger = get_logger("nlp_agent.model_runtime")
 
 
@@ -68,6 +71,10 @@ class ModelRuntimeExhaustedError(RuntimeError):
 
 class EmptyModelResponseError(RuntimeError):
     pass
+
+
+class StructuredOutputParseError(ValueError):
+    """A provider responded, but its structured payload failed local parsing."""
 
 
 class ModelFinishReasonError(RuntimeError):
@@ -161,6 +168,8 @@ def _merge_delta_usage(
     return CanonicalTokenUsage(
         input_tokens=current.input_tokens + incoming.input_tokens,
         cached_input_tokens=current.cached_input_tokens + incoming.cached_input_tokens,
+        cache_miss_input_tokens=current.cache_miss_input_tokens
+        + incoming.cache_miss_input_tokens,
         cache_write_input_tokens=current.cache_write_input_tokens
         + incoming.cache_write_input_tokens,
         output_tokens=current.output_tokens + incoming.output_tokens,
@@ -191,6 +200,8 @@ def _finalize_stream_usage(
 
 
 def classify_model_error(error: BaseException) -> ErrorDecision:
+    if isinstance(error, (StructuredOutputParseError, OutputParserException)):
+        return ErrorDecision(False, "structured_output_parse_error")
     if isinstance(error, EmptyModelResponseError):
         return ErrorDecision(True, "upstream_empty_response")
     if isinstance(error, ModelFinishReasonError):
@@ -256,6 +267,7 @@ def classify_model_error(error: BaseException) -> ErrorDecision:
         return ErrorDecision(False, "upstream_provider_quota_exhausted")
 
     quota_markers = (
+        "allocationquota.freetieronly",
         "insufficient_quota",
         "quota_exceeded",
         "insufficient balance",
@@ -348,6 +360,7 @@ class ResilientChatModel:
         self.route = route
         self.reporter_slot = reporter_slot
         self.caller_include_raw = caller_include_raw
+        self._abandoned_stream_tasks: set[asyncio.Task[Any]] = set()
         self.model_name = candidates[0].definition.model_id
         self.context_window_tokens = min(
             candidate.definition.context_window_tokens for candidate in candidates
@@ -564,6 +577,70 @@ class ResilientChatModel:
             model=candidate.definition.model_id,
         )
 
+    async def _read_stream_chunk(
+        self, iterator: Any, timeout_s: float, *, task_name: str
+    ) -> Any:
+        read_task = asyncio.ensure_future(iterator.__anext__())
+        read_task.set_name(task_name)
+        timeout_task = asyncio.create_task(
+            asyncio.sleep(timeout_s), name=f"{task_name}:timeout"
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                {read_task, timeout_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            timeout_task.cancel()
+            await asyncio.gather(timeout_task, return_exceptions=True)
+            await self._cancel_stream_task(read_task)
+            raise
+
+        if read_task in done:
+            timeout_task.cancel()
+            await asyncio.gather(timeout_task, return_exceptions=True)
+            return await read_task
+
+        await self._cancel_stream_task(read_task)
+        raise asyncio.TimeoutError
+
+    async def _cancel_stream_task(self, task: asyncio.Task[Any]) -> None:
+        if task.done():
+            self._consume_stream_task(task)
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=_STREAM_CANCEL_DRAIN_S
+            )
+        except asyncio.TimeoutError:
+            self._detach_stream_task(task)
+        except asyncio.CancelledError:
+            # A normally cancelled child task raises CancelledError through
+            # shield(); that is expected and must not abort the caller.  If
+            # the caller itself was cancelled while the child ignored its
+            # cancellation, detach it and preserve the caller cancellation.
+            if task.done():
+                self._consume_stream_task(task)
+                return
+            self._detach_stream_task(task)
+            raise
+        except BaseException:
+            self._consume_stream_task(task)
+
+    def _detach_stream_task(self, task: asyncio.Task[Any]) -> None:
+        self._abandoned_stream_tasks.add(task)
+        task.add_done_callback(self._consume_stream_task)
+
+    def _consume_stream_task(self, task: asyncio.Task[Any]) -> None:
+        self._abandoned_stream_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return
+
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
         if self.normalize_response:
             combined: Any = None
@@ -705,7 +782,7 @@ class ResilientChatModel:
                                 finish_reason=finish_reason,
                                 error_kind="structured_output_parse_error",
                             )
-                            raise parsing_error
+                            raise StructuredOutputParseError(str(parsing_error)) from parsing_error
 
                         attempt_reported = True
                         await self._report_attempt_guarded(
@@ -739,7 +816,8 @@ class ResilientChatModel:
                 except BaseException as error:
                     last_error = error
                     decision = classify_model_error(error)
-                    candidate.circuit.fail(candidate.preset.circuit_breaker)
+                    if decision.kind != "structured_output_parse_error":
+                        candidate.circuit.fail(candidate.preset.circuit_breaker)
                     if not attempt_reported:
                         await self._report_attempt(
                             invocation=invocation,
@@ -805,6 +883,7 @@ class ResilientChatModel:
                 )
                 delta_usage: CanonicalTokenUsage | None = None
                 finish_reason: str | None = None
+                finish_drain_deadline: float | None = None
                 provider_response_id: str | None = None
                 try:
                     async with _attempt_span(
@@ -822,18 +901,36 @@ class ResilientChatModel:
                                 raise asyncio.TimeoutError(
                                     "model stream total timeout"
                                 )
+                            if finish_drain_deadline is not None:
+                                remaining_finish_drain = (
+                                    finish_drain_deadline - time.monotonic()
+                                )
+                                if remaining_finish_drain <= 0:
+                                    break
+                            else:
+                                remaining_finish_drain = remaining_total
                             wait_s = min(
                                 remaining_total,
+                                remaining_finish_drain,
                                 candidate.preset.timeouts.first_token_s
                                 if first
                                 else candidate.preset.timeouts.stream_idle_s,
                             )
                             try:
-                                chunk = await asyncio.wait_for(
-                                    iterator.__anext__(), timeout=wait_s
+                                chunk = await self._read_stream_chunk(
+                                    iterator,
+                                    wait_s,
+                                    task_name=(
+                                        f"model-stream-read:{candidate.provider_name}:"
+                                        f"{candidate.definition.model_id}"
+                                    ),
                                 )
                             except StopAsyncIteration:
                                 break
+                            except asyncio.TimeoutError:
+                                if finish_drain_deadline is not None:
+                                    break
+                                raise
                             first = False
                             received = True
                             chunk_visible = self._visible_chunk(chunk)
@@ -878,6 +975,10 @@ class ResilientChatModel:
                                 if usage["total_tokens"]:
                                     span.set_usage(usage)
                             yield normalized
+                            if finish and finish_drain_deadline is None:
+                                finish_drain_deadline = (
+                                    time.monotonic() + _FINISH_USAGE_DRAIN_S
+                                )
                         if not received:
                             raise EmptyModelResponseError(
                                 "Provider stream completed without chunks"
@@ -920,7 +1021,8 @@ class ResilientChatModel:
                 except BaseException as error:
                     last_error = error
                     decision = classify_model_error(error)
-                    candidate.circuit.fail(candidate.preset.circuit_breaker)
+                    if decision.kind != "structured_output_parse_error":
+                        candidate.circuit.fail(candidate.preset.circuit_breaker)
                     partial_usage = _finalize_stream_usage(
                         latest_usage,
                         delta_usage,

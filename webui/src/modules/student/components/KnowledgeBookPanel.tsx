@@ -3,10 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { api } from "@/platform/http/api";
-import type { LearningBookNavigationItem, LearningBookPage } from "@/shared/types";
+import type { KnowledgeBookContext, LearningBookNavigationItem, LearningBookPage } from "@/shared/types";
 
 import { demoLearningBookNavigation, demoLearningBookPages } from "./knowledgeBookDemo";
 import { indexMarkdownHeadings, readKnowledgeBookUrl, replaceKnowledgeBookUrl } from "./knowledgeBook";
+import { KnowledgeBookPromptComposer } from "./KnowledgeBookPromptComposer";
 import { MarkdownContent, type MarkdownCodeActions } from "./MarkdownContent";
 
 interface TopicGroup {
@@ -28,27 +29,7 @@ interface SelectionPrompt {
   heading?: string;
   top: number;
   left: number;
-}
-
-function quoteSelection(text: string): string {
-  return text.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
-}
-
-function buildSelectionPrompt(page: LearningBookPage, text: string, heading: string | undefined): string {
-  return [
-    `我正在阅读「${page.topic_name} / ${page.title}」${heading ? `的「${heading}」小节` : ""}。`,
-    "",
-    "选中内容：",
-    quoteSelection(text),
-    "",
-    "请结合本节上下文解释这段内容，并指出我理解时最需要注意的地方。",
-  ].join("\n");
-}
-
-function buildCodePrompt(page: LearningBookPage, code: string, language: string, heading: string | undefined): string {
-  const maxCodeLength = 6000;
-  const excerpt = code.length > maxCodeLength ? `${code.slice(0, maxCodeLength)}\n……（代码过长，已截断）` : code;
-  return [`我正在阅读「${page.topic_name} / ${page.title}」${heading ? `的「${heading}」小节` : ""}中的代码示例。`, "", `语言：${language}`, "", "```" + language, excerpt, "```", "", "请解释这段代码的作用、关键步骤，以及它在本节知识点中的意义。"].join("\n");
+  composerOpen?: boolean;
 }
 
 function isExcludedSelectionNode(node: Node | null): boolean {
@@ -135,7 +116,7 @@ function keepFocusInDrawer(event: ReactKeyboardEvent<HTMLElement>) {
   }
 }
 
-export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: { workspaceId: string; onAskNova?: (prompt: string) => void; onOpenInSandbox?: (code: string, language: string) => void }) {
+export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: { workspaceId: string; onAskNova?: (prompt: string, context: KnowledgeBookContext) => void; onOpenInSandbox?: (code: string, language: string) => void }) {
   const [initialViewState] = useState(() => readBookViewState(workspaceId));
   const [initialDeepLink] = useState(() => readKnowledgeBookUrl(window.location.search));
   const demoMode = initialDeepLink.demo;
@@ -157,6 +138,7 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
   const contentRef = useRef<HTMLDivElement>(null);
   const articleRef = useRef<HTMLElement>(null);
   const selectionActionRef = useRef<HTMLButtonElement>(null);
+  const selectionComposerRef = useRef<HTMLFormElement>(null);
   const leftDrawerRef = useRef<HTMLElement>(null);
   const rightDrawerRef = useRef<HTMLElement>(null);
   const leftToggleRef = useRef<HTMLButtonElement>(null);
@@ -188,11 +170,21 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
   const codeActions = useMemo<MarkdownCodeActions>(() => {
     const actions: MarkdownCodeActions = {};
     if (canAskNova) {
-      actions.onAskNova = (code, language) => {
+      actions.onAskNova = (code, language, question) => {
         const currentPage = visiblePageRef.current;
         if (!currentPage) return;
         const heading = headingIndexRef.current.headings.find((item) => item.id === activeHeadingIdRef.current)?.text;
-        onAskNovaRef.current?.(buildCodePrompt(currentPage, code, language, heading));
+        onAskNovaRef.current?.(question, {
+          workspace_id: currentPage.workspace_id,
+          topic_id: currentPage.topic_id,
+          topic_name: currentPage.topic_name,
+          knowledge_point_id: currentPage.knowledge_point_id,
+          title: currentPage.title,
+          heading,
+          code,
+          language,
+          content_markdown: currentPage.content_markdown,
+        });
       };
     }
     if (canOpenInSandbox) {
@@ -356,7 +348,7 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
     if (!selectionPrompt) return undefined;
     const clearSelectionPrompt = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Node && (selectionActionRef.current?.contains(target) || articleRef.current?.contains(target))) return;
+      if (target instanceof Node && (selectionActionRef.current?.contains(target) || selectionComposerRef.current?.contains(target) || articleRef.current?.contains(target))) return;
       setSelectionPrompt(null);
     };
     document.addEventListener("pointerdown", clearSelectionPrompt);
@@ -415,8 +407,8 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
       const gap = 8;
       const aboveTop = rect.top - buttonHeight - gap;
       const top = aboveTop >= 8 ? aboveTop : Math.min(Math.max(8, viewportHeight - buttonHeight - 8), rect.bottom + gap);
-      const buttonHalfWidth = 74;
-      setSelectionPrompt({ text, heading: headingBeforeSelection(article, range), top, left: Math.min(Math.max(buttonHalfWidth + 8, rect.left + rect.width / 2), viewportWidth - buttonHalfWidth - 8) });
+      const floatingHalfWidth = Math.min(180, Math.max(0, (viewportWidth - 16) / 2));
+      setSelectionPrompt({ text, heading: headingBeforeSelection(article, range), top, left: Math.min(Math.max(floatingHalfWidth + 8, rect.left + rect.width / 2), viewportWidth - floatingHalfWidth - 8), composerOpen: false });
     }, 0);
   };
 
@@ -432,9 +424,21 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
     replaceKnowledgeBookUrl({ pointId: selectedId, headingId: heading.id });
     scrollToHeading(contentRef.current, heading.id);
   };
-  const askSelection = () => {
+  const openSelectionComposer = () => {
+    setSelectionPrompt((current) => current ? { ...current, composerOpen: true } : current);
+  };
+  const askSelection = (prompt: string) => {
     if (!onAskNova || !selectionPrompt || !visiblePage) return;
-    onAskNova(buildSelectionPrompt(visiblePage, selectionPrompt.text, selectionPrompt.heading));
+    onAskNova(prompt, {
+      workspace_id: visiblePage.workspace_id,
+      topic_id: visiblePage.topic_id,
+      topic_name: visiblePage.topic_name,
+      knowledge_point_id: visiblePage.knowledge_point_id,
+      title: visiblePage.title,
+      heading: selectionPrompt.heading,
+      selected_text: selectionPrompt.text,
+      content_markdown: visiblePage.content_markdown,
+    });
     setSelectionPrompt(null);
     window.getSelection()?.removeAllRanges();
   };
@@ -480,6 +484,7 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
         {headingIndex.headings.length ? <nav>{headingIndex.headings.map((heading) => <button type="button" key={heading.id} className={activeHeadingId === heading.id ? "active" : ""} style={{ paddingLeft: `${12 + (heading.level - 2) * 12}px` }} onClick={() => selectHeading(heading)}>{heading.text}</button>)}</nav> : <p className="knowledge-book-muted">本页暂无小标题。</p>}
       </aside>
     </div>
-    {selectionPrompt && onAskNova && <button ref={selectionActionRef} type="button" className="knowledge-book-selection-action" style={{ top: `${selectionPrompt.top}px`, left: `${selectionPrompt.left}px` }} onMouseDown={(event) => event.preventDefault()} onClick={askSelection}>向 Nova 提问</button>}
+    {selectionPrompt && onAskNova && !selectionPrompt.composerOpen && <button ref={selectionActionRef} type="button" className="knowledge-book-selection-action" style={{ top: `${selectionPrompt.top}px`, left: `${selectionPrompt.left}px` }} onMouseDown={(event) => event.preventDefault()} onClick={openSelectionComposer}>向 Nova 提问</button>}
+    {selectionPrompt && onAskNova && selectionPrompt.composerOpen && <KnowledgeBookPromptComposer ref={selectionComposerRef} className="knowledge-book-selection-composer" style={{ top: `${selectionPrompt.top}px`, left: `${selectionPrompt.left}px` }} ariaLabel="向 Nova 提问" placeholder="这是什么意思？" onSubmit={askSelection} />}
   </section>;
 }

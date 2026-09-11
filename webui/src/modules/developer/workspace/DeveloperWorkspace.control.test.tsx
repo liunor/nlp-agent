@@ -4,6 +4,7 @@ import { Agents, Models, Tools } from "./DeveloperWorkspace";
 
 const {
   deleteWorkerProfileMock,
+  saveModelProfileMock,
   saveModelPresetMock,
   saveModelProviderMock,
   saveModelRouteMock,
@@ -11,6 +12,7 @@ const {
   updateToolPoliciesMock,
 } = vi.hoisted(() => ({
   deleteWorkerProfileMock: vi.fn(),
+  saveModelProfileMock: vi.fn(),
   saveModelPresetMock: vi.fn(),
   saveModelProviderMock: vi.fn(),
   saveModelRouteMock: vi.fn(),
@@ -21,6 +23,7 @@ const {
 vi.mock("@/platform/http/api", () => ({
   api: {
     deleteWorkerProfile: deleteWorkerProfileMock,
+    saveModelProfile: saveModelProfileMock,
     saveModelPreset: saveModelPresetMock,
     saveModelProvider: saveModelProviderMock,
     saveModelRoute: saveModelRouteMock,
@@ -102,6 +105,12 @@ const snapshot = {
         api_key_env: "DEEPSEEK_API_KEY",
         api_key_configured: true,
       },
+      qwen: {
+        adapter: "qwen",
+        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key_env: "DASHSCOPE_API_KEY",
+        api_key_configured: true,
+      },
     },
     models: {
       "deepseek-v4-flash": {
@@ -110,6 +119,13 @@ const snapshot = {
         context_window_tokens: 1000000,
         max_output_tokens: 384000,
         capabilities: { streaming: true, tool_calls: true, thinking: true },
+      },
+      "qwen-plus": {
+        provider: "qwen",
+        model_id: "qwen-plus",
+        context_window_tokens: 131072,
+        max_output_tokens: 8192,
+        capabilities: { streaming: true, tool_calls: true, thinking: false },
       },
     },
     presets: {
@@ -122,10 +138,29 @@ const snapshot = {
         retry: { max_attempts: 2, base_delay_s: 1, max_delay_s: 8, jitter: "full" },
         circuit_breaker: { failure_threshold: 5, cooldown_s: 60 },
       },
+      "worker-qwen": {
+        model: "qwen-plus",
+        thinking: { enabled: false, effort: "none" },
+        generation: { max_output_tokens: 8192, temperature: 0.2 },
+        native_search: { enabled: false, forced: false, strategy: "turbo" },
+        timeouts: { connect_s: 10, first_token_s: 120, stream_idle_s: 60, total_s: 360 },
+        retry: { max_attempts: 2, base_delay_s: 1, max_delay_s: 8, jitter: "full" },
+        circuit_breaker: { failure_threshold: 5, cooldown_s: 60 },
+      },
     },
     routes: {
       worker: { primary: "worker-fast", fallbacks: [] },
     },
+    profiles: {
+      deepseek: {
+        label: "DeepSeek",
+        provider: "deepseek",
+        coordinator: "worker-fast",
+        worker: "worker-fast",
+        utility: "worker-fast",
+      },
+    },
+    default_model_profile: "deepseek",
     defaults: { model_profile: "deepseek" },
   },
 } as const;
@@ -133,6 +168,7 @@ const snapshot = {
 describe("developer control-plane configuration", () => {
   beforeEach(() => {
     deleteWorkerProfileMock.mockReset();
+    saveModelProfileMock.mockReset();
     saveModelPresetMock.mockReset();
     saveModelProviderMock.mockReset();
     saveModelRouteMock.mockReset();
@@ -215,5 +251,30 @@ describe("developer control-plane configuration", () => {
       "worker",
       expect.objectContaining({ primary: "worker-fast", fallbacks: [] }),
     ));
+  });
+
+  it("edits a model profile and limits its role presets to the selected Provider", async () => {
+    const refresh = vi.fn(async () => undefined);
+    render(<Models snapshot={snapshot as never} refresh={refresh} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "模型档案" }));
+
+    const workerPreset = screen.getByLabelText("deepseek Worker 预设") as HTMLSelectElement;
+    expect(Array.from(workerPreset.options, (option) => option.value)).toEqual(["worker-fast"]);
+    expect(screen.getByText("默认档案")).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("deepseek 显示名称"), { target: { value: "DeepSeek 稳定档" } });
+    fireEvent.change(screen.getByLabelText("deepseek Provider"), { target: { value: "qwen" } });
+    expect(Array.from(workerPreset.options, (option) => option.value)).toEqual(["worker-qwen"]);
+    fireEvent.click(screen.getByRole("button", { name: "保存模型档案" }));
+
+    await waitFor(() => expect(saveModelProfileMock).toHaveBeenCalledWith("deepseek", {
+      label: "DeepSeek 稳定档",
+      provider: "qwen",
+      coordinator: "worker-qwen",
+      worker: "worker-qwen",
+      utility: "worker-qwen",
+    }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
   });
 });

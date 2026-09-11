@@ -1,7 +1,7 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
-
+import { act, render, renderHook, waitFor } from "@testing-library/react";
+import type { ServerEvent, SessionSummary, TurnRecord } from "@/shared/types";
 import { useStudentWorkspace } from "./useStudentWorkspace";
-import { api } from "@/platform/http/api";
+import { api, AUTH_EXPIRED_EVENT } from "@/platform/http/api";
 import { AuthProvider } from "@/platform/auth/AuthContext";
 
 const runtime = {
@@ -12,22 +12,46 @@ const runtime = {
   },
 };
 
-const { ensureAuthMock, getSettingsMock, createSessionMock, deleteSessionMock, sendChatMock, renameSessionMock } = vi.hoisted(() => ({
+const {
+  ensureAuthMock,
+  getSettingsMock,
+  createSessionMock,
+  cancelTurnMock,
+  deleteSessionMock,
+  listTurnsMock,
+  sendChatMock,
+  renameSessionMock,
+  socketConnectMock,
+  socketCloseMock,
+  socketEventHandlerRef,
+  socketCancelMock,
+} = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
   getSettingsMock: vi.fn(),
   createSessionMock: vi.fn(),
+  cancelTurnMock: vi.fn(),
   deleteSessionMock: vi.fn(async () => undefined),
+  listTurnsMock: vi.fn(),
   sendChatMock: vi.fn(),
   renameSessionMock: vi.fn(),
+  socketConnectMock: vi.fn(),
+  socketCloseMock: vi.fn(),
+  socketEventHandlerRef: {
+    current: undefined as ((event: ServerEvent) => void) | undefined,
+  },
+  socketCancelMock: vi.fn(),
 }));
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: ensureAuthMock,
   api: {
     listSessions: vi.fn(async () => ({ items: [] })),
     getSettings: getSettingsMock,
     createSession: createSessionMock,
+    cancelTurn: cancelTurnMock,
     deleteSession: deleteSessionMock,
+    listTurns: listTurnsMock,
     renameSession: renameSessionMock,
     login: vi.fn(),
     logout: vi.fn(async () => undefined),
@@ -37,10 +61,15 @@ vi.mock("@/platform/http/api", () => ({
 
 vi.mock("@/platform/realtime/client", () => ({
   StudentSocket: class {
-    connect() {}
-    close() {}
+    constructor(handler: (event: ServerEvent) => void) {
+      socketEventHandlerRef.current = handler;
+    }
+
+    connect() { socketConnectMock(); }
+    close() { socketCloseMock(); }
     setSession() {}
     sendChat(...args: unknown[]) { sendChatMock(...args); }
+    cancel(...args: unknown[]) { socketCancelMock(...args); }
   },
 }));
 
@@ -52,6 +81,9 @@ describe("useStudentWorkspace settings", () => {
     localStorage.clear();
     dark = false;
     onChange = undefined;
+    socketConnectMock.mockReset();
+    socketCloseMock.mockReset();
+    socketEventHandlerRef.current = undefined;
     document.documentElement.classList.remove("dark");
     ensureAuthMock.mockResolvedValue({ csrf_token: "x", workspace_ids: ["default"] });
     getSettingsMock.mockResolvedValue({ preferences: { settings: { theme: "system" } }, runtime });
@@ -64,9 +96,13 @@ describe("useStudentWorkspace settings", () => {
     vi.mocked(api.updateSettings).mockReset();
     vi.mocked(api.logout).mockReset();
     vi.mocked(api.listSessions).mockResolvedValue({ items: [] });
+    listTurnsMock.mockResolvedValue({ items: [] });
     createSessionMock.mockClear();
+    cancelTurnMock.mockReset();
+    cancelTurnMock.mockResolvedValue({ status: "cancelled" });
     deleteSessionMock.mockClear();
     sendChatMock.mockClear();
+    socketCancelMock.mockClear();
     renameSessionMock.mockClear();
   });
 
@@ -286,6 +322,215 @@ describe("useStudentWorkspace settings", () => {
     expect(result.current.composerRevision).toBe(composerRevision + 1);
   });
 
+  it("clears the previous conversation while the selected session history is loading", async () => {
+    const turn = (sessionId: string, content: string): TurnRecord => ({
+      turn_id: `${sessionId}-turn`,
+      session_id: sessionId,
+      status: "completed",
+      input_text: `${sessionId} question`,
+      final_text: content,
+      error_kind: null,
+      error_message: null,
+      created_at: "2026-09-10T00:00:00Z",
+      started_at: "2026-09-10T00:00:01Z",
+      completed_at: "2026-09-10T00:00:02Z",
+    });
+    vi.mocked(api.listSessions).mockResolvedValue({ items: [
+      { session_id: "session-a", user_id: "user", workspace_id: "default", channel: "web" },
+      { session_id: "session-b", user_id: "user", workspace_id: "default", channel: "web" },
+    ] });
+    let resolveSessionB!: (response: { items: TurnRecord[] }) => void;
+    listTurnsMock.mockImplementation(async (sessionId: string) => {
+      if (sessionId === "session-a") return { items: [turn(sessionId, "会话 A 内容")] };
+      return new Promise((resolve) => { resolveSessionB = resolve; });
+    });
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { result.current.selectSession("session-a"); });
+    await waitFor(() => expect(result.current.messages.some((message) => message.content === "会话 A 内容")).toBe(true));
+
+    await act(async () => {
+      result.current.selectSession("session-b");
+      await Promise.resolve();
+    });
+
+    expect(result.current.messages).toEqual([]);
+    expect(result.current.loadingMessages).toBe(true);
+
+    await act(async () => { resolveSessionB({ items: [turn("session-b", "会话 B 内容")] }); });
+    await waitFor(() => expect(result.current.messages.some((message) => message.content === "会话 B 内容")).toBe(true));
+  });
+
+  it("never renders the previous conversation under a newly selected session", async () => {
+    const turn = (sessionId: string, content: string): TurnRecord => ({
+      turn_id: `${sessionId}-turn`,
+      session_id: sessionId,
+      status: "completed",
+      input_text: `${sessionId} question`,
+      final_text: content,
+      error_kind: null,
+      error_message: null,
+      created_at: "2026-09-10T00:00:00Z",
+      started_at: "2026-09-10T00:00:01Z",
+      completed_at: "2026-09-10T00:00:02Z",
+    });
+    vi.mocked(api.listSessions).mockResolvedValue({ items: [
+      { session_id: "session-a", user_id: "user", workspace_id: "default", channel: "web" },
+      { session_id: "session-b", user_id: "user", workspace_id: "default", channel: "web" },
+    ] });
+    let resolveSessionB!: (response: { items: TurnRecord[] }) => void;
+    listTurnsMock.mockImplementation(async (sessionId: string) => {
+      if (sessionId === "session-a") return { items: [turn(sessionId, "会话 A 内容")] };
+      return new Promise((resolve) => { resolveSessionB = resolve; });
+    });
+    const snapshots: Array<{ activeSessionId: string | null; messages: string[] }> = [];
+    let workspace!: ReturnType<typeof useStudentWorkspace>;
+    function Probe() {
+      workspace = useStudentWorkspace();
+      snapshots.push({
+        activeSessionId: workspace.activeSessionId,
+        messages: workspace.messages.map((message) => message.content),
+      });
+      return null;
+    }
+    const view = render(<Probe />);
+    await waitFor(() => expect(workspace.bootStatus).toBe("ready"));
+
+    await act(async () => { workspace.selectSession("session-a"); });
+    await waitFor(() => expect(workspace.messages.some((message) => message.content === "会话 A 内容")).toBe(true));
+    snapshots.length = 0;
+
+    await act(async () => {
+      workspace.selectSession("session-b");
+      await Promise.resolve();
+    });
+
+    expect(snapshots).not.toContainEqual(expect.objectContaining({
+      activeSessionId: "session-b",
+      messages: expect.arrayContaining(["会话 A 内容"]),
+    }));
+
+    await act(async () => { resolveSessionB({ items: [turn("session-b", "会话 B 内容")] }); });
+    view.unmount();
+  });
+
+  it("never renders the previous conversation after deleting the active session", async () => {
+    const turn = (sessionId: string, content: string): TurnRecord => ({
+      turn_id: `${sessionId}-turn`,
+      session_id: sessionId,
+      status: "completed",
+      input_text: `${sessionId} question`,
+      final_text: content,
+      error_kind: null,
+      error_message: null,
+      created_at: "2026-09-10T00:00:00Z",
+      started_at: "2026-09-10T00:00:01Z",
+      completed_at: "2026-09-10T00:00:02Z",
+    });
+    vi.mocked(api.listSessions).mockResolvedValue({ items: [
+      { session_id: "session-a", user_id: "user", workspace_id: "default", channel: "web" },
+      { session_id: "session-b", user_id: "user", workspace_id: "default", channel: "web" },
+    ] });
+    listTurnsMock.mockImplementation(async (sessionId: string) => ({ items: [turn(sessionId, sessionId === "session-a" ? "会话 A 内容" : "会话 B 内容")] }));
+    const snapshots: Array<{ activeSessionId: string | null; messages: string[] }> = [];
+    let workspace!: ReturnType<typeof useStudentWorkspace>;
+    function Probe() {
+      workspace = useStudentWorkspace();
+      snapshots.push({
+        activeSessionId: workspace.activeSessionId,
+        messages: workspace.messages.map((message) => message.content),
+      });
+      return null;
+    }
+    const view = render(<Probe />);
+    await waitFor(() => expect(workspace.bootStatus).toBe("ready"));
+
+    await act(async () => { workspace.selectSession("session-a"); });
+    await waitFor(() => expect(workspace.messages.some((message) => message.content === "会话 A 内容")).toBe(true));
+    snapshots.length = 0;
+
+    await act(async () => {
+      await workspace.deleteSession("session-a");
+      await Promise.resolve();
+    });
+
+    expect(snapshots).not.toContainEqual(expect.objectContaining({
+      activeSessionId: "session-b",
+      messages: expect.arrayContaining(["会话 A 内容"]),
+    }));
+    view.unmount();
+  });
+
+  it("clears conversation state when authentication changes to another user", async () => {
+    const userOne = {
+      user_id: "user-1",
+      csrf_token: "csrf-1",
+      workspace_ids: ["default"],
+      roles: ["student"],
+      permissions: [],
+      expires_at: 1_900_000_000,
+    };
+    const userTwo = { ...userOne, user_id: "user-2", csrf_token: "csrf-2" };
+    ensureAuthMock.mockResolvedValue(userOne);
+    vi.mocked(api.login).mockResolvedValue(userTwo);
+    const wrapper = ({ children }: { children: React.ReactNode }) => <AuthProvider>{children}</AuthProvider>;
+    const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.send("用户一的私密内容"); });
+    expect(result.current.messages.some((message) => message.content === "用户一的私密内容")).toBe(true);
+
+    await act(async () => { await result.current.authenticate("user-2", "password"); });
+    await waitFor(() => expect(result.current.authSession?.user_id).toBe("user-2"));
+
+    expect(result.current.activeSessionId).toBeNull();
+    expect(result.current.messages).toEqual([]);
+  });
+
+  it("ignores session list responses started under the previous authenticated user", async () => {
+    const userOne = {
+      user_id: "user-1",
+      csrf_token: "csrf-1",
+      workspace_ids: ["default"],
+      roles: ["student"],
+      permissions: [],
+      expires_at: 1_900_000_000,
+    };
+    const userTwo = { ...userOne, user_id: "user-2", csrf_token: "csrf-2" };
+    const sessionOne: SessionSummary = { session_id: "session-user-1", user_id: "user-1", workspace_id: "default", channel: "web" };
+    const sessionTwo: SessionSummary = { session_id: "session-user-2", user_id: "user-2", workspace_id: "default", channel: "web" };
+    ensureAuthMock.mockResolvedValue(userOne);
+    vi.mocked(api.login).mockResolvedValue(userTwo);
+    let listCallCount = 0;
+    let resolveStale!: (response: { items: SessionSummary[] }) => void;
+    vi.mocked(api.listSessions).mockImplementation(() => {
+      listCallCount += 1;
+      if (listCallCount === 1) return Promise.resolve({ items: [sessionOne] });
+      if (listCallCount === 2) return new Promise((resolve) => { resolveStale = resolve; });
+      return Promise.resolve({ items: [sessionTwo] });
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => <AuthProvider>{children}</AuthProvider>;
+    const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "session.updated",
+      session_id: sessionOne.session_id,
+      timestamp: "2026-09-10T00:00:00Z",
+      payload: {},
+    }));
+    await waitFor(() => expect(listCallCount).toBe(2));
+
+    await act(async () => { await result.current.authenticate("user-2", "password"); });
+    await waitFor(() => expect(result.current.authSession?.user_id).toBe("user-2"));
+    await waitFor(() => expect(result.current.sessions.map((session) => session.session_id)).toEqual([sessionTwo.session_id]));
+
+    await act(async () => { resolveStale({ items: [sessionOne] }); });
+    expect(result.current.sessions.map((session) => session.session_id)).toEqual([sessionTwo.session_id]);
+  });
+
   it("creates the backend session in the resolved workspace only on the first message", async () => {
     ensureAuthMock.mockResolvedValue({ csrf_token: "x", workspace_ids: ["default", "research"] });
     getSettingsMock.mockResolvedValue({ preferences: { settings: { theme: "system", default_workspace_id: "research" } }, runtime });
@@ -335,7 +580,270 @@ describe("useStudentWorkspace settings", () => {
     expect(sendChatMock.mock.calls[0][0]).toBe("session-fresh");
   });
 
-  it("uses the global auth session and logout boundary when mounted in the application", async () => {
+  it("marks a running turn as cancelling immediately and uses the HTTP cancellation path", async () => {
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.send("请解释注意力机制"); });
+    const requestId = sendChatMock.mock.calls[0][2] as string;
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "command.ack",
+      request_id: requestId,
+      session_id: "session-new",
+      turn_id: "turn-1",
+      timestamp: "2026-09-09T00:00:00Z",
+      payload: { command: "chat.send" },
+    }));
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "chat.started",
+      session_id: "session-new",
+      turn_id: "turn-1",
+      timestamp: "2026-09-09T00:00:01Z",
+      payload: {},
+    }));
+    expect(result.current.isRunning).toBe(true);
+
+    act(() => result.current.cancel());
+
+    expect(cancelTurnMock).toHaveBeenCalledWith("turn-1");
+    expect(result.current.isCancelling).toBe(true);
+    expect(socketCancelMock).not.toHaveBeenCalled();
+  });
+
+  it("settles the message from a successful HTTP cancellation response", async () => {
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.send("请停止这个回答"); });
+    const requestId = sendChatMock.mock.calls[0][2] as string;
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "command.ack",
+      request_id: requestId,
+      session_id: "session-new",
+      turn_id: "turn-http-cancel",
+      timestamp: "2026-09-09T00:00:00Z",
+      payload: { command: "chat.send" },
+    }));
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "chat.started",
+      session_id: "session-new",
+      turn_id: "turn-http-cancel",
+      timestamp: "2026-09-09T00:00:01Z",
+      payload: {},
+    }));
+
+    await act(async () => {
+      result.current.cancel();
+      await Promise.resolve();
+    });
+
+    expect(result.current.isCancelling).toBe(false);
+    expect(result.current.messages.find((message) => message.turnId === "turn-http-cancel" && message.role === "assistant")?.status).toBe("cancelled");
+    expect(socketCancelMock).not.toHaveBeenCalled();
+  });
+
+  it("sends only one cancellation request for a rapid double click", async () => {
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.send("请停止这个回答"); });
+    const requestId = sendChatMock.mock.calls[0][2] as string;
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "command.ack",
+      request_id: requestId,
+      session_id: "session-new",
+      turn_id: "turn-double-click",
+      timestamp: "2026-09-09T00:00:00Z",
+      payload: { command: "chat.send" },
+    }));
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "chat.started",
+      session_id: "session-new",
+      turn_id: "turn-double-click",
+      timestamp: "2026-09-09T00:00:01Z",
+      payload: {},
+    }));
+
+    act(() => {
+      result.current.cancel();
+      result.current.cancel();
+    });
+
+    expect(cancelTurnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the WebSocket cancellation path when HTTP cancellation fails", async () => {
+    cancelTurnMock.mockRejectedValueOnce(new Error("offline"));
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.send("请停止这个回答"); });
+    const requestId = sendChatMock.mock.calls[0][2] as string;
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "command.ack",
+      request_id: requestId,
+      session_id: "session-new",
+      turn_id: "turn-ws-fallback",
+      timestamp: "2026-09-09T00:00:00Z",
+      payload: { command: "chat.send" },
+    }));
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "chat.started",
+      session_id: "session-new",
+      turn_id: "turn-ws-fallback",
+      timestamp: "2026-09-09T00:00:01Z",
+      payload: {},
+    }));
+
+    act(() => result.current.cancel());
+    await waitFor(() => expect(socketCancelMock).toHaveBeenCalledWith("turn-ws-fallback"));
+    expect(result.current.isCancelling).toBe(true);
+  });
+
+  it("releases the composer when cancellation has no transport acknowledgement", async () => {
+    cancelTurnMock.mockRejectedValueOnce(new Error("HTTP 500"));
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.send("搜索测试"); });
+    const requestId = sendChatMock.mock.calls[0][2] as string;
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "command.ack",
+      request_id: requestId,
+      session_id: "session-new",
+      turn_id: "turn-cancel-unconfirmed",
+      timestamp: "2026-09-10T00:00:00Z",
+      payload: { command: "chat.send" },
+    }));
+    act(() => socketEventHandlerRef.current?.({
+      v: "1",
+      type: "chat.started",
+      session_id: "session-new",
+      turn_id: "turn-cancel-unconfirmed",
+      timestamp: "2026-09-10T00:00:01Z",
+      payload: {},
+    }));
+
+    act(() => result.current.cancel());
+    await waitFor(() => expect(socketCancelMock).toHaveBeenCalledWith("turn-cancel-unconfirmed"));
+
+    await waitFor(() => expect(result.current.isRunning).toBe(false), { timeout: 4_000 });
+  });
+
+  it("preserves the student WebSocket while expired authentication is restored", async () => {
+  ensureAuthMock.mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-1",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_000,
+  });
+
+  vi.mocked(api.login).mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-2",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_100,
+  });
+
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <AuthProvider>{children}</AuthProvider>
+  );
+
+  const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  expect(socketConnectMock).toHaveBeenCalledTimes(1);
+  expect(socketCloseMock).not.toHaveBeenCalled();
+
+  act(() => {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  });
+
+  await act(async () => {
+    await result.current.authenticate("user", "password");
+  });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  expect(socketConnectMock).toHaveBeenCalledTimes(1);
+  expect(socketCloseMock).not.toHaveBeenCalled();
+});
+
+it("clears the previous request error after expired authentication is restored", async () => {
+  ensureAuthMock.mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-1",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_000,
+  });
+
+  vi.mocked(api.login).mockResolvedValue({
+    user_id: "user-1",
+    csrf_token: "csrf-2",
+    workspace_ids: ["default"],
+    roles: ["guest"],
+    permissions: [],
+    expires_at: 1_900_000_100,
+  });
+
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <AuthProvider>{children}</AuthProvider>
+  );
+
+  const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  act(() => {
+socketEventHandlerRef.current?.({
+  v: "1",
+  type: "command.error",
+  timestamp: "2026-08-29T00:00:00Z",
+  payload: {
+    message: "Authentication required",
+  },
+});
+});
+
+  expect(result.current.requestError).toBe("Authentication required");
+
+  act(() => {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  });
+
+  await act(async () => {
+    await result.current.authenticate("user", "password");
+  });
+
+  await waitFor(() => {
+    expect(result.current.bootStatus).toBe("ready");
+  });
+
+  expect(result.current.requestError).toBe("");
+});
+it("uses the global auth session and logout boundary when mounted in the application", async () => {
     ensureAuthMock.mockResolvedValue({
       user_id: "user-1",
       csrf_token: "csrf-1",

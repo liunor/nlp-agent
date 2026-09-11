@@ -297,7 +297,7 @@ html,body,#root{height:100%;min-height:0;overflow:hidden}
 .mon-usage-catalog-link svg{flex:0 0 auto}
 .mon-usage-catalog-link span{font-size:10px;font-weight:700;white-space:nowrap}
 .mon-usage-catalog-link small{overflow:hidden;color:#858996;font-size:9px;text-overflow:ellipsis;white-space:nowrap}
-.mon-usage-summary{display:grid;min-height:0;grid-template-columns:1.35fr repeat(3,minmax(130px,1fr));overflow:hidden;border:1px solid #e3e3ea;border-radius:12px;background:#fff;box-shadow:0 5px 18px rgb(41 43 56 / 3%)}
+.mon-usage-summary{display:grid;min-height:0;grid-template-columns:1.35fr repeat(4,minmax(120px,1fr));overflow:hidden;border:1px solid #e3e3ea;border-radius:12px;background:#fff;box-shadow:0 5px 18px rgb(41 43 56 / 3%)}
 .mon-usage-summary>div{display:grid;align-content:center;gap:4px;min-width:0;padding:9px 14px;border-left:1px solid #ececf1}
 .mon-usage-summary>div:first-child{border-left:0}
 .mon-usage-summary span,.mon-usage-summary small{overflow:hidden;color:#858996;font-size:9px;text-overflow:ellipsis;white-space:nowrap}

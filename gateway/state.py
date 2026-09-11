@@ -20,6 +20,7 @@ class TurnExecutionState(Protocol):
         error_kind: str | None = None,
         error_message: str | None = None,
         exercise_state: ExerciseState | None = None,
+        expected_claim_generation: int | None = None,
     ) -> TurnRecord: ...
 
     def get_turn(self, turn_id: str) -> TurnRecord | None: ...
@@ -31,6 +32,7 @@ class TurnExecutionState(Protocol):
         session_id: str,
         event_type: GatewayEventType,
         payload: dict[str, Any] | None = None,
+        expected_claim_generation: int | None = None,
     ) -> GatewayEvent: ...
 
     def ensure_event(
@@ -40,6 +42,7 @@ class TurnExecutionState(Protocol):
         session_id: str,
         event_type: GatewayEventType,
         payload: dict[str, Any] | None = None,
+        expected_claim_generation: int | None = None,
     ) -> GatewayEvent: ...
 
     def advance_guided_session(self, guided_session_id: str, **changes: Any) -> dict[str, Any]: ...

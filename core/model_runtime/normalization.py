@@ -159,6 +159,9 @@ def canonical_usage(
     cached_input_tokens = _parse_token_int(
         extracted["raw_cache_read"], "cached_input_tokens"
     )
+    cache_miss_input_tokens = _parse_token_int(
+        extracted["raw_cache_miss"], "cache_miss_input_tokens"
+    )
     cache_write_input_tokens = _parse_token_int(
         extracted["raw_cache_write"], "cache_write_input_tokens"
     )
@@ -170,6 +173,7 @@ def canonical_usage(
     has_tokens = any((
         input_tokens,
         cached_input_tokens,
+        cache_miss_input_tokens,
         cache_write_input_tokens,
         output_tokens,
         reasoning_output_tokens,
@@ -184,6 +188,7 @@ def canonical_usage(
     return CanonicalTokenUsage(
         input_tokens=input_tokens,
         cached_input_tokens=cached_input_tokens,
+        cache_miss_input_tokens=cache_miss_input_tokens,
         cache_write_input_tokens=cache_write_input_tokens,
         output_tokens=output_tokens,
         reasoning_output_tokens=reasoning_output_tokens,

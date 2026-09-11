@@ -137,6 +137,7 @@ async def test_durable_reporter_persists_exact_attempt_and_shadow_credits(quota_
     usage = CanonicalTokenUsage(
         input_tokens=1_000_000,
         cached_input_tokens=100_000,
+        cache_miss_input_tokens=900_000,
         cache_write_input_tokens=50_000,
         output_tokens=10_000,
         reasoning_output_tokens=2_000,
@@ -155,6 +156,8 @@ async def test_durable_reporter_persists_exact_attempt_and_shadow_credits(quota_
     assert row["attempt"] == 2
     assert row["fallback_index"] == 1
     assert row["usage_status"] == "exact"
+    assert row["cache_miss_input_tokens"] == 900_000
+    assert row["raw_usage_json"]["usage"]["cache_miss_input_tokens"] == 900_000
     assert row["pricing_version"] == "2026-08-29"
     assert row["credits_micro"] == 2_798_000
 
@@ -733,6 +736,7 @@ async def test_shadow_comparison_matches_model_span_by_operation_id(quota_engine
     assert report["token_delta"] == {
         "input_tokens": 0,
         "cached_input_tokens": 0,
+        "cache_miss_input_tokens": 0,
         "cache_write_input_tokens": 0,
         "output_tokens": 0,
         "reasoning_output_tokens": 0,

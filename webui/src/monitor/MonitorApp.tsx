@@ -54,6 +54,7 @@ function authMessage(reason: unknown): string {
 const TOKEN_LABELS: Record<string, string> = {
   input_tokens: "输入 Token",
   cached_input_tokens: "缓存读取",
+  cache_miss_input_tokens: "缓存未命中",
   cache_write_input_tokens: "缓存写入",
   output_tokens: "输出 Token",
   reasoning_output_tokens: "推理 Token",

@@ -44,6 +44,8 @@ gateway:
   redis_event_channel: nlp-agent:events
   redis_control_channel: nlp-agent:control
   redis_reclaim_idle_ms: 60000
+  # Keep XREADGROUP comfortably below redis-py 8's 5-second socket timeout.
+  redis_poll_block_ms: 2000
   redis_cancel_key_prefix: "nlp-agent:cancel:"
   redis_cancel_ttl_s: 604800
   redis_dead_letter_stream: nlp-agent:turns:dead
@@ -376,7 +378,7 @@ prompts:
 agent_runtime:
   coordinator:
     max_iterations: 12
-    max_duration_s: 600
+    max_duration_s: 120
     max_tokens: 128000
     max_tool_calls: 32
     max_injections: 15
@@ -399,6 +401,7 @@ tools:
         - TaskStop
         - read_local_file
         - get_current_time
+        - get_knowledge_book_context
         - academic_search
         # Phase 4 model-facing Sandbox surface. High-risk entries still need
         # a ToolRuntime grant and explicit confirmation at invocation time.
@@ -412,6 +415,7 @@ tools:
         - context.manage
         - nlp.analyze
         - academic.search
+        - knowledge_book.read
       denied_capabilities:
         - business.write
     worker:
@@ -442,6 +446,7 @@ tools:
   web:
     enabled: true
     proxy_url: ""                          # 只允许运维配置
+    proxy_url_env: "HTTPS_PROXY"           # 显式信任运维注入的出站代理
     user_agent: "Nova/1.0 (+web-fetch)"
     network:
       connect_timeout_s: 5

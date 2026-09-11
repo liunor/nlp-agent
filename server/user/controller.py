@@ -36,7 +36,7 @@ from .service import (
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
-DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+DbSession = Annotated[AsyncSession, Depends(get_db_session, scope="function")]
 
 
 async def _user_response_with_roles(
@@ -49,6 +49,10 @@ async def _user_response_with_roles(
     # an implicit lazy load (which raises MissingGreenlet).
     await service.session.refresh(user)
     roles_map = await service.get_roles_for_users([user.id])
+    # Role replacement and other bulk updates can expire attributes on an ORM
+    # instance.  Load every response column while the async session is still
+    # available so Pydantic serialization cannot start implicit database I/O.
+    await service.session.refresh(user)
     return UserResponse.model_validate(user).model_copy(
         update={"roles": roles_map.get(user.id, [])}
     )

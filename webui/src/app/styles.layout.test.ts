@@ -109,6 +109,13 @@ describe("sandbox titlebar layout", () => {
     expect(bookLayoutRule).toContain("overflow: hidden");
   });
 
+  it("keeps the teacher book directory collapsed after desktop sizing rules run", () => {
+    const collapsedRules = [...stylesheet.matchAll(/\.teacher-content-book \.teacher-book-layout\.directory-collapsed\s*\{([^}]*)\}/g)].map((match) => match[1]);
+    const desktopCollapsedRule = collapsedRules.at(-1) ?? "";
+
+    expect(desktopCollapsedRule).toContain("grid-template-columns: 46px minmax(0, 1fr)");
+  });
+
   it("allocates the teacher book in the remaining viewport row so the editor reaches the bottom", () => {
     const teacherMainRule = [...stylesheet.matchAll(/\.teacher-main\.teacher-book-main\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";
     const bookContentRule = [...stylesheet.matchAll(/\.teacher-content-book\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";

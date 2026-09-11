@@ -9,11 +9,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from core.learning import ExerciseState, LearningContext, LearningProgress, TeachingMaterials
+from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress, TeachingMaterials
 from core.session_context import SessionContext
 from gateway.dispatch import ExecutionAuthorizationContext, TurnTask
 from gateway.contracts import GatewayEvent
 from gateway.events import GatewayEventBroker
+from server.application.turn_reliability import TurnCancellationRequested
 
 
 logger = logging.getLogger(__name__)
@@ -29,9 +30,16 @@ class RedisTransportConfig:
     authorization_channel: str = "nlp-agent:authorization"
     quota_snapshot_channel: str = "nlp-agent:quota-snapshot"
     reclaim_idle_ms: int = 60_000
+    poll_block_ms: int = 2_000
     cancel_key_prefix: str = "nlp-agent:cancel:"
     cancel_ttl_s: int = 604_800
     dead_letter_stream: str = "nlp-agent:turns:dead"
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.poll_block_ms <= 4_000:
+            raise ValueError(
+                "poll_block_ms must be between 1 and 4000 milliseconds"
+            )
 
 
 class RedisTurnDispatcher:
@@ -91,6 +99,8 @@ class RedisTurnDispatcher:
 class RedisWorkerRuntime:
     """Independent Worker consumer for the Redis turn stream."""
 
+    _CANCEL_DRAIN_TIMEOUT_S = 0.25
+
     def __init__(
         self,
         redis: Any,
@@ -115,7 +125,38 @@ class RedisWorkerRuntime:
         self._closed = False
         self._active: dict[str, asyncio.Task[Any]] = {}
         self._active_turns: dict[str, TurnTask] = {}
+        self._cancel_waiters: dict[str, asyncio.Event] = {}
         self._command_cancelled: set[str] = set()
+
+    @classmethod
+    def for_fenced_mysql(
+        cls,
+        redis: Any,
+        config: RedisTransportConfig,
+        execute: Any,
+        *,
+        consumer_name: str,
+        inject: Any = None,
+        cancel_pending: Any = None,
+        is_terminal: Any = None,
+    ) -> "RedisWorkerRuntime":
+        """Build a fenced Worker that drains abandoned Redis deliveries.
+
+        MySQL claim generations remain authoritative for execution ownership;
+        Redis auto-claim is still required to ACK deliveries left pending by a
+        previous container identity.
+        """
+
+        return cls(
+            redis,
+            config,
+            execute,
+            consumer_name=consumer_name,
+            inject=inject,
+            cancel_pending=cancel_pending,
+            is_terminal=is_terminal,
+            reclaim_pending=True,
+        )
 
     async def _ensure_group(self) -> None:
         if self._group_ready:
@@ -129,8 +170,11 @@ class RedisWorkerRuntime:
                 raise
         self._group_ready = True
 
-    async def run_once(self, *, block_ms: int = 5000) -> int:
+    async def run_once(self, *, block_ms: int | None = None) -> int:
         await self._ensure_group()
+        effective_block_ms = (
+            self.config.poll_block_ms if block_ms is None else block_ms
+        )
         batches = []
         if self._reclaim_pending and hasattr(self._redis, "xautoclaim"):
             claimed = await self._redis.xautoclaim(
@@ -149,7 +193,7 @@ class RedisWorkerRuntime:
                 self.consumer_name,
                 {self.config.task_stream: ">"},
                 count=1,
-                block=block_ms,
+                block=effective_block_ms,
             )
         processed = 0
         for _stream, messages in batches:
@@ -161,36 +205,61 @@ class RedisWorkerRuntime:
                     await self._ack(message_id)
                     processed += 1
                     continue
-                if await self._call_predicate(self._is_terminal, task):
+                try:
+                    cancel_requested = await self._redis.get(
+                        f"{self.config.cancel_key_prefix}{task.turn_id}"
+                    )
+                    if cancel_requested:
+                        if self._cancel_pending is not None:
+                            await self._call(self._cancel_pending, task)
+                        terminal = False
+                    else:
+                        terminal = await self._call_predicate(self._is_terminal, task)
+                except LookupError as error:
+                    # Redis can outlive the authoritative MySQL row. Retrying
+                    # such a delivery can never succeed, so retain evidence in
+                    # the dead-letter stream and ACK the poison message.
+                    await self._dead_letter(message_id, fields, error)
                     await self._ack(message_id)
                     processed += 1
                     continue
-                if await self._redis.get(
-                    f"{self.config.cancel_key_prefix}{task.turn_id}"
-                ):
-                    if self._cancel_pending is not None:
-                        await self._call(self._cancel_pending, task)
+                if cancel_requested or terminal:
                     await self._ack(message_id)
                     processed += 1
                     continue
                 start_gate = asyncio.Event()
+                cancel_requested = asyncio.Event()
                 future = asyncio.create_task(self._execute_after(start_gate, task))
                 heartbeat = asyncio.create_task(
                     self._heartbeat(message_id, task.turn_id)
                 )
+                cancel_waiter = asyncio.create_task(cancel_requested.wait())
                 self._active[task.turn_id] = future
                 self._active_turns[task.turn_id] = task
+                self._cancel_waiters[task.turn_id] = cancel_requested
                 try:
                     if await self._redis.get(
                         f"{self.config.cancel_key_prefix}{task.turn_id}"
                     ):
-                        future.cancel()
-                        await asyncio.gather(future, return_exceptions=True)
+                        cancel_requested.set()
+                        await self._cancel_and_drain(future)
                         if self._cancel_pending is not None:
                             await self._call(self._cancel_pending, task)
                     else:
                         start_gate.set()
-                        await future
+                        done, _pending = await asyncio.wait(
+                            {future, cancel_waiter},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if cancel_waiter in done:
+                            await self._cancel_and_drain(future)
+                            if self._cancel_pending is not None:
+                                await self._call(self._cancel_pending, task)
+                        else:
+                            await future
+                except TurnCancellationRequested:
+                    if self._cancel_pending is not None:
+                        await self._call(self._cancel_pending, task)
                 except asyncio.CancelledError:
                     if task.turn_id not in self._command_cancelled:
                         raise
@@ -198,16 +267,46 @@ class RedisWorkerRuntime:
                         await self._call(self._cancel_pending, task)
                 finally:
                     if not future.done():
-                        future.cancel()
-                        await asyncio.gather(future, return_exceptions=True)
+                        await self._cancel_and_drain(future)
+                    cancel_waiter.cancel()
+                    await asyncio.gather(cancel_waiter, return_exceptions=True)
                     heartbeat.cancel()
                     await asyncio.gather(heartbeat, return_exceptions=True)
                     self._active.pop(task.turn_id, None)
                     self._active_turns.pop(task.turn_id, None)
+                    self._cancel_waiters.pop(task.turn_id, None)
                     self._command_cancelled.discard(task.turn_id)
                 await self._ack(message_id)
                 processed += 1
         return processed
+
+    async def _cancel_and_drain(self, future: asyncio.Task[Any]) -> None:
+        if future.done():
+            self._consume_task(future)
+            return
+        future.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(future), timeout=self._CANCEL_DRAIN_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            future.add_done_callback(self._consume_task)
+        except asyncio.CancelledError:
+            if not future.done():
+                future.add_done_callback(self._consume_task)
+        else:
+            self._consume_task(future)
+
+    @staticmethod
+    def _consume_task(future: asyncio.Future[Any]) -> None:
+        if future.cancelled():
+            return
+        try:
+            future.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
 
     async def _ack(self, message_id: str) -> None:
         await self._redis.xack(
@@ -273,6 +372,9 @@ class RedisWorkerRuntime:
         if task is None or task.done():
             return False
         self._command_cancelled.add(turn_id)
+        cancel_waiter = self._cancel_waiters.get(turn_id)
+        if cancel_waiter is not None:
+            cancel_waiter.set()
         task.cancel()
         return True
 
@@ -428,6 +530,7 @@ class TurnTaskCodec:
                 "turn_id": task.turn_id,
                 "content": task.content,
                 "learning_context": task.learning_context.model_dump(mode="json") if task.learning_context else None,
+                "knowledge_book_context": task.knowledge_book_context.model_dump(mode="json") if task.knowledge_book_context else None,
                 "learning_progress": task.learning_progress.model_dump(mode="json") if task.learning_progress else None,
                 "exercise_state": task.exercise_state.model_dump(mode="json") if task.exercise_state else None,
                 "teaching_materials": task.teaching_materials.model_dump(mode="json") if task.teaching_materials else None,
@@ -460,6 +563,7 @@ class TurnTaskCodec:
             turn_id=str(value["turn_id"]),
             content=str(value["content"]),
             learning_context=LearningContext.model_validate(value["learning_context"]) if value["learning_context"] else None,
+            knowledge_book_context=KnowledgeBookContext.model_validate(value["knowledge_book_context"]) if value.get("knowledge_book_context") else None,
             learning_progress=LearningProgress.model_validate(value["learning_progress"]) if value["learning_progress"] else None,
             exercise_state=ExerciseState.model_validate(value["exercise_state"]) if value["exercise_state"] else None,
             teaching_materials=TeachingMaterials.model_validate(value["teaching_materials"]) if value["teaching_materials"] else TeachingMaterials(),

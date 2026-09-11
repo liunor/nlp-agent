@@ -435,6 +435,18 @@ class KnowledgeBookAssetModel(TimestampedModel, Base):
     sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
 
 
+class WhiteboardLibraryItemModel(TimestampedModel, Base):
+    """Globally shared Excalidraw library entries created by teaching roles."""
+
+    __tablename__ = "nlp_whiteboard_library_items"
+    __table_args__ = (Index("ix_nlp_whiteboard_library_created", "created_at", "id"),)
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    item_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[str] = mapped_column(UUID, nullable=False)
+
+
 class TeachingBlueprintModel(TimestampedModel, Base):
     __tablename__ = "nlp_teaching_blueprints"
     __table_args__ = (Index("ix_nlp_blueprints_assignment", "workspace_id", "kind", "topic_id", "knowledge_point_id", "status"),)

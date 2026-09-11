@@ -6,6 +6,7 @@ import binascii
 import hashlib
 import json
 import posixpath
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -730,6 +731,8 @@ class TeacherService:
         gateway: Any,
         workspace_id: str,
         body: TeacherAIAnalysisRequest,
+        *,
+        model_factory: Callable[[dict[str, Any]], Any] | None = None,
     ) -> dict[str, Any]:
         """Generate a cached, evidence-bound DeepSeek report on demand."""
         self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
@@ -768,7 +771,13 @@ class TeacherService:
                 cached["cache_hit"] = True
                 return cached
 
-        generated = await generate_ai_analysis(material)
+        if model_factory is None:
+            generated = await generate_ai_analysis(material)
+        else:
+            generated = await generate_ai_analysis(
+                material,
+                model=model_factory(material),
+            )
         response = {
             **generated,
             "generated_at": datetime.now(timezone.utc).isoformat(),

@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from core.learning import ExerciseState, LearningContext, LearningProgress
+from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress
 
 
 def utc_now() -> datetime:
@@ -24,9 +24,14 @@ class TurnStatus(str, Enum):
     INTERRUPTED = "interrupted"
 
 
+class TurnClaimMismatchError(RuntimeError):
+    """A stale Worker attempted to mutate a Turn owned by another generation."""
+
+
 class GatewayEventType(str, Enum):
     TURN_ACCEPTED = "turn.accepted"
     TURN_STARTED = "turn.started"
+    TURN_HANDOVER = "turn.handover"
     TURN_COMPLETED = "turn.completed"
     TURN_FAILED = "turn.failed"
     TURN_CANCELLED = "turn.cancelled"
@@ -65,6 +70,7 @@ class SubmitTurnRequest(BaseModel):
     attachments: list[dict[str, str]] = Field(default_factory=list)
     idempotency_key: str | None = Field(default=None, max_length=128)
     learning_context: LearningContext | None = None
+    knowledge_book_context: KnowledgeBookContext | None = None
     evaluation: EvaluationContext | None = None
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"

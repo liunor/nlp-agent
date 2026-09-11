@@ -4,13 +4,15 @@ import userEvent from "@testing-library/user-event";
 import { TeacherBookEditor } from "./TeacherBookEditor";
 import type { TeacherCatalog } from "@/shared/types";
 
-const { getNavigationMock, getPageMock, updateCatalogMock, updatePageMock, previewImportMock, applyImportMock } = vi.hoisted(() => ({
+const { getNavigationMock, getPageMock, updateCatalogMock, updatePageMock, previewImportMock, applyImportMock, previewArchiveImportMock, applyArchiveImportMock } = vi.hoisted(() => ({
   getNavigationMock: vi.fn(),
   getPageMock: vi.fn(),
   updateCatalogMock: vi.fn(),
   updatePageMock: vi.fn(),
   previewImportMock: vi.fn(),
   applyImportMock: vi.fn(),
+  previewArchiveImportMock: vi.fn(),
+  applyArchiveImportMock: vi.fn(),
 }));
 
 vi.mock("@/platform/http/api", () => ({
@@ -22,8 +24,8 @@ vi.mock("@/platform/http/api", () => ({
     publishTeacherBookPage: vi.fn(),
     previewTeacherBookImport: previewImportMock,
     applyTeacherBookImport: applyImportMock,
-    previewTeacherBookArchiveImport: vi.fn(),
-    applyTeacherBookArchiveImport: vi.fn(),
+    previewTeacherBookArchiveImport: previewArchiveImportMock,
+    applyTeacherBookArchiveImport: applyArchiveImportMock,
   },
 }));
 
@@ -35,6 +37,10 @@ describe("TeacherBookEditor Markdown authoring", () => {
   beforeEach(() => {
     updateCatalogMock.mockReset();
     updatePageMock.mockReset();
+    previewImportMock.mockReset();
+    applyImportMock.mockReset();
+    previewArchiveImportMock.mockReset();
+    applyArchiveImportMock.mockReset();
     updatePageMock.mockResolvedValue({
       page: {
         workspace_id: "workspace-1",
@@ -192,13 +198,29 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(screen.getByAltText("imported.png")).toBeVisible();
   });
 
+  it("accepts a standalone Markdown file from the教材包 picker", async () => {
+    previewImportMock.mockResolvedValue({ content_markdown: "# 整本教材\n\n## 第一章", removed_frameworks: [], warnings: [] });
+    render(<TeacherBookEditor workspaceId="workspace-1" />);
+    await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+
+    const markdown = new File(["# 整本教材\n\n## 第一章"], "lesson.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText("导入教材包"), { target: { files: [markdown] } });
+
+    await screen.findByText("lesson.md");
+    expect(previewImportMock).toHaveBeenCalledWith("workspace-1", "lesson.md", "# 整本教材\n\n## 第一章");
+    expect(previewArchiveImportMock).not.toHaveBeenCalled();
+  });
+
   it("collapses the left catalog without hiding the writing surface", async () => {
     render(<TeacherBookEditor workspaceId="workspace-1" />);
 
     expect(await screen.findByRole("button", { name: "收起教材目录" })).toBeVisible();
     expect(await screen.findByRole("textbox", { name: "教材正文 Markdown" })).toBeVisible();
+    const layout = screen.getByRole("complementary", { name: "教材目录" }).parentElement;
+    expect(layout).not.toHaveClass("directory-collapsed");
     fireEvent.click(screen.getByRole("button", { name: "收起教材目录" }));
     expect(screen.getByRole("button", { name: "展开教材目录" })).toBeVisible();
+    expect(layout).toHaveClass("directory-collapsed");
     expect(screen.getByRole("textbox", { name: "教材正文 Markdown" })).toBeVisible();
   });
 

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from core.learning import ExerciseState, LearningContext, LearningProgress, TeachingMaterials
+from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress, TeachingMaterials
 from core.session_context import SessionContext
 
 
@@ -33,6 +33,7 @@ class TurnTask:
     teaching_materials: TeachingMaterials
     guided_session_id: str | None
     exercise_session_id: str | None
+    knowledge_book_context: KnowledgeBookContext | None = None
     model_profile: str | None = None
     authorization: ExecutionAuthorizationContext | None = None
     reservation_id: str | None = None
@@ -77,7 +78,9 @@ class InProcessTurnDispatcher:
         task = self._tasks.get(turn_id)
         if task is not None and not task.done():
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            # Cancellation is a logical state transition. The task's finally
+            # blocks may need to unwind model/tool children, so do not make the
+            # caller wait for physical cleanup here.
 
     async def close(self, *, force: bool = False, grace_s: float = 0) -> None:
         tasks = [task for task in self._tasks.values() if not task.done()]

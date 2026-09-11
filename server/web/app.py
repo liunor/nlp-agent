@@ -58,6 +58,7 @@ from server.quota.service import QuotaService
 from server.session.summary import summary_sweep_loop
 from server.web.contracts import (
     CreateSessionBody,
+    CreateWhiteboardLibraryBody,
     RenameSessionBody,
     LoginBody,
     ReplaceUserRolesBody,
@@ -136,6 +137,7 @@ from server.teacher.models import (
 )
 from server.teacher.service import teacher_service
 from server.rbac.service import (
+    ClassroomNotFoundError,
     LastDeveloperForbiddenError,
     UnknownRoleError,
     rbac_service,
@@ -176,7 +178,12 @@ from server.user.service import (
     UserService,
     generate_sms_code,
 )
-from server.user.tencent_sms import SmsConfigurationError, create_tencent_sms_provider_from_env
+from server.user.tencent_sms import (
+    SmsConfigurationError,
+    create_tencent_sms_provider_from_env,
+    development_sms_code_logging_enabled,
+    mask_phone_for_logging,
+)
 from server.user.phone import InvalidPhoneNumberError, normalize_phone_number
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
@@ -878,6 +885,7 @@ def create_app(
             title="Access forbidden",
         )
 
+    @app.exception_handler(ClassroomNotFoundError)
     @app.exception_handler(ResourceNotFoundError)
     @app.exception_handler(FileNotFoundError)
     async def not_found_error(request: Request, _error: Exception):
@@ -1000,7 +1008,17 @@ def create_app(
                         await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="failed")
                         return JSONResponse({"detail": "SMS gateway failed to deliver the code"}, status_code=status.HTTP_502_BAD_GATEWAY)
                 else:
-                    print(f"[SMS] Verification code for {phone}: {code}")
+                    if development_sms_code_logging_enabled():
+                        logger.warning(
+                            "[SMS] Development verification code for %s: %s",
+                            mask_phone_for_logging(phone),
+                            code,
+                        )
+                    else:
+                        logger.warning(
+                            "[SMS] Development verification code generated for %s; code omitted from logs",
+                            mask_phone_for_logging(phone),
+                        )
                 await code_store.record_sms_send(db, phone=phone, client_ip=client_ip, outcome="sent")
                 await code_store.put_code(db, kind="sms", subject=phone, code=code, ttl_s=code_store.SMS_CODE_TTL_S, client_ip=client_ip)
         except TimeoutError as error:
@@ -1071,7 +1089,11 @@ def create_app(
             factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
             if factory is None:
                 raise AuthenticationError("database authentication is unavailable")
-            csrf_token = await database_auth.rotate_csrf(factory, claims)
+            csrf_token = await database_auth.restore_csrf(
+                factory,
+                claims,
+                request.cookies.get(database_auth.cookie_name),
+            )
             claims = DatabaseSessionClaims(**{**claims.__dict__, "csrf_token": csrf_token})
         principal = await resolve_principal(request, claims)
         username, display_name = await account_identity(request, claims, principal)
@@ -3083,11 +3105,20 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
+        model_factory = getattr(request.app.state, "teacher_ai_model_factory", None)
+        if model_factory is None:
+            return await teacher_service.ai_analysis(
+                principal,
+                request.app.state.gateway,
+                body.workspace_id,
+                body,
+            )
         return await teacher_service.ai_analysis(
             principal,
             request.app.state.gateway,
             body.workspace_id,
             body,
+            model_factory=model_factory,
         )
 
     @app.get("/api/v1/teacher/goals/{workspace_id}", tags=["teacher"])
@@ -3158,6 +3189,24 @@ def create_app(
             if item.get("status") == "enabled" and item.get("topic_id") in enabled_topic_ids
         ]
         return {"catalog": catalog}
+
+    @app.get("/api/v1/whiteboard/library", tags=["whiteboard"])
+    async def get_whiteboard_library(request: Request, principal: Principal):
+        return {"items": await request.app.state.gateway.list_whiteboard_library(principal)}
+
+    @app.post("/api/v1/whiteboard/library", status_code=status.HTTP_201_CREATED, tags=["whiteboard"])
+    async def create_whiteboard_library_item(
+        body: CreateWhiteboardLibraryBody,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        item = await request.app.state.gateway.create_whiteboard_library_item(
+            principal,
+            name=body.name,
+            elements=body.elements,
+        )
+        return {"item": item}
 
     @app.get("/api/v1/teacher/book/{workspace_id}/navigation", tags=["teacher"])
     async def get_teacher_book_navigation(workspace_id: str, request: Request, principal: Principal):

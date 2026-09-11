@@ -14,7 +14,7 @@ docker compose ps
 - `NLP_AGENT_GATEWAY_TRANSPORT=redis`
 - `NLP_AGENT_REDIS_URL=redis://redis:6379/0`
 
-Redis Streams 使用 consumer group 投递 Turn。成功执行后 Worker 才 ACK；执行中的 Worker 会定期续租 pending 消息，进程失联且超过 `redis_reclaim_idle_ms` 后才由其他 Worker 重新认领。取消同时写入带 TTL 的 Redis 标记并广播控制消息：排队中的任务不会漏掉取消，运行中的任务可以立即终止，取消落库后消息仍会 ACK。
+Redis Streams 使用 consumer group 投递 Turn。成功执行后 Worker 才 ACK；执行中的 Worker 会定期续租 pending 消息，进程失联且超过 `redis_reclaim_idle_ms` 后由新的 Worker 通过 `XAUTOCLAIM` 重新认领。MySQL claim generation 决定执行所有权，因此旧投递会在终态补齐后 ACK，不会因容器重建和 consumer 名变化永久堆积。取消同时写入带 TTL 的 Redis 标记并广播控制消息：排队中的任务不会漏掉取消，运行中的任务可以立即终止，取消落库后消息仍会 ACK。
 
 Worker 会持续重试短暂失败的租约续期和消费迭代。无法解码或协议版本不受支持的任务会写入 `redis_dead_letter_stream` 后 ACK，避免 poison message 反复终止消费者。Web 事件订阅和 Worker 控制订阅断线后会自动重连；事件订阅断线时及重新订阅成功后都会中断该窗口内的 WebSocket，强制客户端从持久序列恢复。单条坏 Pub/Sub 消息只会被隔离。
 

@@ -17,6 +17,7 @@ from langchain_core.messages import (
 from langchain_openai import ChatOpenAI
 from typing_extensions import override
 
+from core.model_runtime.network import model_http_client_kwargs
 from core.model_runtime.contracts import (
     ModelDefinition,
     ModelPresetConfig,
@@ -192,6 +193,7 @@ class QwenAdapter:
             "default_headers": provider.default_headers or None,
             "extra_body": self._extra_body(model.model_id, preset),
         }
+        kwargs.update(model_http_client_kwargs(provider.base_url, timeout))
         if preset.generation.temperature is not None:
             kwargs["temperature"] = preset.generation.temperature
         if preset.generation.top_p is not None:

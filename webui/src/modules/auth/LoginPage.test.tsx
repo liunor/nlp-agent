@@ -8,6 +8,7 @@ import { AuthProvider } from "@/platform/auth/AuthContext";
 import { LoginPage } from "./LoginPage";
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn(),
   api: { login: vi.fn() },
 }));

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -28,6 +29,17 @@ class LostTurnClaimError(RuntimeError):
     pass
 
 
+class TurnCancellationRequested(RuntimeError):
+    """The durable turn state says this delivery must be finalized as cancelled."""
+
+
+@dataclass(frozen=True)
+class CancelledTurnClaim:
+    """Explicit claim outcome for the cancellation race at the worker boundary."""
+
+    reason: str = "durable_cancellation"
+
+
 class TurnReliabilityService:
     async def enqueue(self, session: AsyncSession, *, topic: str, payload: dict[str, Any]) -> OutboxMessageModel:
         message = OutboxMessageModel(id=str(uuid.uuid4()), topic=topic, payload_json=payload)
@@ -44,7 +56,7 @@ class TurnReliabilityService:
         lease_s: int,
         user_id: str | None = None,
         workspace_id: str | None = None,
-    ) -> int | None:
+    ) -> int | CancelledTurnClaim | None:
         statement = (
             select(TurnModel)
             .join(ConversationModel, ConversationModel.id == TurnModel.conversation_id)
@@ -76,7 +88,7 @@ class TurnReliabilityService:
                 turn.claimed_by = None
                 turn.lease_expires_at = None
                 await session.flush()
-            return None
+            return CancelledTurnClaim()
         if turn.status != "accepted" and not (
             turn.status == "running"
             and turn.lease_expires_at
@@ -115,15 +127,38 @@ class TurnReliabilityService:
 
     async def recover_stuck_turns(self, session: AsyncSession, *, max_retries: int = 3) -> list[str]:
         now = utc_now()
-        turns = (await session.scalars(select(TurnModel).where(TurnModel.status == "running", TurnModel.lease_expires_at < now).with_for_update(skip_locked=True))).all()
+        recoverable = or_(
+            TurnModel.lease_expires_at < now,
+            # Older recovery code could leave this impossible running state.
+            # Treat it as abandoned so deploying the fix repairs existing rows.
+            TurnModel.claimed_by.is_(None) & TurnModel.lease_expires_at.is_(None),
+        )
+        turns = (
+            await session.scalars(
+                select(TurnModel)
+                .where(TurnModel.status == "running", recoverable)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
         recovered: list[str] = []
         for turn in turns:
             if turn.claim_generation >= max_retries * 2:
                 turn.status = "failed"
+                turn.error_kind = "turn_lease_recovery_exhausted"
+                turn.error_message = "turn lease recovery limit exceeded"
+                turn.completed_at = now
+                turn.claimed_by = None
+                turn.heartbeat_at = None
+                turn.lease_expires_at = None
                 session.add(DeadLetterModel(id=str(uuid.uuid4()), turn_id=turn.id, outbox_id=None, reason="turn lease recovery limit exceeded", payload_json={"generation": turn.claim_generation}))
                 continue
             turn.claim_generation += 1  # recovery invalidates the old owner before a new Worker claim.
+            # Recovery must return the turn to a state claim_turn can acquire.
+            # ``running`` with no owner and no lease is otherwise a permanent
+            # zombie because it is neither fresh nor detectably expired.
+            turn.status = "accepted"
             turn.claimed_by = None
+            turn.heartbeat_at = None
             turn.lease_expires_at = None
             session.add(TurnEventModel(id=str(uuid.uuid4()), turn_id=turn.id, sequence=(await self._next_sequence(session, turn.id)), claim_generation=turn.claim_generation, event_type="turn.handover", payload_json={"reason": "lease_expired"}))
             original = await session.scalar(

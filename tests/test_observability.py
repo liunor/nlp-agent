@@ -5,7 +5,7 @@ import pytest
 
 from core.observability.context import TelemetryContext, bind_telemetry_context
 from core.observability.models import SpanKind, SpanStatus, TokenUsage
-from core.observability.runtime import TelemetryRuntime
+from core.observability.runtime import TelemetryRuntime, usage_from_metadata
 from core.observability.service import ObservabilityService
 from core.observability.summary import (
     build_dependency_health,
@@ -18,6 +18,21 @@ from core.identity import AccessDeniedError
 
 
 ADMIN = AuthenticatedPrincipal.system_admin()
+
+
+def test_usage_from_metadata_preserves_provider_reported_kv_cache_tokens():
+    usage = usage_from_metadata({
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "cached_tokens": 0,
+        "prompt_cache_hit_tokens": 75,
+        "prompt_cache_miss_tokens": 25,
+    })
+
+    assert usage.input_tokens == 100
+    assert usage.cached_tokens == 75
+    assert usage.cache_miss_tokens == 25
+    assert usage.total_tokens == 120
 
 
 def test_trace_identity_prefers_explicit_chain_labels_and_keeps_entrypoint():

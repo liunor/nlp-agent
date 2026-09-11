@@ -20,7 +20,7 @@ from gateway.turn_execution import InProcessTurnExecutor
 from server.application.turn_reliability import OutboxRelay, TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
 from server.session.summary import schedule_summary, summary_sweep_loop
-from server.worker.fencing import FencedTurnExecutor
+from server.worker.fencing import FencedTurnExecutor, current_turn_execution_context
 from server.quota.notifications import QuotaSnapshotRedisPublisher
 from server.quota.operations import QuotaOperationsService
 from server.quota.reaper import QuotaReservationReaper
@@ -53,6 +53,7 @@ def redis_config() -> RedisTransportConfig:
             config.get("redis_quota_snapshot_channel", "nlp-agent:quota-snapshot")
         ),
         reclaim_idle_ms=int(config.get("redis_reclaim_idle_ms", 60_000)),
+        poll_block_ms=int(config.get("redis_poll_block_ms", 2_000)),
         cancel_key_prefix=str(
             config.get("redis_cancel_key_prefix", "nlp-agent:cancel:")
         ),
@@ -117,19 +118,30 @@ async def run_worker() -> None:
     worker_id = f"{socket.gethostname()}-{id(redis)}"
 
     async def emit(turn_id: str, session_id: str, event_type: GatewayEventType, payload: dict) -> None:
-        event = await asyncio.to_thread(
-            repository.append_event,
-            turn_id=turn_id,
-            session_id=session_id,
-            event_type=event_type,
-            payload=payload,
-        )
+        execution_context = current_turn_execution_context()
+        event_arguments: dict[str, Any] = {
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "event_type": event_type,
+            "payload": payload,
+        }
+        if execution_context is not None and execution_context.turn_id == turn_id:
+            event_arguments["expected_claim_generation"] = (
+                execution_context.claim_generation
+            )
+        event = await asyncio.to_thread(repository.append_event, **event_arguments)
         await publisher.publish(event)
 
     async def cancel_pending(task) -> None:
         turn = await asyncio.to_thread(repository.get_turn, task.turn_id)
         if turn is None:
             raise LookupError(f"turn state is unavailable: {task.turn_id}")
+        if turn.status in {
+            TurnStatus.COMPLETED,
+            TurnStatus.FAILED,
+            TurnStatus.INTERRUPTED,
+        }:
+            return
         if turn.status != TurnStatus.CANCELLED:
             await asyncio.to_thread(
                 repository.update_turn, task.turn_id, TurnStatus.CANCELLED
@@ -172,10 +184,11 @@ async def run_worker() -> None:
             # re-arm it here on the retry path instead of losing the title.
             schedule_summary(database_runtime.session_factory, task.context.session_id)
         elif turn.status == TurnStatus.CANCELLED:
-            terminal_events = ((
-                GatewayEventType.TURN_CANCELLED,
-                {"status": TurnStatus.CANCELLED.value},
-            ),)
+            # Cancellation needs the finalizer below to publish the durable
+            # event and release quota before Redis ACKs the delivery. Returning
+            # False sends the delivery through the claim/finalization path,
+            # including after a worker crash between the DB write and ACK.
+            return False
         elif turn.status in {TurnStatus.FAILED, TurnStatus.INTERRUPTED}:
             terminal_events = ((
                 GatewayEventType.TURN_FAILED,
@@ -214,7 +227,7 @@ async def run_worker() -> None:
         worker_id=worker_id,
         lease_s=int(gateway_config.get("mysql_turn_lease_s", 60)),
     )
-    worker = RedisWorkerRuntime(
+    worker = RedisWorkerRuntime.for_fenced_mysql(
         redis,
         config,
         fenced_executor,
@@ -222,7 +235,6 @@ async def run_worker() -> None:
         inject=engine.inject,
         cancel_pending=cancel_pending,
         is_terminal=is_terminal,
-        reclaim_pending=False,
     )
     quota_reaper = create_worker_quota_reaper(repository, gateway_config)
     if quota_reaper is not None:

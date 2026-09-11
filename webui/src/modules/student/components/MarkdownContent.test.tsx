@@ -63,18 +63,21 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(screen.queryByText(/guided-result/)).not.toBeInTheDocument();
   });
 
-  it("renders model-provided external links as inert text while keeping same-origin links", () => {
+  it("renders safe external links while keeping unsafe links inert", () => {
     render(
-      <MarkdownContent>{String.raw`[外部资料](https://evil.example/phishing) [反斜杠绕过](/\evil.example/phishing) [课程目录](/teacher) [本节](#attention)`}</MarkdownContent>,
+      <MarkdownContent>{String.raw`[外部资料](https://docs.example.com/guide) [反斜杠绕过](/\evil.example/phishing) [危险协议](javascript:alert(1)) [课程目录](/teacher) [本节](#attention)`}</MarkdownContent>,
     );
 
-    expect(screen.getByText("外部资料")).not.toHaveAttribute("href");
+    expect(screen.getByRole("link", { name: "外部资料" })).toHaveAttribute("href", "https://docs.example.com/guide");
+    expect(screen.getByRole("link", { name: "外部资料" })).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: "外部资料" })).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByText("反斜杠绕过")).not.toHaveAttribute("href");
+    expect(screen.getByText("危险协议")).not.toHaveAttribute("href");
     expect(screen.getByRole("link", { name: "课程目录" })).toHaveAttribute("href", "/teacher");
     expect(screen.getByRole("link", { name: "本节" })).toHaveAttribute("href", "#attention");
   });
 
-  it("renders trusted academic links with target blank and rel while sanitizing untrusted external links", () => {
+  it("renders safe HTTP(S) links while rejecting credentialed and non-default-port URLs", () => {
     render(
       <MarkdownContent>{String.raw`
 [arXiv 论文](https://arxiv.org/abs/1706.03762)
@@ -115,10 +118,9 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(scholarLink).toHaveAttribute("target", "_blank");
     expect(scholarLink).toHaveAttribute("rel", "noopener noreferrer");
 
-    // Untrusted/unsafe links should NOT have href attribute
-    expect(screen.getByText("明文 HTTP")).not.toHaveAttribute("href");
-    expect(screen.getByText("子域名伪装")).not.toHaveAttribute("href");
-    expect(screen.getByText("参数诱导")).not.toHaveAttribute("href");
+    expect(screen.getByRole("link", { name: "明文 HTTP" })).toHaveAttribute("href", "http://arxiv.org/abs/1706.03762");
+    expect(screen.getByRole("link", { name: "子域名伪装" })).toHaveAttribute("href", "https://arxiv.org.evil.example/phish");
+    expect(screen.getByRole("link", { name: "参数诱导" })).toHaveAttribute("href", "https://evil.example/?next=arxiv.org");
     expect(screen.getByText("包含凭据")).not.toHaveAttribute("href");
     expect(screen.getByText("非默认端口")).not.toHaveAttribute("href");
   });
@@ -161,7 +163,7 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(screen.getByRole("heading", { name: "10.3 注意力评分函数" })).toHaveAttribute("data-knowledge-book-heading-id", "10.3");
   });
 
-  it("exposes copy and ask-Nova actions only when lesson code actions are enabled", async () => {
+  it("opens an inline Nova composer and sends the custom prompt with the code", async () => {
     const user = userEvent.setup();
     const askNova = vi.fn();
     const openInSandbox = vi.fn();
@@ -173,9 +175,28 @@ describe("MarkdownContent LaTeX delimiters", () => {
     await user.click(screen.getByRole("button", { name: "复制 python 代码" }));
     expect(await screen.findByRole("button", { name: "已复制 python 代码" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "询问 Nova" }));
-    expect(askNova).toHaveBeenCalledWith("print('hello')", "python");
+    expect(askNova).not.toHaveBeenCalled();
+    const promptInput = screen.getByRole("textbox", { name: "询问 Nova" });
+    expect(promptInput).toBeVisible();
+    expect(promptInput).toHaveAttribute("placeholder", "这段代码是什么意思？");
+    await user.type(promptInput, "为什么这里使用 softmax？");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(askNova).toHaveBeenCalledWith("print('hello')", "python", "为什么这里使用 softmax？");
+    expect(screen.queryByRole("textbox", { name: "询问 Nova" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "在沙箱中打开" }));
     expect(openInSandbox).toHaveBeenCalledWith("print('hello')", "python");
+  });
+
+  it("can send the code composer placeholder as the default question", async () => {
+    const user = userEvent.setup();
+    const askNova = vi.fn();
+
+    render(<MarkdownContent codeActions={{ onAskNova: askNova }}>{"```python\nprint('hello')\n```"}</MarkdownContent>);
+
+    await user.click(screen.getByRole("button", { name: "询问 Nova" }));
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(askNova).toHaveBeenCalledWith("print('hello')", "python", "这段代码是什么意思？");
   });
 
   it("keeps the copy action when Nova actions are unavailable", () => {

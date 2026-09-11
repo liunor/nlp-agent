@@ -10,6 +10,7 @@ vi.mock("@/platform/http/api", () => {
     }
   }
   return {
+    AUTH_EXPIRED_EVENT: "nova:auth-expired",
     ApiError,
     ensureAuth: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
     api: {

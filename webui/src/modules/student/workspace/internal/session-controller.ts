@@ -8,9 +8,10 @@ interface SessionControllerOptions {
   persistPreferences: (update: (current: LearningPreferences) => LearningPreferences) => void;
   updateSessionMeta: (sessionId: string, patch: Partial<SessionLearningMeta>) => void;
   onRequestError: (message: string) => void;
+  onActiveSessionChange?: (sessionId: string | null) => void;
 }
 
-export function useSessionController({ preferences, persistPreferences, updateSessionMeta, onRequestError }: SessionControllerOptions) {
+export function useSessionController({ preferences, persistPreferences, updateSessionMeta, onRequestError, onActiveSessionChange }: SessionControllerOptions) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [workspaceId, setWorkspaceId] = useState("default");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -19,13 +20,16 @@ export function useSessionController({ preferences, persistPreferences, updateSe
   const creationRef = useRef<Promise<string | null> | null>(null);
   const freshSessionIdsRef = useRef(new Set<string>());
   const chatEpochRef = useRef(0);
+  const sessionLoadGenerationRef = useRef(0);
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
   }, [activeSessionId]);
 
   const loadSessions = useCallback(async () => {
+    const generation = ++sessionLoadGenerationRef.current;
     const response = await api.listSessions();
+    if (generation !== sessionLoadGenerationRef.current) return [];
     setSessions(response.items);
     const existing = new Set(response.items.map((session) => session.session_id));
     persistPreferences((current) => {
@@ -38,6 +42,10 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     });
     return response.items;
   }, [persistPreferences]);
+
+  const invalidateSessionLoads = useCallback(() => {
+    sessionLoadGenerationRef.current += 1;
+  }, []);
 
   const createBackendSession = useCallback(() => {
     if (creationRef.current) return creationRef.current;
@@ -72,17 +80,19 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     chatEpochRef.current += 1;
     creationRef.current = null;
     activeSessionRef.current = sessionId;
+    onActiveSessionChange?.(sessionId);
     setComposerRevision((current) => current + 1);
     setActiveSessionId(sessionId);
-  }, []);
+  }, [onActiveSessionChange]);
 
   const startNewChat = useCallback(() => {
     chatEpochRef.current += 1;
     creationRef.current = null;
     activeSessionRef.current = null;
+    onActiveSessionChange?.(null);
     setComposerRevision((current) => current + 1);
     setActiveSessionId(null);
-  }, []);
+  }, [onActiveSessionChange]);
 
   const deleteSession = useCallback(async (sessionId: string) => {
     await api.deleteSession(sessionId);
@@ -96,10 +106,11 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     if (activeSessionRef.current === sessionId) {
       const nextSessionId = remaining[0]?.session_id ?? null;
       activeSessionRef.current = nextSessionId;
+      onActiveSessionChange?.(nextSessionId);
       setComposerRevision((current) => current + 1);
       setActiveSessionId(nextSessionId);
     }
-  }, [persistPreferences, sessions]);
+  }, [onActiveSessionChange, persistPreferences, sessions]);
 
   const renameSessionTitle = useCallback(async (sessionId: string, title: string) => {
     try {
@@ -131,6 +142,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
     activeSessionRef: activeSessionRef as MutableRefObject<string | null>,
     freshSessionIdsRef: freshSessionIdsRef as MutableRefObject<Set<string>>,
     loadSessions,
+    invalidateSessionLoads,
     createBackendSession,
     startNewChat,
     deleteSession,

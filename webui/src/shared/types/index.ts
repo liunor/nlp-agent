@@ -6,6 +6,8 @@ export type TurnStatus =
   | "cancelled"
   | "interrupted";
 
+export type ChatMessageStatus = TurnStatus | "cancelling";
+
 export interface AuthSession {
   user_id: string;
   username?: string;
@@ -15,6 +17,14 @@ export interface AuthSession {
   csrf_token: string;
   expires_at: number;
   permissions?: string[];
+}
+
+export interface WhiteboardLibraryItem {
+  id: string;
+  status: "published" | "unpublished";
+  elements: unknown[];
+  created: number;
+  name?: string;
 }
 
 export interface DeveloperSnapshot {
@@ -180,6 +190,18 @@ export interface LearningBookPage {
   title: string;
   content_markdown: string;
   revision: number;
+}
+export interface KnowledgeBookContext {
+  workspace_id: string;
+  topic_id: string;
+  topic_name: string;
+  knowledge_point_id: string;
+  title: string;
+  heading?: string;
+  selected_text?: string;
+  code?: string;
+  language?: string;
+  content_markdown: string;
 }
 export interface TeacherBookImportPreview {
   file_name: string;
@@ -472,7 +494,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   reasoning?: string;
-  status?: TurnStatus;
+  status?: ChatMessageStatus;
   activities?: ActivityItem[];
   attachments?: ChatAttachment[];
   createdAt: string;
@@ -853,47 +875,4 @@ export interface UserListResponse {
   total: number;
   offset: number;
   limit: number;
-}
-
-export interface Workspace {
-  id: string;
-  slug: string;
-  name: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceMember {
-  workspace_id: string;
-  user_id: string;
-  member_type: string;
-  status: string;
-  created_at: string;
-}
-
-export interface ClassroomSummary {
-  id: string;
-  workspace_id: string;
-  name: string;
-  status: string;
-}
-
-export interface JoinRequest {
-  id: string;
-  class_id: string;
-  class_name: string;
-  user_id: string;
-  user_name: string;
-  display_name: string;
-  student_number: string | null;
-  status: string;
-  requested_at: string;
-  reviewed_at: string | null;
-  reviewed_by: string | null;
-}
-
-export interface JoinRequestListResponse {
-  items: JoinRequest[];
-  total: number;
 }

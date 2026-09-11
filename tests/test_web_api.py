@@ -324,6 +324,7 @@ def test_login_sets_httponly_cookie_reports_expiry_and_refreshes_on_activity(web
         body = response.json()
         assert body["csrf_token"]
         assert body["expires_at"] > time.time()
+        csrf = body["csrf_token"]
 
         set_cookie = response.headers.get("set-cookie", "")
         assert set_cookie.startswith("nlp_session=")
@@ -336,8 +337,19 @@ def test_login_sets_httponly_cookie_reports_expiry_and_refreshes_on_activity(web
         refreshed = client.get("/api/v1/auth/session")
         assert refreshed.status_code == 200
         assert refreshed.json()["user_id"] == "nova"
+        assert refreshed.json()["csrf_token"] == csrf
+        restored_again = client.get("/api/v1/auth/session")
+        assert restored_again.status_code == 200
+        assert restored_again.json()["csrf_token"] == csrf
         refreshed_cookie = refreshed.headers.get("set-cookie", "")
         assert "Max-Age=86400" in refreshed_cookie
+
+        created = client.post(
+            "/api/v1/sessions",
+            json={"workspace_id": "default"},
+            headers=write_headers(csrf),
+        )
+        assert created.status_code == 201
 
 
 def test_student_cannot_call_teacher_or_developer_control_planes(student_web_app):
@@ -668,6 +680,74 @@ def test_learning_catalog_only_exposes_enabled_topics_and_enabled_knowledge_poin
                 ],
             }
         ]
+
+
+def test_whiteboard_library_is_global_and_teacher_managed(web_app, student_web_app):
+    app, _engine = web_app
+    with TestClient(app) as teacher_client:
+        csrf = authenticate(teacher_client)
+        assert teacher_client.get("/api/v1/whiteboard/library").json() == {"items": []}
+
+        created = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "注意力流程",
+                "elements": [{"id": "shape-1", "type": "rectangle"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert created.status_code == 201
+        item = created.json()["item"]
+        assert item["name"] == "注意力流程"
+        assert item["status"] == "published"
+        assert item["elements"] == [{"id": "shape-1", "type": "rectangle"}]
+
+        listed = teacher_client.get("/api/v1/whiteboard/library")
+        assert listed.status_code == 200
+        assert listed.json() == {"items": [item]}
+
+        rejected_element = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "不安全素材",
+                "elements": [{"id": "embed-1", "type": "embeddable"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert rejected_element.status_code == 422
+
+        rejected_image = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "图片素材",
+                "elements": [{"id": "image-1", "type": "image"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert rejected_image.status_code == 422
+
+        rejected_non_finite = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            content=json.dumps({
+                "name": "非有限值",
+                "elements": [{"id": "shape-3", "type": "rectangle", "x": float("nan")}],
+            }).encode(),
+            headers={**write_headers(csrf), "Content-Type": "application/json"},
+        )
+        assert rejected_non_finite.status_code == 422
+
+    student_app, _student_engine = student_web_app
+    with TestClient(student_app) as student_client:
+        csrf = authenticate(student_client)
+        rejected = student_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "学生素材",
+                "elements": [{"id": "shape-2", "type": "ellipse"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert rejected.status_code == 403
 
 
 def test_teacher_book_page_is_draft_first_and_student_reads_only_published_content(web_app):

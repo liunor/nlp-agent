@@ -21,6 +21,7 @@ from server.tools.vision.contracts import (
     ImageReference,
     OCRBlock,
     OCRResult,
+    TableDataCell,
     VisionError,
     VisionErrorCode,
     VisionModelResult,
@@ -134,6 +135,33 @@ def _result() -> VisionModelResult:
     )
 
 
+@pytest.mark.parametrize("status,code,expected", [
+    (403, "AllocationQuota.FreeTierOnly", VisionErrorCode.PROVIDER_QUOTA_EXHAUSTED),
+    (403, "AccessDenied", VisionErrorCode.PROVIDER_AUTH_FAILED),
+    (429, "RateLimit", VisionErrorCode.PROVIDER_RATE_LIMITED),
+])
+async def test_provider_errors_are_actionable_and_do_not_leak_raw_body(monkeypatch, status, code, expected):
+    class ProviderError(Exception):
+        status_code = status
+        body = {"error": {"code": code, "message": "private-request-secret"}}
+    factory = FakeFactory(None, invoke_error=ProviderError("private-request-secret"))
+    provider = _provider(monkeypatch, factory)
+    with pytest.raises(VisionError) as raised:
+        await provider.analyze(_asset(), task="describe", question=None, language="auto", ocr_context=None)
+    assert raised.value.code == expected
+    assert "private-request-secret" not in raised.value.message
+    assert len(factory.route.structured.calls) == 1
+
+
+async def test_local_quota_rejection_is_not_converted_to_degradable_provider_error(monkeypatch):
+    from server.quota.errors import QuotaDomainError, QuotaErrorCode
+    error = QuotaDomainError(QuotaErrorCode.ADMISSION_DENIED, "local quota denied")
+    provider = _provider(monkeypatch, FakeFactory(None, invoke_error=error))
+    with pytest.raises(QuotaDomainError) as raised:
+        await provider.analyze(_asset(), task="table", question=None, language="auto", ocr_context=OCRResult(text="partial"))
+    assert raised.value is error
+
+
 def _provider(monkeypatch, factory: FakeFactory, **kwargs):
     monkeypatch.setattr(vlm_module, "get_global_model_factory", lambda: factory)
     return ModelRuntimeVLMProvider(
@@ -242,6 +270,7 @@ async def test_builds_openai_compatible_multimodal_message(monkeypatch) -> None:
     assert "Task: question" in text_part["text"]
     assert "Requested language: zh" in text_part["text"]
     assert "图里有什么？" in text_part["text"]
+    assert "answer field" in text_part["text"]
     assert UNTRUSTED_IMAGE_BANNER in text_part["text"]
     assert str(asset.path) not in text_part["text"]
     assert image_part["type"] == "image_url"
@@ -397,6 +426,56 @@ async def test_invalid_structured_response_becomes_safe_vision_error(
     assert raised.value.message == "视觉模型 provider 返回了无效结构"
     assert "sk-test-secret" not in raised.value.message
     assert "C:/private" not in raised.value.message
+
+
+async def test_ignores_non_contract_fields_and_preserves_optional_answer(
+    monkeypatch,
+) -> None:
+    factory = FakeFactory(
+        {
+            "summary": "简短摘要",
+            "answer": "合同金额是 100 元。",
+            "thought": "private reasoning",
+            "title": "合同问答",
+        }
+    )
+    provider = _provider(monkeypatch, factory)
+
+    result = await provider.analyze(
+        _asset(),
+        task="question",
+        question="合同金额是多少？",
+        language="zh",
+        ocr_context=None,
+    )
+
+    assert result.answer == "合同金额是 100 元。"
+    assert "thought" not in result.model_dump()
+    assert "title" not in result.model_dump()
+
+
+async def test_accepts_semantic_table_cells_without_ocr_geometry(monkeypatch) -> None:
+    factory = FakeFactory(
+        {
+            "summary": "识别到一个表格",
+            "table": {
+                "markdown": "| A |\n|---|\n| 1 |",
+                "cells": [{"row": 0, "column": 0, "text": "A"}],
+            },
+        }
+    )
+    provider = _provider(monkeypatch, factory)
+
+    result = await provider.analyze(
+        _asset(),
+        task="table",
+        question=None,
+        language="auto",
+        ocr_context=None,
+    )
+
+    assert result.table is not None
+    assert result.table.cells == [TableDataCell(row=0, column=0, text="A")]
 
 
 async def test_structured_output_parser_failure_is_not_reported_as_outage(

@@ -23,6 +23,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -30,6 +31,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.model_runtime.usage import UsageAttributionContext, bind_usage_attribution
 from core.prompt_runtime.manager import global_prompt_runtime
 from server.agent.llm_factory import get_utility_llm
 from server.infrastructure.mysql.models import ConversationModel, TurnModel
@@ -60,6 +62,16 @@ SWEEP_INTERVAL_S = 5
 BASE_BACKOFF_S = 60
 MAX_BACKOFF_S = 3600
 MAX_SUMMARY_ATTEMPTS = 10
+
+
+@dataclass(frozen=True, slots=True)
+class _SummaryState:
+    title_updated_at: datetime | None
+    title_is_manual: bool
+    turns: list[TurnModel]
+    summary_attempts: int
+    workspace_id: str | None
+    owner_user_id: str | None
 
 
 def _utcnow() -> datetime:
@@ -124,19 +136,27 @@ def _decide(
 
 async def _load_state(
     session: AsyncSession, session_id: str
-) -> tuple[datetime | None, bool, list[TurnModel], int]:
+) -> _SummaryState:
     row = (
         await session.execute(
             select(
                 ConversationModel.title_updated_at,
                 ConversationModel.title_is_manual,
                 ConversationModel.summary_attempts,
+                ConversationModel.workspace_id,
+                ConversationModel.owner_user_id,
             ).where(ConversationModel.id == session_id)
         )
     ).one_or_none()
     title_updated_at = row.title_updated_at if row is not None else None
     title_is_manual = bool(row.title_is_manual) if row is not None else False
     summary_attempts = int(row.summary_attempts or 0) if row is not None else 0
+    workspace_id = (
+        str(row.workspace_id) if row is not None and row.workspace_id else None
+    )
+    owner_user_id = (
+        str(row.owner_user_id) if row is not None and row.owner_user_id else None
+    )
     turns = list(
         (
             await session.execute(
@@ -149,7 +169,14 @@ async def _load_state(
             )
         ).scalars().all()
     )
-    return title_updated_at, title_is_manual, turns, summary_attempts
+    return _SummaryState(
+        title_updated_at=title_updated_at,
+        title_is_manual=title_is_manual,
+        turns=turns,
+        summary_attempts=summary_attempts,
+        workspace_id=workspace_id,
+        owner_user_id=owner_user_id,
+    )
 
 
 async def _generate_title(text: str, llm: Any) -> str | None:
@@ -230,10 +257,8 @@ async def build_conversation_text(
 ) -> str:
     """Render the anchor turn of a session as prompt text."""
     async with session_factory() as session:
-        _title_updated_at, _title_is_manual, turns, _summary_attempts = (
-            await _load_state(session, session_id)
-        )
-    return _render_turns(_select_turns(turns))
+        state = await _load_state(session, session_id)
+    return _render_turns(_select_turns(state.turns))
 
 
 async def generate_and_store_summary(
@@ -242,26 +267,27 @@ async def generate_and_store_summary(
     """Generate a topic title and conditionally store it.  Never raises."""
     try:
         async with session_factory() as session:
-            title_updated_at, title_is_manual, turns, summary_attempts = (
-                await _load_state(session, session_id)
-            )
-        basis = _decide(turns, title_updated_at, title_is_manual)
+            state = await _load_state(session, session_id)
+        basis = _decide(
+            state.turns,
+            state.title_updated_at,
+            state.title_is_manual,
+        )
         if basis is None:
             return False
-        text = _render_turns(_select_turns(turns))
+        text = _render_turns(_select_turns(state.turns))
         if not text:
             return False
-        if summary_attempts >= MAX_SUMMARY_ATTEMPTS:
+        if state.summary_attempts >= MAX_SUMMARY_ATTEMPTS:
             # Exhausted the retry budget; leave the row alone until a manual
             # rename or a future migration resets it.  Logging at info level
             # keeps the operator aware without screaming into error channels.
             logger.info(
                 "session summary gave up after %s attempts",
-                summary_attempts,
+                state.summary_attempts,
                 extra={"session_id": session_id},
             )
             return False
-
         now = _utcnow()
         async with session_factory.begin() as session:
             if not await _claim_summary(
@@ -269,9 +295,34 @@ async def generate_and_store_summary(
             ):
                 return False
 
+        if not state.owner_user_id or not state.workspace_id:
+            logger.error(
+                "session summary is missing usage attribution identity",
+                session_id=session_id,
+            )
+            async with session_factory.begin() as session:
+                await _backoff_summary(
+                    session,
+                    session_id,
+                    now=_utcnow(),
+                    attempts_so_far=state.summary_attempts,
+                )
+            return False
+
         title: str | None = None
         try:
-            title = await _generate_title(text, get_utility_llm())
+            attribution = UsageAttributionContext(
+                request_id=(
+                    f"session-summary:{session_id}:{state.summary_attempts + 1}"
+                ),
+                user_id=state.owner_user_id,
+                workspace_id=state.workspace_id,
+                conversation_id=session_id,
+                turn_id=None,
+                purpose="other",
+            )
+            with bind_usage_attribution(attribution):
+                title = await _generate_title(text, get_utility_llm())
         except asyncio.CancelledError:
             # Worker is shutting down; leave the 60s claim in place so another
             # worker can pick it up after the lease expires naturally.
@@ -288,7 +339,7 @@ async def generate_and_store_summary(
                     session,
                     session_id,
                     now=now,
-                    attempts_so_far=summary_attempts,
+                    attempts_so_far=state.summary_attempts,
                 )
             return False
 

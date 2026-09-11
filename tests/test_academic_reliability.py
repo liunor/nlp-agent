@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import time
 
 import httpx
@@ -23,7 +24,11 @@ from server.tools.academic.contracts import (
     AcademicSourceRecord,
 )
 from server.tools.academic.provider import AcademicProviderError
-from server.tools.academic.runtime import AcademicMetrics, RedisAcademicStore
+from server.tools.academic.runtime import (
+    AcademicMetrics,
+    RedisAcademicStore,
+    create_academic_redis_store,
+)
 from server.tools.academic.service import AcademicSearchService
 from server.tools.web.cache import TTLCache
 
@@ -186,6 +191,22 @@ async def test_redis_outage_enters_cooldown_instead_of_retrying_every_operation(
         await store.get_cache("second")
 
     assert redis.get_calls == 1
+
+
+def test_academic_redis_uses_gateway_server_url_when_env_is_unset(monkeypatch):
+    monkeypatch.delenv("NLP_AGENT_REDIS_URL", raising=False)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "configs.settings",
+        SimpleNamespace(settings=SimpleNamespace(gateway_runtime={"redis_url": "redis://redis-server:6379/2"})),
+    )
+
+    store = create_academic_redis_store(
+        AcademicReliabilityConfig(redis_url_env="NLP_AGENT_REDIS_URL")
+    )
+
+    assert store is not None
+    assert store._client.connection_pool.connection_kwargs["host"] == "redis-server"
 
 
 @pytest.mark.asyncio

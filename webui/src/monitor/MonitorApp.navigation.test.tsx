@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const { monitorApi } = vi.hoisted(() => ({
   monitorApi: {
@@ -187,6 +187,45 @@ describe("MonitorApp navigation", () => {
     expect(location.pathname).toBe("/monitor/usage");
     expect(await screen.findByRole("heading", { name: "Token 与缓存" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "系统总览", level: 1 })).not.toBeInTheDocument();
+  });
+
+  it("shows the Provider-measured KV cache hit rate in the usage summary", async () => {
+    history.replaceState({}, "", "/monitor/usage");
+    monitorApi.systemUsage.mockResolvedValueOnce({
+      scope: "system", period_days: 30, from: "2026-08-09T00:00:00Z", to: "2026-09-08T00:00:00Z", granularity: "day",
+      events: 2, priced_events: 2, unpriced_events: 0, credits_complete: true, credit_status: "complete", credits_micro: 100, priced_credits_micro: 100,
+      tokens: { input_tokens: 200, cached_input_tokens: 80, cache_write_input_tokens: 0, output_tokens: 4, reasoning_output_tokens: 0, total_tokens: 204 },
+      cache_hit_rate: 0.4, cache_input_tokens: 200, cache_cached_input_tokens: 80,
+      breakdown: [], users: [], workspaces: [], providers: [], purposes: [], models: [],
+    });
+
+    render(<MonitorApp />);
+
+    expect(await screen.findByText("KV Cache 命中率")).toBeVisible();
+    expect(screen.getByText("40.0%")).toBeVisible();
+    expect(screen.getByText("80 / 200 Provider 输入 Token")).toBeVisible();
+  });
+
+  it("does not derive a KV cache hit rate from the legacy Trace fallback", async () => {
+    history.replaceState({}, "", "/monitor/usage");
+    monitorApi.overview.mockResolvedValueOnce({
+      requests: 2, errors: 0, error_rate: 0, period_days: 30, active_users: 1,
+      active_workspaces: 1, active_sessions: 1,
+      latency_ms: { p50: 0, p90: 0, p95: 0, p99: 0 },
+      ttft_ms: { p50: 0, p90: 0, p95: 0, p99: 0 },
+      tokens: { input_tokens: 200, cached_input_tokens: 80, total_tokens: 200 },
+      runtime: {}, status_breakdown: [], tags: { channels: [], sources: [], span_kinds: [] },
+      component_spans: [], span_kinds: [], models: [], error_groups: [],
+      events_by_level: {}, event_names: [], top_users: [],
+    });
+    monitorApi.systemUsage.mockRejectedValue(new Error("usage unavailable"));
+
+    render(<MonitorApp />);
+
+    const rate = await screen.findByText("KV Cache 命中率");
+    expect(rate.parentElement).toHaveTextContent("—");
+    expect(rate.parentElement).not.toHaveTextContent("40.0%");
+    expect(rate.parentElement).not.toHaveTextContent("80 / 200 输入 Token");
   });
 
   it("loads dependency health only on the component route and links an anomaly to traces", async () => {
@@ -489,7 +528,7 @@ describe("MonitorApp navigation", () => {
     expect(screen.getByText("来自多模型厂商管理")).toBeVisible();
     expect(screen.getAllByText(/openai_compatible/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/default/).length).toBeGreaterThan(0);
-    expect(monitorApi.systemUsageTrend).toHaveBeenCalledWith(120, 5);
+    await waitFor(() => expect(monitorApi.systemUsageTrend).toHaveBeenCalledWith(120, 5));
     expect(await screen.findByRole("img", { name: "最近 120 分钟 Token 趋势" })).toBeVisible();
     expect(await screen.findByRole("button", { name: /2026-09-04 09:55.*3 次事件.*3,000 Token/ })).toBeVisible();
   });

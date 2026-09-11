@@ -293,7 +293,9 @@ def create_academic_redis_store(
         try:
             from configs.settings import settings
 
-            redis_url = str(getattr(settings, config.redis_url_env, "")).strip()
+            redis_url = str(
+                settings.gateway_runtime.get("redis_url", "")
+            ).strip()
         except Exception:
             redis_url = ""
     if not redis_url:

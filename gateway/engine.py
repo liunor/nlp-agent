@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
-from typing import Protocol
+from typing import Any, Protocol
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from core.coordinator_runtime import CoordinatorRuntime
 from core.session_context import SessionContext
-from core.learning import ExerciseState, LearningContext, LearningProgress, TeachingMaterials
+from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress, TeachingMaterials
 from core.observability.context import bind_telemetry_context, current_telemetry_context
 from core.observability.runtime import global_telemetry
 from core.task_manager import global_task_manager
@@ -28,11 +30,15 @@ from gateway.contracts import GatewayEventType
 EngineEventSink = Callable[
     [str, str, GatewayEventType, dict], Awaitable[None]
 ]
+_CHECKPOINT_READ_TIMEOUT_S = 0.5
+_TRANSCRIPT_PERSIST_TIMEOUT_S = 1.0
+_BACKGROUND_CANCEL_DRAIN_TIMEOUT_S = 0.25
+logger = logging.getLogger(__name__)
 
 
 class AgentEngine(Protocol):
     async def start(self, event_sink: EngineEventSink) -> None: ...
-    async def run_turn(self, context: SessionContext, turn_id: str, content: str, *, learning_context: LearningContext | None = None, learning_progress: LearningProgress | None = None, exercise_state: ExerciseState | None = None, teaching_materials: TeachingMaterials | None = None, model_profile: str | None = None) -> str: ...
+    async def run_turn(self, context: SessionContext, turn_id: str, content: str, *, learning_context: LearningContext | None = None, learning_progress: LearningProgress | None = None, exercise_state: ExerciseState | None = None, teaching_materials: TeachingMaterials | None = None, knowledge_book_context: KnowledgeBookContext | None = None, model_profile: str | None = None) -> str: ...
     async def inject(self, context: SessionContext, content: str) -> str | None: ...
     async def cancel_turn(self, context: SessionContext, turn_id: str) -> None: ...
     async def delete_session(self, context: SessionContext) -> None: ...
@@ -49,6 +55,9 @@ class LangGraphAgentEngine:
         self._event_sink: EngineEventSink | None = None
         self._started = False
         self._session_model_profiles: dict[str, str | None] = {}
+        self._foreground_outputs: dict[str, list[str]] = {}
+        self._abandoned_tasks: set[asyncio.Task[Any]] = set()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     async def start(self, event_sink: EngineEventSink) -> None:
         if self._started:
@@ -82,6 +91,7 @@ class LangGraphAgentEngine:
         learning_progress: LearningProgress | None = None,
         exercise_state: ExerciseState | None = None,
         teaching_materials: TeachingMaterials | None = None,
+        knowledge_book_context: KnowledgeBookContext | None = None,
     ) -> None:
         if self._app is None:
             raise RuntimeError("Agent engine is not started")
@@ -99,6 +109,7 @@ class LangGraphAgentEngine:
                     learning_progress,
                     exercise_state,
                     teaching_materials,
+                    knowledge_book_context,
                 )
             return
         configurable = {
@@ -117,6 +128,7 @@ class LangGraphAgentEngine:
             "review_blueprint": teaching_materials.review_blueprint if teaching_materials else {},
             "guided_session": teaching_materials.guided_session if teaching_materials else {},
             "guided_blueprint": teaching_materials.guided_blueprint if teaching_materials else {},
+            "knowledge_book_context": knowledge_book_context.model_dump(mode="json") if knowledge_book_context else None,
         }
         telemetry = current_telemetry_context()
         if telemetry is None and self._runtime is not None:
@@ -179,6 +191,10 @@ class LangGraphAgentEngine:
                             else:
                                 anonymous_suppressed_model_stream = True
                             continue
+                        if not background and isinstance(chunk.content, str):
+                            self._foreground_outputs.setdefault(turn_id, []).append(
+                                chunk.content
+                            )
                         global_telemetry.mark_ttft(telemetry)
                         await self._emit(
                             turn_id,
@@ -238,7 +254,13 @@ class LangGraphAgentEngine:
                             GatewayEventType.TOOL_COMPLETED,
                             {"name": "tool"},
                         )
-                await self._apply_pending_snips(context)
+                    try:
+                        await self._apply_pending_snips(context)
+                    except Exception as error:
+                        logger.warning(
+                            "Unable to apply pending transcript snips",
+                            exc_info=True,
+                        )
 
     async def run_turn(
         self,
@@ -250,27 +272,33 @@ class LangGraphAgentEngine:
         learning_progress: LearningProgress | None = None,
         exercise_state: ExerciseState | None = None,
         teaching_materials: TeachingMaterials | None = None,
+        knowledge_book_context: KnowledgeBookContext | None = None,
         model_profile: str | None = None,
     ) -> str:
         self._session_model_profiles[context.storage_key] = model_profile
-        with bind_model_profile(model_profile):
-            return await self._run_selected_turn(
-                context,
-                turn_id,
-                content,
-                learning_context=learning_context,
-                learning_progress=learning_progress,
-                exercise_state=exercise_state,
-                teaching_materials=teaching_materials,
-            )
+        self._foreground_outputs[turn_id] = []
+        try:
+            with bind_model_profile(model_profile):
+                return await self._run_selected_turn(
+                    context,
+                    turn_id,
+                    content,
+                    learning_context=learning_context,
+                    learning_progress=learning_progress,
+                    exercise_state=exercise_state,
+                    teaching_materials=teaching_materials,
+                    knowledge_book_context=knowledge_book_context,
+                )
+        finally:
+            self._foreground_outputs.pop(turn_id, None)
 
-    async def _run_selected_turn(self, context: SessionContext, turn_id: str, content: str, *, learning_context: LearningContext | None = None, learning_progress: LearningProgress | None = None, exercise_state: ExerciseState | None = None, teaching_materials: TeachingMaterials | None = None) -> str:
+    async def _run_selected_turn(self, context: SessionContext, turn_id: str, content: str, *, learning_context: LearningContext | None = None, learning_progress: LearningProgress | None = None, exercise_state: ExerciseState | None = None, teaching_materials: TeachingMaterials | None = None, knowledge_book_context: KnowledgeBookContext | None = None) -> str:
         if self._runtime is None or self._app is None:
             raise RuntimeError("Agent engine is not started")
         message = HumanMessage(content=content, id=turn_id)
         await self._runtime.submit_user_turn(
             context, message, learning_context, learning_progress, exercise_state,
-            teaching_materials,
+            teaching_materials, knowledge_book_context,
         )
         config = {"configurable": {
             "thread_id": context.session_id,
@@ -278,19 +306,46 @@ class LangGraphAgentEngine:
             "workspace_id": context.workspace_id,
             "channel": context.channel,
         }}
-        state = await self._app.aget_state(config)
-        state_messages = state.values.get("messages", [])
+        state_messages: list[Any] = []
+        state_error: Exception | None = None
+        try:
+            state = await self._await_bounded(
+                self._app.aget_state(config),
+                timeout_s=_CHECKPOINT_READ_TIMEOUT_S,
+                task_name=f"checkpoint-read:{context.session_id}",
+            )
+            state_messages = list(state.values.get("messages", []))
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            state_error = error
+            logger.warning(
+                "Unable to read final graph checkpoint; using streamed output "
+                "session_id=%s turn_id=%s error=%s",
+                context.session_id,
+                turn_id,
+                str(error),
+            )
         from server.agent.session_storage import record_transcript
 
-        await record_transcript(
-            context.session_id,
-            public_transcript_messages(state_messages),
-            user_id=context.user_id,
-            workspace_id=context.workspace_id,
-        )
+        if state_messages:
+            self._schedule_transcript_persistence(
+                record_transcript,
+                context.session_id,
+                public_transcript_messages(state_messages),
+                user_id=context.user_id,
+                workspace_id=context.workspace_id,
+            )
         for item in reversed(state_messages):
             if isinstance(item, AIMessage) and item.content:
                 return sanitize_public_output(item.content)
+        streamed_output = sanitize_public_output(
+            "".join(self._foreground_outputs.get(turn_id, []))
+        )
+        if streamed_output:
+            return streamed_output
+        if state_error is not None:
+            raise state_error
         return ""
 
     async def inject(self, context: SessionContext, content: str) -> str | None:
@@ -328,7 +383,11 @@ class LangGraphAgentEngine:
             "workspace_id": context.workspace_id,
             "channel": context.channel,
         }}
-        state = await self._app.aget_state(config)
+        state = await self._await_bounded(
+            self._app.aget_state(config),
+            timeout_s=_CHECKPOINT_READ_TIMEOUT_S,
+            task_name=f"snip-checkpoint-read:{context.session_id}",
+        )
         messages = state.values.get("messages", [])
         for message in reversed(messages):
             if not getattr(message, "tool_calls", None):
@@ -344,13 +403,125 @@ class LangGraphAgentEngine:
                         messages, to_id=args["to_id"], from_id=args.get("from_id")
                     )
                     if result.tokens_freed:
-                        await self._app.aupdate_state(config, {"messages": result.messages})
+                        await self._await_bounded(
+                            self._app.aupdate_state(
+                                config, {"messages": result.messages}
+                            ),
+                            timeout_s=_CHECKPOINT_READ_TIMEOUT_S,
+                            task_name=f"snip-checkpoint-write:{context.session_id}",
+                        )
                 message.additional_kwargs["_snip_applied"] = True
                 return
+
+    async def _await_bounded(
+        self,
+        awaitable: Awaitable[Any],
+        *,
+        timeout_s: float,
+        task_name: str,
+    ) -> Any:
+        task = asyncio.ensure_future(awaitable)
+        task.set_name(task_name)
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=timeout_s)
+        except asyncio.CancelledError:
+            await self._cancel_background_task(task)
+            raise
+        if not done:
+            await self._cancel_background_task(task)
+            raise asyncio.TimeoutError(f"{task_name} exceeded {timeout_s:g}s")
+        return task.result()
+
+    async def _cancel_background_task(self, task: asyncio.Task[Any]) -> None:
+        if task.done():
+            self._consume_background_task(task)
+            return
+        task.cancel()
+        try:
+            done, pending = await asyncio.wait(
+                {task}, timeout=_BACKGROUND_CANCEL_DRAIN_TIMEOUT_S
+            )
+        except asyncio.CancelledError:
+            self._detach_background_task(task)
+            raise
+        for completed in done:
+            self._consume_background_task(completed)
+        for abandoned in pending:
+            self._detach_background_task(abandoned)
+
+    def _detach_background_task(self, task: asyncio.Task[Any]) -> None:
+        self._abandoned_tasks.add(task)
+        task.add_done_callback(self._consume_background_task)
+
+    def _consume_background_task(self, task: asyncio.Task[Any]) -> None:
+        self._abandoned_tasks.discard(task)
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return
+
+    def _schedule_transcript_persistence(
+        self,
+        record_transcript: Callable[..., Awaitable[Any]],
+        session_id: str,
+        messages: list[Any],
+        *,
+        user_id: str | None,
+        workspace_id: str | None,
+    ) -> None:
+        task = asyncio.create_task(
+            self._persist_transcript_best_effort(
+                record_transcript,
+                session_id,
+                messages,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            ),
+            name=f"transcript-persist:{session_id}",
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._consume_background_task)
+
+    async def _persist_transcript_best_effort(
+        self,
+        record_transcript: Callable[..., Awaitable[Any]],
+        session_id: str,
+        messages: list[Any],
+        *,
+        user_id: str | None,
+        workspace_id: str | None,
+    ) -> None:
+        try:
+            await self._await_bounded(
+                record_transcript(
+                    session_id,
+                    messages,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                ),
+                timeout_s=_TRANSCRIPT_PERSIST_TIMEOUT_S,
+                task_name=f"transcript-write:{session_id}",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(
+                "Transcript persistence did not complete session_id=%s error=%s",
+                session_id,
+                str(error),
+            )
 
     async def close(self) -> None:
         if not self._started:
             return
+        background_tasks = list(self._background_tasks)
+        for task in background_tasks:
+            task.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         if self._runtime is not None:
             await self._runtime.close()
         from core.observability.runtime import global_telemetry

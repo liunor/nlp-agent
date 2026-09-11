@@ -11,6 +11,7 @@ from typing import Any
 import defusedxml.ElementTree as ET
 import httpx
 
+from core.outbound_network import OutboundNetworkPolicy
 from core.tool_config import AcademicArxivConfig
 from server.tools.academic.contracts import (
     AcademicAuthor,
@@ -55,6 +56,7 @@ class ArxivProvider(AcademicProvider):
         transport: httpx.AsyncBaseTransport | None = None,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         shared_store: AcademicSharedStore | None = None,
+        network_policy: OutboundNetworkPolicy | None = None,
     ) -> None:
         self.config = config or AcademicArxivConfig()
         self.base_url = self.config.base_url
@@ -63,6 +65,7 @@ class ArxivProvider(AcademicProvider):
         self.max_response_bytes = max_response_bytes
         self._transport = transport
         self._shared_store = shared_store
+        self.network_policy = network_policy or OutboundNetworkPolicy.from_environment()
 
     def _build_search_query(self, query: str) -> str:
         clean = query.strip()
@@ -141,9 +144,14 @@ class ArxivProvider(AcademicProvider):
                 "timeout": httpx.Timeout(self.timeout_s),
                 "limits": limits,
                 "headers": {"User-Agent": "nlp-agent/1.0 (+academic-search)"},
+                "trust_env": False,
             }
             if self._transport is not None:
                 client_kwargs["transport"] = self._transport
+            else:
+                client_kwargs["proxy"] = self.network_policy.proxy_for_url(
+                    self.base_url
+                )
 
             try:
                 async with httpx.AsyncClient(**client_kwargs) as client:

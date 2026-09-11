@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, field_validator, model_validator
-from core.learning import LearningContext
+from core.learning import KnowledgeBookContext, LearningContext
 from gateway.contracts import EvaluationContext
 
 
@@ -19,6 +20,37 @@ class StrictModel(BaseModel):
 
 class CreateSessionBody(StrictModel):
     workspace_id: str = Field(default="default", min_length=1, max_length=128)
+
+
+class CreateWhiteboardLibraryBody(StrictModel):
+    name: str = Field(min_length=1, max_length=128)
+    elements: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("elements")
+    @classmethod
+    def validate_elements(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if any(
+            not isinstance(element.get("id"), str)
+            or not element["id"].strip()
+            or not isinstance(element.get("type"), str)
+            or not element["type"].strip()
+            for element in value
+        ):
+            raise ValueError("素材元素必须包含有效的 id 和 type")
+        if any(element.get("type") in {"image", "iframe", "embeddable"} for element in value):
+            raise ValueError("素材不能包含图片或嵌入式元素")
+        try:
+            serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise ValueError("素材元素必须是可序列化的 JSON") from error
+        if len(serialized.encode("utf-8")) > 512_000:
+            raise ValueError("素材不能超过 512 KB")
+        return value
 
 
 class RenameSessionBody(StrictModel):
@@ -135,6 +167,7 @@ class SubmitChatBody(StrictModel):
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=5)
     idempotency_key: str | None = Field(default=None, max_length=128)
     learning_context: LearningContext | None = None
+    knowledge_book_context: KnowledgeBookContext | None = None
     evaluation: EvaluationContext | None = None
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
@@ -364,6 +397,7 @@ class ChatSendPayload(StrictModel):
     attachments: list[ChatAttachment] = Field(default_factory=list, max_length=5)
     idempotency_key: str | None = Field(default=None, max_length=128)
     learning_context: LearningContext | None = None
+    knowledge_book_context: KnowledgeBookContext | None = None
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )

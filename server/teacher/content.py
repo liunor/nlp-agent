@@ -15,13 +15,16 @@ _UNSAFE_MARKUP_RE = re.compile(
     re.IGNORECASE,
 )
 _EXTERNAL_RESOURCE_RE = re.compile(
-    r"!?\[[^\]]*\]\(\s*<?(?:https?:|//|data:|javascript:)",
+    r"!\[[^\]]*\]\(\s*<?(?:https?:|//|data:|javascript:)",
     re.IGNORECASE,
 )
 _EXTERNAL_REFERENCE_RE = re.compile(
-    r"^\s{0,3}\[[^\]]+\]:\s*<?(?:https?:|//|data:|javascript:)",
+    r"^\s{0,3}\[([^\]]+)\]:\s*<?(?:https?:|//|data:|javascript:)",
     re.IGNORECASE | re.MULTILINE,
 )
+_IMAGE_REFERENCE_USE_RE = re.compile(r"!\[([^\]]*)\]\[([^\]]*)\]", re.IGNORECASE)
+_INLINE_CODE_RE = re.compile(r"`+[^`\r\n]*`+")
+_SAFE_AUTOLINK_RE = re.compile(r"<https?://[^\s>]+>", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})[ \t]+")
 MAX_MARKDOWN_BYTES = 1 * 1024 * 1024
 
@@ -134,13 +137,46 @@ def _heading_warnings(content: str) -> list[str]:
     return warnings
 
 
+def _has_external_image_reference(content: str) -> bool:
+    external_definitions = {
+        match.group(1).strip().lower()
+        for match in _EXTERNAL_REFERENCE_RE.finditer(content)
+    }
+    return any(
+        (reference_id.strip() or alt_text.strip()).lower() in external_definitions
+        for alt_text, reference_id in _IMAGE_REFERENCE_USE_RE.findall(content)
+    )
+
+
+def _has_unsafe_markup(content: str) -> bool:
+    fence_char: str | None = None
+    fence_length = 0
+    for line in content.splitlines():
+        fence_match = _FENCE_RE.match(line)
+        if fence_char is not None:
+            if fence_match and fence_match.group(1)[0] == fence_char and len(fence_match.group(1)) >= fence_length:
+                fence_char = None
+                fence_length = 0
+            continue
+        if fence_match:
+            marker = fence_match.group(1)
+            fence_char = marker[0]
+            fence_length = len(marker)
+            continue
+        prose = _INLINE_CODE_RE.sub("", line)
+        prose = _SAFE_AUTOLINK_RE.sub("", prose)
+        if _UNSAFE_MARKUP_RE.search(prose):
+            return True
+    return False
+
+
 def normalize_teacher_markdown(file_name: str, content_markdown: str) -> TeacherBookImportPreview:
     if not _is_valid_markdown_name(file_name):
         raise ValueError("教材导入只接受不含路径的 .md 文件")
-    if _UNSAFE_MARKUP_RE.search(content_markdown):
+    if _has_unsafe_markup(content_markdown):
         raise ValueError("教材 Markdown 不支持原始 HTML、脚本、嵌入或危险链接标记")
-    if _EXTERNAL_RESOURCE_RE.search(content_markdown) or _EXTERNAL_REFERENCE_RE.search(content_markdown):
-        raise ValueError("教材 Markdown 不支持外部链接或外部图片资源")
+    if _EXTERNAL_RESOURCE_RE.search(content_markdown) or _has_external_image_reference(content_markdown):
+        raise ValueError("教材 Markdown 不支持外部图片资源")
     if len(content_markdown.encode("utf-8")) > MAX_MARKDOWN_BYTES:
         raise ValueError("教材 Markdown 单文件不能超过 1 MB")
 

@@ -69,6 +69,7 @@ class UsageAttributionContext(UsageFrozenModel):
 class CanonicalTokenUsage(UsageFrozenModel):
     input_tokens: StrictNonNegativeInt = 0
     cached_input_tokens: StrictNonNegativeInt = 0
+    cache_miss_input_tokens: StrictNonNegativeInt = 0
     cache_write_input_tokens: StrictNonNegativeInt = 0
     output_tokens: StrictNonNegativeInt = 0
     reasoning_output_tokens: StrictNonNegativeInt = 0
@@ -79,6 +80,11 @@ class CanonicalTokenUsage(UsageFrozenModel):
 
     @model_validator(mode="after")
     def validate_subsets_and_total(self) -> "CanonicalTokenUsage":
+        if self.cached_input_tokens + self.cache_miss_input_tokens > self.input_tokens:
+            raise ValueError(
+                "cached_input_tokens + cache_miss_input_tokens "
+                "must not exceed input_tokens"
+            )
         if self.cached_input_tokens + self.cache_write_input_tokens > self.input_tokens:
             raise ValueError(
                 "cached_input_tokens + cache_write_input_tokens "
@@ -91,6 +97,7 @@ class CanonicalTokenUsage(UsageFrozenModel):
         if self.source == "none" and any((
             self.input_tokens,
             self.cached_input_tokens,
+            self.cache_miss_input_tokens,
             self.cache_write_input_tokens,
             self.output_tokens,
             self.reasoning_output_tokens,

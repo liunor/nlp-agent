@@ -31,6 +31,7 @@ class ToolPoliciesConfig(StrictConfigModel):
                 "TaskStop",
                 "read_local_file",
                 "get_current_time",
+                "get_knowledge_book_context",
             },
             allowed_capabilities={"context.manage"},
             denied_capabilities={"business.write"},
@@ -149,6 +150,9 @@ class WebFetchConfig(StrictConfigModel):
 class WebToolsConfig(StrictConfigModel):
     enabled: bool = True
     proxy_url: str = ""
+    proxy_url_env: str = Field(
+        default="", pattern=r"^$|^[A-Z][A-Z0-9_]{1,79}$"
+    )
     user_agent: str = "Nova/1.0 (+web-fetch)"
     network: WebNetworkConfig = Field(default_factory=WebNetworkConfig)
     fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)

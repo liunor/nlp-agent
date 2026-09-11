@@ -13,12 +13,23 @@ from alembic.script import ScriptDirectory
 def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260907_50_obs_indexes"]
-    assert scripts.get_revision("20260907_50_obs_indexes").down_revision == (
-        "20260907_49_reset_permission"
+    assert scripts.get_heads() == ["20260910_53_whiteboard_library"]
+    assert scripts.get_revision("20260905_49_phone_schema_repair").down_revision == (
+        "20260904_48_developer_merge"
+    )
+    assert scripts.get_revision("20260907_50_merge_database_heads").down_revision == (
+        "20260904_49_billable_features",
+        "20260905_49_phone_schema_repair",
     )
     assert scripts.get_revision("20260907_49_reset_permission").down_revision == (
         "20260904_49_billable_features"
+    )
+    assert scripts.get_revision("20260907_50_obs_indexes").down_revision == (
+        "20260907_49_reset_permission"
+    )
+    assert scripts.get_revision("20260907_51_merge_database_heads").down_revision == (
+        "20260907_50_merge_database_heads",
+        "20260907_50_obs_indexes",
     )
     assert scripts.get_revision("20260904_49_billable_features").down_revision == (
         "20260904_48_developer_merge"
@@ -162,3 +173,52 @@ def test_quota_daily_weekly_migration_renames_legacy_monthly_rows() -> None:
             assert connection.execute(
                 sa.select(metadata.tables[table_name].c.bucket_type)
             ).scalar_one() == "weekly"
+
+
+def test_phone_schema_repair_adds_missing_normalized_column_and_backfills() -> None:
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    users = sa.Table(
+        "nlp_users",
+        metadata,
+        sa.Column("id", sa.String(), primary_key=True),
+        sa.Column("phone_number", sa.String(20)),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+    )
+    metadata.create_all(engine)
+
+    migration = importlib.import_module(
+        "migrations.versions.20260905_49_repair_user_phone_schema_drift"
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            users.insert().values(
+                id="user-1",
+                phone_number="138 0013 8000",
+                created_at=sa.text("CURRENT_TIMESTAMP"),
+            )
+        )
+        migration_context = MigrationContext.configure(connection)
+        operations = Operations(migration_context)
+
+        migration.op = SimpleNamespace(
+            get_bind=operations.get_bind,
+            add_column=operations.add_column,
+            create_index=operations.create_index,
+            create_unique_constraint=lambda name, table, columns: connection.exec_driver_sql(
+                f'CREATE UNIQUE INDEX "{name}" ON "{table}" ("{columns[0]}")'
+            ),
+        )
+
+        migration.upgrade()
+
+        columns = {
+            item["name"]
+            for item in sa.inspect(connection).get_columns("nlp_users")
+        }
+        assert "phone_number_normalized" in columns
+        assert connection.execute(
+            sa.text(
+                "SELECT phone_number_normalized FROM nlp_users WHERE id='user-1'"
+            )
+        ).scalar_one() == "+8613800138000"

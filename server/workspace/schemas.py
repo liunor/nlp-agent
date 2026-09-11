@@ -58,6 +58,8 @@ class WorkspaceMemberAdd(BaseModel):
 class WorkspaceMemberResponse(BaseModel):
     """Workspace member response."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     workspace_id: str
     user_id: str
     member_type: str

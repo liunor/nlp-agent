@@ -59,6 +59,33 @@ describe("MessageList session updates", () => {
     expect(img).toBeVisible();
     expect(img).toHaveAttribute("src", "/api/v1/uploads/sess/sample.png");
   });
+
+  it("keeps partial assistant content visible when the turn fails", () => {
+    const failedAssistant: ChatMessage = {
+      id: "turn-failed-assistant",
+      turnId: "turn-failed",
+      role: "assistant",
+      content: "已经生成的部分答案",
+      reasoning: "已经完成思考",
+      status: "failed",
+      createdAt: "2026-07-19T00:02:00Z",
+      startedAt: "2026-07-19T00:02:00Z",
+      completedAt: "2026-07-19T00:02:05Z",
+    };
+
+    render(
+      <MessageList
+        messages={[failedAssistant]}
+        loading={false}
+        showReasoning={false}
+        onFollowUp={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("已经生成的部分答案")).toBeVisible();
+    expect(screen.getByText(/已保留已生成内容/)).toBeVisible();
+    expect(screen.getByRole("button", { name: /已处理 5s/ })).toBeVisible();
+  });
 });
 it("copies only the selected assistant response as Markdown", async () => {
   const clipboardDescriptor = Object.getOwnPropertyDescriptor(

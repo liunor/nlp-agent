@@ -60,3 +60,10 @@ testpaths = ["scripts", "tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+    "api_smoke: real HTTP smoke tests against managed Web and Monitor services",
+    "api_core: real HTTP core API tests",
+    "api_async_core: real HTTP chat/Worker/Redis/WebSocket integration tests",
+    "api_runtime_core: real HTTP Sandbox and Monitor runtime tests",
+    "api_full: real HTTP full API tests driven by the live OpenAPI inventory",
+]

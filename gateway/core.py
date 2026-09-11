@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import uuid
 from collections import defaultdict
@@ -21,7 +22,7 @@ from core.rbac import (
     required_permission_for_high_risk_tool,
 )
 from core.session_context import SessionContext
-from core.learning import LearningContext, TeachingMaterials, default_progress
+from core.learning import KnowledgeBookContext, LearningContext, TeachingMaterials, default_progress
 from gateway.contracts import (
     GatewayEvent,
     GatewayEventType,
@@ -61,6 +62,8 @@ from server.session.summary import schedule_summary
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
+logger = logging.getLogger(__name__)
+_WHITEBOARD_LIBRARY_MANAGER_ROLES = frozenset({"teacher", "developer", "admin"})
 
 
 def _session_uploads_root(context: SessionContext) -> Path:
@@ -100,6 +103,25 @@ _EXPLICIT_EXERCISE_START_RE = re.compile(
 
 def _is_explicit_exercise_start(content: str) -> bool:
     return bool(_EXPLICIT_EXERCISE_START_RE.search(content.strip()))
+
+
+async def _resolve_knowledge_book_context(
+    repository: Any, context: SessionContext, candidate: KnowledgeBookContext | None
+) -> KnowledgeBookContext | None:
+    """Replace client-supplied page text with the published server copy."""
+    if candidate is None:
+        return None
+    get_published_page = getattr(repository, "get_published_knowledge_page", None)
+    if not callable(get_published_page):
+        return candidate
+    page = await asyncio.to_thread(
+        get_published_page, context.workspace_id, candidate.knowledge_point_id
+    )
+    if page is None:
+        return candidate.model_copy(update={"content_markdown": ""})
+    return candidate.model_copy(
+        update={"content_markdown": str(page.get("published_markdown") or "")}
+    )
 
 
 class BackendGateway:
@@ -161,6 +183,7 @@ class BackendGateway:
                 event_channel=str(gateway_config.get("redis_event_channel", "nlp-agent:events")),
                 control_channel=str(gateway_config.get("redis_control_channel", "nlp-agent:control")),
                 reclaim_idle_ms=int(gateway_config.get("redis_reclaim_idle_ms", 60_000)),
+                poll_block_ms=int(gateway_config.get("redis_poll_block_ms", 2_000)),
                 quota_snapshot_channel=str(
                     gateway_config.get(
                         "redis_quota_snapshot_channel", "nlp-agent:quota-snapshot"
@@ -344,6 +367,11 @@ class BackendGateway:
         if auth_session_id:
             context = context.model_copy(update={"auth_session_id": auth_session_id})
         authorization_service.require(principal, Permission.AGENT_TURN_SUBMIT, workspace_id=context.workspace_id)
+        if request.knowledge_book_context is not None and request.knowledge_book_context.workspace_id != context.workspace_id:
+            raise ValueError("知识教材上下文不属于当前工作区")
+        knowledge_book_context = await _resolve_knowledge_book_context(
+            self.repository, context, request.knowledge_book_context
+        )
         if request.model_profile is not None:
             from core.model_runtime.factory import get_global_model_factory
 
@@ -528,6 +556,7 @@ class BackendGateway:
             turn_id=turn_id,
             content=enriched_content,
             learning_context=learning_context,
+            knowledge_book_context=knowledge_book_context,
             learning_progress=progress,
             exercise_state=exercise,
             teaching_materials=teaching_materials,
@@ -594,7 +623,8 @@ class BackendGateway:
         )
         task = task.__class__(
             context=task.context, turn_id=turn.turn_id, content=task.content,
-            learning_context=task.learning_context, learning_progress=task.learning_progress,
+            learning_context=task.learning_context, knowledge_book_context=task.knowledge_book_context,
+            learning_progress=task.learning_progress,
             exercise_state=task.exercise_state, teaching_materials=task.teaching_materials,
             guided_session_id=task.guided_session_id, exercise_session_id=task.exercise_session_id,
             model_profile=task.model_profile, authorization=task.authorization,
@@ -687,7 +717,31 @@ class BackendGateway:
             )
             if updated is not None:
                 turn = updated
-        await self.dispatcher.cancel(turn_id)
+        else:
+            turn = await asyncio.to_thread(
+                self.repository.update_turn,
+                turn_id,
+                TurnStatus.CANCELLED,
+            )
+        event = await asyncio.to_thread(
+            self.repository.ensure_event,
+            turn_id=turn_id,
+            session_id=context.session_id,
+            event_type=GatewayEventType.TURN_CANCELLED,
+            payload={"status": TurnStatus.CANCELLED.value},
+        )
+        self.events.publish(event)
+        try:
+            await self.dispatcher.cancel(turn_id)
+        except Exception:
+            # Cancellation is already durable in the repository and its event
+            # has been published. A transient Redis control-plane failure must
+            # not turn the user-facing cancel request into HTTP 500.
+            logger.warning(
+                "Turn cancellation dispatch failed after durable cancellation",
+                exc_info=True,
+                extra={"turn_id": turn_id},
+            )
         updated = await asyncio.to_thread(self.repository.get_turn, turn_id)
         return updated or turn
 
@@ -781,6 +835,27 @@ class BackendGateway:
             self.repository.update_user_settings,
             principal.user_id,
             changes,
+        )
+
+    async def list_whiteboard_library(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
+        return await asyncio.to_thread(self.repository.list_whiteboard_library)
+
+    async def create_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        name: str,
+        elements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        return await asyncio.to_thread(
+            self.repository.create_whiteboard_library_item,
+            name=name,
+            elements=elements,
+            created_by=principal.user_id,
         )
 
     async def get_teaching_catalog(self, principal: AuthenticatedPrincipal, workspace_id: str) -> dict[str, Any]:

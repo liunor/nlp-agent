@@ -5,8 +5,9 @@ import pytest
 
 import gateway.core as gateway_core
 from core.identity import AccessDeniedError, AuthenticatedPrincipal
-from core.learning import LearningContext
+from core.learning import KnowledgeBookContext, LearningContext, TeachingMaterials
 from core.session_context import SessionContext
+from core.rbac import Permission
 from configs.settings import settings
 from gateway.contracts import (
     EvaluationContext,
@@ -20,6 +21,31 @@ from gateway.contracts import (
 from gateway.core import BackendGateway
 from gateway.dispatch import InProcessTurnDispatcher, TurnTask
 from gateway.repository import GatewayRepository
+
+
+@pytest.mark.asyncio
+async def test_knowledge_book_context_uses_published_server_copy():
+    class Repository:
+        def get_published_knowledge_page(self, workspace_id, knowledge_point_id):
+            assert workspace_id == "workspace-1"
+            assert knowledge_point_id == "point-1"
+            return {"published_markdown": "# Published textbook"}
+
+    candidate = KnowledgeBookContext(
+        workspace_id="workspace-1",
+        topic_id="topic-1",
+        knowledge_point_id="point-1",
+        content_markdown="# Client supplied text",
+    )
+
+    resolved = await gateway_core._resolve_knowledge_book_context(
+        Repository(),
+        SessionContext(session_id="session-1", workspace_id="workspace-1"),
+        candidate,
+    )
+
+    assert resolved is not None
+    assert resolved.content_markdown == "# Published textbook"
 
 
 class FakeSessions:
@@ -95,6 +121,18 @@ class FakeEngine:
         self.closed = True
 
 
+class SlowCancelEngine(FakeEngine):
+    def __init__(self):
+        super().__init__()
+        self.cancel_release = asyncio.Event()
+
+    async def cancel_turn(self, context, turn_id):
+        self.cancel_calls.append(turn_id)
+        self.lifecycle.append("cancel")
+        await self.cancel_release.wait()
+        self.active.pop(context.session_id, None)
+
+
 class RecordingTurnDispatcher:
     def __init__(self):
         self.submissions = []
@@ -115,6 +153,39 @@ class RecordingTurnDispatcher:
 class FailingTurnDispatcher(RecordingTurnDispatcher):
     async def submit(self, task):
         raise ConnectionError("redis unavailable")
+
+
+class FailingCancelTurnDispatcher(RecordingTurnDispatcher):
+    async def cancel(self, turn_id):
+        raise ConnectionError("redis unavailable")
+
+
+@pytest.mark.asyncio
+async def test_in_process_cancel_does_not_wait_for_slow_executor_cleanup():
+    started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def execute(_task):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await release_cleanup.wait()
+
+    dispatcher = InProcessTurnDispatcher(execute)
+    task = TurnTask(
+        context=SessionContext(session_id="session-1"), turn_id="turn-1", content="hello",
+        learning_context=None, learning_progress=None, exercise_state=None,
+        teaching_materials=TeachingMaterials(), guided_session_id=None, exercise_session_id=None,
+    )
+    await dispatcher.submit(task)
+    await started.wait()
+
+    await asyncio.wait_for(dispatcher.cancel(task.turn_id), timeout=0.1)
+    assert dispatcher.active_count() == 1
+
+    release_cleanup.set()
+    await asyncio.sleep(0)
 
 
 def test_explicit_repository_bypasses_redis_runtime_dispatch(tmp_path, monkeypatch):
@@ -231,6 +302,30 @@ async def test_gateway_rejects_student_teaching_catalog_updates(tmp_path, princi
 
 
 @pytest.mark.asyncio
+async def test_gateway_rejects_non_manager_role_even_with_content_manage_permission(tmp_path):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    gateway = BackendGateway(
+        engine=FakeEngine(),
+        repository=repository,
+        sessions=FakeSessions(),
+        dispatcher=RecordingTurnDispatcher(),
+    )
+    student_with_override = AuthenticatedPrincipal(
+        user_id="student-override",
+        workspace_ids=frozenset({"w1"}),
+        roles=frozenset({"student"}),
+        permissions=frozenset({Permission.LEARNING_CONTENT_MANAGE.value}),
+    )
+
+    with pytest.raises(AccessDeniedError, match="teacher or developer"):
+        await gateway.create_whiteboard_library_item(
+            student_with_override,
+            name="不应发布",
+            elements=[{"id": "shape-1", "type": "rectangle"}],
+        )
+
+
+@pytest.mark.asyncio
 async def test_gateway_rejects_guest_teaching_catalog_reads(tmp_path):
     repository = GatewayRepository(tmp_path / "gateway.sqlite3")
     gateway = BackendGateway(
@@ -276,6 +371,30 @@ async def test_gateway_submits_persisted_turn_to_dispatcher(tmp_path, principal)
     assert task.context == session
     assert task.content == "dispatch me"
     assert repository.get_turn(accepted.turn_id).status == TurnStatus.ACCEPTED
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_returns_cancelled_when_dispatcher_cancel_is_unavailable(
+    tmp_path, principal
+):
+    dispatcher = FailingCancelTurnDispatcher()
+    gateway = BackendGateway(
+        engine=FakeEngine(),
+        repository=GatewayRepository(tmp_path / "gateway.sqlite3"),
+        sessions=FakeSessions(),
+        dispatcher=dispatcher,
+    )
+    await gateway.start()
+    session = await gateway.create_session(principal, workspace_id="w1")
+    accepted = await gateway.submit_turn(
+        principal,
+        SubmitTurnRequest(session_id=session.session_id, content="cancel me"),
+    )
+
+    cancelled = await gateway.cancel_turn(principal, accepted.turn_id)
+
+    assert cancelled.status == TurnStatus.CANCELLED
     await gateway.close()
 
 
@@ -559,6 +678,34 @@ async def test_gateway_enforces_single_turn_supports_injection_and_cancel(tmp_pa
 
     cancelled = await gateway.cancel_turn(principal, first.turn_id)
     assert cancelled.status == TurnStatus.CANCELLED
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_publishes_cancelled_before_slow_executor_cleanup(tmp_path, principal):
+    engine = SlowCancelEngine()
+    engine.block = asyncio.Event()
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    gateway = BackendGateway(
+        engine=engine,
+        repository=repository,
+        sessions=FakeSessions(),
+    )
+    await gateway.start()
+    session = await gateway.create_session(principal, workspace_id="w1")
+    accepted = await gateway.submit_turn(
+        principal, SubmitTurnRequest(session_id=session.session_id, content="slow")
+    )
+    while session.session_id not in engine.active:
+        await asyncio.sleep(0)
+
+    cancelled = await gateway.cancel_turn(principal, accepted.turn_id)
+    events = repository.events_after(accepted.turn_id)
+
+    assert cancelled.status == TurnStatus.CANCELLED
+    assert [event.type for event in events].count(GatewayEventType.TURN_CANCELLED) == 1
+
+    engine.cancel_release.set()
     await gateway.close()
 
 

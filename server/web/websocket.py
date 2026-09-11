@@ -570,6 +570,7 @@ async def _dispatch_command(
                 attachments=[a.model_dump() for a in payload.attachments],
                 idempotency_key=payload.idempotency_key,
                 learning_context=payload.learning_context,
+                knowledge_book_context=payload.knowledge_book_context,
                 model_profile=payload.model_profile,
             ),
             auth_session_id=connection.auth_session_id,

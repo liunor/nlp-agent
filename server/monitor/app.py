@@ -457,12 +457,15 @@ def create_monitor_app(
 
     @app.get("/api/v1/auth/session", tags=["auth"])
     async def get_session(
+        request: Request,
         session: Annotated[SessionClaims | DatabaseSessionClaims, Depends(claims)],
         identity: Principal,
     ):
         if isinstance(session, DatabaseSessionClaims):
-            csrf_token = await database_auth.rotate_csrf(
-                rbac_runtime.session_factory, session
+            csrf_token = await database_auth.restore_csrf(
+                rbac_runtime.session_factory,
+                session,
+                request.cookies.get(database_auth.cookie_name),
             )
             session = DatabaseSessionClaims(
                 **{**session.__dict__, "csrf_token": csrf_token}

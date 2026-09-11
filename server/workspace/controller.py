@@ -30,7 +30,7 @@ from .service import (
 router = APIRouter(prefix="/api/v1/workspaces", tags=["workspaces"])
 
 
-DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+DbSession = Annotated[AsyncSession, Depends(get_db_session, scope="function")]
 
 
 @router.get("", response_model=WorkspaceListResponse)
@@ -150,6 +150,9 @@ async def add_member(
             resource_id=workspace_id,
             detail={"member_type": data.member_type},
         )
+        # ``created_at`` is a MySQL server default and may still be unloaded
+        # after the service flush.  Load it before Pydantic reads the ORM row.
+        await db.refresh(member)
         return WorkspaceMemberResponse.model_validate(member)
     except WorkspaceNotFoundError:
         raise HTTPException(status_code=404, detail="Workspace not found")

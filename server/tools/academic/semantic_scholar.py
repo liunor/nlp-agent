@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from core.outbound_network import OutboundNetworkPolicy
 from core.tool_config import AcademicSemanticScholarConfig
 from server.tools.academic.contracts import (
     AcademicAuthor,
@@ -97,6 +98,7 @@ class SemanticScholarProvider(AcademicProvider):
         transport: httpx.AsyncBaseTransport | None = None,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         min_interval_s: float = 1.0,
+        network_policy: OutboundNetworkPolicy | None = None,
     ) -> None:
         self.config = config or AcademicSemanticScholarConfig()
         self.base_url = self.config.base_url.rstrip("/")
@@ -105,6 +107,7 @@ class SemanticScholarProvider(AcademicProvider):
         self.max_response_bytes = max_response_bytes
         self.min_interval_s = min_interval_s
         self._transport = transport
+        self.network_policy = network_policy or OutboundNetworkPolicy.from_environment()
 
     def _get_api_key(self) -> str | None:
         if not self.api_key_env:
@@ -173,9 +176,12 @@ class SemanticScholarProvider(AcademicProvider):
                 "timeout": httpx.Timeout(self.timeout_s),
                 "limits": limits,
                 "headers": headers,
+                "trust_env": False,
             }
             if self._transport is not None:
                 client_kwargs["transport"] = self._transport
+            else:
+                client_kwargs["proxy"] = self.network_policy.proxy_for_url(url)
 
             try:
                 async with httpx.AsyncClient(**client_kwargs) as client:

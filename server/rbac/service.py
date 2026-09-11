@@ -36,6 +36,10 @@ class UnknownRoleError(ValueError):
     pass
 
 
+class ClassroomNotFoundError(LookupError):
+    """Raised when an active classroom cannot be found by ID."""
+
+
 class LastDeveloperForbiddenError(PermissionError):
     """Raised when a role change would remove the last active developer."""
 
@@ -206,6 +210,17 @@ class RbacService:
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=None, decision="allow", reason_code="role_permissions_replaced", permission_code="system:role:manage", resource_type="role", resource_id=role_code)
         return await self.invalidate_role_users(session, role.id, reason="role_permissions_changed")
 
+    async def menus(self, session: AsyncSession) -> list[MenuModel]:
+        return list(
+            (
+                await session.scalars(
+                    select(MenuModel)
+                    .where(MenuModel.status == "active")
+                    .order_by(MenuModel.sort_order)
+                )
+            ).all()
+        )
+
     async def visible_menus(
         self, session: AsyncSession, principal: AuthenticatedPrincipal
     ) -> list[MenuModel]:
@@ -257,6 +272,10 @@ class RbacService:
             raise ValueError("workspace already has a classroom")
         classroom = ClassroomModel(id=str(uuid.uuid4()), workspace_id=workspace_id, name=name, status="active")
         session.add(classroom)
+        # The membership row has a foreign key to the newly-created classroom.
+        # Flush the parent explicitly before adding that child while retaining
+        # the surrounding request transaction for atomicity.
+        await session.flush([classroom])
         # The creator is the first classroom teacher; this is the explicit
         # classroom-scope root rather than an implicit workspace shortcut.
         session.add(ClassroomMemberModel(classroom_id=classroom.id, user_id=actor_user_id, member_role="teacher", status="active"))
@@ -266,7 +285,7 @@ class RbacService:
     async def classroom(self, session: AsyncSession, classroom_id: str) -> ClassroomModel:
         row = await session.scalar(select(ClassroomModel).where(ClassroomModel.id == classroom_id, ClassroomModel.status == "active"))
         if row is None:
-            raise KeyError(classroom_id)
+            raise ClassroomNotFoundError(classroom_id)
         return row
 
     async def classrooms_for_user(self, session: AsyncSession, user_id: str) -> list[ClassroomModel]:
@@ -292,6 +311,63 @@ class RbacService:
         )
         session.add(OutboxMessageModel(id=str(uuid.uuid4()), topic="authorization.changed", payload_json={"user_id": user_id, "reason": "classroom_membership_changed"}))
         await self.audit(session, actor_user_id=actor_user_id, target_user_id=user_id, decision="allow", reason_code="classroom_member_replaced", permission_code="classroom:member:manage", resource_type="classroom", resource_id=classroom_id, detail={"member_role": member_role, "status": status})
+
+    async def replace_role_menus(
+        self,
+        session: AsyncSession,
+        *,
+        role_code: str,
+        menu_ids: set[str],
+        actor_user_id: str,
+    ) -> None:
+        role = await session.scalar(
+            select(RoleModel).where(RoleModel.code == role_code).with_for_update()
+        )
+        if role is None or role.is_builtin:
+            raise KeyError(role_code)
+        menus = (
+            list(
+                (
+                    await session.scalars(
+                        select(MenuModel).where(
+                            MenuModel.id.in_(menu_ids), MenuModel.status == "active"
+                        )
+                    )
+                ).all()
+            )
+            if menu_ids
+            else []
+        )
+        if {item.id for item in menus} != menu_ids:
+            raise ValueError("unknown or disabled menu")
+        await session.execute(
+            delete(RoleMenuModel).where(RoleMenuModel.role_id == role.id)
+        )
+        session.add_all(
+            [RoleMenuModel(role_id=role.id, menu_id=item.id) for item in menus]
+        )
+        await self.audit(
+            session,
+            actor_user_id=actor_user_id,
+            target_user_id=None,
+            decision="allow",
+            reason_code="role_menus_replaced",
+            permission_code="system:role:manage",
+            resource_type="role",
+            resource_id=role_code,
+        )
+
+    async def role_menu_ids(self, session: AsyncSession, role_code: str) -> set[str]:
+        role = await session.scalar(select(RoleModel.id).where(RoleModel.code == role_code))
+        if role is None:
+            raise KeyError(role_code)
+        return set(
+            (
+                await session.scalars(
+                    select(RoleMenuModel.menu_id).where(RoleMenuModel.role_id == role)
+                )
+            ).all()
+        )
 
     async def audit(
         self,

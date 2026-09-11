@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from sqlalchemy import BigInteger, Engine, case, cast, create_engine, func, literal, literal_column, select
 
@@ -16,6 +16,7 @@ from server.quota.service import QuotaService
 TOKEN_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
+    "cache_miss_input_tokens",
     "cache_write_input_tokens",
     "output_tokens",
     "reasoning_output_tokens",
@@ -25,6 +26,30 @@ TOKEN_FIELDS = (
 UsageGranularity = Literal["day", "week", "five_minute"]
 SystemUsageDimension = Literal["users", "workspaces", "providers", "purposes", "models"]
 SYSTEM_DIMENSION_PREVIEW_LIMIT = 50
+
+
+def _cache_metrics(input_tokens: Any, cached_input_tokens: Any) -> dict[str, Any]:
+    """Return Provider-only cache totals and a rate from bounded token facts."""
+    input_value = max(0, int(input_tokens or 0))
+    cached_value = min(max(0, int(cached_input_tokens or 0)), input_value)
+    return {
+        "cache_input_tokens": input_value,
+        "cache_cached_input_tokens": cached_value,
+        "cache_hit_rate": cached_value / input_value if input_value else None,
+    }
+
+
+def _provider_cache_tokens(rows: list[Mapping[str, Any]]) -> dict[str, int]:
+    """Return cache-rate inputs from Provider-measured UsageEvents only."""
+    provider_rows = [row for row in rows if row.get("usage_source") == "provider"]
+    return {
+        "input_tokens": sum(
+            int(row.get("input_tokens") or 0) for row in provider_rows
+        ),
+        "cached_input_tokens": sum(
+            int(row.get("cached_input_tokens") or 0) for row in provider_rows
+        ),
+    }
 
 
 def _utc_now() -> datetime:
@@ -140,8 +165,8 @@ class UsageReadService:
         return snapshot
 
     @staticmethod
-    def _aggregate_expressions(table):
-        return [
+    def _aggregate_expressions(table, *, include_provider_cache: bool = False):
+        expressions = [
             func.count().label("events"),
             func.coalesce(
                 func.sum(case((table.c.credits_micro.is_(None), 1), else_=0)), 0
@@ -160,6 +185,36 @@ class UsageReadService:
                 for field in TOKEN_FIELDS
             ],
         ]
+        if include_provider_cache:
+            expressions.extend(
+                [
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    table.c.usage_source == "provider",
+                                    table.c.input_tokens,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("_provider_input_tokens"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    table.c.usage_source == "provider",
+                                    table.c.cached_input_tokens,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("_provider_cached_input_tokens"),
+                ]
+            )
+        return expressions
 
     @staticmethod
     def _dimension_item(row, key: str, *, secondary_key: str | None = None) -> dict[str, Any]:
@@ -203,7 +258,9 @@ class UsageReadService:
             table.c.occurred_at < end,
             table.c.archived_at.is_(None),
         )
-        totals_query = select(*self._aggregate_expressions(table)).where(*conditions)
+        totals_query = select(
+            *self._aggregate_expressions(table, include_provider_cache=True)
+        ).where(*conditions)
         period = func.date(table.c.occurred_at).label("period_label")
         # Keep the overview trend one row per day. Grouping by purpose,
         # provider, and model made this lightweight snapshot grow with every
@@ -264,6 +321,7 @@ class UsageReadService:
                 }
             )
 
+        tokens = {field: int(totals[field] or 0) for field in TOKEN_FIELDS}
         output = {
             "scope": "system",
             "user_id": None,
@@ -279,7 +337,11 @@ class UsageReadService:
             "credit_status": "complete" if unpriced_events == 0 else "partial",
             "credits_micro": priced_credits_micro if unpriced_events == 0 else None,
             "priced_credits_micro": priced_credits_micro,
-            "tokens": {field: int(totals[field] or 0) for field in TOKEN_FIELDS},
+            "tokens": tokens,
+            **_cache_metrics(
+                totals.get("_provider_input_tokens", 0),
+                totals.get("_provider_cached_input_tokens", 0),
+            ),
             "breakdown": output_breakdown,
         }
         for name, (key, secondary_key) in dimensions.items():
@@ -467,7 +529,10 @@ class UsageReadService:
                 connection, table, bucket_minutes=bucket_minutes
             )
             query = (
-                select(bucket.label("bucket_epoch"), *self._aggregate_expressions(table))
+                select(
+                    bucket.label("bucket_epoch"),
+                    *self._aggregate_expressions(table, include_provider_cache=True),
+                )
                 .where(*conditions)
                 .group_by(bucket)
                 .order_by(bucket)
@@ -577,6 +642,13 @@ class UsageReadService:
             "credits_micro": priced_credits_micro if unpriced_events == 0 else None,
             "priced_credits_micro": priced_credits_micro,
             "tokens": token_totals,
+            **_cache_metrics(
+                sum(int(row.get("_provider_input_tokens") or 0) for row in rows),
+                sum(
+                    int(row.get("_provider_cached_input_tokens") or 0)
+                    for row in rows
+                ),
+            ),
             "breakdown": breakdown,
         }
 
@@ -737,6 +809,7 @@ class UsageReadService:
             ),
             "priced_credits_micro": priced_credits_micro,
             "tokens": tokens,
+            **_cache_metrics(**_provider_cache_tokens(rows)),
             "breakdown": [
                 breakdown[key] for key in sorted(breakdown)
             ],
@@ -848,6 +921,12 @@ class UsageReadService:
             "input_tokens": int(usage.get("input_tokens") or 0),
             "cached_input_tokens": int(
                 input_details.get("cache_read", usage.get("cached_tokens", 0))
+                or 0
+            ),
+            "cache_miss_input_tokens": int(
+                input_details.get(
+                    "cache_miss", usage.get("prompt_cache_miss_tokens", 0)
+                )
                 or 0
             ),
             "cache_write_input_tokens": int(

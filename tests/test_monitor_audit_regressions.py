@@ -401,7 +401,7 @@ def test_usage_dimensions_have_a_bounded_database_page() -> None:
                     "unpriced_events": 0,
                     "priced_credits_micro": 20,
                     **{field: 1 for field in (
-                        "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                        "input_tokens", "cached_input_tokens", "cache_miss_input_tokens", "cache_write_input_tokens",
                         "output_tokens", "reasoning_output_tokens", "total_tokens",
                     )},
                 }
@@ -460,7 +460,7 @@ def test_usage_trend_aggregates_five_minute_buckets_in_sql() -> None:
                     "unpriced_events": 0,
                     "priced_credits_micro": 20,
                     **{field: 1 for field in (
-                        "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                        "input_tokens", "cached_input_tokens", "cache_miss_input_tokens", "cache_write_input_tokens",
                         "output_tokens", "reasoning_output_tokens", "total_tokens",
                     )},
                 }

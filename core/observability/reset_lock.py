@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 
 RUNTIME_RESET_LOCK_NAME = "nlp_agent_monitor_runtime_reset"
+RUNTIME_WRITE_LOCK_TIMEOUT_S = 10
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -20,8 +21,8 @@ def runtime_reset_lock(
     """Hold a MySQL named lock for one reset transaction boundary.
 
     The lock is session-scoped and therefore works across Gateway and Monitor
-    processes. A normal writer fails fast while reset owns the fence; a reset
-    waits for a writer that already owns it to finish.
+    processes. A normal writer waits for a bounded interval while reset owns
+    the fence; a reset likewise waits for an active writer to finish.
     """
     if not enabled:
         yield
@@ -53,9 +54,18 @@ def runtime_reset_lock(
 
 @contextmanager
 def runtime_write_transaction(
-    engine: Any, *, enabled: bool = True, timeout_s: int = 0
+    engine: Any,
+    *,
+    enabled: bool = True,
+    timeout_s: int = RUNTIME_WRITE_LOCK_TIMEOUT_S,
 ) -> Iterator[Any]:
-    """Run one mutation and its reset fence on the same DB connection."""
+    """Run one mutation and its reset fence on the same DB connection.
+
+    Writers wait briefly instead of failing on ordinary write/write contention
+    or while the monitor performs a bounded reset. This keeps the lock as a
+    backpressure boundary rather than turning a transient collision into a
+    partially persisted Turn.
+    """
     if not enabled:
         with engine.begin() as connection:
             yield connection
@@ -91,7 +101,11 @@ def runtime_write_guard(function: F) -> F:
     def guarded(self, *args: Any, **kwargs: Any):
         if not getattr(self, "_runtime_lock_enabled", False):
             return function(self, *args, **kwargs)
-        with runtime_reset_lock(self._engine, enabled=True, timeout_s=0):
+        with runtime_reset_lock(
+            self._engine,
+            enabled=True,
+            timeout_s=RUNTIME_WRITE_LOCK_TIMEOUT_S,
+        ):
             return function(self, *args, **kwargs)
 
     return guarded  # type: ignore[return-value]

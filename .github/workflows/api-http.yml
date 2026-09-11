@@ -1,0 +1,167 @@
+name: Real HTTP API Tests
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # Keep push and pull_request validation in separate groups.  Both events
+  # fire for a feature branch with an open PR; sharing a group would cancel
+  # the push selector before it can deliberately skip duplicate validation.
+  group: api-http-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    name: Select API HTTP trigger
+    runs-on: ubuntu-latest
+    outputs:
+      run_tests: ${{ steps.decision.outputs.run_tests }}
+    steps:
+      - name: Avoid duplicate feature push validation while a PR is open
+        id: decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_tests=true
+          if [[ "$EVENT_NAME" == "push" && "$REF_NAME" == feature/* ]]; then
+            if open_prs=$(gh pr list \
+                --repo "$REPOSITORY" \
+                --state open \
+                --head "$REF_NAME" \
+                --json baseRefName \
+                --jq '[.[] | select(.baseRefName == "develop" or .baseRefName == "main")] | length'); then
+              if [[ "$open_prs" =~ ^[1-9][0-9]*$ ]]; then
+                run_tests=false
+                echo "An open develop/main PR owns validation for $REF_NAME; skipping duplicate push smoke."
+              fi
+            else
+              echo "::warning::Could not query open PRs for $REF_NAME; running API smoke instead of skipping validation."
+            fi
+          fi
+          echo "run_tests=$run_tests" >> "$GITHUB_OUTPUT"
+
+  api-http:
+    name: Real HTTP API tests
+    needs: select
+    if: needs.select.outputs.run_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUN_API_HTTP: '1'
+      PYTHONUNBUFFERED: '1'
+      API_HTTP_FULL_GATE: '1'
+      API_HTTP_PRINT_DIAGNOSTICS: '1'
+      API_HTTP_ARTIFACT_DIR: ${{ github.workspace }}/api-http-diagnostics
+      API_HTTP_COVERAGE_REPORT: ${{ github.workspace }}/artifacts/api-http-coverage.txt
+      # The harness refuses these values when non-empty.  Keeping them empty
+      # here makes the isolation contract explicit for hosted runners.
+      DATABASE_URL: ''
+      REDIS_URL: ''
+      NLP_AGENT_DATABASE_URL: ''
+      NLP_AGENT_REDIS_URL: ''
+      MYSQL_URL: ''
+      API_HTTP_DATABASE_URL: ''
+      API_HTTP_REDIS_URL: ''
+      WEB_BASE_URL: ''
+      MONITOR_BASE_URL: ''
+      NLP_AGENT_WEB_BASE_URL: ''
+      NLP_AGENT_MONITOR_BASE_URL: ''
+      NLP_AGENT_WEB_HOST: ''
+      NLP_AGENT_MONITOR_HOST: ''
+      API_HTTP_WEB_BASE_URL: ''
+      API_HTTP_MONITOR_BASE_URL: ''
+      DEEPSEEK_API_KEY: ''
+      QWEN_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify Docker daemon
+        run: docker info --format '{{.ServerVersion}}'
+
+      - name: Install locked test dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Select API test tier
+        id: tier
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            marker='api_full'
+          elif [[ "$GITHUB_EVENT_NAME" == "push" && ( "$GITHUB_REF_NAME" == 'develop' || "$GITHUB_REF_NAME" == 'main' ) ]]; then
+            marker='api_core or api_async_core or api_runtime_core'
+          else
+            marker='api_smoke'
+          fi
+          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+          echo "Selected marker: $marker"
+
+      - name: Run real HTTP API tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts api-http-diagnostics
+          uv run pytest tests/api_http \
+            -m "${{ steps.tier.outputs.marker }}" \
+            -q -s \
+            -o junit_logging=none \
+            --junitxml=artifacts/api-http-junit.xml
+
+      - name: Upload API HTTP JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-http-junit-${{ github.run_id }}
+          if-no-files-found: warn
+          path: artifacts/api-http-junit.xml
+
+      - name: Write Docker diagnostics after failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p api-http-diagnostics
+          docker info > api-http-diagnostics/docker-info.txt 2>&1
+          docker ps -a > api-http-diagnostics/docker-ps.txt 2>&1
+
+      - name: Upload API HTTP failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-http-diagnostics-${{ github.run_id }}
+          if-no-files-found: warn
+          path: api-http-diagnostics/
+
+      - name: Upload Full API coverage summary
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-http-coverage-${{ github.run_id }}
+          if-no-files-found: warn
+          path: artifacts/api-http-coverage.txt

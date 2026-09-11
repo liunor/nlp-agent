@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage
 from typing_extensions import override
 
 from core.model_runtime.adapters.openai_compatible import OpenAICompatibleChatModel
+from core.model_runtime.network import model_http_client_kwargs
 from core.model_runtime.contracts import (
     ModelDefinition,
     ModelPresetConfig,
@@ -102,6 +103,7 @@ class GLMAdapter:
                 "tool_stream": True,
             },
         }
+        kwargs.update(model_http_client_kwargs(provider.base_url, timeout))
         if preset.generation.temperature is not None:
             kwargs["temperature"] = preset.generation.temperature
         if preset.generation.top_p is not None:

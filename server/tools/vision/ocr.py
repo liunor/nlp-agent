@@ -35,9 +35,31 @@ from server.tools.vision.contracts import (
 from server.tools.vision.imaging import decode_bgr, downscale_to
 
 _UPSCALE_FACTOR = 2
+_shared_engine: Any = None
+_shared_engine_lock = threading.Lock()
+
+
+class _SerializedEngine:
+    """RapidOCR has mutable inference state; share weights, serialize calls."""
+
+    def __init__(self, engine: Any) -> None:
+        self.engine = engine
+        self.lock = threading.Lock()
+
+    def __call__(self, array: np.ndarray) -> Any:
+        with self.lock:
+            return self.engine(array)
 
 
 def _default_engine_factory() -> Any:
+    global _shared_engine
+    with _shared_engine_lock:
+        if _shared_engine is None:
+            _shared_engine = _SerializedEngine(_create_engine())
+        return _shared_engine
+
+
+def _create_engine() -> Any:
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as error:

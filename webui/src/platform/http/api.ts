@@ -1,7 +1,8 @@
-import type { AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperRuntimeHealth, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperRuntimeHealth, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, WhiteboardLibraryItem } from "@/shared/types";
 import type { FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
+export const AUTH_EXPIRED_EVENT = "nova:auth-expired";
 
 export class ApiError extends Error {
   constructor(
@@ -14,8 +15,13 @@ export class ApiError extends Error {
 }
 
 let csrfToken = "";
+let authRequest: Promise<AuthSession> | null = null;
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  retryCsrf = true,
+): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) {
@@ -33,16 +39,45 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const problem = await response.json().catch(() => ({})) as { detail?: string; title?: string; code?: string };
+    if (
+      response.status === 403 &&
+      problem.code === "csrf_rejected" &&
+      retryCsrf &&
+      !["GET", "HEAD", "OPTIONS"].includes(method) &&
+      path !== "/auth/session"
+    ) {
+      await ensureAuth();
+      return request<T>(path, init, false);
+    }
+    if (
+  response.status === 401 &&
+  csrfToken &&
+  path !== "/auth/session" &&
+  path !== "/auth/login"
+) {
+  csrfToken = "";
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
     throw new ApiError(problem.detail ?? problem.title ?? `HTTP ${response.status}`, response.status, problem.code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
-export async function ensureAuth(): Promise<AuthSession> {
-  const session = await request<AuthSession>("/auth/session");
-  csrfToken = session.csrf_token;
-  return session;
+export function ensureAuth(): Promise<AuthSession> {
+  if (authRequest) return authRequest;
+  const pending = request<AuthSession>("/auth/session")
+    .then((session) => {
+      csrfToken = session.csrf_token;
+      return session;
+    })
+    .finally(() => {
+      if (authRequest === pending) authRequest = null;
+    });
+  authRequest = pending;
+  return pending;
 }
 
 export interface UploadResponse {
@@ -277,6 +312,8 @@ export const api = {
   saveGuidedBlueprint: (workspaceId: string, blueprint: TeacherCatalog["guided_blueprints"][number]) => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/guided-blueprints/${encodeURIComponent(blueprint.id)}`, { method: "PUT", body: JSON.stringify(blueprint) }),
   deleteBlueprint: (workspaceId: string, kind: "exercise" | "review", blueprintId: string) => request<void>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/${kind}-blueprints/${encodeURIComponent(blueprintId)}`, { method: "DELETE" }),
   getLearningCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/learning/catalog/${encodeURIComponent(workspaceId)}`),
+  getWhiteboardLibrary: () => request<{ items: WhiteboardLibraryItem[] }>("/whiteboard/library"),
+  createWhiteboardLibraryItem: (name: string, elements: unknown[]) => request<{ item: WhiteboardLibraryItem }>("/whiteboard/library", { method: "POST", body: JSON.stringify({ name, elements }) }),
   getTeacherBookNavigation: (workspaceId = "default") => request<{ workspace_id: string; items: TeacherBookNavigationItem[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/navigation`),
   getTeacherBookPage: (workspaceId: string, knowledgePointId: string) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`),
   updateTeacherBookPage: (workspaceId: string, knowledgePointId: string, content_markdown: string, expected_revision: number, assets: TeacherBookAssetInput[] = []) => request<{ page: TeacherBookPage; warnings: string[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`, { method: "PUT", body: JSON.stringify({ content_markdown, expected_revision, assets }) }),
@@ -290,7 +327,7 @@ export const api = {
   getTeacherResource: (resource: "courses" | "prompts" | "reports", workspaceId = "default") =>
     request<{ items: unknown[]; status: string }>(`/teacher/${resource}?workspace_id=${encodeURIComponent(workspaceId)}`),
 
-  // ---- Admin module (用户 / 工作区 / 班级加入申请) ----
+  // ---- Admin module (用户) ----
   listUsers: (offset = 0, limit = 12, status?: string, keyword?: string, includeDeleted = false) =>
     request<UserListResponse>(
       `/users?offset=${offset}&limit=${limit}${status ? `&status=${encodeURIComponent(status)}` : ""}${keyword ? `&keyword=${encodeURIComponent(keyword)}` : ""}${includeDeleted ? "&include_deleted=true" : ""}`,
@@ -335,23 +372,6 @@ export const api = {
     return request<AuthorizationAuditListResponse>(`/audit/authorization${suffix}`);
   },
   getAuthorizationAuditStats: (days = 30) => request<AuthorizationAuditSummary>(`/audit/authorization/stats?days=${days}`),
-  listWorkspaces: () => request<{ workspaces: Workspace[]; total: number }>("/workspaces"),
-  listWorkspaceMembers: (workspaceId: string) =>
-    request<WorkspaceMember[]>(`/workspaces/${encodeURIComponent(workspaceId)}/members`),
-  listClassrooms: () => request<{ items: ClassroomSummary[] }>("/classrooms"),
-  listJoinRequests: (classroomId: string) =>
-    request<JoinRequestListResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-requests`),
-  approveJoinRequest: (classroomId: string, requestId: string) =>
-    request<JoinRequest>(
-      `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/approve`,
-      { method: "POST", body: "{}" },
-    ),
-  rejectJoinRequest: (classroomId: string, requestId: string) =>
-    request<JoinRequest>(
-      `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/reject`,
-      { method: "POST" },
-    ),
-
   // ---------------------------------------------------------------------------
   // Registration (public)
   // ---------------------------------------------------------------------------

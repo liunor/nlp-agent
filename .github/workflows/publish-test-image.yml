@@ -139,6 +139,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cleanup unused Docker resources
+        env:
+          COMPOSE_PROJECT_NAME: nova-test
+        run: |
+          set -euo pipefail
+          # The runner is a long-lived single-purpose deploy host. Keep named
+          # data volumes, but reclaim every unused container, network, image,
+          # and local build cache before pulling the next release.
+          docker system prune -af
+          docker builder prune -af
+          df -h /
       - name: Deploy the published GHCR image
         env:
           DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
@@ -162,10 +173,15 @@ jobs:
           DEPLOY_ENV_FILE="$(mktemp)"
           trap 'rm -f "$DEPLOY_ENV_FILE"' EXIT
           awk -v nova_image_ref="$NOVA_IMAGE_REF" -v sandbox_runtime_ref="$SANDBOX_RUNTIME_REF" '
-            BEGIN { nova_found = 0; sandbox_found = 0 }
+            BEGIN { nova_found = 0; sandbox_found = 0; monitor_bind_found = 0 }
             /^NOVA_IMAGE_REF=/ {
               print "NOVA_IMAGE_REF=\"" nova_image_ref "\""
               nova_found = 1
+              next
+            }
+            /^NOVA_MONITOR_BIND_ADDRESS=/ {
+              print "NOVA_MONITOR_BIND_ADDRESS=\"0.0.0.0\""
+              monitor_bind_found = 1
               next
             }
             /^NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=/ {
@@ -177,13 +193,15 @@ jobs:
             END {
               if (!nova_found) print "NOVA_IMAGE_REF=\"" nova_image_ref "\""
               if (!sandbox_found) print "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=\"" sandbox_runtime_ref "\""
+              if (!monitor_bind_found) print "NOVA_MONITOR_BIND_ADDRESS=\"0.0.0.0\""
             }
           ' "$DEPLOY_DIR/.env" > "$DEPLOY_ENV_FILE"
           chmod 600 "$DEPLOY_ENV_FILE"
           export NOVA_ENV_FILE="$DEPLOY_ENV_FILE"
           SANDBOX_CONFIGURED_REF="$(awk -F= '$1 == "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST" {sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit}' "$DEPLOY_ENV_FILE")"
           test "$SANDBOX_CONFIGURED_REF" = "$SANDBOX_RUNTIME_REF"
-          docker pull "$SANDBOX_CONFIGURED_REF"
+          bash "$GITHUB_WORKSPACE/.github/scripts/run-with-transient-registry-retry.sh" \
+            docker pull --quiet "$SANDBOX_CONFIGURED_REF"
           test "$NOVA_IMAGE_REF" = "ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}"
           resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml config --images)"
           printf '%s\n' "$resolved_images"
@@ -191,11 +209,59 @@ jobs:
             echo "Compose did not resolve the expected published image: $NOVA_IMAGE_REF"
             exit 1
           }
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml pull nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx
+          bash "$GITHUB_WORKSPACE/.github/scripts/run-with-transient-registry-retry.sh" \
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml pull --quiet nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx mysql redis
+          # Every image needed by this `up` was pulled above. Prevent Compose
+          # from issuing a second registry request after a successful pull.
+          export NOVA_PULL_POLICY=never
           if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx; then
             echo "::error::Compose startup failed; collecting migration diagnostics."
             docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps || true
             docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml logs --no-color --tail=200 nova-migrate || true
+            exit 1
+          fi
+          worker_running=0
+          for worker_attempt in {1..12}; do
+            if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker"; then
+              worker_running=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$worker_running" -ne 1 ]; then
+            echo "::error::nova-worker is not running; cannot validate outbound network configuration."
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps || true
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml logs --no-color --tail=200 nova-worker || true
+            exit 1
+          fi
+          echo "Proxy connectivity preflight"
+          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-worker .venv/bin/python -c '
+          import os
+          import socket
+          import sys
+          from urllib.parse import urlsplit
+
+          raw = os.environ.get("NOVA_OUTBOUND_PROXY_URL", "").strip() or os.environ.get("HTTPS_PROXY", "").strip()
+          if not raw:
+              print("Outbound proxy disabled; skipping proxy connectivity check.")
+              raise SystemExit(0)
+          parsed = urlsplit(raw)
+          try:
+              port = parsed.port
+          except ValueError:
+              port = None
+          if parsed.scheme not in {"http", "https"} or not parsed.hostname or not port:
+              print("Configured outbound proxy must be an HTTP(S) URL with a host and port.", file=sys.stderr)
+              raise SystemExit(1)
+          try:
+              with socket.create_connection((parsed.hostname, port), timeout=5):
+                  pass
+          except OSError as error:
+              print(f"Outbound proxy is not reachable from the container at {parsed.hostname}:{port}: {error}", file=sys.stderr)
+              raise SystemExit(1)
+          print(f"Outbound proxy is reachable from the container at {parsed.hostname}:{port}.")
+          '; then
+            echo "::error::Outbound proxy preflight failed. Ensure the proxy listens on the Docker-reachable host.docker.internal address, not only 127.0.0.1."
             exit 1
           fi
           for attempt in {1..12}; do
@@ -204,18 +270,23 @@ jobs:
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-sandbox-manager | grep -Fxq "nova-sandbox-manager" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
+              docker image inspect "$SANDBOX_CONFIGURED_REF" >/dev/null || {
+                echo "::error::Configured sandbox runtime image is missing after deployment: $SANDBOX_CONFIGURED_REF"
+                exit 1
+              }
               exit 0
             fi
             sleep 5
           done
           exit 1
-      - name: Cleanup unused Docker resources
+      - name: Cleanup Docker resources after deployment
         if: always()
-        env:
-          COMPOSE_PROJECT_NAME: nova-test
         run: |
           set -euo pipefail
-          docker container prune -f --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME"
-          docker image prune -af
+          # Run even when health checks fail so a bad release cannot strand
+          # old image layers on the runner. Named MySQL, Redis, app, and log
+          # data volumes are intentionally preserved.
+          docker system prune -af
           docker builder prune -af
+          docker system df
           df -h /

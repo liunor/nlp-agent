@@ -5,8 +5,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from server.application.turn_reliability import LostTurnClaimError, TurnReliabilityService, utc_now
-from server.infrastructure.mysql.models import TurnModel
+from server.application.turn_reliability import (
+    CancelledTurnClaim,
+    LostTurnClaimError,
+    TurnReliabilityService,
+    utc_now,
+)
+from server.infrastructure.mysql.models import TurnCancellationModel, TurnModel
 
 
 @pytest.mark.asyncio
@@ -26,8 +31,45 @@ async def test_claim_increments_generation_and_heartbeat_requires_the_same_owner
 
 
 @pytest.mark.asyncio
-async def test_recovery_invalidates_old_generation_and_emits_handover_without_resetting_sequence() -> None:
-    turn = TurnModel(id="turn-1", conversation_id="conversation-1", workspace_id="workspace-1", user_id="user-1", input_text="hi", status="running", claim_generation=2, lease_expires_at=utc_now() - timedelta(seconds=1))
+async def test_claim_reports_durable_cancellation_as_a_distinct_outcome() -> None:
+    turn = TurnModel(
+        id="turn-1",
+        conversation_id="conversation-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        input_text="hi",
+        status="accepted",
+        claim_generation=0,
+    )
+    cancellation = TurnCancellationModel(
+        turn_id="turn-1", requested_by="user-1", reason="user_requested"
+    )
+    session = AsyncMock()
+    session.scalar.side_effect = [turn, cancellation]
+    service = TurnReliabilityService()
+
+    result = await service.claim_turn(
+        session, turn_id="turn-1", worker_id="worker-a", lease_s=30
+    )
+
+    assert isinstance(result, CancelledTurnClaim)
+    assert turn.status == "cancelled"
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovery_repairs_legacy_unleased_zombie_and_preserves_sequence() -> None:
+    turn = TurnModel(
+        id="turn-1",
+        conversation_id="conversation-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        input_text="hi",
+        status="running",
+        claim_generation=2,
+        claimed_by=None,
+        lease_expires_at=None,
+    )
     session = AsyncMock()
     session.add = MagicMock()
     scalars = MagicMock()
@@ -42,6 +84,13 @@ async def test_recovery_invalidates_old_generation_and_emits_handover_without_re
 
     assert recovered == ["turn-1"]
     assert turn.claim_generation == 3
+    assert turn.status == "accepted"
+    assert turn.claimed_by is None
+    assert turn.heartbeat_at is None
+    assert turn.lease_expires_at is None
+    recovery_query = str(session.scalars.await_args_list[0].args[0])
+    assert "nlp_turns.claimed_by IS NULL" in recovery_query
+    assert "nlp_turns.lease_expires_at IS NULL" in recovery_query
     added = [call.args[0] for call in session.add.call_args_list]
     assert any(getattr(item, "event_type", None) == "turn.handover" and getattr(item, "sequence", None) == 8 for item in added)
     assert any(
@@ -49,6 +98,52 @@ async def test_recovery_invalidates_old_generation_and_emits_handover_without_re
         and getattr(item, "payload_json", None) == {"turn_id": "turn-1", "task": "encoded-turn-task"}
         for item in added
     )
+
+    session.scalar.side_effect = [turn, None]
+    generation = await service.claim_turn(
+        session,
+        turn_id="turn-1",
+        worker_id="worker-new",
+        lease_s=30,
+    )
+    assert generation == 4
+    assert turn.status == "running"
+    assert turn.claimed_by == "worker-new"
+    assert turn.lease_expires_at is not None
+
+
+@pytest.mark.asyncio
+async def test_recovery_exhaustion_converges_turn_to_failed_terminal_state() -> None:
+    expired_at = utc_now() - timedelta(seconds=1)
+    turn = TurnModel(
+        id="turn-1",
+        conversation_id="conversation-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        input_text="hi",
+        status="running",
+        claim_generation=6,
+        claimed_by="worker-old",
+        heartbeat_at=expired_at,
+        lease_expires_at=expired_at,
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    scalars = MagicMock()
+    scalars.all.return_value = [turn]
+    session.scalars.return_value = scalars
+
+    recovered = await TurnReliabilityService().recover_stuck_turns(
+        session, max_retries=3
+    )
+
+    assert recovered == []
+    assert turn.status == "failed"
+    assert turn.error_kind == "turn_lease_recovery_exhausted"
+    assert turn.completed_at is not None
+    assert turn.claimed_by is None
+    assert turn.heartbeat_at is None
+    assert turn.lease_expires_at is None
 
 
 @pytest.mark.asyncio

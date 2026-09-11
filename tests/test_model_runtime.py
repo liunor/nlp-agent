@@ -1,8 +1,9 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 import core.coordinator_runtime as coordinator_runtime_module
 import core.model_runtime.runtime as model_runtime_module
@@ -122,6 +123,48 @@ class DelayedFirstStreamModel(FakeStreamModel):
         await asyncio.sleep(self.delay_s)
         yield AIMessageChunk(content="first")
         yield AIMessageChunk(content="second")
+
+
+class FinishThenHangModel(FakeStreamModel):
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        yield AIMessageChunk(content="partial")
+        yield AIMessageChunk(
+            content="", response_metadata={"finish_reason": "stop"}
+        )
+        await asyncio.Event().wait()
+
+
+class FinishThenCancellationHangsModel(FakeStreamModel):
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        yield AIMessageChunk(content="partial")
+        yield AIMessageChunk(
+            content="", response_metadata={"finish_reason": "stop"}
+        )
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # Simulate a provider transport that swallows cancellation while
+            # closing its response stream.
+            await asyncio.Event().wait()
+
+
+class FinishThenUsageModel(FakeStreamModel):
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        yield AIMessageChunk(content="partial")
+        yield AIMessageChunk(
+            content="", response_metadata={"finish_reason": "stop"}
+        )
+        yield AIMessageChunk(
+            content="",
+            usage_metadata={
+                "input_tokens": 3,
+                "output_tokens": 4,
+                "total_tokens": 7,
+            },
+        )
 
 
 @pytest.mark.asyncio
@@ -508,6 +551,47 @@ def test_deepseek_replays_reasoning_only_for_tool_call_messages():
     assert payload["messages"][3]["reasoning_content"] == "needed"
 
 
+def test_deepseek_replays_all_reasoning_when_tools_in_payload():
+    model = DeepSeekChatModel(
+        model="deepseek-v4-pro", api_base="https://api.deepseek.com",
+        api_key="test", max_retries=0,
+    )
+    plain = AIMessage(
+        content="answer", additional_kwargs={"reasoning_content": "first-turn"}
+    )
+    tool = AIMessage(
+        content="", additional_kwargs={"reasoning_content": "tool-turn"},
+        tool_calls=[{
+            "id": "call-1", "name": "lookup", "args": {"q": "x"},
+            "type": "tool_call",
+        }],
+    )
+    payload = model._get_request_payload(
+        [
+            HumanMessage(content="one"),
+            plain,
+            HumanMessage(content="two"),
+            tool,
+            ToolMessage(content="result", tool_call_id="call-1"),
+        ],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a value",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            },
+        }],
+    )
+
+    assert payload["messages"][1]["reasoning_content"] == "first-turn"
+    assert payload["messages"][3]["reasoning_content"] == "tool-turn"
+
+
 @pytest.mark.asyncio
 async def test_transient_errors_retry_then_fail_over():
     primary = FakeModel([StatusError(503), StatusError(503)])
@@ -555,6 +639,62 @@ async def test_stream_never_replays_after_visible_delta():
     with pytest.raises(StreamInterruptedError):
         await anext(stream)
     assert fallback.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_ends_when_provider_emits_finish_reason(monkeypatch):
+    monkeypatch.setattr(
+        model_runtime_module,
+        "global_telemetry",
+        SimpleNamespace(event=lambda *_args, **_kwargs: None),
+    )
+    runtime = ResilientChatModel(
+        [candidate("finish", FinishThenHangModel([]))]
+    )
+
+    async def consume():
+        return [chunk async for chunk in runtime.astream([HumanMessage(content="hello")])]
+
+    chunks = await asyncio.wait_for(consume(), timeout=1.5)
+    assert [chunk.content for chunk in chunks] == ["partial", ""]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_name", ["qwen", "deepseek", "kimi", "glm"])
+async def test_stream_finish_drain_is_bounded_for_all_provider_families(provider_name):
+    runtime = ResilientChatModel(
+        [
+            ModelCandidate(
+                preset_name=provider_name,
+                provider_name=provider_name,
+                model_name=provider_name,
+                definition=definition(provider_name),
+                preset=preset(),
+                model=FinishThenCancellationHangsModel([]),
+            )
+        ]
+    )
+
+    async def consume():
+        return [chunk async for chunk in runtime.astream([HumanMessage(content="hello")])]
+
+    chunks = await asyncio.wait_for(consume(), timeout=0.75)
+    assert [chunk.content for chunk in chunks] == ["partial", ""]
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_usage_tail_after_finish_reason():
+    runtime = ResilientChatModel(
+        [candidate("finish-usage", FinishThenUsageModel([]))]
+    )
+
+    response = await runtime.ainvoke([HumanMessage(content="hello")])
+
+    assert response.content == "partial"
+    assert response.usage_metadata is not None
+    assert response.usage_metadata["input_tokens"] == 3
+    assert response.usage_metadata["output_tokens"] == 4
+    assert response.usage_metadata["total_tokens"] == 7
 
 
 def test_bind_tools_applies_to_every_fallback_candidate():

@@ -186,6 +186,7 @@ def _usage_event(
         "error_kind": None,
         "input_tokens": 8,
         "cached_input_tokens": 0,
+        "cache_miss_input_tokens": 0,
         "cache_write_input_tokens": 0,
         "output_tokens": 2,
         "reasoning_output_tokens": 0,
@@ -795,6 +796,61 @@ def test_system_snapshot_aggregates_detailed_usage_for_every_user():
     assert [row["user_id"] for row in snapshot["users"]] == ["alice", "bob"]
     assert snapshot["providers"][0]["provider"] == "provider-a"
     assert snapshot["models"][1]["provider_model"] == "model-b"
+
+
+def test_system_snapshot_reports_provider_measured_kv_cache_hit_rate():
+    engine = _engine()
+    first = _usage_event(
+        operation_id="op-cache-warmup",
+        occurred_at=NOW - timedelta(hours=1),
+    )
+    first.update(
+        usage_source="estimated",
+        input_tokens=100,
+        cached_input_tokens=0,
+        output_tokens=2,
+        total_tokens=102,
+    )
+    second = _usage_event(
+        operation_id="op-cache-hit",
+        occurred_at=NOW - timedelta(minutes=30),
+    )
+    second.update(
+        input_tokens=100,
+        cached_input_tokens=80,
+        output_tokens=2,
+        total_tokens=102,
+    )
+    estimated = _usage_event(
+        operation_id="op-cache-estimated",
+        occurred_at=NOW - timedelta(minutes=15),
+    )
+    estimated.update(
+        usage_source="estimated",
+        input_tokens=100,
+        cached_input_tokens=0,
+        output_tokens=2,
+        total_tokens=102,
+    )
+    with engine.begin() as connection:
+        connection.execute(insert(UsageEventModel), [first, second, estimated])
+
+    reader = UsageReadService(engine)
+    snapshot = reader.system_snapshot(days=7, now=NOW)
+    weekly = reader.system_snapshot(days=7, granularity="week", now=NOW)
+    trend = reader.system_trend(window_minutes=120, now=NOW)
+
+    assert snapshot["tokens"]["input_tokens"] == 300
+    assert snapshot["tokens"]["cached_input_tokens"] == 80
+    assert snapshot["cache_input_tokens"] == 100
+    assert snapshot["cache_cached_input_tokens"] == 80
+    assert snapshot["cache_hit_rate"] == pytest.approx(0.8)
+    assert weekly["cache_input_tokens"] == 100
+    assert weekly["cache_cached_input_tokens"] == 80
+    assert weekly["cache_hit_rate"] == pytest.approx(0.8)
+    assert trend["cache_input_tokens"] == 100
+    assert trend["cache_cached_input_tokens"] == 80
+    assert trend["cache_hit_rate"] == pytest.approx(0.8)
 
 
 def test_system_usage_exposes_bounded_user_pages_and_five_minute_trend():

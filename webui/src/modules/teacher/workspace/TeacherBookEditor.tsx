@@ -601,6 +601,13 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
 
   const handleArchiveFile = async (file: File | undefined) => {
     if (!file) return;
+    if (file.name.toLowerCase().endsWith(".md")) {
+      setArchivePreview(null);
+      setArchiveName("");
+      setArchiveBase64("");
+      await handleFile([file]);
+      return;
+    }
     setMessage("");
     try {
       const archive_base64 = await fileToBase64(file);
@@ -665,7 +672,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
       <div className="teacher-book-toolbar">
         <label className="teacher-book-import"><Upload size={15} />导入 Markdown/图片<input type="file" multiple accept=".md,text/markdown,image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { void handleFile(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} /></label>
         <label className="teacher-book-import"><Upload size={15} />附加编辑图片<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { void handleEditorAssets(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} /></label>
-        <label className="teacher-book-import"><Upload size={15} />导入教材包<input type="file" accept=".zip,application/zip" onChange={(event) => { void handleArchiveFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
+        <label className="teacher-book-import"><Upload size={15} />导入教材包<input type="file" accept=".zip,application/zip,.md,text/markdown" onChange={(event) => { void handleArchiveFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
         <button type="button" onClick={() => void loadNavigation()} disabled={loading}><RefreshCw size={15} className={loading ? "spin" : ""} />刷新目录</button>
         {message && <span role="status">{message}</span>}
       </div>

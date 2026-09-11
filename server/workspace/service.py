@@ -84,6 +84,10 @@ class WorkspaceService:
         self.session.add(member)
 
         await self.session.flush()
+        # MySQL server defaults for the timestamp columns are not guaranteed to
+        # be populated on the INSERT.  Refresh before returning so the
+        # controller's response model never triggers async lazy I/O.
+        await self.session.refresh(workspace)
         return workspace
 
     async def get_workspace(self, workspace_id: str) -> WorkspaceModel:

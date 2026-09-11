@@ -3,6 +3,8 @@ import logging.config
 import os
 import structlog
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 
 def _add_telemetry_context(_, __, event_dict):
@@ -20,13 +22,52 @@ def _add_telemetry_context(_, __, event_dict):
         pass
     return event_dict
 
-# 确保日志目录存在
-os.makedirs("logs", exist_ok=True)
+
+@dataclass(frozen=True)
+class LoggingOptions:
+    base_dir: Path
+    level: int
+    stdout: bool
+    retention_days: int
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def logging_options() -> LoggingOptions:
+    """Read logging settings without exposing credentials or application config."""
+    base_dir = Path(os.getenv("NLP_AGENT_LOG_DIR", "logs").strip() or "logs").expanduser()
+    service = os.getenv("NLP_AGENT_LOG_SERVICE", "").strip()
+    if service:
+        base_dir /= service
+
+    level_name = os.getenv("NLP_AGENT_LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+
+    try:
+        retention_days = max(1, int(os.getenv("NLP_AGENT_LOG_RETENTION_DAYS", "14")))
+    except ValueError:
+        retention_days = 14
+
+    return LoggingOptions(
+        base_dir=base_dir,
+        level=level,
+        stdout=_env_bool("NLP_AGENT_LOG_STDOUT", False),
+        retention_days=retention_days,
+    )
 
 def setup_logging():
     '''
     初始化日志系统，配置日志格式和输出方式
     '''
+    options = logging_options()
+
     # 1. 定义共用的处理器
     shared_processors = [
         _add_telemetry_context,
@@ -47,7 +88,7 @@ def setup_logging():
                 "()": structlog.stdlib.ProcessorFormatter,
                 "processors": [
                     structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                    structlog.dev.ConsoleRenderer(colors=True),
+                    structlog.processors.JSONRenderer(ensure_ascii=False),
                 ],
                 "foreign_pre_chain": shared_processors,
             },
@@ -61,15 +102,21 @@ def setup_logging():
             },
         },
         "handlers": {
-            # 控制台静默 — 避免干扰流式输出。日志全部走 DailyDirectoryHandler 落盘。
-            "console": {
-                "class": "logging.NullHandler",
-            },
+            "console": (
+                {
+                    "class": "logging.StreamHandler",
+                    "level": options.level,
+                    "formatter": "json_formatter",
+                    "stream": "ext://sys.stdout",
+                }
+                if options.stdout
+                else {"class": "logging.NullHandler"}
+            ),
         },
         "loggers": {
             "": {
                 "handlers": ["console"],
-                "level": "INFO",
+                "level": options.level,
             },
             # 第三方库静默 — 避免 httpx/openai/chromadb 的请求日志污染终端
             "httpx": {"level": "WARNING"},
@@ -91,9 +138,21 @@ def setup_logging():
     )
 
     for h in (
-        DailyDirectoryHandler(base_dir="logs", level=logging.NOTSET),   # all.log
-        DailyDirectoryHandler(base_dir="logs", level=logging.WARNING),  # warning.log
-        DailyDirectoryHandler(base_dir="logs", level=logging.ERROR),    # error.log
+        DailyDirectoryHandler(
+            base_dir=options.base_dir,
+            level=logging.NOTSET,
+            retention_days=options.retention_days,
+        ),
+        DailyDirectoryHandler(
+            base_dir=options.base_dir,
+            level=logging.WARNING,
+            retention_days=options.retention_days,
+        ),
+        DailyDirectoryHandler(
+            base_dir=options.base_dir,
+            level=logging.ERROR,
+            retention_days=options.retention_days,
+        ),
     ):
         h.setFormatter(json_formatter)
         logging.root.addHandler(h)

@@ -58,6 +58,7 @@ def test_canonical_token_usage_valid():
     usage = CanonicalTokenUsage(
         input_tokens=100,
         cached_input_tokens=30,
+        cache_miss_input_tokens=70,
         cache_write_input_tokens=20,
         output_tokens=50,
         reasoning_output_tokens=15,
@@ -67,6 +68,7 @@ def test_canonical_token_usage_valid():
     )
     assert usage.input_tokens == 100
     assert usage.cached_input_tokens == 30
+    assert usage.cache_miss_input_tokens == 70
     assert usage.cache_write_input_tokens == 20
     assert usage.output_tokens == 50
     assert usage.reasoning_output_tokens == 15
@@ -137,6 +139,21 @@ def test_canonical_token_usage_rejects_cached_exceeding_input():
             input_tokens=50,
             cached_input_tokens=40,
             cache_write_input_tokens=20,
+            output_tokens=10,
+            total_tokens=60,
+            source="provider",
+        )
+
+
+def test_canonical_token_usage_rejects_cache_miss_exceeding_input():
+    with pytest.raises(
+        ValidationError,
+        match="cached_input_tokens \\+ cache_miss_input_tokens must not exceed input_tokens",
+    ):
+        CanonicalTokenUsage(
+            input_tokens=50,
+            cached_input_tokens=40,
+            cache_miss_input_tokens=20,
             output_tokens=10,
             total_tokens=60,
             source="provider",

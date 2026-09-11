@@ -83,7 +83,7 @@ Fallback 在配置加载时验证 streaming/tool-call 能力。上下文预算�
 
 ## DeepSeek 工具调用
 
-DeepSeek thinking 模式下，包含工具调用的 Assistant 消息必须回传 `reasoning_content`。`DeepSeekChatModel` 只为此类消息注入 reasoning；普通完成轮次不回传，从而保持请求前缀稳定。
+DeepSeek thinking 模式下，只要当前请求携带 `tools` 参数，`DeepSeekChatModel` 就会回传所有历史 Assistant 消息的 `reasoning_content`，包括此前未调用工具的普通完成轮次，以满足多轮 Function Calling 的上下文约束。当前请求不携带 `tools` 时，仍只为包含 `tool_calls` 的历史 Assistant 消息注入 reasoning，普通完成轮次不回传，从而保持请求前缀稳定。
 
 工具调用仍使用 LangChain 标准 `AIMessage.tool_calls` 与 `AIMessageChunk.tool_call_chunks`，后续由 Tool Runtime 执行 Pydantic 参数校验。模型层不会修复或猜测可执行参数。
 
@@ -137,8 +137,9 @@ model.stream_interrupted
 
 - **`ModelIdentity`**: 描述模型调用的静态身份，包含 `provider`, `provider_model`, `model_profile`, `preset`, `route`, `pricing_key`, `context_window_tokens`, `max_output_tokens`。
 - **`UsageAttributionContext`**: 溯源归属上下文，包含 `request_id`, `user_id`, `workspace_id`, `conversation_id`, `turn_id`, `reservation_id`, `worker_id`, `parent_operation_id`, `purpose` (`coordinator | worker | compact | memory | vision | evaluation | other`)。
-- **`CanonicalTokenUsage`**: 标准化 Token 用量，包含 `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`, `source` (`provider | estimated | none`), `provider_response_id`。严格保证：
+- **`CanonicalTokenUsage`**: 标准化 Token 用量，包含 `input_tokens`, `cached_input_tokens`, `cache_miss_input_tokens`（Provider 观测、非独立计费项）, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`, `source` (`provider | estimated | none`), `provider_response_id`。严格保证：
   - `cached_input_tokens + cache_write_input_tokens <= input_tokens`
+  - `cached_input_tokens + cache_miss_input_tokens <= input_tokens`
   - `reasoning_output_tokens <= output_tokens`
   - `total_tokens = input_tokens + output_tokens`
 - **`BillableFeatureUsage`**: 与 Token 契约并列的功能用量，包含 `visual_input_tokens`, `image_units`, `search_calls`, `link_pages`；视觉 Token 与图片单位互斥。

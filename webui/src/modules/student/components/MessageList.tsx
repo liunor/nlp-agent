@@ -71,12 +71,17 @@ const AssistantMessage = memo(function AssistantMessage({ message, showReasoning
           startedAt={message.startedAt}
           completedAt={message.completedAt}
         />
-        {message.status === "failed" ? (
+        {message.status === "failed" && !message.content ? (
           <div className="error-card">这次讲解没有完成，请稍后重试。</div>
         ) : message.status === "cancelled" && !message.content ? (
           <div className="muted-card">已停止生成。</div>
         ) : (
-          <MarkdownContent streaming={streaming} streamRenderIntervalMs={streamRenderIntervalMs}>{message.content}</MarkdownContent>
+          <>
+            <MarkdownContent streaming={streaming} streamRenderIntervalMs={streamRenderIntervalMs}>{message.content}</MarkdownContent>
+            {message.status === "failed" && message.content && (
+              <div className="error-card">这次讲解未完整完成，已保留已生成内容，请稍后重试。</div>
+            )}
+          </>
         )}
         {!streaming && message.content && (
           <div className="message-actions">

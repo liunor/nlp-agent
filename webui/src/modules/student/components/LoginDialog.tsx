@@ -7,32 +7,49 @@ type Tab = "login" | "register";
 
 interface LoginDialogProps {
   open: boolean;
+  expired?: boolean;
   onClose: () => void;
   onAuthenticate: (username: string, password: string) => Promise<void>;
 }
 
-export function LoginDialog({ open, onClose, onAuthenticate }: LoginDialogProps) {
+export function LoginDialog({ open, expired = false, onClose, onAuthenticate }: LoginDialogProps) {
   const [tab, setTab] = useState<Tab>("login");
 
   const close = useCallback(() => {
     setTab("login");
     onClose();
   }, [onClose]);
+  const dismiss = useCallback(() => {
+  if (expired) return;
+  close();
+}, [close, expired]);
 
   return (
-    <Dialog.Root open={open} onOpenChange={(nextOpen: boolean) => { if (!nextOpen) close(); }}>
+    <Dialog.Root open={open} onOpenChange={(nextOpen: boolean) => { if (!nextOpen) dismiss(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="login-dialog-overlay" />
         <Dialog.Content className="login-dialog-content" aria-describedby="login-dialog-description">
-          <button className="login-dialog-close" type="button" onClick={close} aria-label="关闭">
-            <X size={18} />
-          </button>
+          {!expired && (
+  <button
+    className="login-dialog-close"
+    type="button"
+    onClick={dismiss}
+    aria-label="关闭"
+  >
+    <X size={18} />
+  </button>
+)}
 
           <Dialog.Description id="login-dialog-description">
             {tab === "login"
               ? "登录后可创建学习会话并使用实时对话功能。"
               : "使用手机号注册新账户，开始您的学习之旅。"}
           </Dialog.Description>
+          {expired && (
+  <p className="login-dialog-error login-dialog-expired-message" role="alert">
+    登录状态已失效，请重新登录后继续使用。
+  </p>
+)}
 
           {tab === "login" ? (
             <LoginForm onAuthenticate={onAuthenticate} onSuccess={close} onSwitchToRegister={() => setTab("register")} />

@@ -31,6 +31,7 @@ def test_canonical_usage_deepseek_fields():
     canon = canonical_usage(raw_deepseek, provider_response_id="deepseek-resp-1")
     assert canon.input_tokens == 1000
     assert canon.cached_input_tokens == 600
+    assert canon.cache_miss_input_tokens == 400
     assert canon.cache_write_input_tokens == 0
     assert canon.output_tokens == 200
     assert canon.reasoning_output_tokens == 80

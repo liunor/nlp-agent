@@ -63,6 +63,26 @@ def test_compose_runs_database_bootstrap_before_application_services_start():
         )
 
 
+def test_compose_passes_outbound_proxy_to_web_and_worker_containers():
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    for service_name in ("nova-web", "nova-worker"):
+        service = compose["services"][service_name]
+        assert "host.docker.internal:host-gateway" in service["extra_hosts"]
+        environment = service["environment"]
+        assert environment["HTTP_PROXY"] == "${NOVA_OUTBOUND_PROXY_URL:-}"
+        assert environment["HTTPS_PROXY"] == "${NOVA_OUTBOUND_PROXY_URL:-}"
+        assert environment["NOVA_OUTBOUND_PROXY_URL"] == "${NOVA_OUTBOUND_PROXY_URL:-}"
+        assert environment["NOVA_DIRECT_DOMAINS"].startswith("${NOVA_DIRECT_DOMAINS:-")
+        assert "${NOVA_DIRECT_DOMAINS:-" in environment["NO_PROXY"]
+        assert "redis" in environment["NO_PROXY"]
+        assert "mysql" in environment["NO_PROXY"]
+
+
 def test_model_provider_api_key_settings_bind_defaults_and_env_overrides(monkeypatch):
     monkeypatch.delenv("KIMI_API_KEY", raising=False)
     monkeypatch.delenv("GLM_API_KEY", raising=False)
@@ -121,3 +141,27 @@ def test_deployment_and_example_env_templates_include_kimi_and_glm_api_keys():
         content = local_env.read_text(encoding="utf-8")
         assert "KIMI_API_KEY" in content, f"Missing KIMI_API_KEY in {local_env}"
         assert "GLM_API_KEY" in content, f"Missing GLM_API_KEY in {local_env}"
+
+
+def test_compose_persists_and_exposes_structured_service_logs():
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    for service_name in (
+        "nova-migrate",
+        "nova-web",
+        "nova-worker",
+        "nova-monitor",
+        "nova-sandbox-manager",
+    ):
+        service = compose["services"][service_name]
+        assert "nova-logs:/app/logs" in service["volumes"]
+        environment = service["environment"]
+        assert environment["NLP_AGENT_LOG_DIR"] == "/app/logs"
+        assert environment["NLP_AGENT_LOG_SERVICE"] == service_name
+        assert environment["NLP_AGENT_LOG_STDOUT"] == "${NLP_AGENT_LOG_STDOUT:-true}"
+
+    assert "nova-logs" in compose["volumes"]

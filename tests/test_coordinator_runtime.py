@@ -6,6 +6,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from core.coordinator_runtime import CoordinatorRuntime, invoke_model_with_telemetry
+from core.learning import TeachingMaterials
 from core.observability.context import TelemetryContext, bind_telemetry_context
 from core.observability.models import SpanKind
 from core.observability.runtime import TelemetryRuntime
@@ -301,6 +302,28 @@ async def test_new_message_is_injected_into_active_coordinator_turn():
     await asyncio.wait_for(first, 1)
     assert len(calls) == 2
     assert global_agent_injections.pending("session-inject") == 0
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_eight_argument_invoke_keeps_teaching_materials_compatibility():
+    calls = []
+
+    async def invoke(
+        _messages, _context, _background, _turn_id, _learning_context,
+        _learning_progress, _exercise_state, teaching_materials,
+    ):
+        calls.append(teaching_materials)
+
+    runtime = CoordinatorRuntime(WorkerEventBus(), invoke)
+    materials = TeachingMaterials(learning_topic={"id": "transformer"})
+    await runtime.submit_user_turn(
+        "session-materials",
+        HumanMessage(content="question", id="turn-materials"),
+        teaching_materials=materials,
+    )
+
+    assert calls == [materials]
     await runtime.close()
 
 

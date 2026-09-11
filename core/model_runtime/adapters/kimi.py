@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage
 from typing_extensions import override
 
 from core.model_runtime.adapters.openai_compatible import OpenAICompatibleChatModel
+from core.model_runtime.network import model_http_client_kwargs
 from core.model_runtime.contracts import (
     ModelDefinition,
     ModelPresetConfig,
@@ -77,15 +78,17 @@ class KimiAdapter:
             "type": "enabled" if preset.thinking.enabled else "disabled",
             "keep": None,
         }
-        return KimiChatModel(
-            model=model.model_id,
-            base_url=provider.base_url,
-            api_key=api_key,
-            max_tokens=preset.generation.max_output_tokens,
-            request_timeout=timeout,
-            stream_chunk_timeout=preset.timeouts.stream_idle_s,
-            stream_usage=True,
-            max_retries=0,
-            default_headers=provider.default_headers or None,
-            extra_body={"thinking": thinking},
-        )
+        kwargs: dict[str, Any] = {
+            "model": model.model_id,
+            "base_url": provider.base_url,
+            "api_key": api_key,
+            "max_tokens": preset.generation.max_output_tokens,
+            "request_timeout": timeout,
+            "stream_chunk_timeout": preset.timeouts.stream_idle_s,
+            "stream_usage": True,
+            "max_retries": 0,
+            "default_headers": provider.default_headers or None,
+            "extra_body": {"thinking": thinking},
+        }
+        kwargs.update(model_http_client_kwargs(provider.base_url, timeout))
+        return KimiChatModel(**kwargs)

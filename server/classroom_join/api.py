@@ -31,7 +31,7 @@ from server.rbac.service import rbac_service
 
 router = APIRouter(prefix="/api/v1/classrooms", tags=["classroom-join-requests"])
 
-DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+DbSession = Annotated[AsyncSession, Depends(get_db_session, scope="function")]
 
 
 def _to_response(req: ClassJoinRequestModel) -> JoinRequestResponse:

@@ -6,7 +6,8 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from core.learning import ExerciseState, LearningContext, LearningProgress
-from gateway.contracts import TurnStatus
+from gateway.contracts import GatewayEventType, TurnStatus
+from gateway.contracts import TurnClaimMismatchError
 from gateway.mysql_repository import MySQLGatewayRepository
 
 
@@ -97,6 +98,30 @@ def test_events_after_decodes_mysql_json_payloads() -> None:
     events = repository.events_after("turn-1")
 
     assert events[0].payload == {"delta": "hello"}
+
+
+def test_events_after_accepts_reliability_handover_events() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    connection = MagicMock()
+    rows = MagicMock()
+    rows.mappings.return_value.all.return_value = [
+        {
+            "id": "event-handover",
+            "conversation_id": "session-1",
+            "sequence": 8,
+            "event_type": "turn.handover",
+            "created_at": "2026-09-10T00:00:00Z",
+            "payload_json": '{"reason":"lease_expired"}',
+        }
+    ]
+    connection.execute.return_value = rows
+    repository._engine = MagicMock()
+    repository._engine.connect.return_value.__enter__.return_value = connection
+
+    events = repository.events_after("turn-1")
+
+    assert events[0].type == GatewayEventType.TURN_HANDOVER
+    assert events[0].payload == {"reason": "lease_expired"}
 
 
 def test_guided_session_stats_qualifies_created_at_after_user_join() -> None:
@@ -194,6 +219,72 @@ def test_create_turn_ensures_the_conversation_before_inserting_the_turn() -> Non
     assert "INSERT INTO nlp_turns" in str(connection.execute.call_args.args[0])
     assert record is sentinel.record
     assert duplicate is False
+
+
+def test_update_turn_preserves_cancelled_status_in_mysql_adapter() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    transaction = MagicMock()
+    connection = transaction.__enter__.return_value
+    current = MagicMock()
+    current.mappings.return_value.first.return_value = {
+        "status": "cancelled",
+        "error_kind": None,
+        "claim_generation": 1,
+    }
+    connection.execute.return_value = current
+    repository._runtime_begin = MagicMock(return_value=transaction)
+    repository._row = MagicMock(return_value={"id": "turn-1", "status": "cancelled"})
+    repository._record = MagicMock(return_value=sentinel.cancelled_record)
+
+    result = repository.update_turn("turn-1", TurnStatus.COMPLETED, final_text="late answer")
+
+    assert result is sentinel.cancelled_record
+    assert connection.execute.call_count == 1
+    assert "UPDATE nlp_turns" not in str(connection.execute.call_args.args[0])
+
+
+def test_update_turn_rejects_a_stale_claim_generation() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    transaction = MagicMock()
+    connection = transaction.__enter__.return_value
+    current = MagicMock()
+    current.mappings.return_value.first.return_value = {
+        "status": "running",
+        "error_kind": None,
+        "claim_generation": 2,
+    }
+    connection.execute.return_value = current
+    repository._runtime_begin = MagicMock(return_value=transaction)
+
+    with pytest.raises(TurnClaimMismatchError, match="turn-1"):
+        repository.update_turn(
+            "turn-1",
+            TurnStatus.COMPLETED,
+            expected_claim_generation=1,
+        )
+
+    assert connection.execute.call_count == 1
+
+
+def test_append_event_rejects_a_stale_claim_generation() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    transaction = MagicMock()
+    connection = transaction.__enter__.return_value
+    generation = MagicMock()
+    generation.scalar_one_or_none.return_value = 2
+    connection.execute.return_value = generation
+    repository._runtime_begin = MagicMock(return_value=transaction)
+
+    with pytest.raises(TurnClaimMismatchError, match="turn-1"):
+        repository.append_event(
+            turn_id="turn-1",
+            session_id="session-1",
+            event_type=GatewayEventType.MESSAGE_DELTA,
+            payload={"delta": "stale"},
+            expected_claim_generation=1,
+        )
+
+    assert connection.execute.call_count == 1
 
 
 def test_create_turn_retries_the_complete_mysql_transaction_after_deadlock() -> None:

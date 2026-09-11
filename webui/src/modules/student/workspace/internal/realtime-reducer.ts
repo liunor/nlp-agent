@@ -58,6 +58,7 @@ interface RealtimeHandlerOptions {
   activeSessionRef: MutableRefObject<string | null>;
   pendingRequests: MutableRefObject<Map<string, string>>;
   inFlightTurnIds: MutableRefObject<Set<string>>;
+  cancelledTurnIds?: MutableRefObject<Set<string>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setActiveSessionId: Dispatch<SetStateAction<string | null>>;
   setRequestError: Dispatch<SetStateAction<string>>;
@@ -72,6 +73,7 @@ export function createRealtimeEventHandler({
   activeSessionRef,
   pendingRequests,
   inFlightTurnIds,
+  cancelledTurnIds,
   setMessages,
   setActiveSessionId,
   setRequestError,
@@ -123,6 +125,12 @@ export function createRealtimeEventHandler({
     }
     if (!event.session_id || event.session_id !== activeSessionRef.current || !event.turn_id) return;
     if (event.type === "stream.gap") void loadTurns(event.session_id);
+    if (event.type === "chat.cancelled") cancelledTurnIds?.current.add(event.turn_id);
+    if (["chat.completed", "chat.message.completed", "chat.error", "chat.cancelled"].includes(event.type)) {
+      inFlightTurnIds.current.delete(event.turn_id);
+    }
+    const cancellationRequested = cancelledTurnIds?.current.has(event.turn_id) ?? false;
+    if ((event.type === "chat.completed" || event.type === "chat.message.completed") && cancellationRequested) return;
     if (event.type === "chat.completed" && typeof event.payload.content === "string") {
       updateSessionMeta(event.session_id, {
         summary: event.payload.content.replace(/[#*_`]/g, "").slice(0, 180),
@@ -147,6 +155,8 @@ export function createRealtimeEventHandler({
       if (event.type.startsWith("chat.") || event.type.startsWith("tool.") || event.type.startsWith("worker.") || event.type === "stream.gap") ensureAssistant();
       if (index < 0) return next;
       const message = { ...next[index], activities: [...(next[index].activities ?? [])] };
+      if (["cancelled", "completed", "failed", "interrupted"].includes(message.status ?? "")) return next;
+      if (message.status === "cancelling" && !["chat.cancelled", "chat.error"].includes(event.type)) return next;
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
       if (event.type === "chat.delta") message.content += delta;
       if (event.type === "chat.reasoning.delta") message.reasoning = `${message.reasoning ?? ""}${delta}`;

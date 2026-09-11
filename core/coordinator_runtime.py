@@ -12,7 +12,7 @@ from typing import Awaitable, Callable
 from langchain_core.messages import BaseMessage, SystemMessage
 
 from core.session_context import SessionContext
-from core.learning import ExerciseState, LearningContext, LearningProgress, TeachingMaterials
+from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress, TeachingMaterials
 from core.observability.context import (
     TelemetryContext,
     bind_telemetry_context,
@@ -27,7 +27,7 @@ from core.agent_runtime import global_agent_injections
 
 
 InvokeCoordinator = Callable[
-    [list[BaseMessage], SessionContext, bool, str, LearningContext | None, LearningProgress | None, ExerciseState | None, TeachingMaterials | None], Awaitable[None]
+    [list[BaseMessage], SessionContext, bool, str, LearningContext | None, LearningProgress | None, ExerciseState | None, TeachingMaterials | None, KnowledgeBookContext | None], Awaitable[None]
 ]
 
 
@@ -67,13 +67,17 @@ class SessionRuntime:
     learning_progress: LearningProgress | None = None
     exercise_state: ExerciseState | None = None
     teaching_materials: TeachingMaterials | None = None
+    knowledge_book_context: KnowledgeBookContext | None = None
 
 
 class CoordinatorRuntime:
     def __init__(self, event_bus: WorkerEventBus, invoke: InvokeCoordinator) -> None:
         self._event_bus = event_bus
         self._invoke = invoke
-        self._invoke_accepts_learning = len(inspect.signature(invoke).parameters) >= 7
+        invoke_parameter_count = len(inspect.signature(invoke).parameters)
+        self._invoke_accepts_learning = invoke_parameter_count >= 7
+        self._invoke_accepts_teaching_materials = invoke_parameter_count >= 8
+        self._invoke_accepts_knowledge_book_context = invoke_parameter_count >= 9
         self._sessions: dict[str, SessionRuntime] = {}
         self._closed = False
         self._subscription_id = self._event_bus.subscribe(self.notify_worker_event)
@@ -87,8 +91,15 @@ class CoordinatorRuntime:
         learning_progress: LearningProgress | None = None,
         exercise_state: ExerciseState | None = None,
         teaching_materials: TeachingMaterials | None = None,
+        knowledge_book_context: KnowledgeBookContext | None = None,
     ) -> None:
-        if len(inspect.signature(self._invoke).parameters) >= 8:
+        if self._invoke_accepts_knowledge_book_context:
+            await self._invoke(
+                messages, context, background, turn_id, learning_context,
+                learning_progress, exercise_state, teaching_materials,
+                knowledge_book_context,
+            )
+        elif self._invoke_accepts_teaching_materials:
             await self._invoke(
                 messages, context, background, turn_id, learning_context,
                 learning_progress, exercise_state, teaching_materials,
@@ -133,6 +144,7 @@ class CoordinatorRuntime:
         learning_progress: LearningProgress | None = None,
         exercise_state: ExerciseState | None = None,
         teaching_materials: TeachingMaterials | None = None,
+        knowledge_book_context: KnowledgeBookContext | None = None,
     ) -> None:
         context = (
             context if isinstance(context, SessionContext) else SessionContext(session_id=context)
@@ -153,6 +165,7 @@ class CoordinatorRuntime:
             runtime.learning_progress = learning_progress
             runtime.exercise_state = exercise_state
             runtime.teaching_materials = teaching_materials
+            runtime.knowledge_book_context = knowledge_book_context
             runtime.foreground_active = True
             runtime.active_turn_id = message.id or str(uuid.uuid4())
             telemetry = TelemetryContext.create(
@@ -178,13 +191,13 @@ class CoordinatorRuntime:
                     async with global_telemetry.span(
                         SpanKind.COORDINATOR, "coordinator.turn", context=telemetry
                     ):
-                        await self._invoke_coordinator([message], context, False, runtime.active_turn_id, learning_context, learning_progress, exercise_state, teaching_materials)
+                        await self._invoke_coordinator([message], context, False, runtime.active_turn_id, learning_context, learning_progress, exercise_state, teaching_materials, knowledge_book_context)
                         # Close the small race between the graph's final safe-point
                         # drain and releasing the session lock.
                         injection_cycles = 0
                         while global_agent_injections.pending(session_id) and injection_cycles < 5:
                             pending_before = global_agent_injections.pending(session_id)
-                            await self._invoke_coordinator([], context, False, runtime.active_turn_id, learning_context, learning_progress, exercise_state, teaching_materials)
+                            await self._invoke_coordinator([], context, False, runtime.active_turn_id, learning_context, learning_progress, exercise_state, teaching_materials, knowledge_book_context)
                             injection_cycles += 1
                             if global_agent_injections.pending(session_id) >= pending_before:
                                 break
@@ -241,6 +254,7 @@ class CoordinatorRuntime:
                 self._session(session_id).learning_progress,
                 self._session(session_id).exercise_state,
                 self._session(session_id).teaching_materials,
+                self._session(session_id).knowledge_book_context,
             )
 
     async def _collect_barrier_events(
@@ -344,6 +358,7 @@ class CoordinatorRuntime:
                                     True, parent_turn_id, runtime.learning_context,
                                     runtime.learning_progress, runtime.exercise_state,
                                     runtime.teaching_materials,
+                                    runtime.knowledge_book_context,
                                 )
                                 await self._process_wait_plans(session_id, parent_turn_id, background=True)
                     except BaseException as error:
