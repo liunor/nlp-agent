@@ -454,6 +454,34 @@ class ResilientChatModel:
         except BaseException as error:
             raise _ReporterFailure(error) from error
 
+    async def _report_attempt_best_effort(self, **kwargs: Any) -> None:
+        """Do not discard a successful model response because billing failed.
+
+        Reporting is required for accounting, but it runs after the Provider
+        has already produced a successful response.  A transient database or
+        pricing-store failure must therefore be observable without turning a
+        successful model call into a retryable Provider failure.  Missing
+        required Reporter configuration and task cancellation remain fatal.
+        """
+        try:
+            await self._report_attempt(**kwargs)
+        except UsageReporterUnavailableError as error:
+            # Keep fail-closed Reporter configuration out of Provider error
+            # classification while preserving the original cause.
+            raise _ReporterFailure(error) from error
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            invocation = kwargs.get("invocation")
+            identity = getattr(invocation, "identity", None)
+            logger.error(
+                "Model usage reporting failed after successful response",
+                operation_id=getattr(invocation, "operation_id", None),
+                provider=getattr(identity, "provider", None),
+                model=getattr(identity, "provider_model", None),
+                error=str(error),
+            )
+
     async def _reserve_feature_attempt(
         self, invocation: ModelInvocation | None
     ) -> None:
@@ -785,7 +813,7 @@ class ResilientChatModel:
                             raise StructuredOutputParseError(str(parsing_error)) from parsing_error
 
                         attempt_reported = True
-                        await self._report_attempt_guarded(
+                        await self._report_attempt_best_effort(
                             invocation=invocation,
                             usage=canon_usage,
                             status="succeeded",
@@ -795,7 +823,7 @@ class ResilientChatModel:
                         return response if self.caller_include_raw else parsed
 
                     attempt_reported = True
-                    await self._report_attempt_guarded(
+                    await self._report_attempt_best_effort(
                         invocation=invocation,
                         usage=canon_usage,
                         status="succeeded",
@@ -994,7 +1022,7 @@ class ResilientChatModel:
                         provider_response_id,
                         complete=True,
                     )
-                    await self._report_attempt_guarded(
+                    await self._report_attempt_best_effort(
                         invocation=invocation,
                         usage=final_usage,
                         status="succeeded",

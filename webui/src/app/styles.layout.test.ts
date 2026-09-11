@@ -2,6 +2,25 @@ import { readFileSync } from "node:fs";
 
 const stylesheet = readFileSync("src/app/styles.css", "utf8");
 
+describe("message image sizing", () => {
+  it("uses readable proportional thumbnails and wraps multiple images", () => {
+    const imageRules = [...stylesheet.matchAll(/\.message-attachment-image\s*\{([^}]*)\}/g)].map((match) => match[1]);
+    expect(imageRules[0]).toContain("width: clamp(220px, 32vw, 320px)");
+    expect(imageRules[0]).toContain("max-width: 100%");
+    expect(imageRules[0]).toContain("max-height: 240px");
+    expect(imageRules[0]).toContain("object-fit: contain");
+    expect(imageRules[1]).toContain("width: min(72vw, 280px)");
+    expect(stylesheet.match(/\.message-attachments\s*\{([^}]*)\}/)?.[1]).toContain("flex-wrap: wrap");
+  });
+
+  it("bounds original-image previews to the viewport without cropping", () => {
+    const previewRule = stylesheet.match(/\.image-preview-image\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(previewRule).toContain("max-width: calc(100vw - 48px)");
+    expect(previewRule).toContain("max-height: calc(100dvh - 48px)");
+    expect(previewRule).toContain("object-fit: contain");
+  });
+});
+
 describe("sandbox titlebar layout", () => {
   it("keeps long student release notes in a borderless fixed-height scroller", () => {
     const releaseRule = [...stylesheet.matchAll(/\.release-notes-list\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";

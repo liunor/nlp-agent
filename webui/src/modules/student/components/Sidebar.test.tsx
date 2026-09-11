@@ -203,6 +203,21 @@ describe("Sidebar delete requests", () => {
 
     expect(onMeta).toHaveBeenCalledWith("session_1", { pinnedAt: expect.any(Number) });
   });
+
+  it("filters history by session title when search is opened", () => {
+    const sessions = [
+      { session_id: "attention", user_id: "student", workspace_id: "default", channel: "web", title: "Attention 入门" },
+      { session_id: "lora", user_id: "student", workspace_id: "default", channel: "web", title: "LoRA 实践" },
+    ];
+    const preferences = { ...props.preferences, sessions: { attention: {}, lora: {} } };
+    render(<Sidebar {...props} sessions={sessions} preferences={preferences} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "search" }));
+    fireEvent.change(screen.getByPlaceholderText("搜索历史问题"), { target: { value: "  attention  " } });
+
+    expect(screen.getByText("Attention 入门")).toBeInTheDocument();
+    expect(screen.queryByText("LoRA 实践")).not.toBeInTheDocument();
+  });
   it("renames a session inline without using a native prompt", () => {
   const onRename = vi.fn();
   const { container } = render(<Sidebar {...props} onRename={onRename} />);

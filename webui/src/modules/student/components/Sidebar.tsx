@@ -52,7 +52,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
     const meta = preferences.sessions[session.session_id];
     if (!!meta?.archived !== showArchived) return false;
     const title = displayTitle(session, meta);
-    return title.toLowerCase().includes(query.toLowerCase());
+    return title.toLowerCase().includes(query.trim().toLowerCase());
   }), [preferences.sessions, query, sessions, showArchived]);
   const grouped = useMemo(() => {
     const pinned = visible

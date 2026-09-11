@@ -588,7 +588,7 @@ async def test_reporter_failure_halts_retries():
 
 
 @pytest.mark.asyncio
-async def test_reporter_failure_after_success_does_not_replay_provider():
+async def test_reporter_failure_after_success_keeps_provider_response():
     class BrokenReporter:
         def __init__(self) -> None:
             self.calls = 0
@@ -613,12 +613,40 @@ async def test_reporter_failure_after_success_does_not_replay_provider():
     resilient = ResilientChatModel([cand], reporter_slot=slot)
 
     with bind_usage_attribution(_sample_attribution()):
-        with pytest.raises(RuntimeError, match="Database connection down"):
-            async for _ in resilient.astream([HumanMessage(content="hi")]):
-                pass
+        chunks = [chunk async for chunk in resilient.astream([HumanMessage(content="hi")])]
 
     assert fake.calls == 1
     assert reporter.calls == 1
+    assert "".join(chunk.content for chunk in chunks) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_reporter_failure_after_success_keeps_provider_response():
+    class BrokenReporter:
+        async def report(self, _invocation, _usage, _outcome):
+            raise RuntimeError("Database connection down")
+
+    reporter = BrokenReporter()
+    fake = FakeRawModel([
+        AIMessage(
+            content="completed",
+            response_metadata={
+                "id": "success-before-reporter-failure",
+                "token_usage": {"prompt_tokens": 9, "completion_tokens": 3},
+            },
+        )
+    ])
+    resilient = ResilientChatModel(
+        [_candidate("non-stream-success-broken-reporter", fake)],
+        reporter_slot=ModelUsageReporterSlot(reporter),
+        normalize_response=False,
+    )
+
+    with bind_usage_attribution(_sample_attribution()):
+        result = await resilient.ainvoke([HumanMessage(content="hi")])
+
+    assert result.content == "completed"
+    assert fake.calls == 1
 
 
 @pytest.mark.asyncio

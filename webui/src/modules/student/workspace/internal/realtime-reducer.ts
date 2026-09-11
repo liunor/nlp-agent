@@ -38,6 +38,16 @@ function quotaErrorMessage(event: ServerEvent): string | undefined {
   return messages[code] ?? undefined;
 }
 
+function reconcileCompletedContent(streamed: string, final: string): string {
+  if (!final || !streamed || final === streamed) return final || streamed;
+  // A completion event may carry the authoritative full response after only
+  // part of it was streamed. Accept that monotonic extension. If the payload
+  // is unrelated (for example a late fallback error), keep what the learner
+  // has already seen instead of replacing it with a surprising jump.
+  if (final.startsWith(streamed)) return final;
+  return streamed;
+}
+
 function activityLabel(event: ServerEvent): Pick<ActivityItem, "kind" | "label" | "status" | "detail"> | null {
   const detail = eventDetail(event);
   const readableTool = toolDetail(event);
@@ -161,7 +171,12 @@ export function createRealtimeEventHandler({
       if (event.type === "chat.delta") message.content += delta;
       if (event.type === "chat.reasoning.delta") message.reasoning = `${message.reasoning ?? ""}${delta}`;
       if (event.type === "chat.started") { message.status = "running"; message.startedAt ??= event.timestamp; }
-      if (event.type === "chat.message.completed" || event.type === "chat.completed") { const final = typeof event.payload.content === "string" ? event.payload.content : ""; if (final) message.content = final; message.status = "completed"; message.completedAt = event.timestamp; }
+      if (event.type === "chat.message.completed" || event.type === "chat.completed") {
+        const final = typeof event.payload.content === "string" ? event.payload.content : "";
+        message.content = reconcileCompletedContent(message.content, final);
+        message.status = "completed";
+        message.completedAt = event.timestamp;
+      }
       if (event.type === "chat.cancelled") { message.status = "cancelled"; message.completedAt = event.timestamp; }
       if (event.type === "chat.error") { message.status = "failed"; message.completedAt = event.timestamp; }
       const activity = activityLabel(event);

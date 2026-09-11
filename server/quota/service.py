@@ -1848,6 +1848,7 @@ class QuotaService:
                     UsageEventModel.image_units,
                     UsageEventModel.search_calls,
                     UsageEventModel.link_pages,
+                    UsageEventModel.cache_miss_input_tokens,
                 ).limit(1)
             ).first()
 

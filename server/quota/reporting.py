@@ -86,6 +86,11 @@ class DurableModelUsageReporter(ModelUsageReporter):
         if self._quota_service is not None:
             self._quota_service.set_snapshot_notifier(notifier)
 
+    def verify_schema(self) -> None:
+        """Fail readiness before reporting can hit an unapplied migration."""
+        with self._engine.connect() as connection:
+            connection.execute(select(UsageEventModel.__table__).limit(1)).first()
+
     async def report(
         self,
         invocation: ModelInvocation,

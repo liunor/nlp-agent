@@ -181,12 +181,20 @@ def configure_usage_reporter(
             )
         return None
     quota_service = QuotaService(resolved) if quota_enforcement else None
+    reporter: DurableModelUsageReporter | None = None
     try:
         if quota_service is not None:
             quota_service.verify_schema()
         reporter = DurableModelUsageReporter(resolved, quota_service=quota_service)
+        if required:
+            # Usage reporting is enabled in the production web/worker paths
+            # even when quota enforcement is disabled. Probe its complete
+            # table contract before accepting model traffic.
+            reporter.verify_schema()
     except Exception:
-        if quota_service is not None:
+        if reporter is not None:
+            reporter.close()
+        elif quota_service is not None:
             quota_service.close()
         raise
     if required:

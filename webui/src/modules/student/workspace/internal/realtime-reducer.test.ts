@@ -94,4 +94,70 @@ describe("realtime acknowledgement reconciliation", () => {
     expect(updateSessionMeta).not.toHaveBeenCalled();
     expect(loadSessions).not.toHaveBeenCalled();
   });
+
+  it("keeps streamed content when completion payload is an unrelated fallback", () => {
+    let messages: ChatMessage[] = [];
+    const handler = createRealtimeEventHandler({
+      socketRef: { current: null },
+      activeSessionRef: { current: "session-1" },
+      pendingRequests: { current: new Map() },
+      inFlightTurnIds: { current: new Set(["turn-1"]) },
+      setMessages: (update) => {
+        messages = typeof update === "function" ? update(messages) : update;
+      },
+      setActiveSessionId: vi.fn(),
+      setRequestError: vi.fn(),
+      persistPreferences: vi.fn(),
+      updateSessionMeta: vi.fn(),
+      loadSessions: vi.fn(async () => []),
+      loadTurns: vi.fn(async () => undefined),
+    });
+    const event = (type: string, payload: Record<string, unknown> = {}): ServerEvent => ({
+      v: "1",
+      type,
+      session_id: "session-1",
+      turn_id: "turn-1",
+      timestamp: "2026-09-09T00:00:01Z",
+      payload,
+    });
+
+    handler(event("chat.delta", { delta: "已经生成的答案" }));
+    handler(event("chat.message.completed", { content: "模型请求失败，请重试" }));
+
+    expect(messages[0].content).toBe("已经生成的答案");
+    expect(messages[0].status).toBe("completed");
+  });
+
+  it("accepts a completion payload that extends streamed content", () => {
+    let messages: ChatMessage[] = [];
+    const handler = createRealtimeEventHandler({
+      socketRef: { current: null },
+      activeSessionRef: { current: "session-1" },
+      pendingRequests: { current: new Map() },
+      inFlightTurnIds: { current: new Set(["turn-1"]) },
+      setMessages: (update) => {
+        messages = typeof update === "function" ? update(messages) : update;
+      },
+      setActiveSessionId: vi.fn(),
+      setRequestError: vi.fn(),
+      persistPreferences: vi.fn(),
+      updateSessionMeta: vi.fn(),
+      loadSessions: vi.fn(async () => []),
+      loadTurns: vi.fn(async () => undefined),
+    });
+    const event = (type: string, payload: Record<string, unknown> = {}): ServerEvent => ({
+      v: "1",
+      type,
+      session_id: "session-1",
+      turn_id: "turn-1",
+      timestamp: "2026-09-09T00:00:01Z",
+      payload,
+    });
+
+    handler(event("chat.delta", { delta: "答案前半段" }));
+    handler(event("chat.completed", { content: "答案前半段及完整结论" }));
+
+    expect(messages[0].content).toBe("答案前半段及完整结论");
+    expect(messages[0].status).toBe("completed");
+  });
 });

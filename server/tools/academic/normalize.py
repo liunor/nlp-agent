@@ -143,6 +143,20 @@ def _extract_paper_year(paper: AcademicPaper) -> int | None:
     return paper.publication_year
 
 
+def _canonical_arxiv_id(raw: str | None) -> str | None:
+    """Return a stable arXiv identity even if a caller supplies a version."""
+    if not raw or not isinstance(raw, str):
+        return None
+    clean = raw.strip()
+    if not clean:
+        return None
+    try:
+        canonical, _ = parse_arxiv_id(clean)
+    except ValueError:
+        return clean.lower()
+    return canonical.lower()
+
+
 def are_papers_duplicate(p1: AcademicPaper, p2: AcademicPaper) -> bool:
     """Check if two papers represent the same work per Section 14.2 priority:
     1. Exact DOI match
@@ -157,11 +171,10 @@ def are_papers_duplicate(p1: AcademicPaper, p2: AcademicPaper) -> bool:
         return True
 
     # 2. arXiv ID exact match
-    if p1.identifiers.arxiv_id and p2.identifiers.arxiv_id:
-        if (
-            p1.identifiers.arxiv_id.strip().lower()
-            == p2.identifiers.arxiv_id.strip().lower()
-        ):
+    arxiv_1 = _canonical_arxiv_id(p1.identifiers.arxiv_id)
+    arxiv_2 = _canonical_arxiv_id(p2.identifiers.arxiv_id)
+    if arxiv_1 and arxiv_2:
+        if arxiv_1 == arxiv_2:
             return True
 
     # 3. ACL ID exact match
@@ -226,16 +239,23 @@ def merge_papers(
     else:
         merged_doi = d1 or d2
 
-    merged_arxiv = primary.identifiers.arxiv_id or secondary.identifiers.arxiv_id
-    if primary.identifiers.arxiv_id and secondary.identifiers.arxiv_id:
-        a1 = primary.identifiers.arxiv_id.strip().lower()
-        a2 = secondary.identifiers.arxiv_id.strip().lower()
-        if a1 != a2:
+    primary_arxiv = _canonical_arxiv_id(primary.identifiers.arxiv_id)
+    secondary_arxiv = _canonical_arxiv_id(secondary.identifiers.arxiv_id)
+    merged_arxiv = primary_arxiv or secondary_arxiv
+    if primary_arxiv and secondary_arxiv:
+        if primary_arxiv != secondary_arxiv:
             warnings.append(
                 f"arXiv ID conflict between '{primary.identifiers.arxiv_id}' and '{secondary.identifiers.arxiv_id}'"
             )
 
     merged_acl = primary.identifiers.acl_id or secondary.identifiers.acl_id
+    if primary.identifiers.acl_id and secondary.identifiers.acl_id:
+        acl_1 = primary.identifiers.acl_id.strip().strip("/").lower()
+        acl_2 = secondary.identifiers.acl_id.strip().strip("/").lower()
+        if acl_1 != acl_2:
+            warnings.append(
+                f"ACL ID conflict between '{primary.identifiers.acl_id}' and '{secondary.identifiers.acl_id}'"
+            )
     merged_s2 = (
         primary.identifiers.semantic_scholar_id
         or secondary.identifiers.semantic_scholar_id
@@ -334,7 +354,10 @@ def merge_papers(
             primary.first_submitted_at or secondary.first_submitted_at
         )
 
-    merged_updated_at = primary.updated_at or secondary.updated_at
+    updated_dates = [
+        date for date in (primary.updated_at, secondary.updated_at) if date is not None
+    ]
+    merged_updated_at = max(updated_dates) if updated_dates else None
     merged_publication_year = (
         merged_published_at.year
         if merged_published_at is not None

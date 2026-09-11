@@ -353,8 +353,9 @@ async def test_internal_model_invocation_carries_non_public_event_metadata():
 
 
 @pytest.mark.asyncio
-async def test_coordinator_writes_in_place_compaction_replacements_back_to_state(
-    monkeypatch,
+@pytest.mark.parametrize("model_error", [None, RuntimeError("provider failed"), TimeoutError("provider timed out")])
+async def test_coordinator_preserves_compaction_updates_and_propagates_model_failures(
+    monkeypatch, model_error,
 ):
     import server.agent.compression.context_manager as context_manager_module
     import server.agent.node.coordinator as coordinator_module
@@ -392,6 +393,8 @@ async def test_coordinator_writes_in_place_compaction_replacements_back_to_state
     async def invoke(_model, messages, _config, *, name):
         captured["messages"] = messages
         captured["name"] = name
+        if model_error is not None:
+            raise model_error
         return AIMessage(content="answer")
 
     async def no_injections(*_args, **_kwargs):
@@ -410,6 +413,16 @@ async def test_coordinator_writes_in_place_compaction_replacements_back_to_state
     monkeypatch.setattr(coordinator_module.global_memory_runtime, "context_message", lambda _session: None)
     monkeypatch.setattr(coordinator_module.global_agent_injections, "drain", no_injections)
     monkeypatch.setattr(context_manager_module.global_context_manager, "prepare", prepare)
+
+    if model_error is not None:
+        with pytest.raises(type(model_error)) as raised:
+            await coordinator_module.coordinator_node(
+                {"messages": [original]},
+                {"configurable": {"thread_id": "coordinator-state", "turn_id": "turn-1"}},
+            )
+        assert raised.value is model_error
+        assert captured["name"] == "coordinator.model"
+        return
 
     result = await coordinator_module.coordinator_node(
         {"messages": [original]},

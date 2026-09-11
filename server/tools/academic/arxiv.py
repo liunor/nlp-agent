@@ -42,6 +42,13 @@ ATOM_NAMESPACES = {
 DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MB safety limit
 
 
+def _normalize_datetime(value: datetime) -> datetime:
+    """Make Atom timestamps comparable with the service's UTC timestamps."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class ArxivProvider(AcademicProvider):
     """Client for arXiv export Atom API with strict rate limiting and safety controls."""
 
@@ -247,8 +254,10 @@ class ArxivProvider(AcademicProvider):
             published_elem = entry.find("atom:published", ATOM_NAMESPACES)
             if published_elem is not None and published_elem.text:
                 try:
-                    first_submitted_at = datetime.fromisoformat(
-                        published_elem.text.strip().replace("Z", "+00:00")
+                    first_submitted_at = _normalize_datetime(
+                        datetime.fromisoformat(
+                            published_elem.text.strip().replace("Z", "+00:00")
+                        )
                     )
                 except ValueError:
                     pass
@@ -257,8 +266,10 @@ class ArxivProvider(AcademicProvider):
             updated_elem = entry.find("atom:updated", ATOM_NAMESPACES)
             if updated_elem is not None and updated_elem.text:
                 try:
-                    updated_at = datetime.fromisoformat(
-                        updated_elem.text.strip().replace("Z", "+00:00")
+                    updated_at = _normalize_datetime(
+                        datetime.fromisoformat(
+                            updated_elem.text.strip().replace("Z", "+00:00")
+                        )
                     )
                 except ValueError:
                     pass

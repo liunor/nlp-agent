@@ -41,13 +41,16 @@ from server.tools.academic.provider import (
 
 DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MB safety limit
 SEARCH_FIELDS = "paperId,title,abstract,authors,year,publicationDate,venue,externalIds,url,openAccessPdf"
+TRUSTED_ACADEMIC_URL_HOSTS = frozenset(
+    {"arxiv.org", "doi.org", "aclanthology.org", "www.semanticscholar.org"}
+)
 
 
 def _build_s2_paper_url(paper_id: str, raw_url: str | None = None) -> str:
     """Build a validated Semantic Scholar HTTPS URL with API attribution."""
     canonical = f"https://www.semanticscholar.org/paper/{quote(paper_id, safe='')}"
     base = canonical
-    if raw_url:
+    if isinstance(raw_url, str) and raw_url.strip():
         try:
             parsed = urlsplit(raw_url.strip())
             if (
@@ -81,6 +84,31 @@ def _parse_retry_after(value: str | None, *, default_s: float) -> float:
             except (TypeError, ValueError, OverflowError):
                 pass
     return default_s
+
+
+def _normalize_datetime(value: datetime) -> datetime:
+    """Make provider dates comparable with the service's UTC timestamps."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _trusted_academic_url(raw_url: str | None) -> str | None:
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return None
+    try:
+        parsed = urlsplit(raw_url.strip())
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in TRUSTED_ACADEMIC_URL_HOSTS
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+        ):
+            return None
+    except ValueError:
+        return None
+    return urlunsplit(parsed)
 
 
 class SemanticScholarProvider(AcademicProvider):
@@ -347,12 +375,12 @@ class SemanticScholarProvider(AcademicProvider):
                 try:
                     cleaned_date = pub_date_str.strip()
                     if len(cleaned_date) == 10:  # YYYY-MM-DD
-                        parsed_date = datetime.fromisoformat(
-                            f"{cleaned_date}T00:00:00+00:00"
+                        parsed_date = _normalize_datetime(
+                            datetime.fromisoformat(f"{cleaned_date}T00:00:00+00:00")
                         )
                     else:
-                        parsed_date = datetime.fromisoformat(
-                            cleaned_date.replace("Z", "+00:00")
+                        parsed_date = _normalize_datetime(
+                            datetime.fromisoformat(cleaned_date.replace("Z", "+00:00"))
                         )
                 except ValueError:
                     pass
@@ -407,8 +435,7 @@ class SemanticScholarProvider(AcademicProvider):
             open_access_pdf = item.get("openAccessPdf")
             if isinstance(open_access_pdf, dict):
                 oa_url = open_access_pdf.get("url")
-                if isinstance(oa_url, str) and oa_url.strip().startswith("http"):
-                    pdf_url = oa_url.strip()
+                pdf_url = _trusted_academic_url(oa_url)
             if not pdf_url and arxiv_id:
                 pdf_url = canonical_arxiv_pdf_url(arxiv_id)
             integrity_status = (

@@ -162,19 +162,27 @@ class AcademicSearchService:
 
     async def search(self, request: AcademicSearchInput) -> AcademicSearchResponse:
         query_used = (request.query_en or request.query).strip()
+        # The request schema protects the public API at ten results, while the
+        # runtime configuration provides the deployment-wide upper bound.
+        effective_max_results = min(request.max_results, self.config.max_results)
+        provider_request = request.model_copy(
+            update={"max_results": effective_max_results}
+        )
         now = datetime.now(timezone.utc)
 
         if not self.config.enabled:
+            disabled_sources = list(dict.fromkeys(request.sources)) or ["arxiv"]
             return AcademicSearchResponse(
                 query=request.query,
                 query_used=query_used,
                 papers=[],
                 source_status=[
                     AcademicSourceStatus(
-                        source="arxiv",
+                        source=source,
                         status="skipped",
                         message="academic search disabled by configuration",
                     )
+                    for source in disabled_sources
                 ],
                 partial=False,
                 warnings=["academic search is disabled"],
@@ -182,7 +190,7 @@ class AcademicSearchService:
             )
 
         # Prefer Redis, then fall back to the existing process-local cache.
-        ckey = self._get_cache_key(request, query_used)
+        ckey = self._get_cache_key(provider_request, query_used)
         cached_raw: str | None = None
         cache_backend = "miss"
         if self.shared_store is not None:
@@ -218,6 +226,15 @@ class AcademicSearchService:
                     cache_backend=cache_backend,
                     paper_count=len(cached_response.papers),
                     partial=cached_response.partial,
+                )
+                cached_response = cached_response.model_copy(
+                    update={
+                        # The normalized query determines result reuse, but the
+                        # response must still describe the current user input.
+                        "query": request.query,
+                        "query_used": query_used,
+                        "papers": cached_response.papers[:effective_max_results],
+                    }
                 )
                 await self._record_search_metrics(
                     cache_hit=True, partial=cached_response.partial
@@ -275,7 +292,7 @@ class AcademicSearchService:
             for attempt in range(1, reliability.retry_attempts + 1):
                 started = time.monotonic()
                 try:
-                    result = await provider.search(request)
+                    result = await provider.search(provider_request)
                     latency_ms = int((time.monotonic() - started) * 1000)
                     circuit.succeed()
                     await self._record_provider_metrics(
@@ -431,9 +448,8 @@ class AcademicSearchService:
                 reverse=True,
             )
 
-        # Slice to requested max_results (defaults to 5, at most 10)
-        max_results = min(max(1, request.max_results), 10)
-        papers = deduped_papers[:max_results]
+        # Slice to the request limit after applying the deployment-wide cap.
+        papers = deduped_papers[:effective_max_results]
         papers = [
             paper.model_copy(
                 update={

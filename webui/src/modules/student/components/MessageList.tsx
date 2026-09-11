@@ -2,6 +2,7 @@ import { Check, Copy, GraduationCap, RotateCcw } from "lucide-react";
 import { memo, useState } from "react";
 
 import { ActivityPanel } from "./ActivityPanel";
+import { ImagePreviewDialog } from "./ImagePreviewDialog";
 import { MarkdownContent, stripInternalChatMetadata } from "./MarkdownContent";
 import type { ChatMessage } from "@/shared/types";
 
@@ -94,7 +95,13 @@ const AssistantMessage = memo(function AssistantMessage({ message, showReasoning
   );
 });
 
-const UserMessage = memo(function UserMessage({ message }: { message: ChatMessage }) {
+const UserMessage = memo(function UserMessage({
+  message,
+  onPreviewImage,
+}: {
+  message: ChatMessage;
+  onPreviewImage?: (att: { url: string; alt?: string }) => void;
+}) {
   let content = message.content;
   const attachments = [...(message.attachments || [])];
 
@@ -121,12 +128,30 @@ const UserMessage = memo(function UserMessage({ message }: { message: ChatMessag
   return (
     <div className="user-message">
       {attachments.length > 0 && (
-        <div className="message-attachments" style={{ display: "flex", gap: "8px", marginBottom: content ? "8px" : 0 }}>
-          {attachments.map((att, i) => (
-            <a key={i} href={att.url || "#"} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block" }}>
-              {att.url ? <img src={att.url} alt={att.displayName ?? att.fileName} style={{ width: 60, height: 60, objectFit: "cover", borderRadius: "4px" }} /> : <span>{att.displayName ?? att.fileName}</span>}
-            </a>
-          ))}
+        <div className={`message-attachments${content ? " has-content" : ""}`}>
+          {attachments.map((att, i) => {
+            const displayName = att.displayName ?? att.fileName;
+            return att.url ? (
+              <button
+                key={i}
+                type="button"
+                className="message-attachment-trigger"
+                onClick={() => onPreviewImage?.({ url: att.url, alt: displayName })}
+                aria-label={`查看原图：${displayName}`}
+              >
+                <img
+                  src={att.url}
+                  alt={displayName}
+                  className="message-attachment-image"
+                  loading="eager"
+                />
+              </button>
+            ) : (
+              <span key={i} className="message-attachment-fallback">
+                {displayName}
+              </span>
+            );
+          })}
         </div>
       )}
       {content}
@@ -141,6 +166,8 @@ export function MessageList({ messages, loading, showReasoning, streamRenderInte
   streamRenderIntervalMs?: number;
   onFollowUp: (text: string) => void;
 }) {
+  const [previewAttachment, setPreviewAttachment] = useState<{ url: string; alt?: string } | null>(null);
+
   if (loading) return <div className="empty-state"><span className="loading-dot" />正在加载学习记录…</div>;
   if (!messages.length) {
     return (
@@ -155,16 +182,26 @@ export function MessageList({ messages, loading, showReasoning, streamRenderInte
   return (
     <div className="message-list">
       {messages.map((message) => message.role === "user" ? (
-        <UserMessage key={message.id} message={message} />
+        <UserMessage
+          key={message.id}
+          message={message}
+          onPreviewImage={setPreviewAttachment}
+        />
       ) : (
         <AssistantMessage
-  key={message.id}
-  message={message}
-  showReasoning={showReasoning}
-  streamRenderIntervalMs={streamRenderIntervalMs}
-  onFollowUp={onFollowUp}
-/>
+          key={message.id}
+          message={message}
+          showReasoning={showReasoning}
+          streamRenderIntervalMs={streamRenderIntervalMs}
+          onFollowUp={onFollowUp}
+        />
       ))}
+      <ImagePreviewDialog
+        open={Boolean(previewAttachment)}
+        url={previewAttachment?.url}
+        alt={previewAttachment?.alt}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </div>
   );
 }

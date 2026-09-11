@@ -313,25 +313,14 @@ async def coordinator_node(state: AgentState, config: RunnableConfig) -> dict:
             payload={
                 "role": "coordinator",
                 "stop_reason": "model_error",
+                "error_kind": type(error).__name__,
                 "iterations": runtime.iterations,
             },
         )
-        response = AIMessage(content=(
-            "模型请求在超时重试和故障转移后仍未恢复，本轮已安全停止。"
-            "会话状态与已经完成的工具结果均已保留，可以继续重试。"
-        ))
-        return {
-            "messages": [*state_modifiers, response],
-            "runtime_turn_id": turn_id,
-            "runtime_started_at": runtime.started_at,
-            "runtime_iterations": runtime.iterations,
-            "runtime_tokens": runtime.tokens,
-            "runtime_tool_calls": runtime.tool_calls,
-            "runtime_injections": runtime.injections,
-            "runtime_continue": False,
-            "runtime_wait_for_workers": False,
-            "runtime_stop_reason": "model_error",
-        }
+        # A model/runtime exception is not a successful assistant message.
+        # Let the Gateway converge the turn to FAILED so the error cannot be
+        # persisted as conversation history or overwrite streamed output.
+        raise
     runtime.tokens += usage_total(response)
 
     result_messages = [*state_modifiers, response]

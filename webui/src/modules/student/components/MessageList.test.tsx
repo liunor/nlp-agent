@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { AppErrorBoundary } from "@/shared/ui/AppErrorBoundary";
 import {
@@ -28,7 +28,7 @@ describe("MessageList session updates", () => {
     consoleError.mockRestore();
   });
 
-  it("renders attachment thumbnails and strips internal attachment markers from content", () => {
+  it("renders attachment as clickable button instead of target=_blank link, and opens in-page image preview dialog with matching src", async () => {
     const testMsg: ChatMessage = {
       id: "turn-3",
       turnId: "turn-3",
@@ -55,9 +55,153 @@ describe("MessageList session updates", () => {
 
     expect(screen.getByText("分析这张图")).toBeVisible();
     expect(screen.queryByText(/---附件---/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+
     const img = screen.getByRole("img", { name: "sample.png" });
     expect(img).toBeVisible();
     expect(img).toHaveAttribute("src", "/api/v1/uploads/sess/sample.png");
+    expect(img).toHaveAttribute("loading", "eager");
+    expect(screen.getByRole("img", { name: "sample.png" }).closest(".message-attachments")).toHaveClass("has-content");
+
+    const trigger = screen.getByRole("button", { name: "查看原图：sample.png" });
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    const dialogImg = within(dialog).getByRole("img", { name: "sample.png" });
+    expect(dialogImg).toHaveAttribute("src", "/api/v1/uploads/sess/sample.png");
+
+    const closeBtn = screen.getByRole("button", { name: "关闭原图预览" });
+    fireEvent.click(closeBtn);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("closes the image preview dialog via Escape key", async () => {
+    const testMsg: ChatMessage = {
+      id: "turn-esc",
+      turnId: "turn-esc",
+      role: "user",
+      content: "按ESC关闭",
+      createdAt: "2026-07-19T00:00:00Z",
+      attachments: [
+        {
+          fileName: "escape.png",
+          url: "/api/v1/uploads/sess/escape.png",
+          mediaType: "image/png",
+          width: 100,
+          height: 100,
+          status: "ready",
+        },
+      ],
+    };
+
+    render(
+      <AppErrorBoundary>
+        <MessageList messages={[testMsg]} loading={false} showReasoning={false} onFollowUp={vi.fn()} />
+      </AppErrorBoundary>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看原图：escape.png" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("supports multiple image attachments and opens the corresponding image on click", async () => {
+    const multiMsg: ChatMessage = {
+      id: "turn-multi",
+      turnId: "turn-multi",
+      role: "user",
+      content: "对比两张图片",
+      createdAt: "2026-07-19T00:00:00Z",
+      attachments: [
+        { fileName: "first.png", url: "/api/v1/uploads/sess/first.png", mediaType: "image/png", width: 100, height: 100, status: "ready" },
+        { fileName: "second.png", url: "/api/v1/uploads/sess/second.png", mediaType: "image/png", width: 100, height: 100, status: "ready" },
+      ],
+    };
+
+    render(
+      <AppErrorBoundary>
+        <MessageList messages={[multiMsg]} loading={false} showReasoning={false} onFollowUp={vi.fn()} />
+      </AppErrorBoundary>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看原图：second.png" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("img", { name: "second.png" })).toHaveAttribute("src", "/api/v1/uploads/sess/second.png");
+  });
+
+  it("allows previewing images recovered from turn history markdown attachment block", async () => {
+    const historyMsg: ChatMessage = {
+      id: "turn-hist",
+      turnId: "turn-hist",
+      role: "user",
+      content: "看这个公式\n\n---附件---\n![formula.png](/api/v1/uploads/sess/formula.png)\n---附件结束---",
+      createdAt: "2026-07-19T00:00:00Z",
+    };
+
+    render(
+      <AppErrorBoundary>
+        <MessageList messages={[historyMsg]} loading={false} showReasoning={false} onFollowUp={vi.fn()} />
+      </AppErrorBoundary>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看原图：formula.png" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("img", { name: "formula.png" })).toHaveAttribute("src", "/api/v1/uploads/sess/formula.png");
+  });
+
+  it("displays fallback text and does not open dialog when attachment has no url", () => {
+    const noUrlMsg: ChatMessage = {
+      id: "turn-nourl",
+      turnId: "turn-nourl",
+      role: "user",
+      content: "上传失败的图片",
+      createdAt: "2026-07-19T00:00:00Z",
+      attachments: [
+        { fileName: "broken.png", url: "", mediaType: "image/png", width: 0, height: 0, status: "error" },
+      ],
+    };
+
+    render(
+      <AppErrorBoundary>
+        <MessageList messages={[noUrlMsg]} loading={false} showReasoning={false} onFollowUp={vi.fn()} />
+      </AppErrorBoundary>
+    );
+
+    expect(screen.getByText("broken.png")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /查看原图/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("does not add content spacing when the user message only contains an image", () => {
+    const imageOnlyMsg: ChatMessage = {
+      id: "turn-image-only",
+      turnId: "turn-image-only",
+      role: "user",
+      content: "",
+      createdAt: "2026-07-19T00:00:00Z",
+      attachments: [
+        {
+          fileName: "only.png",
+          url: "/api/v1/uploads/sess/only.png",
+          mediaType: "image/png",
+          width: 100,
+          height: 100,
+          status: "ready",
+        },
+      ],
+    };
+
+    render(
+      <AppErrorBoundary>
+        <MessageList messages={[imageOnlyMsg]} loading={false} showReasoning={false} onFollowUp={vi.fn()} />
+      </AppErrorBoundary>
+    );
+
+    expect(screen.getByRole("img", { name: "only.png" }).closest(".message-attachments")).not.toHaveClass("has-content");
   });
 
   it("keeps partial assistant content visible when the turn fails", () => {
