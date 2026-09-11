@@ -15,6 +15,14 @@ from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _TAGLINE = "自然语言处理学习与实践助手"
+_FALLBACK_VERSION = "1.0.0"
+
+# Query-string keys that may carry credentials; anything else is preserved
+# verbatim so innocuous options (charset, sslmode, timezone) still render.
+_SENSITIVE_QUERY_KEYS = frozenset({
+    "password", "passwd", "pwd", "secret", "secret_key", "access_key",
+    "token", "access_token", "auth", "sig", "signature", "ssl_key", "ssl_cert",
+})
 
 # Block-style "NOVA" in the ANSI Shadow figlet font. Kept free of trailing
 # whitespace so ``git diff --check`` stays clean.
@@ -40,9 +48,9 @@ _RESET = "\x1b[0m"
 def _read_version() -> str:
     try:
         data = tomllib.loads((_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        return str(data.get("project", {}).get("version", "1.0.0"))
-    except Exception:
-        return "1.0.0"
+        return str(data.get("project", {}).get("version", _FALLBACK_VERSION))
+    except (OSError, ValueError):
+        return _FALLBACK_VERSION
 
 
 def _enable_windows_ansi() -> bool:
@@ -77,6 +85,18 @@ def _paint(text: str, code: str | None, color: bool) -> str:
     return f"{_CODES[code]}{text}{_RESET}"
 
 
+def _mask_query(query: str) -> str:
+    """Mask credential-style query params, preserving innocuous options."""
+    masked_parts = []
+    for part in query.split("&"):
+        key, sep, _ = part.partition("=")
+        if sep and key.lower() in _SENSITIVE_QUERY_KEYS:
+            masked_parts.append(f"{key}=***")
+        else:
+            masked_parts.append(part)
+    return "&".join(masked_parts)
+
+
 def mask_dsn(url: str) -> str:
     """Mask credentials in a database DSN, keeping driver/host/port/db."""
     if not url:
@@ -103,13 +123,23 @@ def mask_dsn(url: str) -> str:
     if path:
         masked += f"/{path}"
     if query:
-        masked += f"?{query}"
+        masked += f"?{_mask_query(query)}"
     return masked
 
 
 def _display_width(text: str) -> int:
-    """Terminal column width, counting CJK/fullwidth glyphs as two cells."""
-    return sum(2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1 for ch in text)
+    """Terminal column width, counting CJK/fullwidth glyphs as two cells.
+
+    Zero-width combining marks, variation selectors, and ZWJ joiners are
+    skipped so accented/emoji sequences don't inflate the box width.
+    """
+    width = 0
+    for ch in text:
+        code = ord(ch)
+        if ch == "\u200d" or 0xFE00 <= code <= 0xFE0F or unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+    return width
 
 
 def _llm_line(conf: dict, default: str = "?") -> str:
@@ -120,12 +150,17 @@ def _llm_line(conf: dict, default: str = "?") -> str:
     return f"{model}  ({meta})" if meta else model
 
 
-def _snapshot_rows(kind: str) -> list[tuple[str, str, str | None]]:
-    """Build aligned (label, value, style) rows for a startup kind."""
-    from configs.settings import settings
+def _snapshot_rows(kind: str, config=None) -> list[tuple[str, str, str | None]]:
+    """Build aligned (label, value, style) rows for a startup kind.
 
-    planner = settings.planner_llm
-    worker = settings.tool_llm
+    config is an optional settings object; when omitted the real process
+    settings are loaded lazily. Tests inject a lightweight substitute.
+    """
+    if config is None:
+        from configs.settings import settings as config
+
+    planner = config.planner_llm
+    worker = config.tool_llm
     key_env = planner.get("api_key_env") or "API key"
     key_ok = bool(planner.get("api_key_configured"))
 
@@ -136,23 +171,23 @@ def _snapshot_rows(kind: str) -> list[tuple[str, str, str | None]]:
     ]
 
     if kind in {"serve", "web"}:
-        web = settings.web_runtime
+        web = config.web_runtime
         rows.append(
             ("Web", f"http://{web.get('host', '127.0.0.1')}:{web.get('port', 8765)}", None)
         )
-        db = mask_dsn(settings.database_runtime.get("url", "") or "")
+        db = mask_dsn(config.database_runtime.get("url", "") or "")
         if db:
             rows.append(("数据库", db, None))
-        gateway = settings.gateway_runtime
+        gateway = config.gateway_runtime
         transport = gateway.get("transport", "in_process")
         redis = mask_dsn(gateway.get("redis_url", "") or "")
         rows.append(("传输", f"{transport} · Redis {redis}" if redis else transport, None))
         rows.append(
-            ("配额", "启用" if settings.quota_enforcement_enabled else "关闭",
-             "warn" if settings.quota_enforcement_enabled else None)
+            ("配额", "启用" if config.quota_enforcement_enabled else "关闭",
+             "warn" if config.quota_enforcement_enabled else None)
         )
     elif kind in {"monitor", "observe"}:
-        monitor = settings.monitor_runtime
+        monitor = config.monitor_runtime
         rows.append(
             ("监控", f"http://{monitor.get('host', '127.0.0.1')}:{monitor.get('port', 8766)}", None)
         )
@@ -163,18 +198,18 @@ def _snapshot_rows(kind: str) -> list[tuple[str, str, str | None]]:
                  f"trace {retention.get('trace_days', '?')} 天 · event {retention.get('event_days', '?')} 天",
                  None)
             )
-        db = mask_dsn(settings.database_runtime.get("url", "") or "")
+        db = mask_dsn(config.database_runtime.get("url", "") or "")
         if db:
             rows.append(("数据库", db, None))
     elif kind == "worker":
-        gateway = settings.gateway_runtime
+        gateway = config.gateway_runtime
         transport = gateway.get("transport", "redis")
         redis = mask_dsn(gateway.get("redis_url", "") or "")
         rows.append(("角色", "worker（消费 turn 队列）", None))
         rows.append(("传输", f"{transport} · Redis {redis}" if redis else transport, None))
     elif kind == "sandbox-manager":
-        mode = getattr(settings, "NLP_AGENT_SANDBOX_RUNTIME_MODE", "disabled")
-        backend = getattr(settings, "NLP_AGENT_SANDBOX_RUNTIME_BACKEND", "runsc")
+        mode = getattr(config, "NLP_AGENT_SANDBOX_RUNTIME_MODE", "disabled")
+        backend = getattr(config, "NLP_AGENT_SANDBOX_RUNTIME_BACKEND", "runsc")
         rows.append(("沙箱", f"{mode}  ({backend})", "warn" if mode == "inprocess" else None))
     elif kind == "chat":
         rows.append(("会话", "channel: cli（登录后进入交互）", None))

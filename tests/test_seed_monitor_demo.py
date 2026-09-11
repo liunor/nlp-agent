@@ -59,6 +59,8 @@ def test_demo_seed_builds_bounded_sandbox_monitor_data_without_user_code():
     assert len(users) == 4
     assert workspace["slug"] == f"{MARKER}-workspace"
     assert len(environments) == 4
+    assert all("active_runtime_id" in env for env in environments)
+    assert sum(env["active_runtime_id"] is not None for env in environments) >= 1
     assert len(runtimes) == 12
     assert len(executions) == 24
     assert len(samples) == 60
