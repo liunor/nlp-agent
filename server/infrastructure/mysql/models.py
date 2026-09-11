@@ -515,9 +515,14 @@ class ConversationModel(TimestampedModel, Base):
     # On LLM failure the lease is extended (exponential backoff) instead of
     # cleared, so a dead model service does not trigger a retry storm.
     summary_lease_expires_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
-    # How many LLM calls have been attempted for the current title generation.
-    # Capped by ``MAX_SUMMARY_ATTEMPTS`` in the sweep query; reset to 0 on
-    # success, so the next turn's regeneration gets a fresh budget.
+    # How many LLM calls have been attempted for the current title generation,
+    # driving the exponential-backoff lease above; reset to 0 on a successful
+    # write.  It bounds the retry *rate*, never the retry *count*: the backoff
+    # tops out at ``MAX_BACKOFF_S``, so a session that cannot be titled costs at
+    # most one utility call per hour and starts succeeding again by itself once
+    # the model recovers.  Capping the count instead would disable titling for
+    # that session permanently, which no longer makes sense now that every
+    # completed turn re-arms generation.
     summary_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 

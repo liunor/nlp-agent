@@ -19,16 +19,19 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy.dialects import mysql
 
 from core.model_runtime.usage import current_usage_attribution
 from server.session.summary import (
     MAX_INPUT_CHARS,
     MAX_MESSAGE_CHARS,
-    MAX_SUMMARY_ATTEMPTS,
+    SUMMARY_TURN_WINDOW,
     _backoff_summary,
     _clean_input,
+    _clean_result,
     _clean_title,
     _decide,
+    _due_sessions_statement,
     _render_turns,
     _select_turns,
     _SummaryState,
@@ -69,6 +72,17 @@ def test_clean_input_strips_learning_context_preamble():
         "什么是注意力机制？"
     )
     assert _clean_input(raw) == "什么是注意力机制？"
+
+
+def test_clean_result_strips_an_echoed_learning_preamble():
+    # Assistant text is rendered into the prompt as well now, so a reply that
+    # echoes the learning context must not spend prompt budget on that metadata.
+    raw = (
+        '<!-- nlp-learning-context:{"topic_name":"Transformer"} -->\n'
+        "[学习设置：主题=Transformer；难度=入门；教学方式=讲解]\n"
+        "注意力机制通过权重聚焦相关信息。"
+    )
+    assert _clean_result(raw) == "注意力机制通过权重聚焦相关信息。"
 
 
 def test_clean_title_strips_quotes_and_markdown():
@@ -139,6 +153,43 @@ def test_render_turns_keeps_the_anchor_and_the_newest_turns():
     # The middle of a long conversation is dropped rather than squeezing every
     # turn into a truncated rendering.
     assert len(lines) < len(turns) * 2
+
+
+def test_a_capped_anchor_and_newest_turn_always_fit_the_budget():
+    # Invariant the whole per-turn cadence rests on: even with the opening
+    # exchange and the newest turn both at the per-message cap, they fit inside
+    # MAX_INPUT_CHARS together.  If that ever stops holding, the budget would drop
+    # the newest turn and regeneration would burn a utility call to rewrite the
+    # title from a prompt identical to the previous one.
+    turns = [
+        _turn(
+            f"t{i}",
+            "问" * (MAX_MESSAGE_CHARS * 3),
+            "答" * (MAX_MESSAGE_CHARS * 3),
+            datetime(2026, 1, 1) + timedelta(seconds=i),
+        )
+        for i in range(4)
+    ]
+    text = _render_turns(turns)
+    lines = text.split("\n")
+    assert len(text) <= MAX_INPUT_CHARS
+    assert lines[0] == f"[user]: {'问' * MAX_MESSAGE_CHARS}"
+    assert lines[-1] == f"[assistant]: {'答' * MAX_MESSAGE_CHARS}"
+    # Anchor plus at least the newest turn, i.e. more than one exchange.
+    assert len(lines) >= 4
+
+
+def test_turn_window_covers_everything_the_budget_could_render():
+    # ``_load_state`` reads at most SUMMARY_TURN_WINDOW turns.  The window must be
+    # at least the number of turns the prompt budget could ever hold, so that the
+    # budget -- not the window -- is always what limits the recent turns a title
+    # tracks.  (For a conversation longer than the window the anchor becomes the
+    # oldest turn inside it rather than the conversation opener; that is a
+    # deliberate trade-off, and the right one for a title meant to follow the
+    # latest state of a long-running session.)
+    # Smallest realistic turn: a one-character question and answer.
+    smallest_turn = len("[user]: x") + 1 + len("[assistant]: x") + 1
+    assert MAX_INPUT_CHARS // smallest_turn <= SUMMARY_TURN_WINDOW
 
 
 @pytest.mark.asyncio
@@ -424,17 +475,22 @@ async def test_generate_backs_off_longer_with_each_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_gives_up_after_max_attempts(monkeypatch):
-    turns = _make_turns(1, datetime(2026, 1, 1))
-    llm = _FakeLLM()
-    factory = _patch_env(
-        monkeypatch, turns, None, llm, summary_attempts=MAX_SUMMARY_ATTEMPTS
-    )
+async def test_generate_still_runs_after_a_long_outage(monkeypatch):
+    # ``summary_attempts`` drives the exponential-backoff lease; it is not a
+    # lifetime cap.  A session that kept failing through a model outage must start
+    # titling again by itself once the model recovers, so a high counter still
+    # generates instead of being skipped forever.
+    turns = _make_turns(2, datetime(2026, 1, 1))
+    llm = _FakeLLM("恢复后的标题")
+    factory = _patch_env(monkeypatch, turns, None, llm, summary_attempts=99)
 
-    assert await generate_and_store_summary("session-1", factory) is False
-    # LLM must not even be called once the budget is exhausted.
-    assert llm.invocations == []
-    assert factory.session.writes == []
+    assert await generate_and_store_summary("session-1", factory) is True
+    assert len(llm.invocations) == 1
+    assert _title_writes(factory)[0]["title"] == "恢复后的标题"
+    # The successful write clears the counter, so the next turn's failure starts
+    # backing off from BASE_BACKOFF_S again.
+    statement = next(s for s, p in factory.session.writes if p and "title" in p)
+    assert "summary_attempts=0" in str(statement)
 
 
 @pytest.mark.asyncio
@@ -673,3 +729,52 @@ def test_session_rename_rejects_empty_title(monkeypatch):
 
     with pytest.raises(ValueError):
         asyncio.run(service.rename(principal, "s1", "   "))
+
+
+# --- sweep query (compiled against the MySQL dialect, no DB needed) ----------
+
+
+def _compiled_sql(statement) -> str:
+    return str(statement.compile(dialect=mysql.dialect()))
+
+
+def test_due_sessions_selects_on_a_newer_completed_turn():
+    sql = _compiled_sql(_due_sessions_statement(now=datetime(2026, 1, 1), batch=25))
+    # The due condition is a correlated EXISTS over turns newer than the basis the
+    # standing title was built from, replacing the old write-once filter that only
+    # ever matched sessions with no title at all.
+    assert "EXISTS" in sql
+    assert "nlp_turns.conversation_id = nlp_conversations.id" in sql
+    assert "nlp_turns.completed_at > nlp_conversations.title_updated_at" in sql
+    assert "nlp_conversations.title_updated_at IS NULL" in sql
+
+
+def test_due_sessions_never_filters_on_the_attempt_counter():
+    # ``summary_attempts`` drives the backoff lease only.  Filtering on it here is
+    # what used to disable titling permanently once a session had failed enough
+    # times, which no longer makes sense now that every turn re-arms generation.
+    sql = _compiled_sql(_due_sessions_statement(now=datetime(2026, 1, 1), batch=25))
+    assert "summary_attempts" not in sql
+
+
+def test_due_sessions_prioritises_untitled_then_recent_activity():
+    sql = _compiled_sql(_due_sessions_statement(now=datetime(2026, 1, 1), batch=25))
+    order_by = sql.split("ORDER BY", 1)[1]
+    # Never-titled sessions first -- those are the ones a learner still sees as an
+    # empty or first-question fallback -- then most recent activity.  Recency
+    # alone would starve a quiet but genuinely due session whenever the due rate
+    # exceeds one batch per cadence.
+    assert "CASE WHEN" in order_by
+    assert order_by.index("title_updated_at IS NULL") < order_by.index(
+        "last_message_at DESC"
+    )
+    assert "LIMIT" in sql
+
+
+def test_due_sessions_still_respects_manual_titles_and_leases():
+    sql = _compiled_sql(_due_sessions_statement(now=datetime(2026, 1, 1), batch=25))
+    assert "nlp_conversations.title_is_manual IS false" in sql or (
+        "nlp_conversations.title_is_manual = " in sql
+    )
+    assert "summary_lease_expires_at" in sql
+    assert "nlp_conversations.status = " in sql
