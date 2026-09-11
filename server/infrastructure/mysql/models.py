@@ -504,7 +504,8 @@ class ConversationModel(TimestampedModel, Base):
     last_message_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     # Basis of the last LLM-generated title: the newest completed turn's
     # ``completed_at``.  NULL until the first summary is written.  The
-    # conditional UPDATE keys on this to reject out-of-order overwrites.
+    # conditional UPDATEs key on this both to reject out-of-order overwrites and
+    # to decide whether a newer completed turn makes regeneration due.
     title_updated_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     # True once the user manually renames the session; the summarizer never
     # overwrites a manual title.
@@ -514,8 +515,9 @@ class ConversationModel(TimestampedModel, Base):
     # On LLM failure the lease is extended (exponential backoff) instead of
     # cleared, so a dead model service does not trigger a retry storm.
     summary_lease_expires_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
-    # How many LLM calls have been attempted for the first summary.  Capped by
-    # ``MAX_SUMMARY_ATTEMPTS`` in the sweep query; reset to 0 on success.
+    # How many LLM calls have been attempted for the current title generation.
+    # Capped by ``MAX_SUMMARY_ATTEMPTS`` in the sweep query; reset to 0 on
+    # success, so the next turn's regeneration gets a fresh budget.
     summary_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
