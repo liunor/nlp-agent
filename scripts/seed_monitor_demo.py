@@ -284,6 +284,7 @@ def _build_sandbox_demo(
             "profile_revision": 1,
             "status": "ready",
             "generation": 1,
+            "active_runtime_id": None,
             "last_active_at": sampled_at - timedelta(seconds=index * 45),
         }
         for index in range(len(user_rows))
