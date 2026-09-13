@@ -15,7 +15,7 @@ import { MessageList } from "@/modules/student/components/MessageList";
 import { SettingsDialog } from "@/modules/student/components/SettingsDialog";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { Sidebar, SidebarToggle } from "@/modules/student/components/Sidebar";
-import { ToolDock, type ToolDockTabDropPosition, type ToolDockTool } from "@/modules/student/components/ToolDock";
+import { ToolDock, type SandboxSourceRequest, type ToolDockTabDropPosition, type ToolDockTool } from "@/modules/student/components/ToolDock";
 import { useStudentWorkspace } from "@/modules/student/workspace/public";
 import { useSessionScrollRestoration } from "@/modules/student/workspace/hooks/useSessionScrollRestoration";
 import type { CourseTopic, TeacherCatalog } from "@/shared/types";
@@ -34,7 +34,7 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [openTools, setOpenTools] = useState<ToolDockTool[]>(() => typeof window !== "undefined" && readKnowledgeBookUrl(window.location.search).tool === "knowledge-book" ? ["book"] : []);
   const [activeTool, setActiveTool] = useState<ToolDockTool | null>(() => typeof window !== "undefined" && readKnowledgeBookUrl(window.location.search).tool === "knowledge-book" ? "book" : null);
-  const [sandboxSource, setSandboxSource] = useState<string | null>(null);
+  const [sandboxSource, setSandboxSource] = useState<SandboxSourceRequest | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -96,7 +96,7 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   const openCodeInSandbox = useCallback((code: string, language: string) => {
     if (!/^(?:python|pytorch|py)$/i.test(language)) return;
     onOpenInSandbox?.(code, language);
-    setSandboxSource(code);
+    setSandboxSource((current) => ({ source: code, requestId: (current?.requestId ?? 0) + 1 }));
     setToolDockOpen(true);
     setToolMenuOpen(false);
     setOpenTools((current) => current.includes("sandbox") ? current : [...current, "sandbox"]);

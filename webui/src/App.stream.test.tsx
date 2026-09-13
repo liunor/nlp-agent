@@ -327,6 +327,11 @@ describe("student stream rendering", () => {
     expect(screen.getByRole("button", { name: "展开工具面板" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "还原工具面板" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "沙箱代码" })).toHaveValue("import torch\nprint(torch.__version__)");
+
+    fireEvent.click(screen.getByRole("button", { name: "清空代码" }));
+    expect(screen.getByRole("textbox", { name: "沙箱代码" })).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "在沙箱中打开" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "沙箱代码" })).toHaveValue("import torch\nprint(torch.__version__)"));
   }, 10000);
 
   it("keeps the kernel status in the environment strip when the workbench is expanded", async () => {

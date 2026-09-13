@@ -7,6 +7,10 @@ import { SandboxArtifactFrame } from "./SandboxArtifactFrame";
 
 export type ToolDockTool = "files" | "learning" | "book" | "sandbox" | "whiteboard";
 export type ToolDockTabDropPosition = "before" | "after";
+export interface SandboxSourceRequest {
+  source: string;
+  requestId: number;
+}
 
 const tools: Array<{
   id: ToolDockTool;
@@ -79,12 +83,12 @@ function PythonSyntax({ source }: { source: string }) {
   return <>{fragments}</>;
 }
 
-function SandboxPhaseZeroPanel({ onExplainCode, initialSource }: { onExplainCode: (source: string) => void; initialSource?: string | null }) {
+function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest }: { onExplainCode: (source: string) => void; sourceRequest?: SandboxSourceRequest | null }) {
   // Keep the local in-memory preview immediately usable; a Docker response
   // without its mandatory ticket replaces this optimistic display with
   // “warming” before any privileged execution is attempted.
   const [leaseStatus, setLeaseStatus] = useState<"creating" | "ready" | "error">("ready");
-  const [source, setSource] = useState(() => initialSource ?? "# 在这里运行 Python 代码\n");
+  const [source, setSource] = useState(() => sourceRequest?.source ?? "# 在这里运行 Python 代码\n");
   const [result, setResult] = useState("");
   const [running, setRunning] = useState(false);
   const [runtimeTicket, setRuntimeTicket] = useState<string | null>(null);
@@ -122,10 +126,10 @@ function SandboxPhaseZeroPanel({ onExplainCode, initialSource }: { onExplainCode
   };
 
   useEffect(() => {
-    if (initialSource === undefined || initialSource === null) return undefined;
-    const timer = window.setTimeout(() => setSource(initialSource), 0);
+    if (!sourceRequest) return undefined;
+    const timer = window.setTimeout(() => setSource(sourceRequest.source), 0);
     return () => window.clearTimeout(timer);
-  }, [initialSource]);
+  }, [sourceRequest]);
 
   useEffect(() => {
     let active = true;
@@ -464,7 +468,7 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
   learningPanel: ReactNode;
   knowledgeBookPanel: ReactNode;
   whiteboardPanel: ReactNode;
-  sandboxSource?: string | null;
+  sandboxSource?: SandboxSourceRequest | null;
   filesUserId: string | null;
   filesWorkspaceId: string;
 }) {
@@ -653,7 +657,7 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
           const panelShare = currentPanelWidths[index] ?? 0;
           return <Fragment key={tool}>
             <div className="tool-dock-panel" data-active={tool === activeTool ? "true" : "false"}>
-              {tool === "files" ? <FilesPanel key={filesUserId + ":" + filesWorkspaceId} userId={filesUserId} workspaceId={filesWorkspaceId} /> : tool === "learning" ? learningPanel : tool === "book" ? knowledgeBookPanel : tool === "whiteboard" ? whiteboardPanel : <SandboxPhaseZeroPanel onExplainCode={onExplainCode} initialSource={sandboxSource} />}
+              {tool === "files" ? <FilesPanel key={filesUserId + ":" + filesWorkspaceId} userId={filesUserId} workspaceId={filesWorkspaceId} /> : tool === "learning" ? learningPanel : tool === "book" ? knowledgeBookPanel : tool === "whiteboard" ? whiteboardPanel : <SandboxPhaseZeroPanel onExplainCode={onExplainCode} sourceRequest={sandboxSource} />}
             </div>
             {index < openTools.length - 1 && <div className="tool-dock-panel-resizer" role="separator" aria-label={`调整${item.label}与${tools.find((candidate) => candidate.id === openTools[index + 1])?.label ?? "下个页面"}面板宽度`} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(panelShare)} tabIndex={0} onPointerDown={(event) => beginPanelResize(index, event)} onKeyDown={(event) => resizePanelWithKeyboard(index, event)}><i /></div>}
           </Fragment>;

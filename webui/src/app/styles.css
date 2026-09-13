@@ -736,6 +736,7 @@ button { color: inherit; }
 .student-school-logo { position: fixed; z-index: 33; right: 0; bottom: 0; pointer-events: none; line-height: 0; }
 .student-school-logo .school-logo { display: block; width: clamp(190px,15vw,230px); height: auto; object-fit: contain; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }.tool-dock { position: relative; z-index: 34; width: 0; flex: 0 0 0; overflow: hidden; border-left: 0 solid var(--border); background: var(--bg); transition: width .26s cubic-bezier(.2,.8,.2,1), flex-basis .26s cubic-bezier(.2,.8,.2,1), border-color .2s ease; }
 .tool-dock.open { width: min(var(--tool-dock-width), 88vw); flex-basis: min(var(--tool-dock-width), 88vw); border-left-width: 1px; }
+.student-app-shell.tool-dock-expanded .thread-shell .learning-context-menu { visibility:hidden; pointer-events:none; }
 @media (min-width: 901px) {
   .tool-dock.open.expanded {
     position: fixed;

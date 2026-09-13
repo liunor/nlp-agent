@@ -68,6 +68,13 @@ describe("sandbox titlebar layout", () => {
     expect(gutterRule).toContain("padding:16px 8px 16px 0");
   });
 
+  it("keeps the learning-topic trigger behind an expanded tool workbench", () => {
+    const rule = stylesheet.match(/\.student-app-shell\.tool-dock-expanded \.thread-shell \.learning-context-menu\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(rule).toContain("visibility:hidden");
+    expect(rule).toContain("pointer-events:none");
+  });
+
   it("reserves a complete safe area for the tool picker trigger beside fixed header actions", () => {
     const tabRules = [...stylesheet.matchAll(/\.tool-dock-tabs\s*\{([^}]*)\}/g)].map((match) => match[1]);
 
