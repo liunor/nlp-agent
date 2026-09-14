@@ -203,7 +203,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
   };
 
   const inputCls = "mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50";
-  const captchaImgCls = "h-9 rounded border border-gray-300 cursor-pointer";
+  const captchaImgCls = "h-12 w-32 shrink-0 rounded border border-gray-300 cursor-pointer";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -221,7 +221,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
         <div className="mt-1 flex items-center gap-2">
           <input type="text" required value={smsCaptchaCode}
             onChange={(e) => setSmsCaptchaCode(e.target.value)} disabled={submitting}
-            placeholder="输入图中字符" maxLength={10} className={inputCls} />
+            placeholder="输入图中字符" maxLength={10} className={`${inputCls} min-w-0`} />
           {smsCaptchaImage && (
             <img src={smsCaptchaImage} alt="验证码" className={captchaImgCls}
               onClick={() => void loadCaptcha("sms")} title="点击刷新" />
@@ -277,7 +277,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
           <div className="mt-1 flex items-center gap-2">
             <input type="text" required value={regCaptchaCode}
               onChange={(e) => setRegCaptchaCode(e.target.value)} disabled={submitting}
-              placeholder="输入图中字符" maxLength={10} className={inputCls} />
+              placeholder="输入图中字符" maxLength={10} className={`${inputCls} min-w-0`} />
             <img src={regCaptchaImage} alt="注册验证码" className={captchaImgCls}
               onClick={() => void loadCaptcha("reg")} title="点击刷新" />
             <button type="button" onClick={() => void loadCaptcha("reg")}

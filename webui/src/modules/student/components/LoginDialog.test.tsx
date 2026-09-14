@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+import { api } from "@/platform/http/api";
 import { LoginDialog } from "./LoginDialog";
 
 describe("LoginDialog", () => {
@@ -33,6 +34,19 @@ describe("LoginDialog", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("账号或密码错误");
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it("renders a readable-sized CAPTCHA in the registration form", async () => {
+    vi.spyOn(api, "getCaptcha").mockResolvedValue({
+      captcha_id: "captcha-1",
+      image: "data:image/png;base64,captcha",
+    });
+    render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "立即注册" }));
+
+    const captcha = await screen.findByRole("img", { name: "验证码" });
+    expect(captcha).toHaveStyle({ width: "128px", height: "48px" });
   });
 });
 it("shows a session-expired message when reopened after authentication expires", () => {

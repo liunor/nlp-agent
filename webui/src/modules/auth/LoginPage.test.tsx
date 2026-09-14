@@ -10,7 +10,7 @@ import { LoginPage } from "./LoginPage";
 vi.mock("@/platform/http/api", () => ({
   AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn(),
-  api: { login: vi.fn() },
+  api: { login: vi.fn(), getCaptcha: vi.fn() },
 }));
 
 const session: AuthSession = {
@@ -25,6 +25,7 @@ describe("LoginPage", () => {
   beforeEach(() => {
     vi.mocked(ensureAuth).mockRejectedValue(new Error("HTTP 401"));
     vi.mocked(api.login).mockReset();
+    vi.mocked(api.getCaptcha).mockReset();
   });
 
   it("logs in with the database account and returns to the protected destination", async () => {
@@ -66,5 +67,27 @@ describe("LoginPage", () => {
 
     await waitFor(() => expect(screen.getByText("用户管理页")).toBeVisible());
     expect(screen.queryByRole("heading", { name: "NLP 学习平台" })).not.toBeInTheDocument();
+  });
+
+  it("renders a readable-sized CAPTCHA after switching to registration", async () => {
+    vi.mocked(api.getCaptcha).mockResolvedValue({
+      captcha_id: "captcha-1",
+      image: "data:image/png;base64,captcha",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "立即注册" }));
+
+    const captcha = await screen.findByRole("img", { name: "验证码" });
+    expect(captcha).toHaveClass("w-32", "h-12");
   });
 });

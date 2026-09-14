@@ -5,6 +5,14 @@ import { api } from "@/platform/http/api";
 
 type Tab = "login" | "register";
 
+const captchaImageStyle = {
+  width: 128,
+  height: 48,
+  borderRadius: 4,
+  border: "1px solid var(--border, #d1d5db)",
+  cursor: "pointer",
+};
+
 interface LoginDialogProps {
   open: boolean;
   expired?: boolean;
@@ -282,13 +290,13 @@ function RegisterForm({
             placeholder="输入图中字符"
             maxLength={10}
             required
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 0 }}
           />
           {smsCaptchaImage && (
             <img
               src={smsCaptchaImage}
               alt="验证码"
-              style={{ height: 36, borderRadius: 4, border: "1px solid var(--border, #d1d5db)", cursor: "pointer" }}
+              style={captchaImageStyle}
               onClick={() => void loadCaptcha("sms")}
               title="点击刷新"
             />
@@ -384,12 +392,12 @@ function RegisterForm({
               placeholder="输入图中字符"
               maxLength={10}
               required
-              style={{ flex: 1 }}
+              style={{ flex: 1, minWidth: 0 }}
             />
             <img
               src={regCaptchaImage}
               alt="注册验证码"
-              style={{ height: 36, borderRadius: 4, border: "1px solid var(--border, #d1d5db)", cursor: "pointer" }}
+              style={captchaImageStyle}
               onClick={() => void loadCaptcha("reg")}
               title="点击刷新"
             />
