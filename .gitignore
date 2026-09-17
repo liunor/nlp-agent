@@ -15,6 +15,7 @@ venv/
 .env
 .env.*
 !.env-example
+!.env-example.zh
 !.env.example
 
 # 私钥、证书与本地数据库的兜底保护

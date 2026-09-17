@@ -1,87 +1,159 @@
-# Nova
+<div align="center">
 
-<p align="center">
-  <img src="webui/logo/nova.png" alt="Nova" width="160" />
+<img src="webui/logo/nova.png" alt="Nova logo" width="150" />
+
+<h1>Nova</h1>
+
+**A teaching and learning assistant for NLP courses.**
+
+<p>
+  <img src="https://img.shields.io/github/stars/liunor/nlp-agent?logo=github" alt="GitHub stars">
+  <img src="https://github.com/liunor/nlp-agent/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/FastAPI-005571?logo=fastapi" alt="FastAPI">
+  <img src="https://img.shields.io/badge/LangGraph-1C3C3C" alt="LangGraph">
+  <img src="https://img.shields.io/badge/MySQL-4479A1?logo=mysql&logoColor=white" alt="MySQL">
+  <img src="https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white" alt="Redis">
+  <img src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/docs-docs%2F-blue" alt="Docs">
+  <img src="https://img.shields.io/badge/License-MIT-0969da" alt="MIT License">
 </p>
 
-<p align="center">
-  <strong>Nova</strong> 是一个面向自然语言处理（NLP）教学与学习场景的智能助手——从一个问题开始，让提问、理解、练习与复盘更简单。
-</p>
-
-<p align="center">
-  <img src="docs/assets/demo-flow.gif" alt="Nova 功能联动演示" width="82%" />
-</p>
-
-<p align="center">
-  <a href="#快速开始">快速开始</a> ·
-  <a href="README.en.md">English</a> ·
-  <a href="CONTRIBUTING.md">贡献</a> ·
+<p>
+  <a href="#features">Features</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="README.zh.md">中文</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="LICENSE">License</a>
 </p>
 
-## 四个端
+</div>
 
-| 学习者 | 教师 |
+<img src="docs/assets/demo-flow.gif" alt="Nova feature walkthrough" width="100%" />
+
+Nova is a teaching and learning assistant for NLP courses. A single deployment serves four roles — Learner, Teacher, Developer and Monitor — so one instance covers a whole class.
+
+Teachers author topics, Markdown knowledge points and exercise blueprints. Students ask questions in plain language and get step-by-step explanations, auto-graded practice, and a review of each answer against the rubric their teacher defined. The Developer configures models and infrastructure, and the Monitor watches every turn across the pipeline.
+
+## Start here
+
+| You want to... | Go to |
 | --- | --- |
-| <img src="docs/assets/screenshot-learner.png" alt="学习者界面" width="520"> | <img src="docs/assets/screenshot-teacher.png" alt="教师界面" width="520"> |
+| Run it locally in minutes | [Quick Start](#quick-start) |
+| See what it looks like | [Four dedicated views](#four-dedicated-views) |
+| Understand the feature set | [Features](#features) |
+| Configure models & database | [`.env-example`](./.env-example) |
+| Contribute or extend it | [CONTRIBUTING.md](./CONTRIBUTING.md) |
 
-| 开发者 | 运行监控 |
-| --- | --- |
-| <img src="docs/assets/screenshot-developer.png" alt="开发者界面" width="520"> | <img src="docs/assets/screenshot-monitor.png" alt="运行监控界面" width="520"> |
+## Four dedicated views
 
----
+Nova runs four role-based views over a single deployment, so a whole classroom works on one instance:
 
-## 快速开始
+### Learner
 
-### 安装与运行
+The Learner view is where students do their coursework.
 
-需要 Python 3.11 或更高版本，以及 [uv](https://docs.astral.sh/uv/)。
+- Ask questions in plain language and follow step-by-step explanations.
+- Practise with auto-generated exercises that come from your teacher's blueprints.
+- Review every answer against the weighted rubric your teacher defined.
+
+<p align="center">
+  <img src="docs/assets/screenshot-learner.png" alt="Learner view" width="900">
+</p>
+
+### Teacher
+
+The Teacher view is where instructors author the course.
+
+- Write topics and Markdown knowledge points; each question is injected with exactly the scope it needs.
+- Design exercise blueprints that generate questions and grade answers against weighted rubrics.
+- Keep grading consistent across the class with one shared rubric.
+
+<p align="center">
+  <img src="docs/assets/screenshot-teacher.png" alt="Teacher view" width="900">
+</p>
+
+### Developer
+
+The Developer view manages model and runtime configuration.
+
+- Add and rotate model providers and their API keys in one place.
+- Tune runtime settings for the web, worker and sandbox services.
+- Manage the sandbox that runs generated code, isolated from the host.
+
+<p align="center">
+  <img src="docs/assets/screenshot-developer.png" alt="Developer view" width="900">
+</p>
+
+### Monitor
+
+The Monitor view is the observability dashboard.
+
+- Watch live turns, traces and metrics across web, worker and sandbox.
+- Inspect task activity along the whole pipeline.
+- Trace a single question from the client all the way to the answer.
+
+<p align="center">
+  <img src="docs/assets/screenshot-monitor.png" alt="Monitor view" width="900">
+</p>
+
+## Features
+
+- **Four role-based views**: Learner, Teacher, Developer and Monitor, separated by access control so each role sees only what it should.
+- **Guided learning**: question-and-answer sessions that resolve a problem step by step instead of dumping a single answer.
+- **Auto-graded exercises**: teachers define blueprints that generate questions and grade each answer against weighted rubrics.
+- **Knowledge-point catalogue**: teachers write topics and Markdown knowledge points; each question is answered with exactly the scope it needs, nothing more.
+- **Observability**: a built-in monitor shows turns, traces and metrics across web, worker and sandbox.
+- **Modular runtime**: a coordinator/worker engine on LangGraph, with tools, memory and sandboxed code execution.
+- **Web and CLI**: chat from the browser or the terminal, so students and teachers aren't tied to one interface.
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/).
+- A MySQL database, configured in `.env`.
+
+> [!NOTE]
+> Copy [`.env-example`](./.env-example) to `.env` and fill in the model service key and database connection before starting.
+
+> [!TIP]
+> For the full distributed stack (nginx, MySQL, Redis, web, worker, sandbox manager), use the provided [`compose.yaml`](./compose.yaml).
+
+### Install and run
 
 ```powershell
-uv sync                                   # 安装依赖
-Copy-Item .env-example .env               # 准备配置，填写模型服务密钥与数据库连接
-uv run python main.py bootstrap-db        # 初始化数据库
-uv run python main.py bootstrap-developer # 创建第一个账号
-uv run python main.py serve               # 启动服务
+uv sync                                   # install dependencies
+Copy-Item .env-example .env               # prepare config: model key & database
+uv run python main.py bootstrap-db        # initialize the database
+uv run python main.py bootstrap-developer # create the first account
+uv run python main.py serve               # start the server
 ```
 
-启动成功后，在浏览器打开 <http://127.0.0.1:8765>。
+Once it starts, open <http://127.0.0.1:8765>.
 
-<details>
-<summary>macOS / Linux</summary>
+### Log in and explore
 
-```shell
-uv sync
-cp .env-example .env
-uv run python main.py bootstrap-db
-uv run python main.py bootstrap-developer
-uv run python main.py serve
-```
+Log in with the account created by `bootstrap-developer`:
 
-</details>
+- Learner — <http://127.0.0.1:8765/>
+- Teacher — <http://127.0.0.1:8765/teacher>
+- Developer — <http://127.0.0.1:8765/developer>
 
-### 登录与使用
-
-用 `bootstrap-developer` 创建的账号登录后即可开始：
-
-- 学习者：<http://127.0.0.1:8765/>
-- 教师：<http://127.0.0.1:8765/teacher>
-- 开发者：<http://127.0.0.1:8765/developer>
-
-也可以直接在命令行里对话：
+Or chat from the terminal:
 
 ```powershell
 uv run python main.py chat
 ```
 
-需要运行监控时，先执行 `uv run python main.py monitor`，再打开 <http://127.0.0.1:8766/>。
+For the observability monitor, run `uv run python main.py monitor` first, then open <http://127.0.0.1:8766/>.
 
-## 文档
+## Documentation
 
-- [贡献指南](./CONTRIBUTING.md)
-- [配置说明](./docs/)
-- [许可证](./LICENSE)
+- [Contributing](./CONTRIBUTING.md)
+- [Configuration & guides](./docs/)
+- [License](./LICENSE)
 
 ---
 
-本仓库采用 [MIT](./LICENSE) 许可证开源。
+This repository is licensed under the [MIT](./LICENSE) license.
