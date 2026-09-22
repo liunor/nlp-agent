@@ -24,23 +24,22 @@ _SENSITIVE_QUERY_KEYS = frozenset({
     "token", "access_token", "auth", "sig", "signature", "ssl_key", "ssl_cert",
 })
 
-# Block-style "NOVA" in the ANSI Shadow figlet font. Kept free of trailing
-# whitespace so ``git diff --check`` stays clean.
+# "NLP AGENT NOVA" wordmark, figlet Slant font. Kept free of trailing
+# whitespace so ``git diff --check`` clean.
 NOVA_LOGO = (
-    "███╗   ██╗ ██████╗ ██╗   ██╗ █████╗",
-    "████╗  ██║██╔═══██╗██║   ██║██╔══██╗",
-    "██╔██╗ ██║██║   ██║██║   ██║███████║",
-    "██║╚██╗██║██║   ██║╚██╗ ██╔╝██╔══██║",
-    "██║ ╚████║╚██████╔╝ ╚████╔╝ ██║  ██║",
-    "╚═╝  ╚═══╝ ╚═════╝   ╚═══╝  ╚═╝  ╚═╝",
+    '   _   __   __     ____             ___    ______   ______   _   __  ______           _   __   ____   _    __    ___',
+    '  / | / /  / /    / __ \\           /   |  / ____/  / ____/  / | / / /_  __/          / | / /  / __ \\ | |  / /   /   |',
+    ' /  |/ /  / /    / /_/ /          / /| | / / __   / __/    /  |/ /   / /            /  |/ /  / /_/ / | | / /   / /| |',
+    '/ /|  /  / /___ / ____/          / ___ |/ /_/ /  / /___   / /|  /   / /            / /|  /  / ____/  | |/ /   / ___ |',
+    '/_/ |_/  /_____//_/              /_/  |_|\\____/   \\____/   /_/ |_/  /_/             /_/ |_/  \\____/   |___/   /_/  |_|',
 )
 
 _CODES = {
-    "cyan": "\x1b[36m",
     "dim": "\x1b[2m",
     "bold": "\x1b[1m",
     "yellow": "\x1b[33m",
     "green": "\x1b[32m",
+    "blue": "\x1b[38;5;33m",
 }
 _RESET = "\x1b[0m"
 
@@ -222,7 +221,7 @@ def print_startup_banner(kind: str) -> None:
     color = _use_color()
 
     for line in NOVA_LOGO:
-        print(_paint(line, "cyan", color))
+        print(_paint(line, "blue", color))
     print()
     print(
         f"  {_paint('Nova', 'bold', color)} · {_TAGLINE}"

@@ -44,7 +44,7 @@ def make_settings(**overrides):
 
 
 def test_nova_logo_shape():
-    assert len(NOVA_LOGO) == 6
+    assert len(NOVA_LOGO) == 5
     assert all(line.strip() and not line.endswith(" ") for line in NOVA_LOGO)
 
 
