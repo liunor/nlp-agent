@@ -29,6 +29,8 @@ def test_linux_smoke_uses_the_registered_gvisor_runtime() -> None:
     assert "feature/sandbox-capacity-phase1" in workflow
     assert "pip install -e ." not in workflow
     assert "pip install -r requirements.txt" in workflow
+
+
 def test_linux_smoke_executes_the_pinned_cpu_torch_import() -> None:
     workflow = Path(".github/workflows/sandbox-linux.yml").read_text(encoding="utf-8")
 
