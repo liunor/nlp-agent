@@ -16,7 +16,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      sandbox: ${{ github.event_name != 'pull_request' || steps.filter.outputs.sandbox == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            sandbox:
+              - '.github/workflows/sandbox-linux.yml'
+              - 'configs/sandbox_preload_matrix.json'
+              - 'migrations/versions/*sandbox*.py'
+              - 'sandbox-runtime/**'
+              - 'scripts/benchmark_sandbox_startup.py'
+              - 'server/sandbox/**'
+              - 'tests/test_sandbox_*.py'
+              - 'tests/api_http/sandbox/**'
+
   sandbox-runtime:
+    needs: changes
+    if: needs.changes.outputs.sandbox == 'true'
     runs-on: ubuntu-latest
     services:
       redis:
@@ -86,6 +108,8 @@ jobs:
             configs/sandbox_preload_matrix.json
 
   sandbox-auth-lifecycle:
+    needs: changes
+    if: needs.changes.outputs.sandbox == 'true'
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -117,6 +141,8 @@ jobs:
   # runsc installation restarts Docker, so this job starts MySQL only after
   # the runtime is registered instead of using a GitHub service container.
   sandbox-manager-runsc:
+    needs: changes
+    if: needs.changes.outputs.sandbox == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

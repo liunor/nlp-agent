@@ -31,6 +31,17 @@ def test_linux_smoke_uses_the_registered_gvisor_runtime() -> None:
     assert "pip install -r requirements.txt" in workflow
 
 
+def test_linux_validation_skips_unrelated_pull_requests() -> None:
+    workflow = Path(".github/workflows/sandbox-linux.yml").read_text(encoding="utf-8")
+
+    assert "  changes:" in workflow
+    assert "dorny/paths-filter@v3" in workflow
+    assert "server/sandbox/**" in workflow
+    assert "tests/test_sandbox_*.py" in workflow
+    assert "needs: changes" in workflow
+    assert "if: needs.changes.outputs.sandbox == 'true'" in workflow
+
+
 def test_linux_smoke_executes_the_pinned_cpu_torch_import() -> None:
     workflow = Path(".github/workflows/sandbox-linux.yml").read_text(encoding="utf-8")
 
