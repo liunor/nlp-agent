@@ -15,6 +15,7 @@ from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError, VerifyMismatchError
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from server.infrastructure.mysql.models import (
     RoleModel,
@@ -61,6 +62,10 @@ class SelfDeleteForbiddenError(UserServiceError):
 
 class LastDeveloperForbiddenError(UserServiceError):
     """Raised when an operation would leave no usable developer account."""
+
+
+class HardDeleteBlockedError(UserServiceError):
+    """Raised when protected business data still references the account."""
 
 
 DEFAULT_USER_ROLE = "guest"
@@ -456,6 +461,30 @@ class UserService:
         await self._mark_authorization_changed(user_id, "user_soft_deleted")
         await self.session.flush()
         return user
+
+    async def hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        actor_user_id: str,
+    ) -> None:
+        """Permanently remove an account after explicit administrator confirmation."""
+        if user_id == actor_user_id:
+            raise SelfDeleteForbiddenError("Admin cannot delete their own account")
+
+        user = await self.session.scalar(
+            select(UserModel).where(UserModel.id == user_id).with_for_update()
+        )
+        if user is None:
+            raise UserNotFoundError(f"User {user_id} not found")
+        await self.session.delete(user)
+        try:
+            await self.session.flush()
+        except IntegrityError as error:
+            await self.session.rollback()
+            raise HardDeleteBlockedError(
+                "User still owns protected business data and cannot be permanently deleted"
+            ) from error
 
     async def revoke_user_sessions(
         self,

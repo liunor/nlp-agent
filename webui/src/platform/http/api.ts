@@ -358,6 +358,8 @@ export const api = {
     request<UserListResponse["users"][number]>(`/users/${encodeURIComponent(userId)}/restore`, { method: "POST", body: "{}" }),
   deleteUser: (userId: string) =>
     request<void>(`/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  hardDeleteUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/permanent`, { method: "DELETE" }),
   revokeUserSessions: (userId: string) =>
     request<void>(`/users/${encodeURIComponent(userId)}/sessions/revoke`, { method: "POST", body: "{}" }),
   resetUserPassword: (userId: string, new_password: string) =>

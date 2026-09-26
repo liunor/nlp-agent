@@ -27,6 +27,7 @@ from .schemas import (
     UserUpdate,
 )
 from .service import (
+    HardDeleteBlockedError,
     SelfDeleteForbiddenError,
     UserAlreadyExistsError,
     UserNotFoundError,
@@ -436,6 +437,37 @@ async def restore_user(
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="Deleted user not found")
     except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.delete("/{user_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
+async def permanently_delete_user(
+    user_id: str,
+    db: DbSession,
+    _write: WriteClaims,
+    principal: Principal,
+):
+    """Permanently delete a previously soft-deleted user (admin only)."""
+    authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
+
+    service = UserService(db)
+    try:
+        await rbac_service.audit(
+            db,
+            actor_user_id=principal.user_id,
+            target_user_id=user_id,
+            decision="allow",
+            reason_code="user_account_hard_delete_requested",
+            permission_code="system:user:manage",
+            resource_type="user",
+            resource_id=user_id,
+        )
+        await service.hard_delete_user(user_id, actor_user_id=principal.user_id)
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except SelfDeleteForbiddenError:
+        raise HTTPException(status_code=403, detail="Cannot delete your own account")
+    except HardDeleteBlockedError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
