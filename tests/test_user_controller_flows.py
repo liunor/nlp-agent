@@ -54,6 +54,7 @@ class _FakeService:
         self.user = _user()
         self.create_user = AsyncMock(return_value=self.user)
         self.change_password = AsyncMock()
+        self.hard_delete_user = AsyncMock()
 
     async def get_user(self, _user_id):
         return self.user
@@ -229,3 +230,24 @@ async def test_management_http_endpoints_cover_create_edit_and_password_reset(mo
     service.change_password.assert_awaited_once_with(
         service.user.id, "ChangedPw0rd2"
     )
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_endpoint_deletes_active_user_directly(monkeypatch):
+    service = _FakeService(None)
+    monkeypatch.setattr(controller, "UserService", lambda session: service)
+    audit = AsyncMock()
+    monkeypatch.setattr(rbac_service, "audit", audit)
+
+    result = await controller.permanently_delete_user(
+        service.user.id,
+        db=object(),
+        _write=object(),
+        principal=_principal(),
+    )
+
+    assert result is None
+    service.hard_delete_user.assert_awaited_once_with(
+        service.user.id, actor_user_id="admin-user"
+    )
+    assert audit.await_args.kwargs["reason_code"] == "user_account_hard_delete_requested"

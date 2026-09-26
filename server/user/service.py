@@ -64,10 +64,6 @@ class LastDeveloperForbiddenError(UserServiceError):
     """Raised when an operation would leave no usable developer account."""
 
 
-class HardDeleteForbiddenError(UserServiceError):
-    """Raised when a hard delete is not allowed for the target account."""
-
-
 class HardDeleteBlockedError(UserServiceError):
     """Raised when protected business data still references the account."""
 
@@ -472,7 +468,7 @@ class UserService:
         *,
         actor_user_id: str,
     ) -> None:
-        """Permanently remove a previously soft-deleted account."""
+        """Permanently remove an account after explicit administrator confirmation."""
         if user_id == actor_user_id:
             raise SelfDeleteForbiddenError("Admin cannot delete their own account")
 
@@ -481,9 +477,6 @@ class UserService:
         )
         if user is None:
             raise UserNotFoundError(f"User {user_id} not found")
-        if user.deleted_at is None:
-            raise HardDeleteForbiddenError("Only soft-deleted users can be permanently deleted")
-
         await self.session.delete(user)
         try:
             await self.session.flush()
