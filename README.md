@@ -4,7 +4,8 @@
 
 <h1>Nova</h1>
 
-**A teaching and learning assistant for NLP courses.**
+**AI-powered NLP Learning & Teaching Platform**<br>
+Dialogue · Practice · Knowledge · Observability
 
 <p>
   <img src="https://img.shields.io/github/stars/liunor/nlp-agent?logo=github" alt="GitHub stars">
@@ -28,6 +29,12 @@
 </p>
 
 </div>
+
+<p align="center">
+  <a href="docs/release/v2.0.0.md">
+    <img src="docs/assets/nova-v2.0.0-preview.jpg" alt="Nova — AI-powered NLP Learning & Teaching Platform" width="1280">
+  </a>
+</p>
 
 <img src="docs/assets/demo-flow.gif" alt="Nova feature walkthrough" width="100%" />
 
