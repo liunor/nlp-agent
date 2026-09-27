@@ -447,27 +447,30 @@ async def permanently_delete_user(
     _write: WriteClaims,
     principal: Principal,
 ):
-    """Permanently delete a previously soft-deleted user (admin only)."""
+    """Permanently remove an account and its owned data (admin only)."""
     authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
 
     service = UserService(db)
     try:
+        await service.hard_delete_user(user_id, actor_user_id=principal.user_id)
+        # Record the operator's action without retaining the erased identity.
         await rbac_service.audit(
             db,
             actor_user_id=principal.user_id,
-            target_user_id=user_id,
+            target_user_id=None,
             decision="allow",
-            reason_code="user_account_hard_delete_requested",
+            reason_code="user_account_hard_deleted",
             permission_code="system:user:manage",
             resource_type="user",
-            resource_id=user_id,
+            resource_id=None,
         )
-        await service.hard_delete_user(user_id, actor_user_id=principal.user_id)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
     except SelfDeleteForbiddenError:
         raise HTTPException(status_code=403, detail="Cannot delete your own account")
     except HardDeleteBlockedError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except LastDeveloperForbiddenError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 

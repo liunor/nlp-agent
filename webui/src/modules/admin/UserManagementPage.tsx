@@ -229,7 +229,7 @@ export function UserManagementPage({ refreshToken = 0 }: UserManagementPageProps
   };
 
   const hardDeleteUser = (user: UserProfile) => {
-    if (!window.confirm(`永久删除用户 ${user.username}？此操作不可恢复，关联的身份数据也会被清理。`)) return;
+    if (!window.confirm(`永久删除用户 ${user.username} 及其个人工作区、会话、聊天、学习记录和本地文件？此操作不可恢复；存在共享数据或运行中任务时将拒绝删除。`)) return;
     const confirmation = window.prompt(`请输入用户名 ${user.username} 以确认永久删除`);
     if (confirmation !== user.username) {
       setActionError("用户名校验不匹配，已取消硬删除");

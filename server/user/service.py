@@ -477,13 +477,15 @@ class UserService:
         )
         if user is None:
             raise UserNotFoundError(f"User {user_id} not found")
-        await self.session.delete(user)
+        await self._ensure_not_last_developer(user_id)
+        from .purge import purge_user_data
+
         try:
+            await purge_user_data(self.session, user)
             await self.session.flush()
         except IntegrityError as error:
-            await self.session.rollback()
             raise HardDeleteBlockedError(
-                "User still owns protected business data and cannot be permanently deleted"
+                "User data cannot be completely deleted because protected records still reference it"
             ) from error
 
     async def revoke_user_sessions(

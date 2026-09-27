@@ -250,4 +250,6 @@ async def test_permanent_delete_endpoint_deletes_active_user_directly(monkeypatc
     service.hard_delete_user.assert_awaited_once_with(
         service.user.id, actor_user_id="admin-user"
     )
-    assert audit.await_args.kwargs["reason_code"] == "user_account_hard_delete_requested"
+    assert audit.await_args.kwargs["reason_code"] == "user_account_hard_deleted"
+    assert audit.await_args.kwargs["target_user_id"] is None
+    assert audit.await_args.kwargs["resource_id"] is None
