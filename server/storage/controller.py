@@ -70,6 +70,8 @@ async def update_admin_storage_quota(
         return await _admin_service(db, principal).update_quota(
             user_id,
             body.model_dump(exclude_unset=True),
+            actor_user_id=principal.user_id,
+            reason=body.reason,
         )
     except StorageError as error:
         raise _write_error(error) from error

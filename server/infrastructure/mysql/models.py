@@ -806,6 +806,28 @@ class StorageReservationModel(Base):
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
 
 
+class StorageQuotaAuditModel(Base):
+    """Immutable audit record for administrator quota changes."""
+
+    __tablename__ = "nlp_storage_quota_audits"
+    __table_args__ = (
+        Index("ix_nlp_storage_quota_audits_target_created", "target_user_id", "created_at"),
+        Index("ix_nlp_storage_quota_audits_actor_created", "actor_user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    actor_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False
+    )
+    target_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False
+    )
+    previous_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    new_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False, server_default="")
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
 class UserFileModel(TimestampedModel, Base):
     """User-owned files and folders stored outside the conversation transcript."""
 

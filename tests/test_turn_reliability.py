@@ -26,7 +26,20 @@ async def test_claim_increments_generation_and_heartbeat_requires_the_same_owner
 
 
 @pytest.mark.asyncio
-async def test_recovery_invalidates_old_generation_and_emits_handover_without_resetting_sequence() -> None:
+async def test_recovery_invalidates_old_generation_and_emits_handover_without_resetting_sequence(monkeypatch) -> None:
+    from server.application import turn_reliability
+
+    class _Quota:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def reserve(self, *args, **kwargs):
+            return object()
+
+        async def finalize(self, *args, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(turn_reliability, "AsyncStorageQuota", _Quota)
     turn = TurnModel(id="turn-1", conversation_id="conversation-1", workspace_id="workspace-1", user_id="user-1", input_text="hi", status="running", claim_generation=2, lease_expires_at=utc_now() - timedelta(seconds=1))
     session = AsyncMock()
     session.add = MagicMock()

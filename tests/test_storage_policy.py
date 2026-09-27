@@ -1,4 +1,8 @@
 from server.storage.policy import StorageBucket, fits_quota, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
+from server.storage.quota import StorageQuotaExceeded, validate_final_usage
+from pathlib import Path
+
+from server.storage.service import StorageScope, StorageValidationError, storage_path_for
 
 
 def test_roles_use_highest_policy_without_adding_quotas() -> None:
@@ -54,3 +58,57 @@ def test_admin_overrides_replace_role_defaults_without_role_multiplication() -> 
     assert adjusted.files_quota_bytes == teacher.files_quota_bytes
     assert adjusted.max_file_bytes == 8
     assert adjusted.max_items == teacher.max_items
+
+
+def test_final_settlement_rejects_measured_usage_over_role_quota() -> None:
+    try:
+        validate_final_usage(
+            core_used_bytes=101,
+            files_used_bytes=20,
+            core_quota_bytes=100,
+            files_quota_bytes=100,
+            global_used_bytes=121,
+            global_limit_bytes=1_000,
+        )
+    except StorageQuotaExceeded as error:
+        assert "core" in str(error)
+    else:
+        raise AssertionError("measured core usage must be rejected at final settlement")
+
+
+def test_final_settlement_rejects_measured_usage_over_global_pool() -> None:
+    try:
+        validate_final_usage(
+            core_used_bytes=50,
+            files_used_bytes=50,
+            core_quota_bytes=100,
+            files_quota_bytes=100,
+            global_used_bytes=101,
+            global_limit_bytes=100,
+        )
+    except StorageQuotaExceeded as error:
+        assert "数据池" in str(error)
+    else:
+        raise AssertionError("measured global usage must be rejected at final settlement")
+
+
+def test_storage_path_is_bound_to_workspace_and_owner(monkeypatch) -> None:
+    import server.storage.service as storage_service
+
+    root = Path.cwd() / ".storage-path-test-root"
+    monkeypatch.setattr(storage_service, "storage_root", lambda: root)
+    scope = StorageScope("user-a", "workspace-a", policy_for_roles({"student"}))
+
+    assert storage_path_for(scope, "workspace-a/user-a/file-1").parent == root / "workspace-a" / "user-a"
+    for key in (
+        "workspace-b/user-a/file-1",
+        "workspace-a/user-b/file-1",
+        "workspace-a/user-a/../user-b/file-1",
+        "user-a/file-1",
+    ):
+        try:
+            storage_path_for(scope, key)
+        except StorageValidationError:
+            pass
+        else:
+            raise AssertionError(f"cross-scope storage key was accepted: {key}")

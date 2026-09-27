@@ -28,7 +28,9 @@ from server.infrastructure.mysql.models import (
     MemoryDocumentModel,
     RoleModel,
     StorageAccountModel,
+    StorageQuotaAuditModel,
     StorageReservationModel,
+    ToolCallModel,
     TurnEventModel,
     TurnModel,
     UserModel,
@@ -81,14 +83,28 @@ def _workspace_path(scope: StorageScope) -> Path:
     return storage_root() / scope.workspace_id / scope.owner_user_id
 
 
-def _safe_file_path(scope: StorageScope, storage_key: str | None) -> Path:
+def storage_path_for(scope: StorageScope, storage_key: str | None) -> Path:
     if not storage_key:
         raise StorageValidationError("文件存储位置不存在")
+    relative = Path(storage_key)
+    if (
+        relative.is_absolute()
+        or len(relative.parts) < 2
+        or relative.parts[0] != scope.workspace_id
+        or relative.parts[1] != scope.owner_user_id
+    ):
+        raise StorageValidationError("文件存储位置不属于当前工作空间")
     root = storage_root().resolve()
+    scope_root = _workspace_path(scope).resolve()
     path = (storage_root() / storage_key).resolve()
     if path != root and root not in path.parents:
         raise StorageValidationError("文件存储位置无效")
+    if path != scope_root and scope_root not in path.parents:
+        raise StorageValidationError("文件存储位置不属于当前工作空间")
     return path
+
+
+_safe_file_path = storage_path_for
 
 
 def _bytes_expr(column):
@@ -192,6 +208,20 @@ async def _sum_bytes(db: AsyncSession, model, columns: tuple, filters: tuple) ->
     return int(value or 0)
 
 
+async def reconcile_all_storage_accounts(db: AsyncSession) -> int:
+    """Rebuild every account ledger once after deployment/startup.
+
+    This is intentionally account-wide rather than request-triggered: legacy
+    rows must count before the first write by a user, including users who are
+    currently inactive and therefore would never hit a request path.
+    """
+
+    user_ids = list((await db.scalars(select(UserModel.id))).all())
+    for user_id in user_ids:
+        await AsyncStorageQuota(db, owner_user_id=str(user_id), roles=None).reconcile()
+    return len(user_ids)
+
+
 class StorageService:
     """A small deep module for account-wide storage accounting and mutations.
 
@@ -221,6 +251,7 @@ class StorageService:
         value = await self.db.scalar(
             select(func.coalesce(func.sum(UserFileModel.size_bytes), 0)).where(
                 UserFileModel.owner_user_id == self.scope.owner_user_id,
+                UserFileModel.workspace_id == self.scope.workspace_id,
                 UserFileModel.kind == "file",
                 UserFileModel.status.in_(("active", "trashed")),
             )
@@ -308,6 +339,12 @@ class StorageService:
             (LangGraphCheckpointWriteModel.value_blob,),
             (LangGraphCheckpointWriteModel.owner_user_id == owner,),
         )
+        total += await _sum_bytes(
+            self.db,
+            ToolCallModel,
+            (ToolCallModel.request_json, ToolCallModel.result_json),
+            (ToolCallModel.turn_id.in_(select(TurnModel.id).where(TurnModel.user_id == owner)),),
+        )
         return total
 
     def _uploaded_images_bytes(self) -> int:
@@ -359,6 +396,7 @@ class StorageService:
             "quota_bytes": quota,
             "used_ratio": round(usage_ratio(effective, quota), 4),
             "state": usage_state(effective, quota),
+            "over_quota": effective > quota,
         }
 
     async def usage(self) -> dict:
@@ -381,6 +419,7 @@ class StorageService:
             await self.db.scalar(
                 select(func.count()).select_from(UserFileModel).where(
                     UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.workspace_id == self.scope.workspace_id,
                     UserFileModel.kind == "file",
                     UserFileModel.status == "active",
                 )
@@ -399,6 +438,7 @@ class StorageService:
     async def _sibling_named(self, name: str, parent_id: str | None, *, exclude_id: str | None = None):
         query = select(UserFileModel).where(
             UserFileModel.owner_user_id == self.scope.owner_user_id,
+            UserFileModel.workspace_id == self.scope.workspace_id,
             UserFileModel.parent_id == parent_id,
             UserFileModel.status == "active",
             func.lower(UserFileModel.display_name) == name.lower(),
@@ -414,6 +454,7 @@ class StorageService:
             select(UserFileModel).where(
                 UserFileModel.id == parent_id,
                 UserFileModel.owner_user_id == self.scope.owner_user_id,
+                UserFileModel.workspace_id == self.scope.workspace_id,
                 UserFileModel.kind == "folder",
                 UserFileModel.status == "active",
             )
@@ -441,6 +482,7 @@ class StorageService:
                 select(UserFileModel)
                 .where(
                     UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.workspace_id == self.scope.workspace_id,
                     UserFileModel.parent_id == parent_id,
                     UserFileModel.status == "active",
                 )
@@ -483,6 +525,7 @@ class StorageService:
             await self.db.scalar(
                 select(func.count()).select_from(UserFileModel).where(
                         UserFileModel.owner_user_id == self.scope.owner_user_id,
+                        UserFileModel.workspace_id == self.scope.workspace_id,
                         UserFileModel.kind == "file",
                     UserFileModel.status == "active",
                 )
@@ -539,6 +582,7 @@ class StorageService:
             select(UserFileModel).where(
                 UserFileModel.id == file_id,
                 UserFileModel.owner_user_id == self.scope.owner_user_id,
+                UserFileModel.workspace_id == self.scope.workspace_id,
                 UserFileModel.status == "active",
             )
         )
@@ -563,6 +607,7 @@ class StorageService:
                     select(func.count()).select_from(UserFileModel).where(
                         UserFileModel.parent_id == item.id,
                         UserFileModel.owner_user_id == self.scope.owner_user_id,
+                        UserFileModel.workspace_id == self.scope.workspace_id,
                         UserFileModel.status == "active",
                     )
                 )
@@ -580,6 +625,7 @@ class StorageService:
                 select(UserFileModel)
                 .where(
                     UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.workspace_id == self.scope.workspace_id,
                     UserFileModel.status == "trashed",
                 )
                 .order_by(UserFileModel.deleted_at.desc(), UserFileModel.display_name)
@@ -596,6 +642,7 @@ class StorageService:
             select(UserFileModel).where(
                 UserFileModel.id == file_id,
                 UserFileModel.owner_user_id == self.scope.owner_user_id,
+                UserFileModel.workspace_id == self.scope.workspace_id,
                 UserFileModel.status == "trashed",
             )
         )
@@ -632,6 +679,7 @@ class StorageService:
             await self.db.scalars(
                 select(UserFileModel).where(
                     UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.workspace_id == self.scope.workspace_id,
                     UserFileModel.status == "trashed",
                     UserFileModel.deleted_at < cutoff,
                 )
@@ -724,7 +772,14 @@ class StorageAdminService:
             )
         return items
 
-    async def update_quota(self, user_id: str, values: dict[str, int | None]) -> dict:
+    async def update_quota(
+        self,
+        user_id: str,
+        values: dict[str, int | None],
+        *,
+        actor_user_id: str,
+        reason: str = "",
+    ) -> dict:
         user = await self.db.scalar(
             select(UserModel).where(UserModel.id == user_id, UserModel.status == "active")
         )
@@ -740,6 +795,12 @@ class StorageAdminService:
         )
         if account is None:
             raise StorageError("storage account ledger row is unavailable")
+        previous = {
+            "core_quota_bytes": account.core_quota_override_bytes,
+            "files_quota_bytes": account.files_quota_override_bytes,
+            "max_file_bytes": account.max_file_override_bytes,
+            "max_items": account.max_items_override,
+        }
         if "core_quota_bytes" in values:
             account.core_quota_override_bytes = values["core_quota_bytes"]
         if "files_quota_bytes" in values:
@@ -748,15 +809,27 @@ class StorageAdminService:
             account.max_file_override_bytes = values["max_file_bytes"]
         if "max_items" in values:
             account.max_items_override = values["max_items"]
+        current = {
+            "core_quota_bytes": account.core_quota_override_bytes,
+            "files_quota_bytes": account.files_quota_override_bytes,
+            "max_file_bytes": account.max_file_override_bytes,
+            "max_items": account.max_items_override,
+        }
+        self.db.add(
+            StorageQuotaAuditModel(
+                id=str(uuid.uuid4()),
+                actor_user_id=actor_user_id,
+                target_user_id=user_id,
+                previous_values=previous,
+                new_values=current,
+                reason=reason.strip() or "未提供原因",
+            )
+        )
         await self.db.flush()
         return {
             "user_id": user_id,
-            "overrides": {
-                "core_quota_bytes": account.core_quota_override_bytes,
-                "files_quota_bytes": account.files_quota_override_bytes,
-                "max_file_bytes": account.max_file_override_bytes,
-                "max_items": account.max_items_override,
-            },
+            "overrides": current,
+            "audit_reason": reason.strip() or "未提供原因",
         }
 
     async def purge_expired_trash(self, *, retention_days: int | None = None) -> int:

@@ -33,6 +33,7 @@ from server.infrastructure.mysql.models import (
     MemoryDocumentModel,
     StorageAccountModel,
     StorageReservationModel,
+    ToolCallModel,
     TurnEventModel,
     TurnModel,
     UserFileModel,
@@ -48,6 +49,35 @@ class StorageError(Exception):
 
 class StorageQuotaExceeded(StorageError):
     """Raised before a write would exceed the account's logical quota."""
+
+
+def validate_final_usage(
+    *,
+    core_used_bytes: int,
+    files_used_bytes: int,
+    core_quota_bytes: int,
+    files_quota_bytes: int,
+    global_used_bytes: int,
+    global_limit_bytes: int,
+) -> None:
+    """Enforce limits against measured usage after a write has landed.
+
+    Reservations protect the admission path, but callers may underestimate
+    serialized JSON or filesystem bytes.  This function is intentionally
+    side-effect free so both async/sync adapters and tests share the same
+    final-settlement rule.
+    """
+
+    if core_used_bytes > core_quota_bytes:
+        raise StorageQuotaExceeded(
+            f"core storage quota exceeded after write: {core_used_bytes} > {core_quota_bytes} bytes"
+        )
+    if files_used_bytes > files_quota_bytes:
+        raise StorageQuotaExceeded(
+            f"files storage quota exceeded after write: {files_used_bytes} > {files_quota_bytes} bytes"
+        )
+    if global_used_bytes > global_limit_bytes:
+        raise StorageQuotaExceeded("服务器账户数据池已达到系统上限")
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +154,12 @@ async def _async_reconcile(db: AsyncSession, owner: str) -> tuple[int, int]:
     core += await _sum_bytes(db, LangGraphCheckpointModel, (LangGraphCheckpointModel.checkpoint_blob, LangGraphCheckpointModel.metadata_blob), (LangGraphCheckpointModel.owner_user_id == owner,))
     core += await _sum_bytes(db, LangGraphCheckpointBlobModel, (LangGraphCheckpointBlobModel.value_blob,), (LangGraphCheckpointBlobModel.owner_user_id == owner,))
     core += await _sum_bytes(db, LangGraphCheckpointWriteModel, (LangGraphCheckpointWriteModel.value_blob,), (LangGraphCheckpointWriteModel.owner_user_id == owner,))
+    core += await _sum_bytes(
+        db,
+        ToolCallModel,
+        (ToolCallModel.request_json, ToolCallModel.result_json),
+        (ToolCallModel.turn_id.in_(select(TurnModel.id).where(TurnModel.user_id == owner)),),
+    )
     core += _uploaded_image_bytes(owner)
     files = await db.scalar(
         select(func.coalesce(func.sum(UserFileModel.size_bytes), 0)).where(
@@ -269,14 +305,46 @@ class AsyncStorageQuota:
         )
         if account is None:
             raise RuntimeError("storage account ledger row is unavailable")
+        account_before_total = (
+            int(account.core_used_bytes)
+            + int(account.files_used_bytes)
+            + int(account.core_reserved_bytes)
+            + int(account.files_reserved_bytes)
+        )
+        global_before = await self.db.scalar(
+            select(
+                func.coalesce(
+                    func.sum(
+                        StorageAccountModel.core_used_bytes
+                        + StorageAccountModel.files_used_bytes
+                        + StorageAccountModel.core_reserved_bytes
+                        + StorageAccountModel.files_reserved_bytes
+                    ),
+                    0,
+                )
+            )
+        )
         if reconcile:
-            account.core_used_bytes, account.files_used_bytes = await _async_reconcile(self.db, self.owner_user_id)
+            final_core, final_files = await _async_reconcile(self.db, self.owner_user_id)
         else:
             actual = max(0, int(actual_bytes if actual_bytes is not None else row.amount_bytes))
-            if reservation.bucket is StorageBucket.CORE:
-                account.core_used_bytes = max(0, int(account.core_used_bytes) + actual)
-            else:
-                account.files_used_bytes = max(0, int(account.files_used_bytes) + actual)
+            final_core = int(account.core_used_bytes) + (actual if reservation.bucket is StorageBucket.CORE else 0)
+            final_files = int(account.files_used_bytes) + (actual if reservation.bucket is StorageBucket.FILES else 0)
+        remaining_reserved = (
+            int(account.core_reserved_bytes) + int(account.files_reserved_bytes) - int(row.amount_bytes)
+        )
+        final_global = int(global_before or 0) - account_before_total + final_core + final_files + max(0, remaining_reserved)
+        validate_final_usage(
+            core_used_bytes=final_core,
+            files_used_bytes=final_files,
+            core_quota_bytes=self.policy.core_quota_bytes,
+            files_quota_bytes=self.policy.files_quota_bytes,
+            global_used_bytes=final_global,
+            global_limit_bytes=settings.NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES,
+        )
+        account.core_used_bytes = final_core
+        account.files_used_bytes = final_files
+        account.last_reconciled_at = func.utc_timestamp(6)
         if reservation.bucket is StorageBucket.CORE:
             account.core_reserved_bytes = max(0, int(account.core_reserved_bytes) - int(row.amount_bytes))
         else:
@@ -386,6 +454,12 @@ class SyncStorageQuota:
         core += self._sum("OCTET_LENGTH(checkpoint_blob)+OCTET_LENGTH(metadata_blob)", "nlp_langgraph_checkpoints", "WHERE owner_user_id=:owner")
         core += self._sum("OCTET_LENGTH(value_blob)", "nlp_langgraph_checkpoint_blobs", "WHERE owner_user_id=:owner")
         core += self._sum("OCTET_LENGTH(value_blob)", "nlp_langgraph_checkpoint_writes", "WHERE owner_user_id=:owner")
+        core += self._sum(
+            "OCTET_LENGTH(CAST(COALESCE(tc.request_json,'') AS CHAR))"
+            "+OCTET_LENGTH(CAST(COALESCE(tc.result_json,'') AS CHAR))",
+            "nlp_tool_calls tc JOIN nlp_turns t ON t.id=tc.turn_id",
+            "WHERE t.user_id=:owner",
+        )
         core += _uploaded_image_bytes(self.owner_user_id)
         files = self.connection.execute(
             text("SELECT COALESCE(SUM(size_bytes),0) FROM nlp_user_files WHERE owner_user_id=:owner AND kind='file' AND status IN ('active','trashed')"),
@@ -429,12 +503,38 @@ class SyncStorageQuota:
         if row is None or row["status"] != "reserved":
             return
         account = self._account()
+        account_before_total = (
+            int(account["core_used_bytes"])
+            + int(account["files_used_bytes"])
+            + int(account["core_reserved_bytes"])
+            + int(account["files_reserved_bytes"])
+        )
+        global_before = self.connection.execute(
+            text(
+                "SELECT COALESCE(SUM(core_used_bytes+files_used_bytes+"
+                "core_reserved_bytes+files_reserved_bytes),0) FROM nlp_storage_accounts"
+            )
+        ).scalar()
         if reconcile:
             core, files = self._reconcile()
-            self.connection.execute(text("UPDATE nlp_storage_accounts SET core_used_bytes=:core,files_used_bytes=:files WHERE owner_user_id=:owner"), {"core": core, "files": files, "owner": self.owner_user_id})
         else:
-            column = "core_used_bytes" if reservation.bucket is StorageBucket.CORE else "files_used_bytes"
-            self.connection.execute(text(f"UPDATE nlp_storage_accounts SET {column}={column}+:amount WHERE owner_user_id=:owner"), {"amount": max(0, int(actual_bytes if actual_bytes is not None else row["amount_bytes"])), "owner": self.owner_user_id})
+            actual = max(0, int(actual_bytes if actual_bytes is not None else row["amount_bytes"]))
+            core = int(account["core_used_bytes"]) + (actual if reservation.bucket is StorageBucket.CORE else 0)
+            files = int(account["files_used_bytes"]) + (actual if reservation.bucket is StorageBucket.FILES else 0)
+        remaining_reserved = int(account["core_reserved_bytes"]) + int(account["files_reserved_bytes"]) - int(row["amount_bytes"])
+        final_global = int(global_before or 0) - account_before_total + int(core) + int(files) + max(0, remaining_reserved)
+        validate_final_usage(
+            core_used_bytes=int(core),
+            files_used_bytes=int(files),
+            core_quota_bytes=self.policy.core_quota_bytes,
+            files_quota_bytes=self.policy.files_quota_bytes,
+            global_used_bytes=final_global,
+            global_limit_bytes=settings.NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES,
+        )
+        self.connection.execute(
+            text("UPDATE nlp_storage_accounts SET core_used_bytes=:core,files_used_bytes=:files,last_reconciled_at=UTC_TIMESTAMP(6) WHERE owner_user_id=:owner"),
+            {"core": core, "files": files, "owner": self.owner_user_id},
+        )
         reserved_column = "core_reserved_bytes" if reservation.bucket is StorageBucket.CORE else "files_reserved_bytes"
         self.connection.execute(text(f"UPDATE nlp_storage_accounts SET {reserved_column}=GREATEST(0,{reserved_column}-:amount) WHERE owner_user_id=:owner"), {"amount": int(row["amount_bytes"]), "owner": self.owner_user_id})
         self.connection.execute(text("UPDATE nlp_storage_reservations SET status='committed',finalized_at=UTC_TIMESTAMP(6) WHERE id=:id"), {"id": reservation.id})

@@ -52,7 +52,11 @@ from gateway.redis_transport import TurnTaskCodec
 from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
-from server.storage.service import purge_expired_guest_data, purge_expired_storage_trash
+from server.storage.service import (
+    purge_expired_guest_data,
+    purge_expired_storage_trash,
+    reconcile_all_storage_accounts,
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
@@ -203,6 +207,7 @@ class BackendGateway:
         )
         self._maintenance_stop = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
+        self._storage_reconciled = False
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
         self._accepting = False
@@ -258,6 +263,9 @@ class BackendGateway:
         factory = self.authorization_session_factory
         if factory is not None:
             async with factory.begin() as session:
+                if not self._storage_reconciled:
+                    result["storage_accounts_reconciled"] = await reconcile_all_storage_accounts(session)
+                    self._storage_reconciled = True
                 result["storage_trash_removed"] = await purge_expired_storage_trash(session)
                 result["guest_data_accounts_removed"] = await purge_expired_guest_data(session)
         return result

@@ -19,3 +19,4 @@ class StorageQuotaUpdateRequest(BaseModel):
     files_quota_bytes: int | None = Field(default=None, ge=0)
     max_file_bytes: int | None = Field(default=None, ge=0)
     max_items: int | None = Field(default=None, ge=0)
+    reason: str = Field(default="", max_length=500)
