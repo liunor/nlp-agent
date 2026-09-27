@@ -764,6 +764,33 @@ class ConversationTranscriptModel(Base):
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
 
 
+class UserFileModel(TimestampedModel, Base):
+    """User-owned files and folders stored outside the conversation transcript."""
+
+    __tablename__ = "nlp_user_files"
+    __table_args__ = (
+        Index("ix_nlp_user_files_owner_workspace_parent", "owner_user_id", "workspace_id", "parent_id"),
+        Index("ix_nlp_user_files_owner_workspace_status", "owner_user_id", "workspace_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_id: Mapped[str | None] = mapped_column(UUID, nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True, unique=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True, index=True)
+
+
 class MemoryDocumentModel(TimestampedModel, Base):
     __tablename__ = "nlp_memory_documents"
     id: Mapped[str] = mapped_column(UUID, primary_key=True)

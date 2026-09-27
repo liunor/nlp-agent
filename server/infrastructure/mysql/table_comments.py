@@ -53,6 +53,7 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_langgraph_checkpoint_blobs": "LangGraph 检查点 channel 值的二进制版本数据。",
     "nlp_langgraph_checkpoint_writes": "LangGraph 检查点的任务写入记录。",
     "nlp_conversation_transcripts": "会话历史消息与工具内容的转录存档。",
+    "nlp_user_files": "用户独立文件夹中的个人文件与目录索引。",
     "nlp_memory_documents": "用户工作区的长期记忆文档。",
     "nlp_release_notes": "面向开发者和学生的版本发布说明。",
     "nlp_memory_archives": "记忆归档事件及其来源游标。",

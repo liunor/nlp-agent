@@ -55,6 +55,34 @@ export interface UploadResponse {
   sha256: string;
 }
 
+export type StorageUsageState = "normal" | "warning" | "critical" | "full";
+
+export interface StorageUsageBucket {
+  used_bytes: number;
+  quota_bytes: number;
+  used_ratio: number;
+  state: StorageUsageState;
+}
+
+export interface StorageUsage {
+  role: string;
+  core: StorageUsageBucket;
+  files: StorageUsageBucket;
+  files_count: number;
+  max_file_bytes: number;
+  max_items: number;
+}
+
+export interface StorageFile {
+  id: string;
+  kind: "file" | "folder";
+  name: string;
+  mime_type: string | null;
+  size_bytes: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface SandboxRuntimeProfile {
   id: string;
   runtime: string;
@@ -84,6 +112,17 @@ export async function uploadAttachment(
   });
 }
 
+function storageQuery(workspaceId?: string, parentId?: string) {
+  const query = new URLSearchParams();
+  if (workspaceId) query.set("workspace_id", workspaceId);
+  if (parentId) query.set("parent_id", parentId);
+  return query.size ? `?${query.toString()}` : "";
+}
+
+export function storageFileDownloadUrl(fileId: string, workspaceId?: string) {
+  return `${API_ROOT}/storage/files/${encodeURIComponent(fileId)}/download${storageQuery(workspaceId)}`;
+}
+
 export const api = {
   login: async (username: string, password: string) => {
     const session = await request<AuthSession>("/auth/login", {
@@ -98,6 +137,24 @@ export const api = {
     csrfToken = "";
   },
   getAuthSession: ensureAuth,
+  getStorageUsage: (workspaceId?: string) => request<StorageUsage>(`/storage/usage${storageQuery(workspaceId)}`),
+  listStorageFiles: (workspaceId?: string, parentId?: string) => request<{ items: StorageFile[] }>(`/storage/files${storageQuery(workspaceId, parentId)}`),
+  createStorageFolder: (name: string, workspaceId?: string, parentId?: string) => request<StorageFile>(`/storage/folders${storageQuery(workspaceId, parentId)}`, {
+    method: "POST",
+    body: JSON.stringify({ name, parent_id: parentId ?? null }),
+  }),
+  uploadStorageFile: (file: File, workspaceId?: string, parentId?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (parentId) form.append("parent_id", parentId);
+    if (workspaceId) form.append("workspace_id", workspaceId);
+    return request<StorageFile>("/storage/files", { method: "POST", body: form });
+  },
+  renameStorageFile: (fileId: string, name: string, workspaceId?: string) => request<StorageFile>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  }),
+  deleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
   ensureSandboxLease: () => request<{
     phase: number;
       runtime_available: boolean;

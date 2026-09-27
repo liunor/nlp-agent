@@ -1478,6 +1478,54 @@ button { color: inherit; }
   cursor: pointer;
 }
 .files-panel-remove:hover { background: var(--muted-bg); color: var(--danger); }
+
+/* Account storage summary and the standalone file-manager view. */
+.files-manager-shell { min-width: 0; }
+.storage-summary { flex: 0 0 auto; padding: 10px 12px 8px; border-bottom: 1px solid var(--border); background: var(--soft-bg); }
+.storage-summary-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.storage-summary-heading > div { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.storage-summary-heading strong { color: var(--fg); font-size: 13px; font-weight: 650; }
+.storage-summary-heading small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.storage-summary-heading button, .storage-row-actions button, .storage-row-actions a { display: grid; width: 25px; height: 25px; place-items: center; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--muted); cursor: pointer; text-decoration: none; }
+.storage-summary-heading button:hover, .storage-row-actions button:hover, .storage-row-actions a:hover { background: var(--muted-bg); color: var(--accent); }
+.storage-meter { display: grid; gap: 4px; margin-top: 7px; }
+.storage-meter-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }
+.storage-meter-label strong { color: var(--fg); font-size: 11px; font-weight: 600; }
+.storage-meter-track { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--border) 68%, var(--bg)); }
+.storage-meter-fill { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: #4e9f68; transition: width .25s ease, background .25s ease; }
+.storage-meter.warning .storage-meter-fill { background: #d09b35; }
+.storage-meter.critical .storage-meter-fill { background: #d87336; }
+.storage-meter.full .storage-meter-fill { background: #c94c55; }
+.storage-summary-error { padding: 4px 0; color: var(--danger); font-size: 11px; }
+.storage-meter-skeleton { height: 28px; border-radius: 7px; background: color-mix(in srgb, var(--border) 38%, transparent); }
+.files-panel-tabs { display: flex; flex: 0 0 auto; gap: 4px; padding: 7px 10px 0; border-bottom: 1px solid var(--border); background: var(--bg); }
+.files-panel-tabs button { padding: 7px 9px 8px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.files-panel-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 650; }
+.storage-manager { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
+.storage-manager-toolbar { display: flex; min-height: 45px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.storage-breadcrumb { display: flex; min-width: 0; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 11px; }
+.storage-breadcrumb > span { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
+.storage-breadcrumb button { max-width: 130px; overflow: hidden; padding: 3px 0; border: 0; background: transparent; color: var(--fg); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.storage-breadcrumb button:disabled { color: var(--accent); font-weight: 650; }
+.storage-manager-toolbar .files-panel-actions { gap: 4px; }
+.storage-manager-toolbar .files-panel-actions button { height: 28px; padding: 0 7px; font-size: 11px; }
+.storage-inline-form { display: flex; flex: 0 0 auto; gap: 5px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--soft-bg); }
+.storage-inline-form input, .storage-row-rename input { min-width: 0; flex: 1 1 auto; height: 27px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-size: 11px; }
+.storage-inline-form button, .storage-row-rename button { height: 27px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-size: 11px; cursor: pointer; }
+.storage-list { min-height: 0; flex: 1 1 auto; overflow-y: auto; padding: 6px 8px 12px; }
+.storage-row { display: flex; min-width: 0; align-items: center; gap: 5px; min-height: 43px; padding: 3px 5px; border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent); }
+.storage-row:hover { background: color-mix(in srgb, var(--accent-soft) 38%, transparent); }
+.storage-row-main { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 8px; padding: 5px 2px; border: 0; background: transparent; color: var(--accent); text-align: left; cursor: pointer; }
+.storage-row-main > span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.storage-row-main strong { overflow: hidden; color: var(--fg); font-size: 12px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
+.storage-row-main small { color: var(--muted); font-size: 10px; }
+.storage-row-actions { display: flex; flex: 0 0 auto; gap: 3px; }
+.storage-row-actions .danger:hover { color: var(--danger); }
+.storage-row-rename { display: flex; min-width: 120px; flex: 1 1 auto; gap: 3px; }
+.storage-empty { display: grid; flex: 1 1 auto; align-content: center; justify-items: center; gap: 7px; padding: 24px; color: var(--muted); font-size: 11px; text-align: center; }
+.storage-empty strong { color: var(--fg); font-size: 13px; }
+.storage-empty span { max-width: 260px; line-height: 1.6; }
+.files-manager-shell > .files-panel { min-height: 0; }
 .files-panel-preview { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
 .files-panel-preview-header {
   display: flex;

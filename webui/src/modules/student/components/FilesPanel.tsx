@@ -1,7 +1,8 @@
-import { BookMarked, FileCode2, FileText, FileUp, FolderOpen, Trash2, X } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { ArrowLeft, BookMarked, Download, FileCode2, FileText, FileUp, FolderOpen, FolderPlus, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ChangeEvent } from "react";
 
+import { api, storageFileDownloadUrl, type StorageFile, type StorageUsage, type StorageUsageBucket } from "@/platform/http/api";
 import { createUuid } from "@/shared/utils/uuid";
 import { DocumentCodeView } from "./DocumentCodeView";
 import { MarkdownContent } from "./MarkdownContent";
@@ -69,7 +70,7 @@ function loadImportedFiles(): ImportedFile[] {
   }
 }
 
-export function FilesPanel() {
+function LearningImportPanel() {
   const [files, setFiles] = useState<ImportedFile[]>(() => loadImportedFiles());
   const [selectedId, setSelectedId] = useState<string | null>(files[files.length - 1]?.id ?? null);
   const [dragging, setDragging] = useState(false);
@@ -195,4 +196,132 @@ export function FilesPanel() {
       )}
     </section>
   );
+}
+
+function StorageMeter({ label, bucket }: { label: string; bucket: StorageUsageBucket }) {
+  const percentage = Math.round(Math.min(1, Math.max(0, bucket.used_ratio)) * 100);
+  return <div className={["storage-meter", bucket.state].join(" ")}>
+    <div className="storage-meter-label"><strong>{label}</strong><span>{formatBytes(bucket.used_bytes)} / {formatBytes(bucket.quota_bytes)}</span></div>
+    <div className="storage-meter-track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage}><span className="storage-meter-fill" style={{ width: `${percentage}%` }} /></div>
+  </div>;
+}
+
+function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string; onRefreshUsage: () => void }) {
+  const [items, setItems] = useState<StorageFile[]>([]);
+  const [folderPath, setFolderPath] = useState<StorageFile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [newFolderName, setNewFolderName] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const currentFolder = folderPath[folderPath.length - 1] ?? null;
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setError("");
+    void api.listStorageFiles(workspaceId, currentFolder?.id)
+      .then((response) => setItems(response.items))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取文件列表"))
+      .finally(() => setLoading(false));
+  }, [currentFolder?.id, workspaceId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const createFolder = () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    void api.createStorageFolder(name, workspaceId, currentFolder?.id)
+      .then(() => { setNewFolderName(""); refresh(); onRefreshUsage(); })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法新建文件夹"));
+  };
+
+  const uploadFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!incoming.length) return;
+    void (async () => {
+      for (const file of incoming) {
+        try {
+          await api.uploadStorageFile(file, workspaceId, currentFolder?.id);
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : `无法上传 ${file.name}`);
+          break;
+        }
+      }
+      refresh();
+      onRefreshUsage();
+    })();
+  };
+
+  const remove = (item: StorageFile) => {
+    void api.deleteStorageFile(item.id, workspaceId)
+      .then(() => { refresh(); onRefreshUsage(); })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法删除项目"));
+  };
+
+  const beginRename = (item: StorageFile) => {
+    setRenamingId(item.id);
+    setRenameValue(item.name);
+  };
+
+  const saveRename = (item: StorageFile) => {
+    const name = renameValue.trim();
+    if (!name) return;
+    void api.renameStorageFile(item.id, name, workspaceId)
+      .then(() => { setRenamingId(null); refresh(); })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法重命名项目"));
+  };
+
+  return <div className="storage-manager">
+    <header className="storage-manager-toolbar">
+      <div className="storage-breadcrumb" aria-label="当前文件夹路径">
+        <button type="button" disabled={!folderPath.length} onClick={() => setFolderPath([])}><FolderOpen size={14} />我的文件</button>
+        {folderPath.map((folder, index) => <span key={folder.id}><span>/</span><button type="button" onClick={() => setFolderPath(folderPath.slice(0, index + 1))}>{folder.name}</button></span>)}
+      </div>
+      <div className="files-panel-actions">
+        {folderPath.length > 0 && <button type="button" onClick={() => setFolderPath(folderPath.slice(0, -1))}><ArrowLeft size={14} />返回</button>}
+        <button type="button" onClick={() => setNewFolderName((value) => value ? "" : "新建文件夹")}><FolderPlus size={14} />新建文件夹</button>
+        <button type="button" onClick={() => inputRef.current?.click()}><FileUp size={14} />上传</button>
+        <button type="button" aria-label="刷新文件列表" onClick={() => { refresh(); onRefreshUsage(); }}><RefreshCw size={14} /></button>
+      </div>
+      <input ref={inputRef} type="file" multiple onChange={uploadFiles} />
+    </header>
+    {newFolderName && <div className="storage-inline-form"><input autoFocus value={newFolderName} aria-label="新文件夹名称" onChange={(event) => setNewFolderName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createFolder(); if (event.key === "Escape") setNewFolderName(""); }} /><button type="button" onClick={createFolder}>创建</button><button type="button" onClick={() => setNewFolderName("")}>取消</button></div>}
+    {error && <div className="files-panel-error" role="alert">{error}<button type="button" aria-label="关闭提示" onClick={() => setError("")}><X size={14} /></button></div>}
+    {loading ? <div className="storage-empty">正在读取文件列表…</div> : items.length === 0 ? <div className="storage-empty"><FolderOpen size={24} /><strong>此文件夹为空</strong><span>上传文件或新建文件夹，个人资料会和学习文档导入区分开。</span></div> : <div className="storage-list" role="list" aria-label="个人文件列表">
+      {items.map((item) => <div className="storage-row" key={item.id} role="listitem">
+        <button type="button" className="storage-row-main" onClick={() => item.kind === "folder" && setFolderPath([...folderPath, item])}>
+          {item.kind === "folder" ? <FolderOpen size={17} /> : <FileText size={17} />}<span><strong>{item.name}</strong><small>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</small></span>
+        </button>
+        {renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
+      </div>)}
+    </div>}
+  </div>;
+}
+
+export function FilesPanel({ workspaceId }: { workspaceId?: string } = {}) {
+  const [tab, setTab] = useState<"manager" | "import">("manager");
+  const [usage, setUsage] = useState<StorageUsage | null>(null);
+  const [usageError, setUsageError] = useState("");
+
+  const refreshUsage = useCallback(() => {
+    void api.getStorageUsage(workspaceId)
+      .then((value) => { setUsage(value); setUsageError(""); })
+      .catch((reason: unknown) => setUsageError(reason instanceof Error ? reason.message : "无法读取空间用量"));
+  }, [workspaceId]);
+
+  useEffect(() => { refreshUsage(); }, [refreshUsage]);
+
+  return <section className="files-panel files-manager-shell" aria-label="文件工具">
+    <div className="storage-summary">
+      <div className="storage-summary-heading"><div><FolderOpen size={17} /><strong>文件空间</strong><small>{usage ? `${usage.role} · ${usage.files_count}/${usage.max_items} 个文件` : "正在读取空间用量…"}</small></div><button type="button" aria-label="刷新空间用量" onClick={refreshUsage}><RefreshCw size={14} /></button></div>
+      {usage ? <><StorageMeter label="通用空间" bucket={usage.core} /><StorageMeter label="个人文件" bucket={usage.files} /></> : usageError ? <div className="storage-summary-error">{usageError}</div> : <div className="storage-meter-skeleton" />}
+    </div>
+    <div className="files-panel-tabs" role="tablist" aria-label="文件页面">
+      <button type="button" role="tab" aria-selected={tab === "manager"} onClick={() => setTab("manager")}>我的文件</button>
+      <button type="button" role="tab" aria-selected={tab === "import"} onClick={() => setTab("import")}>学习文档导入</button>
+    </div>
+    {tab === "manager" ? <StorageManager workspaceId={workspaceId} onRefreshUsage={refreshUsage} /> : <LearningImportPanel />}
+  </section>;
 }

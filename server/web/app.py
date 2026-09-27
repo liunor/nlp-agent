@@ -2136,6 +2136,8 @@ def create_app(
     # Image upload endpoints (registered before the SPA mount so /api routes win).
     from server.uploads import router as uploads_router
     app.include_router(uploads_router)
+    from server.storage import router as storage_router
+    app.include_router(storage_router)
 
     if static_dir is not None and static_dir.is_dir():
         app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="webui")
