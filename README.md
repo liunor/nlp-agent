@@ -2,8 +2,6 @@
 
 <img src="webui/logo/nova.png" alt="Nova logo" width="150" />
 
-<h1>Nova</h1>
-
 **AI-powered NLP Learning & Teaching Platform**<br>
 Dialogue · Practice · Knowledge · Observability
 
@@ -27,6 +25,8 @@ Dialogue · Practice · Knowledge · Observability
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="LICENSE">License</a>
 </p>
+
+<h1>Nova</h1>
 
 </div>
 
