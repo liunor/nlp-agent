@@ -25,8 +25,6 @@
   <a href="LICENSE">License</a>
 </p>
 
-<h1>Nova</h1>
-
 </div>
 
 <img src="docs/assets/demo-flow.gif" alt="Nova feature walkthrough" width="100%" />
