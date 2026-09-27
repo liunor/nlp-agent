@@ -17,7 +17,7 @@ Coordinator / Worker / Model / Tool / Memory / Compression
                   └── 实时订阅队列
 ```
 
-观测记录写入当前部署的 MySQL，由 `NLP_AGENT_DATABASE_URL` 决定目标；测试和生产必须使用不同数据库。Prompt、模型完整输出和工具参数值不会写入观测库；工具仅记录参数键名。
+观测记录写入当前部署的 MySQL，由 `NLP_AGENT_DATABASE_URL` 决定目标；测试和生产必须使用不同数据库。监控页的“当前空间”也只读取当前进程配置的数据库和可见磁盘，不会扫描或合并另一套环境；通过 `NLP_AGENT_DEPLOYMENT_ENV=test|production` 标识当前环境。Prompt、模型完整输出和工具参数值不会写入观测库；工具仅记录参数键名。
 
 ## 关联标识
 

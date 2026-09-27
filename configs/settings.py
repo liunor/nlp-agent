@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     NLP_AGENT_REDIS_URL: str = ""
     NLP_AGENT_STATE_FACTORY: str = ""
     NLP_AGENT_DATABASE_URL: str = ""
+    # Identifies the deployment represented by this process.  Test and
+    # production intentionally use separate databases, but keeping the label
+    # explicit prevents monitoring code from ever presenting them as one pool.
+    NLP_AGENT_DEPLOYMENT_ENV: str = "unknown"
     NLP_AGENT_DB_POOL_SIZE: int = 10
     NLP_AGENT_DB_MAX_OVERFLOW: int = 20
     NLP_AGENT_DB_POOL_RECYCLE_S: int = 1800

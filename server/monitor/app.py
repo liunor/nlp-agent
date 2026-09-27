@@ -282,6 +282,13 @@ def create_monitor_app(
     async def storage(identity: Principal):
         return await service.health(identity)
 
+    @app.get("/api/v1/observability/space", tags=["observability"])
+    async def space(
+        identity: Principal,
+        db: Annotated[AsyncSession, Depends(monitor_db_session)],
+    ):
+        return await service.space(identity, db)
+
     @app.post("/api/v1/observability/storage/prune", tags=["observability"])
     async def prune(_identity: Principal, _write: WriteClaims, trace_days: int = Query(30, ge=1, le=365), event_days: int = Query(30, ge=1, le=365)):
         await asyncio.to_thread(runtime.repository.prune, trace_days, event_days)

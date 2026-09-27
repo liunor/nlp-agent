@@ -6,7 +6,7 @@ const { monitorApi } = vi.hoisted(() => ({
     overview: vi.fn().mockResolvedValue({ requests: 0, errors: 0, error_rate: 0, period_days: 30, latency_ms: { p50: 0, p95: 0 }, ttft_ms: { p50: 0, p95: 0 }, tokens: {} }),
     traces: vi.fn().mockResolvedValue({ items: [] }), usage: vi.fn().mockResolvedValue({ items: [] }),
     sessions: vi.fn().mockResolvedValue({ items: [] }), errors: vi.fn().mockResolvedValue({ items: [] }),
-    events: vi.fn().mockResolvedValue({ items: [] }), storage: vi.fn().mockResolvedValue({}),
+    events: vi.fn().mockResolvedValue({ items: [] }), storage: vi.fn().mockResolvedValue({}), space: vi.fn().mockResolvedValue(null),
   },
 }));
 
