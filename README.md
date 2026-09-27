@@ -1,9 +1,8 @@
 <div align="center">
 
-<img src="webui/logo/nova.png" alt="Nova logo" width="150" />
-
-**AI-powered NLP Learning & Teaching Platform**<br>
-Dialogue · Practice · Knowledge · Observability
+<a href="docs/release/v2.0.0.md">
+  <img src="docs/assets/nova-v2.0.0-preview.jpg" alt="Nova — AI-powered NLP Learning & Teaching Platform" width="1280">
+</a>
 
 <p>
   <img src="https://img.shields.io/github/stars/liunor/nlp-agent?logo=github" alt="GitHub stars">
@@ -26,15 +25,7 @@ Dialogue · Practice · Knowledge · Observability
   <a href="LICENSE">License</a>
 </p>
 
-<h1>Nova</h1>
-
 </div>
-
-<p align="center">
-  <a href="docs/release/v2.0.0.md">
-    <img src="docs/assets/nova-v2.0.0-preview.jpg" alt="Nova — AI-powered NLP Learning & Teaching Platform" width="1280">
-  </a>
-</p>
 
 <img src="docs/assets/demo-flow.gif" alt="Nova feature walkthrough" width="100%" />
 
