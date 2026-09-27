@@ -1,4 +1,4 @@
-import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse } from "@/shared/types";
+import type { AgentSessionStats, AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, Workspace, WorkspaceMember, ClassroomSummary, JoinRequest, JoinRequestListResponse, WhiteboardLibraryItem } from "@/shared/types";
 import type { FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
@@ -59,6 +59,8 @@ export type StorageUsageState = "normal" | "warning" | "critical" | "full";
 
 export interface StorageUsageBucket {
   used_bytes: number;
+  committed_used_bytes?: number;
+  reserved_bytes?: number;
   quota_bytes: number;
   used_ratio: number;
   state: StorageUsageState;
@@ -81,6 +83,7 @@ export interface StorageFile {
   size_bytes: number;
   created_at: string | null;
   updated_at: string | null;
+  deleted_at?: string | null;
 }
 
 export interface SandboxRuntimeProfile {
@@ -139,6 +142,7 @@ export const api = {
   getAuthSession: ensureAuth,
   getStorageUsage: (workspaceId?: string) => request<StorageUsage>(`/storage/usage${storageQuery(workspaceId)}`),
   listStorageFiles: (workspaceId?: string, parentId?: string) => request<{ items: StorageFile[] }>(`/storage/files${storageQuery(workspaceId, parentId)}`),
+  listStorageTrash: (workspaceId?: string) => request<{ items: StorageFile[] }>(`/storage/trash${storageQuery(workspaceId)}`),
   createStorageFolder: (name: string, workspaceId?: string, parentId?: string) => request<StorageFile>(`/storage/folders${storageQuery(workspaceId, parentId)}`, {
     method: "POST",
     body: JSON.stringify({ name, parent_id: parentId ?? null }),
@@ -155,6 +159,8 @@ export const api = {
     body: JSON.stringify({ name }),
   }),
   deleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
+  restoreStorageFile: (fileId: string, workspaceId?: string) => request<StorageFile>(`/storage/trash/${encodeURIComponent(fileId)}/restore${storageQuery(workspaceId)}`, { method: "POST" }),
+  permanentlyDeleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/trash/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
   ensureSandboxLease: () => request<{
     phase: number;
       runtime_available: boolean;
@@ -267,6 +273,10 @@ export const api = {
   saveGuidedBlueprint: (workspaceId: string, blueprint: TeacherCatalog["guided_blueprints"][number]) => request<{ catalog: TeacherCatalog }>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/guided-blueprints/${encodeURIComponent(blueprint.id)}`, { method: "PUT", body: JSON.stringify(blueprint) }),
   deleteBlueprint: (workspaceId: string, kind: "exercise" | "review", blueprintId: string) => request<void>(`/teacher/catalog/${encodeURIComponent(workspaceId)}/${kind}-blueprints/${encodeURIComponent(blueprintId)}`, { method: "DELETE" }),
   getLearningCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/learning/catalog/${encodeURIComponent(workspaceId)}`),
+  getWhiteboardLibrary: () => request<{ items: WhiteboardLibraryItem[] }>("/whiteboard/library"),
+  createWhiteboardLibraryItem: (name: string, elements: unknown[]) => request<{ item: WhiteboardLibraryItem }>("/whiteboard/library", { method: "POST", body: JSON.stringify({ name, elements }) }),
+  renameWhiteboardLibraryItem: (itemId: string, name: string) => request<{ item: WhiteboardLibraryItem }>(`/whiteboard/library/${encodeURIComponent(itemId)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteWhiteboardLibraryItem: (itemId: string) => request<void>(`/whiteboard/library/${encodeURIComponent(itemId)}`, { method: "DELETE" }),
   getTeacherBookNavigation: (workspaceId = "default") => request<{ workspace_id: string; items: TeacherBookNavigationItem[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/navigation`),
   getTeacherBookPage: (workspaceId: string, knowledgePointId: string) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`),
   updateTeacherBookPage: (workspaceId: string, knowledgePointId: string, content_markdown: string, expected_revision: number, assets: TeacherBookAssetInput[] = []) => request<{ page: TeacherBookPage; warnings: string[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`, { method: "PUT", body: JSON.stringify({ content_markdown, expected_revision, assets }) }),

@@ -6,9 +6,11 @@ import hashlib
 import shutil
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import cast, func, select
+from sqlalchemy import cast, delete, exists, func, select
+from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.sqltypes import Text as SqlText
 
@@ -24,21 +26,19 @@ from server.infrastructure.mysql.models import (
     LangGraphCheckpointWriteModel,
     MemoryArchiveModel,
     MemoryDocumentModel,
+    RoleModel,
+    StorageAccountModel,
+    StorageReservationModel,
     TurnEventModel,
     TurnModel,
+    UserModel,
+    UserRoleModel,
     UserFileModel,
 )
 from server.tools.vision.input_resolver import DEFAULT_UPLOADS_ROOT
 
-from .policy import StoragePolicy, policy_for_roles, usage_ratio, usage_state
-
-
-class StorageError(Exception):
-    """Base error for storage operations."""
-
-
-class StorageQuotaExceeded(StorageError):
-    """Raised before a write would cross a user's logical quota."""
+from .policy import StorageBucket, StoragePolicy, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
+from .quota import AsyncStorageQuota, StorageError, StorageQuotaExceeded
 
 
 class StorageNameConflict(StorageError):
@@ -95,6 +95,95 @@ def _bytes_expr(column):
     return func.coalesce(func.length(cast(column, SqlText)), 0)
 
 
+async def purge_expired_storage_trash(db: AsyncSession, *, retention_days: int | None = None) -> int:
+    """Delete trashed file rows and bytes after the retention window."""
+
+    days = settings.NLP_AGENT_STORAGE_TRASH_RETENTION_DAYS if retention_days is None else max(0, retention_days)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    items = (
+        await db.scalars(
+            select(UserFileModel).where(
+                UserFileModel.status == "trashed",
+                UserFileModel.deleted_at < cutoff,
+            )
+        )
+    ).all()
+    root = storage_root().resolve()
+    for item in list(items):
+        if item.storage_key:
+            path = (storage_root() / item.storage_key).resolve()
+            if root in path.parents:
+                if item.kind == "folder" and path.is_dir():
+                    shutil.rmtree(path)
+                elif item.kind == "file":
+                    path.unlink(missing_ok=True)
+        await db.delete(item)
+    if items:
+        await db.flush()
+    return len(items)
+
+
+async def purge_expired_guest_data(db: AsyncSession) -> int:
+    """Remove durable data for users that have remained guest-only too long."""
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        days=max(1, settings.NLP_AGENT_GUEST_STORAGE_RETENTION_DAYS)
+    )
+    guest_ids = list(
+        (
+            await db.scalars(
+                select(UserModel.id)
+                .join(UserRoleModel, UserRoleModel.user_id == UserModel.id)
+                .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
+                .where(
+                    UserModel.status == "active",
+                    UserModel.deleted_at.is_(None),
+                    UserModel.created_at < cutoff,
+                    RoleModel.code == "guest",
+                    RoleModel.status == "active",
+                    (UserRoleModel.expires_at.is_(None) | (UserRoleModel.expires_at > func.utc_timestamp())),
+                    ~exists(
+                        select(1)
+                        .select_from(UserRoleModel)
+                        .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
+                        .where(
+                            UserRoleModel.user_id == UserModel.id,
+                            RoleModel.code != "guest",
+                            RoleModel.status == "active",
+                            (UserRoleModel.expires_at.is_(None) | (UserRoleModel.expires_at > func.utc_timestamp())),
+                        )
+                    ),
+                )
+            )
+        ).all()
+    )
+    removed = 0
+    for user_id in guest_ids:
+        session_ids = select(ConversationModel.id).where(ConversationModel.owner_user_id == user_id)
+        for statement in (
+            delete(ConversationTranscriptModel).where(ConversationTranscriptModel.session_id.in_(session_ids)),
+            delete(AgentCheckpointModel).where(AgentCheckpointModel.owner_user_id == user_id),
+            delete(LangGraphCheckpointModel).where(LangGraphCheckpointModel.owner_user_id == user_id),
+            delete(LangGraphCheckpointBlobModel).where(LangGraphCheckpointBlobModel.owner_user_id == user_id),
+            delete(LangGraphCheckpointWriteModel).where(LangGraphCheckpointWriteModel.owner_user_id == user_id),
+            delete(MemoryDocumentModel).where(MemoryDocumentModel.user_id == user_id),
+            delete(MemoryArchiveModel).where(MemoryArchiveModel.user_id == user_id),
+            delete(UserFileModel).where(UserFileModel.owner_user_id == user_id),
+            delete(StorageReservationModel).where(StorageReservationModel.owner_user_id == user_id),
+            delete(StorageAccountModel).where(StorageAccountModel.owner_user_id == user_id),
+            delete(ConversationModel).where(ConversationModel.owner_user_id == user_id),
+        ):
+            await db.execute(statement)
+        for workspace_root in DEFAULT_UPLOADS_ROOT.glob("*") if DEFAULT_UPLOADS_ROOT.is_dir() else ():
+            path = workspace_root / str(user_id)
+            if path.is_dir():
+                shutil.rmtree(path)
+        removed += 1
+    if guest_ids:
+        await db.flush()
+    return removed
+
+
 async def _sum_bytes(db: AsyncSession, model, columns: tuple, filters: tuple) -> int:
     if not columns:
         return 0
@@ -122,13 +211,18 @@ class StorageService:
             policy=policy_for_roles(principal.roles),
         )
         self.role = _display_role(principal.roles)
+        self.quota = AsyncStorageQuota(
+            db,
+            owner_user_id=principal.user_id,
+            roles=principal.roles,
+        )
 
     async def _file_used(self) -> int:
         value = await self.db.scalar(
             select(func.coalesce(func.sum(UserFileModel.size_bytes), 0)).where(
                 UserFileModel.owner_user_id == self.scope.owner_user_id,
                 UserFileModel.kind == "file",
-                UserFileModel.status == "active",
+                UserFileModel.status.in_(("active", "trashed")),
             )
         )
         return int(value or 0)
@@ -256,33 +350,50 @@ class StorageService:
             raise StorageQuotaExceeded("服务器需要保留的系统空间不足")
 
     @staticmethod
-    def _bucket(used: int, quota: int) -> dict[str, int | float | str]:
+    def _bucket(used: int, quota: int, reserved: int = 0) -> dict[str, int | float | str]:
+        effective = max(0, used) + max(0, reserved)
         return {
-            "used_bytes": used,
+            "used_bytes": effective,
+            "committed_used_bytes": max(0, used),
+            "reserved_bytes": max(0, reserved),
             "quota_bytes": quota,
-            "used_ratio": round(usage_ratio(used, quota), 4),
-            "state": usage_state(used, quota),
+            "used_ratio": round(usage_ratio(effective, quota), 4),
+            "state": usage_state(effective, quota),
         }
 
     async def usage(self) -> dict:
-        core_used = await self._core_used_from_db() + self._uploaded_images_bytes()
-        files_used = await self._file_used()
+        await self.quota.reconcile()
+        account = await self.db.scalar(
+            select(StorageAccountModel).where(StorageAccountModel.owner_user_id == self.scope.owner_user_id)
+        )
+        if account is None:
+            raise StorageError("storage account ledger row is unavailable")
+        policy = policy_with_overrides(
+            self.scope.policy,
+            {
+                "core_quota_bytes": account.core_quota_override_bytes,
+                "files_quota_bytes": account.files_quota_override_bytes,
+                "max_file_bytes": account.max_file_override_bytes,
+                "max_items": account.max_items_override,
+            },
+        )
+        files_count = int(
+            await self.db.scalar(
+                select(func.count()).select_from(UserFileModel).where(
+                    UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.kind == "file",
+                    UserFileModel.status == "active",
+                )
+            )
+            or 0
+        )
         return {
             "role": self.role,
-            "core": self._bucket(core_used, self.scope.policy.core_quota_bytes),
-            "files": self._bucket(files_used, self.scope.policy.files_quota_bytes),
-            "files_count": int(
-                await self.db.scalar(
-                    select(func.count()).select_from(UserFileModel).where(
-                        UserFileModel.owner_user_id == self.scope.owner_user_id,
-                        UserFileModel.kind == "file",
-                        UserFileModel.status == "active",
-                    )
-                )
-                or 0
-            ),
-            "max_file_bytes": self.scope.policy.max_file_bytes,
-            "max_items": self.scope.policy.max_items,
+            "core": self._bucket(account.core_used_bytes, policy.core_quota_bytes, account.core_reserved_bytes),
+            "files": self._bucket(account.files_used_bytes, policy.files_quota_bytes, account.files_reserved_bytes),
+            "files_count": files_count,
+            "max_file_bytes": policy.max_file_bytes,
+            "max_items": policy.max_items,
         }
 
     async def _sibling_named(self, name: str, parent_id: str | None, *, exclude_id: str | None = None):
@@ -389,6 +500,12 @@ class StorageService:
         self._check_global_capacity(len(data))
 
         item_id = str(uuid.uuid4())
+        reservation = await self.quota.reserve(
+            StorageBucket.FILES,
+            len(data),
+            resource_type="personal_file",
+            resource_key=item_id,
+        )
         storage_key = str(Path(self.scope.workspace_id) / self.scope.owner_user_id / item_id)
         target = _safe_file_path(self.scope, storage_key)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -410,7 +527,9 @@ class StorageService:
         self.db.add(item)
         try:
             await self.db.flush()
+            await self.quota.finalize(reservation, reconcile=True)
         except Exception:
+            await self.quota.release(reservation)
             target.unlink(missing_ok=True)
             raise
         return self.serialize(item)
@@ -451,15 +570,85 @@ class StorageService:
             )
             if child_count:
                 raise StorageValidationError("文件夹不为空，请先删除其中的项目")
+        item.status = "trashed"
+        item.deleted_at = func.utc_timestamp(6)
+        await self.db.flush()
+
+    async def list_trash(self) -> list[dict]:
+        items = (
+            await self.db.scalars(
+                select(UserFileModel)
+                .where(
+                    UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.status == "trashed",
+                )
+                .order_by(UserFileModel.deleted_at.desc(), UserFileModel.display_name)
+            )
+        ).all()
+        return [
+            self.serialize(item)
+            | {"deleted_at": item.deleted_at.isoformat() if item.deleted_at else None}
+            for item in items
+        ]
+
+    async def _trashed(self, file_id: str) -> UserFileModel:
+        item = await self.db.scalar(
+            select(UserFileModel).where(
+                UserFileModel.id == file_id,
+                UserFileModel.owner_user_id == self.scope.owner_user_id,
+                UserFileModel.status == "trashed",
+            )
+        )
+        if item is None:
+            raise StorageValidationError("回收站中不存在该项目")
+        return item
+
+    async def restore(self, file_id: str) -> dict:
+        item = await self._trashed(file_id)
+        await self._parent(item.parent_id)
+        if await self._sibling_named(item.display_name, item.parent_id, exclude_id=item.id):
+            raise StorageNameConflict("原位置已有同名项目，请先重命名原项目")
+        item.status = "active"
+        item.deleted_at = None
+        await self.db.flush()
+        return self.serialize(item)
+
+    async def permanently_delete(self, file_id: str) -> None:
+        item = await self._trashed(file_id)
         if item.storage_key:
             target = _safe_file_path(self.scope, item.storage_key)
-            if item.kind == "folder":
-                if target.is_dir():
-                    target.rmdir()
-            else:
+            if item.kind == "folder" and target.is_dir():
+                shutil.rmtree(target)
+            elif item.kind == "file":
                 target.unlink(missing_ok=True)
         await self.db.delete(item)
         await self.db.flush()
+        await self.quota.reconcile()
+
+    async def purge_expired_trash(self, *, retention_days: int | None = None) -> int:
+        days = settings.NLP_AGENT_STORAGE_TRASH_RETENTION_DAYS if retention_days is None else max(0, retention_days)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+        items = (
+            await self.db.scalars(
+                select(UserFileModel).where(
+                    UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.status == "trashed",
+                    UserFileModel.deleted_at < cutoff,
+                )
+            )
+        ).all()
+        for item in list(items):
+            if item.storage_key:
+                target = _safe_file_path(self.scope, item.storage_key)
+                if item.kind == "folder" and target.is_dir():
+                    shutil.rmtree(target)
+                elif item.kind == "file":
+                    target.unlink(missing_ok=True)
+            await self.db.delete(item)
+        if items:
+            await self.db.flush()
+            await self.quota.reconcile()
+        return len(items)
 
     async def download_path(self, file_id: str) -> tuple[UserFileModel, Path]:
         item = await self.get_file(file_id)
@@ -469,3 +658,128 @@ class StorageService:
         if not path.is_file():
             raise StorageValidationError("文件内容不存在")
         return item, path
+
+
+class StorageAdminService:
+    """Low-volume administrator read/write seam for account quotas."""
+
+    def __init__(self, db: AsyncSession, principal: AuthenticatedPrincipal) -> None:
+        if not (set(principal.roles) & {"admin", "developer"}):
+            raise StorageValidationError("只有管理员或开发者可以管理账户配额")
+        self.db = db
+
+    async def usage(self) -> list[dict]:
+        users = list(
+            (
+                await self.db.scalars(
+                    select(UserModel)
+                    .where(UserModel.status == "active", UserModel.deleted_at.is_(None))
+                    .order_by(UserModel.username)
+                )
+            ).all()
+        )
+        items: list[dict] = []
+        for user in users:
+            role_rows = await self.db.scalars(
+                select(RoleModel.code)
+                .join(UserRoleModel, UserRoleModel.role_id == RoleModel.id)
+                .where(
+                    UserRoleModel.user_id == user.id,
+                    RoleModel.status == "active",
+                    (UserRoleModel.expires_at.is_(None) | (UserRoleModel.expires_at > func.utc_timestamp())),
+                )
+            )
+            roles = frozenset(role_rows.all())
+            quota = AsyncStorageQuota(self.db, owner_user_id=user.id, roles=roles)
+            await quota.reconcile()
+            account = await self.db.scalar(
+                select(StorageAccountModel).where(StorageAccountModel.owner_user_id == user.id)
+            )
+            if account is None:
+                continue
+            policy = policy_with_overrides(
+                policy_for_roles(roles),
+                {
+                    "core_quota_bytes": account.core_quota_override_bytes,
+                    "files_quota_bytes": account.files_quota_override_bytes,
+                    "max_file_bytes": account.max_file_override_bytes,
+                    "max_items": account.max_items_override,
+                },
+            )
+            items.append(
+                {
+                    "user_id": user.id,
+                    "username": user.username,
+                    "display_name": user.display_name,
+                    "roles": sorted(roles),
+                    "core": StorageService._bucket(account.core_used_bytes, policy.core_quota_bytes, account.core_reserved_bytes),
+                    "files": StorageService._bucket(account.files_used_bytes, policy.files_quota_bytes, account.files_reserved_bytes),
+                    "overrides": {
+                        "core_quota_bytes": account.core_quota_override_bytes,
+                        "files_quota_bytes": account.files_quota_override_bytes,
+                        "max_file_bytes": account.max_file_override_bytes,
+                        "max_items": account.max_items_override,
+                    },
+                }
+            )
+        return items
+
+    async def update_quota(self, user_id: str, values: dict[str, int | None]) -> dict:
+        user = await self.db.scalar(
+            select(UserModel).where(UserModel.id == user_id, UserModel.status == "active")
+        )
+        if user is None:
+            raise StorageValidationError("目标用户不存在")
+        await self.db.execute(
+            insert(StorageAccountModel)
+            .values(id=str(uuid.uuid4()), owner_user_id=user_id)
+            .on_duplicate_key_update(id=StorageAccountModel.id)
+        )
+        account = await self.db.scalar(
+            select(StorageAccountModel).where(StorageAccountModel.owner_user_id == user_id).with_for_update()
+        )
+        if account is None:
+            raise StorageError("storage account ledger row is unavailable")
+        if "core_quota_bytes" in values:
+            account.core_quota_override_bytes = values["core_quota_bytes"]
+        if "files_quota_bytes" in values:
+            account.files_quota_override_bytes = values["files_quota_bytes"]
+        if "max_file_bytes" in values:
+            account.max_file_override_bytes = values["max_file_bytes"]
+        if "max_items" in values:
+            account.max_items_override = values["max_items"]
+        await self.db.flush()
+        return {
+            "user_id": user_id,
+            "overrides": {
+                "core_quota_bytes": account.core_quota_override_bytes,
+                "files_quota_bytes": account.files_quota_override_bytes,
+                "max_file_bytes": account.max_file_override_bytes,
+                "max_items": account.max_items_override,
+            },
+        }
+
+    async def purge_expired_trash(self, *, retention_days: int | None = None) -> int:
+        days = settings.NLP_AGENT_STORAGE_TRASH_RETENTION_DAYS if retention_days is None else max(0, retention_days)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+        items = (
+            await self.db.scalars(
+                select(UserFileModel).where(
+                    UserFileModel.status == "trashed",
+                    UserFileModel.deleted_at < cutoff,
+                )
+            )
+        ).all()
+        for item in list(items):
+            if item.storage_key:
+                path = (storage_root() / item.storage_key).resolve()
+                root = storage_root().resolve()
+                if root in path.parents:
+                    if item.kind == "folder" and path.is_dir():
+                        shutil.rmtree(path)
+                    elif item.kind == "file":
+                        path.unlink(missing_ok=True)
+            await self.db.delete(item)
+        if items:
+            await self.db.flush()
+        return len(items)

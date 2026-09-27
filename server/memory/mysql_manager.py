@@ -15,6 +15,8 @@ from server.infrastructure.mysql.models import MemoryArchiveModel, MemoryCursorM
 from server.memory.types import MemoryArchiveRecord, MemoryCuratorOperation, MemoryScopeKind, is_valid_memory_type
 from server.memory.manager import _truncate_to_tokens
 from utils.tokens import rough_token_count_estimation
+from server.storage.policy import StorageBucket
+from server.storage.quota import SyncStorageQuota
 
 _SECRET_RE = re.compile(r"(?i)(api[_-]?key|access[_-]?token|password|passwd|private[_-]?key)\s*[:=]")
 
@@ -63,7 +65,22 @@ class MySQLMemoryManager:
         key = f"{self.context.workspace_id}:{self.context.user_id}:{chosen.value}:{filename}"
         payload = {"filename": filename, "name": filename[:-3], "description": description.strip(), "type": memory_type, "content": content.strip()}
         with self._engine.begin() as c:
+            quota = SyncStorageQuota(c, owner_user_id=self.context.user_id)
+            old = c.execute(
+                select(MemoryDocumentModel.content_json).where(
+                    *self._query(chosen), MemoryDocumentModel.document_key == filename
+                )
+            ).scalar()
+            old_size = len(str(old).encode("utf-8")) if old is not None else 0
+            new_size = len(str(payload).encode("utf-8"))
+            reservation = quota.reserve(
+                StorageBucket.CORE,
+                max(0, new_size - old_size) + 256,
+                resource_type="memory_document",
+                resource_key=key,
+            )
             c.execute(insert(MemoryDocumentModel).values(id=str(uuid.uuid5(uuid.NAMESPACE_URL, key)), user_id=self.context.user_id, workspace_id=self.context.workspace_id, scope=chosen.value, document_key=filename, content_json=payload).on_duplicate_key_update(content_json=payload, revision=MemoryDocumentModel.revision + 1))
+            quota.finalize(reservation, reconcile=True)
         return filename
 
     def delete_memory_topic(self, filename: str, *, scope: MemoryScopeKind | None = None) -> None:
@@ -71,6 +88,8 @@ class MySQLMemoryManager:
             result = c.execute(delete(MemoryDocumentModel).where(*self._query(scope), MemoryDocumentModel.document_key == filename))
         if not result.rowcount:
             raise FileNotFoundError(f"memory topic not found: {filename}")
+        with self._engine.begin() as c:
+            SyncStorageQuota(c, owner_user_id=self.context.user_id).reconcile()
 
     def scan_memory_headers(self, scope: MemoryScopeKind | None = None) -> list[dict[str, Any]]:
         with self._engine.connect() as c:
@@ -87,7 +106,10 @@ class MySQLMemoryManager:
             cursor = int(c.execute(select(func.coalesce(func.max(MemoryArchiveModel.cursor), 0)).where(MemoryArchiveModel.user_id == self.context.user_id, MemoryArchiveModel.workspace_id == self.context.workspace_id)).scalar_one()) + 1
             payload = {"summary": summary.strip(), "source_message_ids": list(source_message_ids)}
             row = {"id": str(uuid.uuid4()), "user_id": self.context.user_id, "workspace_id": self.context.workspace_id, "session_id": self.context.session_id, "source_id": source_id, "cursor": cursor, "payload_json": payload}
+            quota = SyncStorageQuota(c, owner_user_id=self.context.user_id)
+            reservation = quota.reserve(StorageBucket.CORE, len(str(payload).encode("utf-8")) + 256, resource_type="memory_archive", resource_key=source_id)
             c.execute(insert(MemoryArchiveModel).values(**row))
+            quota.finalize(reservation, reconcile=True)
         return self._archive_mapping(row)
 
     def _archive_record(self, row: MemoryArchiveModel) -> MemoryArchiveRecord:
@@ -105,7 +127,10 @@ class MySQLMemoryManager:
 
     def delete_session_archives(self, session_id: str) -> int:
         with self._engine.begin() as c:
-            return int(c.execute(delete(MemoryArchiveModel).where(MemoryArchiveModel.session_id == session_id)).rowcount or 0)
+            count = int(c.execute(delete(MemoryArchiveModel).where(MemoryArchiveModel.session_id == session_id)).rowcount or 0)
+            if count:
+                SyncStorageQuota(c, owner_user_id=self.context.user_id).reconcile()
+            return count
 
     def get_curator_cursor(self) -> int:
         key = f"{self.context.workspace_id}:{self.context.user_id}"

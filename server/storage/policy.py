@@ -6,7 +6,7 @@ quota contract can be exercised without a database or filesystem.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 
@@ -79,3 +79,21 @@ def usage_state(used_bytes: int, quota_bytes: int) -> str:
     if ratio >= 0.8:
         return "warning"
     return "normal"
+
+
+def fits_quota(used_bytes: int, reserved_bytes: int, incoming_bytes: int, quota_bytes: int) -> bool:
+    """Return whether a reservation can be admitted without oversubscription."""
+
+    return max(0, int(used_bytes)) + max(0, int(reserved_bytes)) + max(0, int(incoming_bytes)) <= max(0, int(quota_bytes))
+
+
+def policy_with_overrides(policy: StoragePolicy, overrides: dict[str, int | None]) -> StoragePolicy:
+    """Apply administrator limits without changing role defaults."""
+
+    values = {
+        "core_quota_bytes": overrides["core_quota_bytes"] if overrides.get("core_quota_bytes") is not None else policy.core_quota_bytes,
+        "files_quota_bytes": overrides["files_quota_bytes"] if overrides.get("files_quota_bytes") is not None else policy.files_quota_bytes,
+        "max_file_bytes": overrides["max_file_bytes"] if overrides.get("max_file_bytes") is not None else policy.max_file_bytes,
+        "max_items": overrides["max_items"] if overrides.get("max_items") is not None else policy.max_items,
+    }
+    return replace(policy, **values)

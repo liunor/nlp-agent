@@ -1,4 +1,4 @@
-from server.storage.policy import StorageBucket, policy_for_roles, usage_ratio, usage_state
+from server.storage.policy import StorageBucket, fits_quota, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
 
 
 def test_roles_use_highest_policy_without_adding_quotas() -> None:
@@ -35,3 +35,22 @@ def test_bucket_quota_is_explicit() -> None:
 
     assert policy.quota_for(StorageBucket.CORE) == policy.core_quota_bytes
     assert policy.quota_for(StorageBucket.FILES) == policy.files_quota_bytes
+
+
+def test_reservation_counts_committed_and_in_flight_bytes() -> None:
+    assert fits_quota(70, 20, 10, 100)
+    assert not fits_quota(70, 20, 11, 100)
+    assert fits_quota(0, 0, 0, 0)
+
+
+def test_admin_overrides_replace_role_defaults_without_role_multiplication() -> None:
+    teacher = policy_for_roles({"teacher", "student"})
+    adjusted = policy_with_overrides(
+        teacher,
+        {"core_quota_bytes": 64, "files_quota_bytes": None, "max_file_bytes": 8, "max_items": None},
+    )
+
+    assert adjusted.core_quota_bytes == 64
+    assert adjusted.files_quota_bytes == teacher.files_quota_bytes
+    assert adjusted.max_file_bytes == 8
+    assert adjusted.max_items == teacher.max_items

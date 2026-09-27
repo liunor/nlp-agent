@@ -24,6 +24,8 @@ from .models import (
     LangGraphCheckpointModel,
     LangGraphCheckpointWriteModel,
 )
+from server.storage.policy import StorageBucket
+from server.storage.quota import AsyncStorageQuota
 
 
 _T = TypeVar("_T")
@@ -280,6 +282,17 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
                     workspace_id=workspace_id,
                     owner_user_id=owner_user_id,
                 )
+                quota = AsyncStorageQuota(session, owner_user_id=owner_user_id, roles=None)
+                reservation = await quota.reserve(
+                    StorageBucket.CORE,
+                    len(checkpoint_blob) + len(metadata_blob) + sum(
+                        len(self.serde.dumps_typed(values[channel])[1])
+                        for channel in new_versions
+                        if channel in values
+                    ) + 512,
+                    resource_type="langgraph_checkpoint",
+                    resource_key=f"{thread_id}:{namespace}:{checkpoint['id']}",
+                )
                 checkpoint_claim = (
                     insert(LangGraphCheckpointModel)
                     .values(
@@ -365,6 +378,7 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
                     )
                     blob_row.value_type = value_type
                     blob_row.value_blob = value_blob
+                await quota.finalize(reservation, reconcile=True)
 
         await _retry_mysql_transaction(put_once)
         return {
@@ -410,6 +424,13 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
                     thread_id=thread_id,
                     workspace_id=workspace_id,
                     owner_user_id=owner_user_id,
+                )
+                quota = AsyncStorageQuota(session, owner_user_id=owner_user_id, roles=None)
+                reservation = await quota.reserve(
+                    StorageBucket.CORE,
+                    sum(len(value_blob) for _, _, _, value_blob in prepared) + 256,
+                    resource_type="langgraph_checkpoint_write",
+                    resource_key=f"{thread_id}:{namespace}:{checkpoint_id}:{task_id}",
                 )
                 for write_index, channel, value_type, value_blob in prepared:
                     claim = (
@@ -457,5 +478,6 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
                         write_row.value_type = value_type
                         write_row.value_blob = value_blob
                         write_row.task_path = task_path
+                await quota.finalize(reservation, reconcile=True)
 
         await _retry_mysql_transaction(put_writes_once)

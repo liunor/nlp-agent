@@ -1,4 +1,4 @@
-import { ArrowLeft, BookMarked, Download, FileCode2, FileText, FileUp, FolderOpen, FolderPlus, Pencil, RefreshCw, Trash2, X } from "lucide-react";
+import { ArrowLeft, BookMarked, Download, FileCode2, FileText, FileUp, FolderOpen, FolderPlus, Pencil, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ChangeEvent } from "react";
 
@@ -214,17 +214,19 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
   const [newFolderName, setNewFolderName] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [trashMode, setTrashMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const currentFolder = folderPath[folderPath.length - 1] ?? null;
 
   const refresh = useCallback(() => {
     setLoading(true);
     setError("");
-    void api.listStorageFiles(workspaceId, currentFolder?.id)
+    const request = trashMode ? api.listStorageTrash(workspaceId) : api.listStorageFiles(workspaceId, currentFolder?.id);
+    void request
       .then((response) => setItems(response.items))
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取文件列表"))
       .finally(() => setLoading(false));
-  }, [currentFolder?.id, workspaceId]);
+  }, [currentFolder?.id, trashMode, workspaceId]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -255,9 +257,16 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
   };
 
   const remove = (item: StorageFile) => {
-    void api.deleteStorageFile(item.id, workspaceId)
+    const request = trashMode ? api.permanentlyDeleteStorageFile(item.id, workspaceId) : api.deleteStorageFile(item.id, workspaceId);
+    void request
       .then(() => { refresh(); onRefreshUsage(); })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法删除项目"));
+  };
+
+  const restore = (item: StorageFile) => {
+    void api.restoreStorageFile(item.id, workspaceId)
+      .then(() => { refresh(); onRefreshUsage(); })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法恢复项目"));
   };
 
   const beginRename = (item: StorageFile) => {
@@ -276,25 +285,24 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
   return <div className="storage-manager">
     <header className="storage-manager-toolbar">
       <div className="storage-breadcrumb" aria-label="当前文件夹路径">
-        <button type="button" disabled={!folderPath.length} onClick={() => setFolderPath([])}><FolderOpen size={14} />我的文件</button>
-        {folderPath.map((folder, index) => <span key={folder.id}><span>/</span><button type="button" onClick={() => setFolderPath(folderPath.slice(0, index + 1))}>{folder.name}</button></span>)}
+        {trashMode ? <strong><Trash2 size={14} />回收站</strong> : <><button type="button" disabled={!folderPath.length} onClick={() => setFolderPath([])}><FolderOpen size={14} />我的文件</button>{folderPath.map((folder, index) => <span key={folder.id}><span>/</span><button type="button" onClick={() => setFolderPath(folderPath.slice(0, index + 1))}>{folder.name}</button></span>)}</>}
       </div>
       <div className="files-panel-actions">
-        {folderPath.length > 0 && <button type="button" onClick={() => setFolderPath(folderPath.slice(0, -1))}><ArrowLeft size={14} />返回</button>}
-        <button type="button" onClick={() => setNewFolderName((value) => value ? "" : "新建文件夹")}><FolderPlus size={14} />新建文件夹</button>
-        <button type="button" onClick={() => inputRef.current?.click()}><FileUp size={14} />上传</button>
+        {!trashMode && folderPath.length > 0 && <button type="button" onClick={() => setFolderPath(folderPath.slice(0, -1))}><ArrowLeft size={14} />返回</button>}
+        {!trashMode && <><button type="button" onClick={() => setNewFolderName((value) => value ? "" : "新建文件夹")}><FolderPlus size={14} />新建文件夹</button><button type="button" onClick={() => inputRef.current?.click()}><FileUp size={14} />上传</button></>}
+        <button type="button" onClick={() => { setTrashMode((value) => !value); setFolderPath([]); setNewFolderName(""); }}><Trash2 size={14} />{trashMode ? "我的文件" : "回收站"}</button>
         <button type="button" aria-label="刷新文件列表" onClick={() => { refresh(); onRefreshUsage(); }}><RefreshCw size={14} /></button>
       </div>
       <input ref={inputRef} type="file" multiple onChange={uploadFiles} />
     </header>
-    {newFolderName && <div className="storage-inline-form"><input autoFocus value={newFolderName} aria-label="新文件夹名称" onChange={(event) => setNewFolderName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createFolder(); if (event.key === "Escape") setNewFolderName(""); }} /><button type="button" onClick={createFolder}>创建</button><button type="button" onClick={() => setNewFolderName("")}>取消</button></div>}
+    {!trashMode && newFolderName && <div className="storage-inline-form"><input autoFocus value={newFolderName} aria-label="新文件夹名称" onChange={(event) => setNewFolderName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createFolder(); if (event.key === "Escape") setNewFolderName(""); }} /><button type="button" onClick={createFolder}>创建</button><button type="button" onClick={() => setNewFolderName("")}>取消</button></div>}
     {error && <div className="files-panel-error" role="alert">{error}<button type="button" aria-label="关闭提示" onClick={() => setError("")}><X size={14} /></button></div>}
-    {loading ? <div className="storage-empty">正在读取文件列表…</div> : items.length === 0 ? <div className="storage-empty"><FolderOpen size={24} /><strong>此文件夹为空</strong><span>上传文件或新建文件夹，个人资料会和学习文档导入区分开。</span></div> : <div className="storage-list" role="list" aria-label="个人文件列表">
+    {loading ? <div className="storage-empty">正在读取文件列表…</div> : items.length === 0 ? <div className="storage-empty"><FolderOpen size={24} /><strong>{trashMode ? "回收站为空" : "此文件夹为空"}</strong><span>{trashMode ? "删除的文件会在保留期后自动清理。" : "上传文件或新建文件夹，个人资料会和学习文档导入区分开。"}</span></div> : <div className="storage-list" role="list" aria-label={trashMode ? "回收站列表" : "个人文件列表"}>
       {items.map((item) => <div className="storage-row" key={item.id} role="listitem">
-        <button type="button" className="storage-row-main" onClick={() => item.kind === "folder" && setFolderPath([...folderPath, item])}>
+        <button type="button" className="storage-row-main" onClick={() => !trashMode && item.kind === "folder" && setFolderPath([...folderPath, item])}>
           {item.kind === "folder" ? <FolderOpen size={17} /> : <FileText size={17} />}<span><strong>{item.name}</strong><small>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</small></span>
         </button>
-        {renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
+        {trashMode ? <div className="storage-row-actions"><button type="button" aria-label={`恢复 ${item.name}`} onClick={() => restore(item)}><RotateCcw size={14} /></button><button type="button" className="danger" aria-label={`彻底删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div> : renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
       </div>)}
     </div>}
   </div>;

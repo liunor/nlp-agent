@@ -52,6 +52,7 @@ from gateway.redis_transport import TurnTaskCodec
 from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.storage.service import purge_expired_guest_data, purge_expired_storage_trash
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
@@ -249,11 +250,17 @@ class BackendGateway:
                 await self.prune_events()
 
     async def prune_events(self) -> dict[str, int]:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self.repository.prune_events,
             retention_days=self.event_retention_days,
             max_events_per_session=self.max_events_per_session,
         )
+        factory = self.authorization_session_factory
+        if factory is not None:
+            async with factory.begin() as session:
+                result["storage_trash_removed"] = await purge_expired_storage_trash(session)
+                result["guest_data_accounts_removed"] = await purge_expired_guest_data(session)
+        return result
 
     async def begin_shutdown(self) -> None:
         """Enter draining state before network channels are stopped."""

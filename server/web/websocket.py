@@ -37,6 +37,7 @@ from server.web.contracts import (
     parse_command_payload,
 )
 from server.web.protocol import control_event, gateway_event_envelope
+from server.storage.quota import StorageQuotaExceeded
 
 
 # The gateway repeats these checks at its transport-independent boundary.
@@ -466,6 +467,8 @@ class WebSocketConnection:
 
 def _command_error(error: Exception) -> tuple[str, str]:
     name = type(error).__name__
+    if isinstance(error, StorageQuotaExceeded):
+        return "storage_quota_exceeded", "账户通用存储空间已达到配额，请清理会话、记忆或图片后重试"
     if isinstance(error, ValidationError):
         return "validation_error", "command payload is invalid"
     if name == "TeachingConfigurationError":

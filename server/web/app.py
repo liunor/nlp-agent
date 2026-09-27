@@ -44,6 +44,7 @@ from server.web.auth import (
 )
 from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 from server.agent.session_service import DatabaseSessionService, local_session_service
+from server.storage.quota import StorageQuotaExceeded
 from server.web.contracts import (
     CreateSessionBody,
     LoginBody,
@@ -1803,6 +1804,16 @@ def create_app(
             body.workspace_id,
             body,
             model_factory=model_factory,
+        )
+
+    @app.exception_handler(StorageQuotaExceeded)
+    async def storage_quota_error(request: Request, error: StorageQuotaExceeded):
+        return _problem(
+            request,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            code="storage_quota_exceeded",
+            title="Account storage quota exceeded",
+            detail=str(error),
         )
 
     @app.get("/api/v1/teacher/goals/{workspace_id}", tags=["teacher"])

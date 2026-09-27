@@ -54,6 +54,8 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_langgraph_checkpoint_writes": "LangGraph 检查点的任务写入记录。",
     "nlp_conversation_transcripts": "会话历史消息与工具内容的转录存档。",
     "nlp_user_files": "用户独立文件夹中的个人文件与目录索引。",
+    "nlp_storage_accounts": "按账户聚合的通用/个人文件用量、预留量与管理员配额覆盖。",
+    "nlp_storage_reservations": "写入前的存储容量预留及提交/释放审计记录。",
     "nlp_memory_documents": "用户工作区的长期记忆文档。",
     "nlp_release_notes": "面向开发者和学生的版本发布说明。",
     "nlp_memory_archives": "记忆归档事件及其来源游标。",

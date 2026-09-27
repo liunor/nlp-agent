@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import Principal, WriteClaims, get_db_session
 
-from .schemas import StorageFolderRequest, StorageRenameRequest
+from .schemas import StorageFolderRequest, StorageQuotaUpdateRequest, StorageRenameRequest
 from .service import (
     StorageError,
     StorageNameConflict,
     StorageQuotaExceeded,
+    StorageAdminService,
     StorageService,
     StorageValidationError,
 )
@@ -45,6 +46,48 @@ def _write_error(error: StorageError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
 
 
+def _admin_service(db: AsyncSession, principal) -> StorageAdminService:
+    try:
+        return StorageAdminService(db, principal)
+    except StorageValidationError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+
+
+@router.get("/admin/usage")
+async def get_admin_storage_usage(db: DbSession, principal: Principal) -> dict:
+    return {"items": await _admin_service(db, principal).usage()}
+
+
+@router.patch("/admin/accounts/{user_id}/quota")
+async def update_admin_storage_quota(
+    user_id: str,
+    body: StorageQuotaUpdateRequest,
+    db: DbSession,
+    principal: Principal,
+    _write: WriteClaims,
+) -> dict:
+    try:
+        return await _admin_service(db, principal).update_quota(
+            user_id,
+            body.model_dump(exclude_unset=True),
+        )
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/admin/trash/purge")
+async def purge_admin_storage_trash(
+    db: DbSession,
+    principal: Principal,
+    _write: WriteClaims,
+) -> dict:
+    try:
+        removed = await _admin_service(db, principal).purge_expired_trash()
+        return {"removed": removed}
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
 @router.get("/usage")
 async def get_storage_usage(
     db: DbSession,
@@ -64,6 +107,19 @@ async def list_storage_files(
     service = _service(db, principal, workspace_id)
     try:
         return {"items": await service.list_files(parent_id)}
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.get("/trash")
+async def list_storage_trash(
+    db: DbSession,
+    principal: Principal,
+    workspace_id: str | None = Query(default=None),
+) -> dict:
+    service = _service(db, principal, workspace_id)
+    try:
+        return {"items": await service.list_trash()}
     except StorageError as error:
         raise _write_error(error) from error
 
@@ -126,6 +182,36 @@ async def delete_storage_file(
     service = _service(db, principal, workspace_id)
     try:
         await service.delete(file_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/trash/{file_id}/restore")
+async def restore_storage_file(
+    file_id: str,
+    db: DbSession,
+    principal: Principal,
+    _write: WriteClaims,
+    workspace_id: str | None = Query(default=None),
+) -> dict:
+    service = _service(db, principal, workspace_id)
+    try:
+        return await service.restore(file_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.delete("/trash/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def permanently_delete_storage_file(
+    file_id: str,
+    db: DbSession,
+    principal: Principal,
+    _write: WriteClaims,
+    workspace_id: str | None = Query(default=None),
+) -> None:
+    service = _service(db, principal, workspace_id)
+    try:
+        await service.permanently_delete(file_id)
     except StorageError as error:
         raise _write_error(error) from error
 

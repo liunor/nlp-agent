@@ -375,6 +375,8 @@ async def record_transcript(
     from sqlalchemy.dialects.mysql import insert
     from configs.settings import settings
     from server.infrastructure.mysql.models import ConversationTranscriptModel
+    from server.storage.policy import StorageBucket
+    from server.storage.quota import SyncStorageQuota
 
     def persist() -> None:
         url = settings.NLP_AGENT_DATABASE_URL.strip()
@@ -399,6 +401,33 @@ async def record_transcript(
                 ).first()
                 if owner is None:
                     raise PermissionError("transcript does not belong to the principal")
+                quota = SyncStorageQuota(connection, owner_user_id=user_id)
+                old_size = int(
+                    connection.execute(
+                        text(
+                            "SELECT COALESCE(SUM("
+                            "OCTET_LENGTH(CAST(COALESCE(content_json,'{}') AS CHAR)) + "
+                            "OCTET_LENGTH(CAST(COALESCE(tool_json,'{}') AS CHAR)) + "
+                            "OCTET_LENGTH(CAST(COALESCE(usage_json,'{}') AS CHAR))"
+                            "),0) FROM nlp_conversation_transcripts WHERE session_id=:session_id"
+                        ),
+                        {"session_id": session_id},
+                    ).scalar()
+                    or 0
+                )
+                message_size = 0
+                for message in messages:
+                    tool_calls = getattr(message, "tool_calls", None)
+                    usage = getattr(message, "usage_metadata", None)
+                    message_size += len(json.dumps({"content": message.content}, ensure_ascii=False, default=str).encode("utf-8"))
+                    message_size += len(json.dumps(tool_calls, ensure_ascii=False, default=str).encode("utf-8")) if tool_calls else 0
+                    message_size += len(json.dumps(usage, ensure_ascii=False, default=str).encode("utf-8")) if usage else 0
+                reservation = quota.reserve(
+                    StorageBucket.CORE,
+                    max(0, message_size - old_size) + (256 if message_size else 0),
+                    resource_type="conversation_transcript",
+                    resource_key=session_id,
+                )
                 connection.execute(delete(ConversationTranscriptModel).where(ConversationTranscriptModel.session_id == session_id))
                 parent_id = None
                 for index, message in enumerate(messages):
@@ -406,6 +435,10 @@ async def record_transcript(
                     role = "assistant" if isinstance(message, AIMessage) else "tool" if isinstance(message, ToolMessage) else "system" if isinstance(message, SystemMessage) else "user"
                     connection.execute(insert(ConversationTranscriptModel).values(id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:{message_id}:{index}")), session_id=session_id, message_uuid=message_id, parent_uuid=parent_id, message_type=message.__class__.__name__, role=role, content_json={"content": message.content}, tool_json={"tool_calls": getattr(message, "tool_calls", [])} if getattr(message, "tool_calls", None) else None, usage_json=getattr(message, "usage_metadata", None)))
                     parent_id = message_id
+                if reservation is not None:
+                    quota.finalize(reservation, reconcile=True)
+                else:
+                    quota.reconcile()
         finally:
             engine.dispose()
 

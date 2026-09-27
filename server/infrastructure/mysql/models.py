@@ -761,6 +761,48 @@ class ConversationTranscriptModel(Base):
     content_json: Mapped[dict | list | str] = mapped_column(JSON, nullable=False)
     tool_json: Mapped[dict | None] = mapped_column(JSON)
     usage_json: Mapped[dict | None] = mapped_column(JSON)
+
+
+class StorageAccountModel(TimestampedModel, Base):
+    """One logical quota ledger per account, shared by every workspace."""
+
+    __tablename__ = "nlp_storage_accounts"
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    core_used_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_used_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    core_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    core_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    files_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    max_file_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    max_items_override: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+
+
+class StorageReservationModel(Base):
+    """An auditable reservation that prevents concurrent quota oversubscription."""
+
+    __tablename__ = "nlp_storage_reservations"
+    __table_args__ = (
+        Index("ix_nlp_storage_reservations_owner_status", "owner_user_id", "status"),
+        Index("ix_nlp_storage_reservations_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
+    )
+    bucket: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_key: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="reserved")
+    reserved_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
 
 

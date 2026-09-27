@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,6 +19,8 @@ from server.infrastructure.mysql.models import (
     TurnEventModel,
     TurnModel,
 )
+from server.storage.policy import StorageBucket
+from server.storage.quota import AsyncStorageQuota
 
 
 def utc_now() -> datetime:
@@ -125,7 +128,10 @@ class TurnReliabilityService:
             turn.claim_generation += 1  # recovery invalidates the old owner before a new Worker claim.
             turn.claimed_by = None
             turn.lease_expires_at = None
+            quota = AsyncStorageQuota(session, owner_user_id=turn.user_id, roles=None)
+            reservation = await quota.reserve(StorageBucket.CORE, 256, resource_type="turn_event", resource_key=f"{turn.id}:handover:{turn.claim_generation}")
             session.add(TurnEventModel(id=str(uuid.uuid4()), turn_id=turn.id, sequence=(await self._next_sequence(session, turn.id)), claim_generation=turn.claim_generation, event_type="turn.handover", payload_json={"reason": "lease_expired"}))
+            await quota.finalize(reservation, reconcile=True)
             original = await session.scalar(
                 select(OutboxMessageModel.payload_json)
                 .where(
@@ -146,9 +152,12 @@ class TurnReliabilityService:
         turn = await session.scalar(select(TurnModel).where(TurnModel.id == turn_id).with_for_update())
         if turn is None or turn.claim_generation != generation:
             raise LostTurnClaimError(turn_id)
+        quota = AsyncStorageQuota(session, owner_user_id=turn.user_id, roles=None)
+        reservation = await quota.reserve(StorageBucket.CORE, len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")) + 256, resource_type="turn_event", resource_key=f"{turn_id}:{event_type}")
         event = TurnEventModel(id=str(uuid.uuid4()), turn_id=turn_id, sequence=await self._next_sequence(session, turn_id), claim_generation=generation, event_type=event_type, payload_json=payload)
         session.add(event)
         await session.flush()
+        await quota.finalize(reservation, reconcile=True)
         return event
 
     async def record_operation(self, session: AsyncSession, *, turn_id: str, generation: int, operation_id: str, tool_name: str, request: dict[str, Any]) -> ToolCallModel:

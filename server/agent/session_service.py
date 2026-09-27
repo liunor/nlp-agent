@@ -41,6 +41,8 @@ from server.infrastructure.mysql.models import (
     TurnEventModel,
     TurnModel,
 )
+from server.storage.policy import StorageBucket
+from server.storage.quota import AsyncStorageQuota
 
 
 class DatabaseSessionService:
@@ -102,6 +104,13 @@ class DatabaseSessionService:
             channel=channel,
         )
         async with self._sessions.begin() as session:
+            quota = AsyncStorageQuota(session, owner_user_id=principal.user_id, roles=principal.roles)
+            reservation = await quota.reserve(
+                StorageBucket.CORE,
+                len(context.session_id.encode("utf-8")) + len(channel.encode("utf-8")) + 512,
+                resource_type="conversation",
+                resource_key=context.session_id,
+            )
             session.add(
                 ConversationModel(
                     id=context.session_id,
@@ -110,6 +119,7 @@ class DatabaseSessionService:
                     channel=channel,
                 )
             )
+            await quota.finalize(reservation, reconcile=True)
         return context
 
     async def resolve(

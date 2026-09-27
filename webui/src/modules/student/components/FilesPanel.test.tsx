@@ -13,6 +13,9 @@ vi.mock("@/platform/http/api", () => ({
     uploadStorageFile: vi.fn(),
     renameStorageFile: vi.fn(),
     deleteStorageFile: vi.fn(),
+    listStorageTrash: vi.fn(),
+    restoreStorageFile: vi.fn(),
+    permanentlyDeleteStorageFile: vi.fn(),
   },
   storageFileDownloadUrl: (fileId: string) => `/api/v1/storage/files/${fileId}/download`,
 }));
@@ -31,6 +34,7 @@ describe("FilesPanel", () => {
     window.localStorage.clear();
     vi.mocked(api.getStorageUsage).mockResolvedValue(usage);
     vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [] });
+    vi.mocked(api.listStorageTrash).mockResolvedValue({ items: [] });
   });
 
   it("shows independent Windows-like meters for core and personal file space", async () => {
@@ -50,5 +54,13 @@ describe("FilesPanel", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
     await waitFor(() => expect(screen.getByText("此文件夹为空")).toBeInTheDocument());
+  });
+
+  it("exposes a recoverable recycle-bin view in the file manager", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "回收站" }));
+    await waitFor(() => expect(api.listStorageTrash).toHaveBeenCalledWith("workspace-1"));
+    expect(screen.getByText("回收站为空")).toBeInTheDocument();
   });
 });
