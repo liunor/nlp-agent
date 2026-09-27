@@ -4,9 +4,6 @@
   <img src="docs/assets/nova-v2.0.0-preview.jpg" alt="Nova — AI-powered NLP Learning & Teaching Platform" width="1280">
 </a>
 
-**AI-powered NLP Learning & Teaching Platform**<br>
-Dialogue · Practice · Knowledge · Observability
-
 <p>
   <img src="https://img.shields.io/github/stars/liunor/nlp-agent?logo=github" alt="GitHub stars">
   <img src="https://github.com/liunor/nlp-agent/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI">
