@@ -100,6 +100,22 @@ vi.mock("@/platform/http/api", () => ({
     executeSandbox: stream.executeSandbox,
     getLearningBookNavigation: stream.getLearningBookNavigation,
     getLearningBookPage: stream.getLearningBookPage,
+    getStorageUsage: vi.fn().mockResolvedValue({
+      role: "student",
+      core: { used_bytes: 0, quota_bytes: 128 * 1024 * 1024, used_ratio: 0, state: "normal" },
+      files: { used_bytes: 0, quota_bytes: 128 * 1024 * 1024, used_ratio: 0, state: "normal" },
+      files_count: 0,
+      max_file_bytes: 10 * 1024 * 1024,
+      max_items: 500,
+    }),
+    listStorageFiles: vi.fn().mockResolvedValue({ items: [] }),
+    listStorageTrash: vi.fn().mockResolvedValue({ items: [] }),
+    createStorageFolder: vi.fn(),
+    uploadStorageFile: vi.fn(),
+    renameStorageFile: vi.fn(),
+    deleteStorageFile: vi.fn(),
+    restoreStorageFile: vi.fn(),
+    permanentlyDeleteStorageFile: vi.fn(),
   },
 }));
 
@@ -469,7 +485,7 @@ describe("student stream rendering", () => {
     expect(menu.closest(".tool-dock-tab-strip")).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "打开浏览器工具" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "打开终端工具" })).not.toBeInTheDocument();
-    expect(menu.querySelectorAll("kbd")).toHaveLength(4);
+    expect(menu.querySelectorAll("kbd")).toHaveLength(5);
     expect(menu).toHaveTextContent("Ctrl+Alt+F");
     expect(screen.getByRole("tab", { name: "文件" })).toBeVisible();
     expect(screen.getByRole("button", { name: "显示工具列表" }).parentElement).toContainElement(menu);

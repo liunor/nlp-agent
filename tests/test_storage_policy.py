@@ -1,4 +1,4 @@
-from server.storage.policy import StorageBucket, fits_quota, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
+from server.storage.policy import ROLE_POLICIES, StorageBucket, fits_quota, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
 from server.storage.quota import StorageQuotaExceeded, validate_final_usage
 from pathlib import Path
 
@@ -21,6 +21,16 @@ def test_unknown_roles_are_safe_and_guests_are_small() -> None:
     assert guest.core_quota_bytes == 32 * 1024 * 1024
     assert guest.files_quota_bytes == 16 * 1024 * 1024
     assert guest.max_file_bytes == 5 * 1024 * 1024
+
+
+def test_all_supported_roles_have_ordered_storage_budgets() -> None:
+    policies = {role: policy_for_roles({role}) for role in ROLE_POLICIES}
+
+    assert set(policies) == {"guest", "student", "teacher", "developer", "admin"}
+    assert policies["guest"].total_quota_bytes < policies["student"].total_quota_bytes
+    assert policies["student"].total_quota_bytes < policies["teacher"].total_quota_bytes
+    assert policies["teacher"] == policies["developer"] == policies["admin"]
+    assert all(policy.max_file_bytes <= policy.files_quota_bytes for policy in policies.values())
 
 
 def test_usage_state_matches_progress_bar_thresholds() -> None:

@@ -6,9 +6,9 @@ from sqlalchemy.dialects.mysql import BIGINT, DATETIME
 
 
 revision = "20260927_42_storage_quota"
-# The repository already contains the in-progress whiteboard migration at 41.
-# Keep the migration chain linear so a deployment upgrades both changes in order.
-down_revision = "20260927_41_whiteboard_library"
+# Keep this feature migration self-contained. The whiteboard migrations are
+# maintained separately and are not required to create the storage ledger.
+down_revision = "20260927_40_user_files"
 branch_labels = None
 depends_on = None
 

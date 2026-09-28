@@ -11,9 +11,7 @@ from sqlalchemy.dialects.mysql import DATETIME
 
 
 revision = "20260927_43_storage_quota_backfill"
-# The whiteboard branch is present in the same deployment bundle.  This
-# migration deliberately joins both 42 heads before rebuilding the ledger.
-down_revision = ("20260927_42_storage_quota", "20260927_42_whiteboard_asset_codes")
+down_revision = "20260927_42_storage_quota"
 branch_labels = None
 depends_on = None
 
@@ -111,7 +109,7 @@ def upgrade() -> None:
         )
     )
 
-    _add_files_grouped(
+    _add_grouped(
         bind,
         "SELECT owner_user_id AS owner, COALESCE(SUM(OCTET_LENGTH(COALESCE(title,''))+OCTET_LENGTH(id)),0) AS amount "
         "FROM nlp_conversations GROUP BY owner_user_id",

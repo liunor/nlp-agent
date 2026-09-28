@@ -194,6 +194,14 @@ async def purge_expired_guest_data(db: AsyncSession) -> int:
             path = workspace_root / str(user_id)
             if path.is_dir():
                 shutil.rmtree(path)
+        personal_root = storage_root().resolve()
+        if personal_root.is_dir():
+            for workspace_root in personal_root.iterdir():
+                if not workspace_root.is_dir():
+                    continue
+                path = (workspace_root / str(user_id)).resolve()
+                if personal_root in path.parents and path.is_dir():
+                    shutil.rmtree(path)
         removed += 1
     if guest_ids:
         await db.flush()
@@ -251,12 +259,32 @@ class StorageService:
         value = await self.db.scalar(
             select(func.coalesce(func.sum(UserFileModel.size_bytes), 0)).where(
                 UserFileModel.owner_user_id == self.scope.owner_user_id,
-                UserFileModel.workspace_id == self.scope.workspace_id,
                 UserFileModel.kind == "file",
                 UserFileModel.status.in_(("active", "trashed")),
             )
         )
         return int(value or 0)
+
+    async def _effective_policy(self) -> StoragePolicy:
+        account = await self.db.scalar(
+            select(StorageAccountModel).where(StorageAccountModel.owner_user_id == self.scope.owner_user_id)
+        )
+        if account is None:
+            await self.quota.reconcile()
+            account = await self.db.scalar(
+                select(StorageAccountModel).where(StorageAccountModel.owner_user_id == self.scope.owner_user_id)
+            )
+        if account is None:
+            raise StorageError("storage account ledger row is unavailable")
+        return policy_with_overrides(
+            self.scope.policy,
+            {
+                "core_quota_bytes": account.core_quota_override_bytes,
+                "files_quota_bytes": account.files_quota_override_bytes,
+                "max_file_bytes": account.max_file_override_bytes,
+                "max_items": account.max_items_override,
+            },
+        )
 
     async def _core_used_from_db(self) -> int:
         owner = self.scope.owner_user_id
@@ -419,7 +447,6 @@ class StorageService:
             await self.db.scalar(
                 select(func.count()).select_from(UserFileModel).where(
                     UserFileModel.owner_user_id == self.scope.owner_user_id,
-                    UserFileModel.workspace_id == self.scope.workspace_id,
                     UserFileModel.kind == "file",
                     UserFileModel.status == "active",
                 )
@@ -518,27 +545,27 @@ class StorageService:
 
     async def create_file(self, upload, parent_id: str | None = None) -> dict:
         name = _safe_name(upload.filename or "未命名文件")
+        policy = await self._effective_policy()
         await self._parent(parent_id)
         if await self._sibling_named(name, parent_id):
             raise StorageNameConflict("同一文件夹中已经存在同名项目")
         count = int(
             await self.db.scalar(
                 select(func.count()).select_from(UserFileModel).where(
-                        UserFileModel.owner_user_id == self.scope.owner_user_id,
-                        UserFileModel.workspace_id == self.scope.workspace_id,
-                        UserFileModel.kind == "file",
+                    UserFileModel.owner_user_id == self.scope.owner_user_id,
+                    UserFileModel.kind == "file",
                     UserFileModel.status == "active",
                 )
             )
             or 0
         )
-        if count >= self.scope.policy.max_items:
+        if count >= policy.max_items:
             raise StorageQuotaExceeded("文件数量已达到配额")
-        data = await upload.read(self.scope.policy.max_file_bytes + 1)
-        if len(data) > self.scope.policy.max_file_bytes:
+        data = await upload.read(policy.max_file_bytes + 1)
+        if len(data) > policy.max_file_bytes:
             raise StorageQuotaExceeded("文件大小已达到当前角色的单文件配额")
         current = await self._file_used()
-        if current + len(data) > self.scope.policy.files_quota_bytes:
+        if current + len(data) > policy.files_quota_bytes:
             raise StorageQuotaExceeded("个人文件空间已达到配额")
         self._check_global_capacity(len(data))
 

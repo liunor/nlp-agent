@@ -136,17 +136,20 @@ class MySQLGatewayRepository:
     def update_turn(self, turn_id: str, status: TurnStatus, *, final_text=None, error_kind=None, error_message=None, exercise_state=None, dispatch_payload: str | None = None) -> TurnRecord:
         terminal = status in {TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.INTERRUPTED}
         with self._engine.begin() as c:
-            turn_identity = c.execute(text("SELECT user_id FROM nlp_turns WHERE id=:id FOR UPDATE"), {"id": turn_id}).mappings().first()
+            turn_identity = c.execute(text("SELECT user_id,result_text,error_message FROM nlp_turns WHERE id=:id FOR UPDATE"), {"id": turn_id}).mappings().first()
             if turn_identity is None:
                 raise KeyError(turn_id)
-            result_size = len((final_text or "").encode("utf-8")) + len((error_message or "").encode("utf-8"))
+            old_result_size = len((turn_identity["result_text"] or "").encode("utf-8")) + len((turn_identity["error_message"] or "").encode("utf-8"))
+            stored_error = (error_message or "")[:1000] or None
+            new_result_size = len((final_text or "").encode("utf-8")) + len((stored_error or "").encode("utf-8"))
+            result_delta = max(0, new_result_size - old_result_size)
             reservation = SyncStorageQuota(c, owner_user_id=str(turn_identity["user_id"])).reserve(
                 StorageBucket.CORE,
-                result_size,
+                result_delta,
                 resource_type="turn_result",
                 resource_key=turn_id,
-            ) if result_size else None
-            c.execute(text("UPDATE nlp_turns SET status=:status,result_text=:result,error_kind=:kind,error_message=:message,started_at=CASE WHEN :running='running' THEN UTC_TIMESTAMP(6) ELSE started_at END,completed_at=CASE WHEN :terminal=1 THEN UTC_TIMESTAMP(6) ELSE completed_at END WHERE id=:id"), {"status": status.value, "result": final_text, "kind": error_kind, "message": (error_message or "")[:1000] or None, "running": status.value, "terminal": int(terminal), "id": turn_id})
+            ) if result_delta else None
+            c.execute(text("UPDATE nlp_turns SET status=:status,result_text=:result,error_kind=:kind,error_message=:message,started_at=CASE WHEN :running='running' THEN UTC_TIMESTAMP(6) ELSE started_at END,completed_at=CASE WHEN :terminal=1 THEN UTC_TIMESTAMP(6) ELSE completed_at END WHERE id=:id"), {"status": status.value, "result": final_text, "kind": error_kind, "message": stored_error, "running": status.value, "terminal": int(terminal), "id": turn_id})
             if dispatch_payload is not None:
                 c.execute(text("INSERT INTO nlp_outbox_messages(id,topic,payload_json,status) VALUES(UUID(),'turn.dispatch',:payload,'pending')"), {"payload": json.dumps({"turn_id": turn_id, "task": dispatch_payload})})
             SyncStorageQuota(c, owner_user_id=str(turn_identity["user_id"])).finalize(reservation, reconcile=True)

@@ -42,7 +42,7 @@ describe("FilesPanel", () => {
 
     expect(await screen.findByRole("progressbar", { name: "通用空间" })).toHaveAttribute("aria-valuenow", "90");
     expect(screen.getByRole("progressbar", { name: "个人文件" })).toHaveAttribute("aria-valuenow", "95");
-    expect(screen.getByRole("progressbar", { name: "通用空间" }).parentElement?.parentElement).toHaveClass("critical");
+    expect(screen.getByRole("progressbar", { name: "通用空间" }).parentElement).toHaveClass("critical");
     expect(api.getStorageUsage).toHaveBeenCalledWith("workspace-1");
   });
 

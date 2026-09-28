@@ -173,7 +173,9 @@ def test_create_turn_ensures_the_conversation_before_inserting_the_turn() -> Non
         patch.object(MySQLGatewayRepository, "_ensure_conversation") as ensure,
         patch.object(MySQLGatewayRepository, "_row", return_value={"id": "turn-1"}),
         patch.object(MySQLGatewayRepository, "_record", return_value=sentinel.record),
+        patch("gateway.mysql_repository.SyncStorageQuota") as quota_type,
     ):
+        quota_type.return_value.reserve.return_value = sentinel.reservation
         record, duplicate = repository.create_turn(
             turn_id="turn-1",
             session_id="session_ecd63e64644e4df28801b77a49efe6e8",
@@ -190,6 +192,6 @@ def test_create_turn_ensures_the_conversation_before_inserting_the_turn() -> Non
         user_id="user-1",
         title="hello",
     )
-    assert "INSERT INTO nlp_turns" in str(connection.execute.call_args.args[0])
+    assert any("INSERT INTO nlp_turns" in str(call.args[0]) for call in connection.execute.call_args_list)
     assert record is sentinel.record
     assert duplicate is False

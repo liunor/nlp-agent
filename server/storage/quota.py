@@ -222,6 +222,13 @@ class AsyncStorageQuota:
         )
         return account
 
+    async def _lock_global_pool(self) -> None:
+        """Serialize reservations that inspect the shared account pool."""
+
+        await self.db.execute(
+            text("SELECT id FROM nlp_storage_pool_lock WHERE id=1 FOR UPDATE")
+        )
+
     @staticmethod
     def _used_and_reserved(account: StorageAccountModel, bucket: StorageBucket) -> tuple[int, int]:
         if bucket is StorageBucket.CORE:
@@ -240,7 +247,12 @@ class AsyncStorageQuota:
         if amount == 0:
             return None
         await self._resolve_policy()
+        await self._lock_global_pool()
         account = await self._locked_account()
+        if bucket is StorageBucket.FILES and amount > self.policy.max_file_bytes:
+            raise StorageQuotaExceeded(
+                f"file size exceeds the configured per-file limit: {amount} > {self.policy.max_file_bytes} bytes"
+            )
         used, reserved = self._used_and_reserved(account, bucket)
         if not fits_quota(used, reserved, amount, self.policy.quota_for(bucket)):
             raise StorageQuotaExceeded(
@@ -291,6 +303,7 @@ class AsyncStorageQuota:
     async def finalize(self, reservation: QuotaReservation | None, *, actual_bytes: int | None = None, reconcile: bool = True) -> None:
         if reservation is None:
             return
+        await self._lock_global_pool()
         row = await self.db.scalar(
             select(StorageReservationModel)
             .where(StorageReservationModel.id == reservation.id, StorageReservationModel.owner_user_id == self.owner_user_id)
@@ -356,6 +369,7 @@ class AsyncStorageQuota:
     async def release(self, reservation: QuotaReservation | None) -> None:
         if reservation is None:
             return
+        await self._lock_global_pool()
         row = await self.db.scalar(
             select(StorageReservationModel)
             .where(StorageReservationModel.id == reservation.id, StorageReservationModel.owner_user_id == self.owner_user_id)
@@ -379,6 +393,7 @@ class AsyncStorageQuota:
         await self.db.flush()
 
     async def reconcile(self) -> None:
+        await self._lock_global_pool()
         account = await self._locked_account()
         account.core_used_bytes, account.files_used_bytes = await _async_reconcile(self.db, self.owner_user_id)
         await self.db.flush()
@@ -438,6 +453,13 @@ class SyncStorageQuota:
         )
         return row
 
+    def _lock_global_pool(self) -> None:
+        """Serialize reservations that inspect the shared account pool."""
+
+        self.connection.execute(
+            text("SELECT id FROM nlp_storage_pool_lock WHERE id=1 FOR UPDATE")
+        )
+
     def _sum(self, expression: str, from_sql: str, where_sql: str = "") -> int:
         value = self.connection.execute(text(f"SELECT COALESCE(SUM({expression}),0) FROM {from_sql} {where_sql}"), {"owner": self.owner_user_id}).scalar()
         return int(value or 0)
@@ -471,6 +493,7 @@ class SyncStorageQuota:
         amount = max(0, int(amount_bytes))
         if amount == 0:
             return None
+        self._lock_global_pool()
         account = self._account()
         used = int(account["core_used_bytes"] if bucket is StorageBucket.CORE else account["files_used_bytes"])
         reserved = int(account["core_reserved_bytes"] if bucket is StorageBucket.CORE else account["files_reserved_bytes"])
@@ -499,6 +522,7 @@ class SyncStorageQuota:
     def finalize(self, reservation: QuotaReservation | None, *, actual_bytes: int | None = None, reconcile: bool = True) -> None:
         if reservation is None:
             return
+        self._lock_global_pool()
         row = self.connection.execute(text("SELECT * FROM nlp_storage_reservations WHERE id=:id AND owner_user_id=:owner FOR UPDATE"), {"id": reservation.id, "owner": self.owner_user_id}).mappings().first()
         if row is None or row["status"] != "reserved":
             return
@@ -540,6 +564,7 @@ class SyncStorageQuota:
         self.connection.execute(text("UPDATE nlp_storage_reservations SET status='committed',finalized_at=UTC_TIMESTAMP(6) WHERE id=:id"), {"id": reservation.id})
 
     def reconcile(self) -> None:
+        self._lock_global_pool()
         self._account()
         core, files = self._reconcile()
         self.connection.execute(
@@ -550,6 +575,7 @@ class SyncStorageQuota:
     def release(self, reservation: QuotaReservation | None) -> None:
         if reservation is None:
             return
+        self._lock_global_pool()
         row = self.connection.execute(text("SELECT * FROM nlp_storage_reservations WHERE id=:id AND owner_user_id=:owner FOR UPDATE"), {"id": reservation.id, "owner": self.owner_user_id}).mappings().first()
         if row is None or row["status"] != "reserved":
             return

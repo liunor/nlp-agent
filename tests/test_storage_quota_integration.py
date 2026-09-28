@@ -28,6 +28,7 @@ from server.infrastructure.mysql.models import (
 from server.storage.policy import StorageBucket, policy_with_overrides
 from server.storage.quota import AsyncStorageQuota, StorageQuotaExceeded
 from server.storage.service import reconcile_all_storage_accounts
+import server.storage.quota as quota_module
 
 
 @pytest.fixture
@@ -180,3 +181,37 @@ async def test_concurrent_reservations_cannot_oversubscribe_account(mysql_sessio
                 await session.execute(delete(StorageReservationModel).where(StorageReservationModel.owner_user_id == user_id))
                 await session.execute(delete(StorageAccountModel).where(StorageAccountModel.owner_user_id == user_id))
                 await session.execute(delete(UserModel).where(UserModel.id == user_id))
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reservations_cannot_oversubscribe_global_pool(mysql_session_factory, monkeypatch) -> None:
+    monkeypatch.setattr(quota_module.settings, "NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES", 100)
+    user_ids = [str(uuid4()), str(uuid4())]
+    async with mysql_session_factory() as session:
+        async with session.begin():
+            for user_id in user_ids:
+                session.add(UserModel(id=user_id, username=f"quota-{uuid4().hex[:12]}", password_hash="test", display_name="Quota Test"))
+            await session.flush()
+            for user_id in user_ids:
+                await AsyncStorageQuota(session, owner_user_id=user_id, roles={"student"}).reconcile()
+
+    async def reserve_once(user_id: str) -> str:
+        async with mysql_session_factory() as session:
+            async with session.begin():
+                quota = AsyncStorageQuota(session, owner_user_id=user_id, roles={"student"})
+                try:
+                    await quota.reserve(StorageBucket.CORE, 60, resource_type="global-concurrency-test")
+                except StorageQuotaExceeded:
+                    return "rejected"
+                return "accepted"
+
+    try:
+        results = await asyncio.gather(*(reserve_once(user_id) for user_id in user_ids))
+        assert sorted(results) == ["accepted", "rejected"]
+    finally:
+        async with mysql_session_factory() as session:
+            async with session.begin():
+                for user_id in user_ids:
+                    await session.execute(delete(StorageReservationModel).where(StorageReservationModel.owner_user_id == user_id))
+                    await session.execute(delete(StorageAccountModel).where(StorageAccountModel.owner_user_id == user_id))
+                    await session.execute(delete(UserModel).where(UserModel.id == user_id))
