@@ -340,12 +340,13 @@ class BackendGateway:
         )
         factory = self.authorization_session_factory
         if factory is not None:
-            async with factory.begin() as session:
-                if not self._storage_reconciled:
-                    result["storage_accounts_reconciled"] = await reconcile_all_storage_accounts(session)
-                    self._storage_reconciled = True
-                result["storage_trash_removed"] = await purge_expired_storage_trash(session)
-                result["guest_data_accounts_removed"] = await purge_expired_guest_data(session)
+            async with factory() as session:
+                async with session.begin():
+                    if not self._storage_reconciled:
+                        result["storage_accounts_reconciled"] = await reconcile_all_storage_accounts(session)
+                        self._storage_reconciled = True
+                    result["storage_trash_removed"] = await purge_expired_storage_trash(session)
+                    result["guest_data_accounts_removed"] = await purge_expired_guest_data(session)
         return result
 
     async def begin_shutdown(self) -> None:

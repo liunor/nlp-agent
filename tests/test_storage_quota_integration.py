@@ -64,6 +64,7 @@ async def test_reconcile_counts_legacy_messages_and_tool_calls(mysql_session_fac
                     title="legacy conversation",
                 )
             )
+            await session.flush()
             session.add(
                 TurnModel(
                     id=turn_id,
@@ -73,6 +74,7 @@ async def test_reconcile_counts_legacy_messages_and_tool_calls(mysql_session_fac
                     input_text="legacy input",
                 )
             )
+            await session.flush()
             session.add(
                 ConversationMessageModel(
                     id=str(uuid4()),

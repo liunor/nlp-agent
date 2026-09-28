@@ -39,12 +39,24 @@ async def test_catalog_write_creates_a_new_version_after_matching_revision() -> 
 
 
 @pytest.mark.asyncio
-async def test_turn_event_service_delegates_serial_sequence_to_locked_turn_crud() -> None:
+async def test_turn_event_service_delegates_serial_sequence_to_locked_turn_crud(monkeypatch) -> None:
     session = AsyncMock()
     turn = TurnModel(id="turn-1", conversation_id="conversation-1", workspace_id="workspace-1", user_id="user-1", input_text="hello", claim_generation=4)
     crud = AsyncMock(spec=TurnCrud)
     crud.lock_turn.return_value = turn
     crud.append_event.return_value = object()
+
+    class NoopQuota:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def reserve(self, *_args, **_kwargs):
+            return object()
+
+        async def finalize(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("server.api.v1.persistence.service.AsyncStorageQuota", NoopQuota)
     service = TurnEventService(crud)
 
     await service.append_event(session, AppendTurnEventCommand(turn_id="turn-1", claim_generation=4, event_type="turn.handover"))

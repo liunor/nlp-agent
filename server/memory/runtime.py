@@ -11,7 +11,7 @@ from configs.settings import settings
 from core.session_context import SessionContext
 from core.prompt_runtime import global_prompt_runtime
 from server.memory.curator import MemoryCurator
-from server.memory.manager import MEMORY_DIR
+from server.memory.manager import MEMORY_DIR, MemoryManager
 from server.memory.mysql_manager import MySQLMemoryManager
 from server.memory.types import MemoryRuntimeConfig
 from utils.logger import get_logger
@@ -34,7 +34,13 @@ class MemoryRuntime:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    def manager(self, context: SessionContext) -> MySQLMemoryManager:
+    def manager(self, context: SessionContext) -> MySQLMemoryManager | MemoryManager:
+        # A custom root is the explicit test/embedded-store seam retained by
+        # the public runtime API. Production uses the durable MySQL store at
+        # the configured default root; isolated roots must not require a
+        # corresponding MySQL user/workspace fixture.
+        if self.root.resolve() != Path(MEMORY_DIR).resolve():
+            return MemoryManager(context, self.root)
         return MySQLMemoryManager(context)
 
     def context_message(self, context: SessionContext) -> SystemMessage | None:
