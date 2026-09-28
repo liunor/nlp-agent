@@ -11,6 +11,7 @@ from server.web.contracts import ServerEventEnvelope
 _EVENT_TYPES: dict[GatewayEventType, str] = {
     GatewayEventType.TURN_ACCEPTED: "chat.accepted",
     GatewayEventType.TURN_STARTED: "chat.started",
+    GatewayEventType.TURN_HANDOVER: "worker.progress",
     GatewayEventType.TURN_COMPLETED: "chat.completed",
     GatewayEventType.TURN_FAILED: "chat.error",
     GatewayEventType.TURN_CANCELLED: "chat.cancelled",

@@ -1,0 +1,172 @@
+schema_version: "1.0"
+suite:
+  id: academic-routing-v1
+  name: 学术检索路由与引用完整性评测
+  description: 统计学术意图召回、非学术误触发和最终引用是否来自工具证据。
+  owner: Pro_NLP
+
+defaults:
+  workspace_id: eval-academic-isolated
+  repeats: 1
+  timeout_seconds: 120
+  expectation:
+    required_tools: [academic_search]
+    forbidden_tools: []
+    ordered_tools: []
+    allowed_tool_statuses: [ok]
+    allow_extra_tools: false
+    delegation_policy: forbidden
+    min_workers: 0
+    max_workers: 0
+    min_dispatches: 0
+    max_dispatches: 0
+    require_citation_integrity: true
+
+cases:
+  - id: academic-transformer-origin
+    input: Transformer 最初由哪篇论文提出？请给出作者、年份、核心创新和官方论文链接。
+    tags: [academic, positive, origin, critical]
+    expectation: {}
+
+  - id: academic-lora-origin
+    input: 查找 LoRA 原始论文，区分预印本时间和正式发表时间，并给出可核验出处。
+    tags: [academic, positive, finetuning, critical]
+    expectation: {}
+
+  - id: academic-rope-theory
+    input: RoPE 旋转位置编码的理论依据是什么？请依据原始论文解释。
+    tags: [academic, positive, theory]
+    expectation: {}
+
+  - id: academic-dpo-origin
+    input: DPO 算法来自哪篇论文，它相对 PPO/RLHF 的关键变化是什么？
+    tags: [academic, positive, alignment, critical]
+    expectation: {}
+
+  - id: academic-ppo-paper
+    input: 请查找 Proximal Policy Optimization 的原始论文并概括 clipped objective。
+    tags: [academic, positive, reinforcement-learning]
+    expectation: {}
+
+  - id: academic-moe-research
+    input: 查找稀疏 Mixture-of-Experts 架构的代表性研究，列出真实论文链接。
+    tags: [academic, positive, architecture]
+    expectation: {}
+
+  - id: academic-bert-paper
+    input: BERT 的预训练目标由哪篇论文提出？请根据论文摘要回答。
+    tags: [academic, positive, model]
+    expectation: {}
+
+  - id: academic-rag-paper
+    input: RAG 这一方法最早的代表论文是什么？作者和核心方法是什么？
+    tags: [academic, positive, retrieval]
+    expectation: {}
+
+  - id: academic-attention-comparison
+    input: 请基于论文比较 Multi-Head Attention 与 Multi-Query Attention 的方法差异。
+    tags: [academic, positive, comparison]
+    expectation: {}
+
+  - id: academic-transformer-recent
+    input: 检索近两年关于长上下文 Transformer 的学术研究，优先给出论文一手资料。
+    tags: [academic, positive, recent]
+    expectation:
+      allow_extra_tools: true
+
+  - id: negative-python-error
+    input: Python 中 list index out of range 是什么意思？给一个简单修复例子，不需要查论文。
+    tags: [negative, programming, no-tool]
+    expectation:
+      required_tools: []
+      forbidden_tools: [academic_search]
+      expected_no_tool: true
+      require_citation_integrity: false
+
+  - id: negative-code-generation
+    input: 写一个 Python 函数，把字符串列表按长度排序。
+    tags: [negative, programming, no-tool]
+    expectation:
+      required_tools: []
+      forbidden_tools: [academic_search]
+      expected_no_tool: true
+      require_citation_integrity: false
+
+  - id: negative-arithmetic
+    input: 计算 128 乘以 32，只给结果。
+    tags: [negative, arithmetic, no-tool]
+    expectation:
+      required_tools: []
+      forbidden_tools: [academic_search]
+      expected_no_tool: true
+      require_citation_integrity: false
+
+  - id: negative-summary
+    input: 把“今天项目完成了接口联调和页面修复”概括成十个字以内。
+    tags: [negative, summary, no-tool]
+    expectation:
+      required_tools: []
+      forbidden_tools: [academic_search]
+      expected_no_tool: true
+      require_citation_integrity: false
+
+  - id: negative-attention-derivation
+    input: 请推导 Self-Attention 的 Q/K/V 矩阵计算和 softmax 过程，不需要查论文。
+    tags: [negative, nlp, derivation, no-tool]
+    expectation:
+      required_tools: []
+      forbidden_tools: [academic_search]
+      expected_no_tool: true
+      require_citation_integrity: false
+
+  - id: negative-transformer-explanation
+    input: 解释 Transformer 的 Encoder-Decoder 结构和各模块作用，不需要论文出处。
+    tags: [negative, nlp, concept, no-tool]
+    expectation:
+      required_tools: []
+      forbidden_tools: [academic_search]
+      expected_no_tool: true
+      require_citation_integrity: false
+
+  - id: negative-backpropagation-derivation
+    input: 请用简单例子推导神经网络的反向传播公式，不需要外部资料。
+    tags: [negative, nlp, derivation, no-tool]
+    expectation:
+      required_tools: []
+      forbidden_tools: [academic_search]
+      expected_no_tool: true
+      require_citation_integrity: false
+
+  - id: negative-explicit-url
+    input: 阅读 https://example.com/report 并总结页面内容，不要检索其他资料。
+    tags: [negative, url-reading]
+    expectation:
+      required_tools: [spawn_worker]
+      forbidden_tools: [academic_search]
+      expected_no_tool: false
+      delegation_policy: required
+      min_workers: 1
+      max_workers: 1
+      min_dispatches: 1
+      max_dispatches: 1
+      worker_required_tools: [web_fetch]
+      allow_extra_tools: true
+      require_join: true
+      required_wait_mode: all
+      require_citation_integrity: false
+
+  - id: negative-current-weather
+    input: 查询北京今天的天气情况。
+    tags: [negative, realtime]
+    expectation:
+      required_tools: [spawn_worker]
+      forbidden_tools: [academic_search]
+      expected_no_tool: false
+      delegation_policy: required
+      min_workers: 1
+      max_workers: 1
+      min_dispatches: 1
+      max_dispatches: 1
+      require_join: true
+      required_wait_mode: all
+      require_citation_integrity: false

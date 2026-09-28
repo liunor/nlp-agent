@@ -27,6 +27,24 @@ def test_sandbox_monitor_router_owns_all_sandbox_observability_routes() -> None:
     assert "/api/v1/observability/sandbox/executions/{execution_id}/events" in paths
 
 
+def test_sandbox_runtime_mutations_require_explicit_reset_permission() -> None:
+    from core.identity import AccessDeniedError, AuthenticatedPrincipal
+    from server.sandbox.monitor_controller import require_runtime_mutation
+
+    monitor_only = AuthenticatedPrincipal(
+        user_id="developer-1",
+        permissions=frozenset({"system:runtime:monitor"}),
+    )
+    reset_operator = AuthenticatedPrincipal(
+        user_id="developer-1",
+        permissions=frozenset({"system:runtime:monitor", "system:runtime:reset"}),
+    )
+
+    with pytest.raises(AccessDeniedError):
+        require_runtime_mutation(monitor_only)
+    require_runtime_mutation(reset_operator)
+
+
 def test_sandbox_log_payload_is_summary_only() -> None:
     from types import SimpleNamespace
 

@@ -4,8 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.mysql import DATETIME
 
-from server.rbac.catalog import permission_id, role_id
-from core.rbac import Permission
+from migrations.rbac_seed_data import permission_id, role_id
+from migrations.rbac_seed_data import Permission
 
 
 revision = "20260819_20"

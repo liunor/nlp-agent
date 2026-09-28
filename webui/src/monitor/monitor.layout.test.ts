@@ -9,4 +9,10 @@ describe("sandbox monitor layout", () => {
     expect(stylesheet).toContain(".sandbox-capacity-chart svg{height:150px;min-height:0");
     expect(stylesheet).toContain(".sandbox-log-list,.sandbox-runtime-list,.sandbox-execution-list{height:176px;max-height:176px");
   });
+
+  it("lets every monitor page use the full developer-platform canvas", () => {
+    expect(stylesheet).toContain(".monitor-shell{display:flex;min-height:100vh;height:100%}");
+    expect(stylesheet).toContain(".monitor-shell>main{min-width:0;min-height:100vh;flex:1}");
+    expect(stylesheet).toContain(".monitor-content{width:100%;max-width:none;min-height:calc(100vh - 58px);margin:0");
+  });
 });

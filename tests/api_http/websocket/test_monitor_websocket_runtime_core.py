@@ -18,8 +18,13 @@ from ..support.environment import SeededUser
 pytestmark = pytest.mark.api_runtime_core
 
 
-def _monitor_authenticate(monitor, web, origin: str) -> dict:
-    monitor.cookies.update(web.cookies)
+def _monitor_authenticate(monitor, user: SeededUser, origin: str) -> dict:
+    login = monitor.post(
+        "/api/v1/auth/login",
+        headers=same_origin_headers(origin),
+        json={"username": user.username, "password": user.password},
+    )
+    assert login.status_code == 200, login.text
     response = monitor.get("/api/v1/auth/session", headers=same_origin_headers(origin))
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -49,20 +54,18 @@ async def _rejected(uri: str, *, origin: str, cookie: str) -> None:
 
 
 def test_monitor_websocket_uses_db_ticket_heartbeat_and_single_use(
-    authenticated_client_for,
     monitor_http_client: httpx.Client,
     monitor_base_url: str,
     api_http_environment,
     developer_user: SeededUser,
     mysql_probe,
 ) -> None:
-    web = authenticated_client_for(developer_user)
-    session = _monitor_authenticate(monitor_http_client, web, monitor_base_url)
+    session = _monitor_authenticate(monitor_http_client, developer_user, monitor_base_url)
     assert session["user_id"] == developer_user.user_id
     ticket_response = monitor_http_client.post("/api/v1/auth/ws-ticket")
     assert ticket_response.status_code == 200, ticket_response.text
     ticket = str(ticket_response.json()["ticket"])
-    cookie = str(web.cookies.get("nlp_session"))
+    cookie = str(monitor_http_client.cookies.get("nlp_session"))
     uri = monitor_base_url.replace("http://", "ws://", 1) + f"/ws/observability?ticket={ticket}"
 
     async def scenario() -> None:

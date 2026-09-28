@@ -1,0 +1,263 @@
+.whiteboard-shell {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.whiteboard-panel {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.whiteboard-save-warning {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  max-width: min(360px, calc(100% - 28px));
+  padding: 8px 10px;
+  border: 1px solid #e4b7bd;
+  border-radius: 7px;
+  background: #fff7f7;
+  color: #bd3343;
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 4px 16px rgb(41 43 56 / 12%);
+}
+
+.whiteboard-library-warning {
+  position: absolute;
+  right: 14px;
+  bottom: 58px;
+  z-index: 3;
+  max-width: min(360px, calc(100% - 28px));
+  padding: 8px 10px;
+  border: 1px solid #e5d4a8;
+  border-radius: 7px;
+  background: #fffaf0;
+  color: #8a5a00;
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: 0 4px 16px rgb(41 43 56 / 12%);
+}
+
+.whiteboard-panel .excalidraw {
+  width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
+}
+
+/* The footer keeps Excalidraw's layout, but its native HelpButton opens the
+ * full upstream help dialog. The adapter supplies the filtered in-product
+ * dialog through the same footer slot instead. */
+.whiteboard-panel .help-icon {
+  display: none;
+}
+
+.whiteboard-help-trigger {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--icon-fill-color, currentColor);
+  cursor: pointer;
+}
+
+.whiteboard-help-trigger:hover {
+  background: var(--button-hover-bg, rgb(15 23 42 / 8%));
+}
+
+.whiteboard-help-trigger:focus-visible {
+  outline: 2px solid var(--focus-highlight-color, currentColor);
+  outline-offset: 2px;
+}
+
+/* HelpDialog is rendered in Excalidraw's body-level portal. These host-level
+ * rules follow the current component class names instead of patching package
+ * source or depending on visible dialog text. */
+.excalidraw-modal-container .HelpDialog__header {
+  display: none;
+}
+
+/* Students see a read-only catalogue. Teachers and developers keep
+ * Excalidraw's native controls so they can create globally shared assets.
+ * These selectors target Excalidraw's public component class names; the
+ * package source is untouched.
+ */
+.whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-control-buttons,
+.whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-dropdown-container,
+.whiteboard-panel:not(.whiteboard-can-manage-library) .library-unit__checkbox {
+  display: none;
+}
+
+/* The bundled and server-created items are loaded as published items. Hide
+ * pending/personal items for learners, while managers can use the native
+ * personal section to create a new item before it is published globally.
+ */
+.whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items-container__header:not(.library-menu-items-container__header--excal),
+.whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items__no-items,
+.whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items-container__items > .library-menu-items-container__header:not(.library-menu-items-container__header--excal) + .library-menu-items-container__grid,
+.whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items-container__grid:has(~ .library-menu-items-container__header--excal) {
+  display: none;
+}
+
+/* Excalidraw 0.18.1 exposes the embed and Mermaid entries with the same test
+ * id. The embed action is the item immediately before Laser; Mermaid remains
+ * available as the supported diagram import path. */
+.whiteboard-panel .App-toolbar__extra-tools-dropdown .dropdown-menu-container > button[data-testid="toolbar-embeddable"]:has(+ button[data-testid="toolbar-laser"]) {
+  display: none;
+}
+
+/* Keep the same result on browsers without :has(); 0.18.1 places Embed in
+ * the second button slot and the dependency is pinned to that DOM contract. */
+@supports not selector(button:has(+ button)) {
+  .whiteboard-panel .App-toolbar__extra-tools-dropdown .dropdown-menu-container > button[data-testid="toolbar-embeddable"]:nth-of-type(2) {
+    display: none;
+  }
+}
+
+/* Context menus are rendered outside the panel. The adapter marks the body
+ * while an authorized manager's whiteboard is mounted. */
+body:not(.whiteboard-library-manager) .context-menu > li[data-testid="addToLibrary"] {
+  display: none;
+}
+
+.whiteboard-loading {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.whiteboard-auth-required {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.whiteboard-help-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(15 23 42 / 28%);
+}
+
+.whiteboard-help-dialog {
+  display: flex;
+  width: min(680px, 100%);
+  max-height: min(720px, 100%);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgb(15 23 42 / 12%);
+  border-radius: 12px;
+  background: var(--island-bg-color, #fff);
+  color: var(--text-primary-color, #1f2937);
+  box-shadow: 0 18px 60px rgb(15 23 42 / 24%);
+}
+
+.whiteboard-help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid rgb(15 23 42 / 10%);
+}
+
+.whiteboard-help-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.whiteboard-help-close {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.whiteboard-help-close:hover {
+  background: rgb(15 23 42 / 8%);
+}
+
+.whiteboard-help-content {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  overflow: auto;
+  padding: 18px 20px 22px;
+}
+
+.whiteboard-help-group h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.whiteboard-help-list {
+  overflow: hidden;
+  border: 1px solid rgb(15 23 42 / 10%);
+  border-radius: 8px;
+}
+
+.whiteboard-help-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgb(15 23 42 / 8%);
+  font-size: 12px;
+}
+
+.whiteboard-help-row:last-child {
+  border-bottom: 0;
+}
+
+.whiteboard-help-row kbd {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid rgb(15 23 42 / 14%);
+  border-radius: 5px;
+  background: rgb(15 23 42 / 5%);
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .whiteboard-help-content {
+    grid-template-columns: 1fr;
+  }
+}

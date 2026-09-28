@@ -7,6 +7,7 @@ import { AuthProvider } from "@/platform/auth/AuthContext";
 import { AuthGate } from "./AuthGate";
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn(),
   api: { logout: vi.fn() },
 }));

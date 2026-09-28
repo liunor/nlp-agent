@@ -17,6 +17,7 @@ from core.authorization_audit import record as record_authorization_decision
 
 
 class Permission(StrEnum):
+    QUOTA_USAGE_READ_SELF = "quota:usage:read_self"
     IDENTITY_PROFILE_READ_SELF = "identity:profile:read_self"
     IDENTITY_PROFILE_UPDATE_SELF = "identity:profile:update_self"
     LEARNING_CONTENT_READ_PUBLIC = "learning:content:read_public"
@@ -44,12 +45,15 @@ class Permission(StrEnum):
     SYSTEM_TOOL_CONFIG_MANAGE = "system:tool_config:manage"
     SYSTEM_RUNTIME_MONITOR = "system:runtime:monitor"
     SYSTEM_RUNTIME_INSPECT = "system:runtime:inspect"
+    SYSTEM_RUNTIME_RESET = "system:runtime:reset"
     SYSTEM_USER_MANAGE = "system:user:manage"
     SYSTEM_ROLE_MANAGE = "system:role:manage"
     SYSTEM_RELEASE_NOTES_MANAGE = "system:release_notes:manage"
     SYSTEM_PERMISSION_READ = "system:permission:read"
     SYSTEM_AUDIT_READ = "system:audit:read"
     SYSTEM_SENSITIVE_DATA_READ = "system:sensitive_data:read"
+    SYSTEM_QUOTA_READ = "system:quota:read"
+    SYSTEM_QUOTA_MANAGE = "system:quota:manage"
 
 
 class ScopeType(StrEnum):
@@ -101,6 +105,7 @@ _GUEST: Final[frozenset[Permission]] = frozenset(
         Permission.AGENT_TURN_SUBMIT,
         Permission.AGENT_TURN_CANCEL,
         Permission.AGENT_EVENT_REPLAY,
+        Permission.QUOTA_USAGE_READ_SELF,
     }
 )
 _STUDENT: Final[frozenset[Permission]] = _GUEST | {
@@ -126,11 +131,14 @@ _DEVELOPER: Final[frozenset[Permission]] = _TEACHER | {
     Permission.SYSTEM_TOOL_CONFIG_MANAGE,
     Permission.SYSTEM_RUNTIME_MONITOR,
     Permission.SYSTEM_RUNTIME_INSPECT,
+    Permission.SYSTEM_RUNTIME_RESET,
     Permission.SYSTEM_USER_MANAGE,
     Permission.SYSTEM_ROLE_MANAGE,
     Permission.SYSTEM_RELEASE_NOTES_MANAGE,
     Permission.SYSTEM_PERMISSION_READ,
     Permission.SYSTEM_AUDIT_READ,
+    Permission.SYSTEM_QUOTA_READ,
+    Permission.SYSTEM_QUOTA_MANAGE,
 }
 
 ROLE_PERMISSIONS: Final[dict[str, frozenset[Permission]]] = {
@@ -160,6 +168,8 @@ HIGH_RISK_TOOL_PERMISSIONS: Final[dict[str, Permission]] = {
 
 
 def required_permission_for_high_risk_tool(tool_name: str) -> Permission:
+    if tool_name.startswith("mcp_"):
+        return Permission.SYSTEM_TOOL_CONFIG_MANAGE
     try:
         return HIGH_RISK_TOOL_PERMISSIONS[tool_name]
     except KeyError as error:

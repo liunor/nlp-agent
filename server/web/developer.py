@@ -30,6 +30,10 @@ def _safe(value: Any, key: str = "") -> Any:
 def _tool_snapshot() -> dict[str, Any]:
     from core.tool_registry import physical_tool_manager
 
+    # The Web process can be remote from the Agent Worker and therefore may
+    # never build an Agent graph. Load local descriptors for the control-plane
+    # view without starting MCP clients in the Web process.
+    physical_tool_manager.ensure_custom_tools()
     descriptors = []
     for descriptor in physical_tool_manager.runtime.catalog.descriptors():
         item = descriptor.model_dump(mode="json", exclude={"factory"})
@@ -105,6 +109,10 @@ async def developer_snapshot(
                 "writable": path.exists() and path.is_dir(),
             }
         )
+    from server.tools.academic.service import academic_metrics_snapshot
+
+    tools = _tool_snapshot()
+    tools["academic_metrics"] = await academic_metrics_snapshot()
     return {
         "runtime": health.model_dump(mode="json"),
         "features": {
@@ -118,9 +126,15 @@ async def developer_snapshot(
             "routes": _safe(raw.get("model_routes", {})),
             "models": _safe(raw.get("models", {})),
             "presets": _safe(raw.get("model_presets", {})),
+            "profiles": _safe(raw.get("model_profiles", {})),
+            "default_model_profile": _safe(
+                raw.get("defaults", {}).get("model_profile")
+                if isinstance(raw.get("defaults"), dict)
+                else None
+            ),
             "providers": providers,
         },
-        "tools": _tool_snapshot(),
+        "tools": tools,
         "skills": _skills_snapshot(),
         "agents": {
             "runtime": _safe(raw.get("agent_runtime", {})),
@@ -134,3 +148,12 @@ async def developer_snapshot(
             "protocol": {"http": "/api/v1", "websocket": "/ws/v1"},
         },
     }
+
+
+async def developer_health(
+    principal: AuthenticatedPrincipal, gateway: Any
+) -> dict[str, Any]:
+    """Return the lightweight live health payload used by runtime diagnostics."""
+    authorization_service.require(principal, Permission.SYSTEM_RUNTIME_INSPECT)
+    health = await gateway.health()
+    return health.model_dump(mode="json")

@@ -3,14 +3,29 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 from evaluation.core.catalog import discover_suites, resolve_suite_reference
 from evaluation.core.dataset import dataset_summary, load_dataset
 from evaluation.core.reporting import load_report, load_trace_metrics, render_report
 from evaluation.core.runner import EvaluationRunner, MonitorHttpEvidenceReader, RemoteApiExecutor
+
+
+def _evaluation_credentials() -> tuple[str, str]:
+    dotenv = dotenv_values(Path(__file__).resolve().parents[1] / ".env")
+    username = (
+        os.environ.get("NLP_AGENT_EVALUATION_USERNAME")
+        or str(dotenv.get("NLP_AGENT_EVALUATION_USERNAME") or "")
+    ).strip()
+    password = os.environ.get("NLP_AGENT_EVALUATION_PASSWORD") or str(
+        dotenv.get("NLP_AGENT_EVALUATION_PASSWORD") or ""
+    )
+    return username, password
 
 
 def parser() -> argparse.ArgumentParser:
@@ -47,7 +62,24 @@ async def _run(args: argparse.Namespace) -> int:
         cases = cases[:args.limit]
     if not cases:
         raise SystemExit("No cases selected")
-    runner = EvaluationRunner(RemoteApiExecutor(args.web_url), MonitorHttpEvidenceReader(args.monitor_url, timeout_s=args.timeout))
+    username, password = _evaluation_credentials()
+    if bool(username) != bool(password):
+        raise SystemExit(
+            "Set both NLP_AGENT_EVALUATION_USERNAME and "
+            "NLP_AGENT_EVALUATION_PASSWORD, or leave both unset for an "
+            "explicitly enabled guest/test adapter."
+        )
+    executor = RemoteApiExecutor(
+        args.web_url,
+        username=username or None,
+        password=password or None,
+    )
+    evidence = MonitorHttpEvidenceReader(
+        args.monitor_url,
+        timeout_s=args.timeout,
+        session_cookie_provider=executor.session_cookies,
+    )
+    runner = EvaluationRunner(executor, evidence)
     report = await runner.run(suite_id=dataset.suite["id"], dataset_sha256=digest, cases=cases, workspace_id=args.workspace, timeout_s=args.timeout)
     rendered = json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2)
     print(rendered)

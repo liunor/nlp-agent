@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import time
 from uuid import uuid4
 
 from sqlalchemy import exists, select, text
@@ -19,8 +20,10 @@ from server.infrastructure.mysql.models import SandboxEnvironmentModel, SandboxL
 
 from .contracts import SandboxScope
 from .faults import SandboxFaultInjector
-from .optimization import AdaptivePoolPolicy
+from .host_budget import host_budget_lock
+from .optimization import AdaptivePoolPolicy, host_capacity_allows_create, refill_count
 from .runtime_adapters import SandboxRuntimeAdapter
+from .runtime_profile import DEFAULT_SANDBOX_RUNTIME_LIMITS
 from .warm_pool import RuntimeClaim, RuntimeState, reconcile_runtime_ids, runtime_container_name, warm_pool_service
 
 
@@ -28,9 +31,31 @@ def _utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def refill_deficit(*, target: int, ready_count: int, creating_count: int) -> int:
-    """Count work needed without treating assigned/dirty instances as reusable capacity."""
-    return max(0, target - ready_count - creating_count)
+def _is_recent_capacity_sample(raw_timestamp: object, *, now_timestamp: float, max_age_seconds: float = 300.0) -> bool:
+    """Accept only finite, non-future samples inside the feedback window."""
+    try:
+        timestamp = float(raw_timestamp or 0)
+    except (TypeError, ValueError):
+        return False
+    return 0 < timestamp <= now_timestamp and now_timestamp - timestamp <= max_age_seconds
+
+
+def refill_deficit(
+    *,
+    target: int,
+    ready_count: int,
+    creating_count: int,
+    total_count: int | None = None,
+    total_max: int | None = None,
+) -> int:
+    """Count work needed without exceeding the host-wide Runtime cap."""
+    return refill_count(
+        target=target,
+        ready_count=ready_count,
+        creating_count=creating_count,
+        total_count=total_count,
+        total_max=total_max,
+    )
 
 
 def ready_state_after_kernel_check(current_state: str) -> str:
@@ -191,6 +216,7 @@ class WarmPoolManager:
         fault_injector: SandboxFaultInjector | None = None,
         adaptive_state_store: object | None = None,
         metrics_store: object | None = None,
+        require_host_lock: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._docker = docker
@@ -201,7 +227,18 @@ class WarmPoolManager:
         self._faults = fault_injector or SandboxFaultInjector.from_env()
         self._adaptive_state_store = adaptive_state_store
         self._metrics_store = metrics_store
+        # Docker-backed managers in a shared host must fail closed when the
+        # deployment forgot to mount the cross-Compose lock.  The default is
+        # intentionally false so deterministic in-process/local adapters can
+        # still be used without a host filesystem dependency.
+        self._require_host_lock = require_host_lock
         self._requested_target: int | None = None
+        self._requested_target_expires_at: float | None = None
+        self._host_budget_blocked_count = 0
+        self._execution_semaphore = asyncio.Semaphore(
+            max(1, int(settings.NLP_AGENT_SANDBOX_EXECUTION_CONCURRENCY_MAX))
+        )
+        self._last_metrics_sample_at = 0.0
 
     @staticmethod
     def _trace(name: str, **payload: object) -> None:
@@ -214,36 +251,94 @@ class WarmPoolManager:
             # fail closed when its optional writer is unavailable.
             return
 
-    def recommended_ready_target(self, *, arrival_rate_per_min: float, refill_p95_s: float) -> int:
+    def recommended_ready_target(
+        self,
+        *,
+        arrival_rate_per_min: float,
+        refill_p95_s: float,
+        unassigned_lease_count: int = 0,
+    ) -> int:
         if self._adaptive_policy is None:
             return self._ready_target
         return self._adaptive_policy.target_for(
             arrival_rate_per_min=arrival_rate_per_min,
             refill_p95_s=refill_p95_s,
+            unassigned_lease_count=unassigned_lease_count,
         )
 
     async def _effective_ready_target(self) -> int:
         if self._requested_target is not None:
-            return self._requested_target
+            if self._requested_target_expires_at is None or time.time() < self._requested_target_expires_at:
+                return self._requested_target
+            self._requested_target = None
+            self._requested_target_expires_at = None
         arrival_rate = settings.NLP_AGENT_SANDBOX_ARRIVAL_RATE_PER_MIN
         refill_p95 = settings.NLP_AGENT_SANDBOX_REFILL_P95_S
+        unassigned_lease_count = 0
+        recent = getattr(self._metrics_store, "recent", None)
         latest = getattr(self._metrics_store, "latest", None)
-        if latest is not None:
+        sample_window: list[dict[str, object]] = []
+        if recent is not None and self._adaptive_policy is not None:
+            try:
+                recent_samples = await recent(limit=12)
+                # Redis/network latency means samples are often timestamped
+                # while the query is in flight. Capture the cutoff after the
+                # query completes, otherwise valid fresh samples can look like
+                # future data and collapse the adaptive target to its minimum.
+                now_timestamp = datetime.now(UTC).timestamp()
+                for sample in recent_samples:
+                    if not isinstance(sample, dict):
+                        continue
+                    if _is_recent_capacity_sample(
+                        sample.get("timestamp"), now_timestamp=now_timestamp
+                    ):
+                        sample_window.append(sample)
+                if sample_window:
+                    desired = self._adaptive_policy.target_for_samples(
+                        sample_window,
+                        fallback_arrival_rate_per_min=arrival_rate,
+                        fallback_refill_p95_s=refill_p95,
+                    )
+                else:
+                    self._trace("sandbox.manager.metrics.stale")
+                    desired = self.recommended_ready_target(
+                        arrival_rate_per_min=arrival_rate,
+                        refill_p95_s=refill_p95,
+                        unassigned_lease_count=unassigned_lease_count,
+                    )
+            except Exception as error:
+                self._trace("sandbox.manager.metrics.unavailable", error=type(error).__name__)
+                desired = self.recommended_ready_target(
+                    arrival_rate_per_min=arrival_rate,
+                    refill_p95_s=refill_p95,
+                    unassigned_lease_count=unassigned_lease_count,
+                )
+        elif latest is not None:
             try:
                 sample = await latest()
                 if sample:
-                    stamp = float(sample.get("timestamp", 0) or 0)
-                    if stamp <= 0 or datetime.now(UTC).timestamp() - stamp <= 300:
+                    now_timestamp = datetime.now(UTC).timestamp()
+                    if _is_recent_capacity_sample(
+                        sample.get("timestamp"), now_timestamp=now_timestamp
+                    ):
                         arrival_rate = max(0.0, float(sample.get("arrival_rate_per_min", arrival_rate)))
                         refill_p95 = max(0.0, float(sample.get("refill_p95_s", refill_p95)))
+                        unassigned_lease_count = max(0, int(sample.get("unassigned_count", 0) or 0))
                     else:
-                        self._trace("sandbox.manager.metrics.stale", age_seconds=round(datetime.now(UTC).timestamp() - stamp, 1))
+                        self._trace("sandbox.manager.metrics.stale")
             except Exception as error:
                 self._trace("sandbox.manager.metrics.unavailable", error=type(error).__name__)
-        desired = self.recommended_ready_target(
-            arrival_rate_per_min=arrival_rate,
-            refill_p95_s=refill_p95,
-        )
+            desired = self.recommended_ready_target(
+                arrival_rate_per_min=arrival_rate,
+                refill_p95_s=refill_p95,
+                unassigned_lease_count=unassigned_lease_count,
+            )
+        else:
+            desired = self.recommended_ready_target(
+                arrival_rate_per_min=arrival_rate,
+                refill_p95_s=refill_p95,
+                unassigned_lease_count=unassigned_lease_count,
+            )
         if self._adaptive_policy is None or self._adaptive_state_store is None:
             return desired
         load = getattr(self._adaptive_state_store, "load", None)
@@ -275,7 +370,7 @@ class WarmPoolManager:
             return desired
         return current
 
-    async def request_target(self, target: int) -> None:
+    async def request_target(self, target: int, *, ttl_seconds: int | float | None = None) -> None:
         if target < 0:
             raise ValueError("pool target must be non-negative")
         upper = (
@@ -283,10 +378,30 @@ class WarmPoolManager:
             if self._adaptive_policy is not None
             else max(self._ready_target, settings.NLP_AGENT_SANDBOX_WARM_POOL_READY_MAX)
         )
+        ttl = settings.NLP_AGENT_SANDBOX_PREWARM_TARGET_TTL_S if ttl_seconds is None else float(ttl_seconds)
+        if ttl <= 0:
+            raise ValueError("prewarm target TTL must be positive")
         self._requested_target = min(target, upper)
+        self._requested_target_expires_at = time.time() + ttl
 
     async def refill(self) -> int:
-        """Create only the deficit. Docker runs outside every database transaction."""
+        if self._require_host_lock and not settings.NLP_AGENT_SANDBOX_HOST_LOCK_FILE.strip():
+            raise RuntimeError(
+                "Sandbox Manager host capacity lock is required for Docker-backed refills"
+            )
+        # Keep this scope around both the database reservation and every
+        # Docker create.  A second Compose project cannot observe the same
+        # host count and reserve capacity until provisioning has completed.
+        async with host_budget_lock(settings.NLP_AGENT_SANDBOX_HOST_LOCK_FILE):
+            return await self._refill_locked()
+
+    async def _refill_locked(self) -> int:
+        """Reserve and provision the deficit while the host lock is held.
+
+        Docker runs outside every database transaction, but remains inside the
+        caller's shared host-budget lock.  The per-profile MySQL advisory lock
+        is released before Docker I/O; the host lock is deliberately not.
+        """
         self._trace("sandbox.manager.refill.started", profile=self._resource_profile_id)
         lock_name = f"nova.sandbox.pool.{self._resource_profile_id}"
         reserved_runtime_ids: list[str] = []
@@ -305,8 +420,20 @@ class WarmPoolManager:
                     target=target,
                     ready_count=counts.ready_count,
                     creating_count=counts.creating_count,
+                    total_count=counts.total_count,
+                    total_max=settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX,
                 )
                 for _ in range(deficit):
+                    if not await self._host_allows_create(
+                        total_count=counts.total_count + len(reserved_runtime_ids),
+                        reserved_count=len(reserved_runtime_ids),
+                    ):
+                        self._trace(
+                            "sandbox.manager.capacity.host_guard",
+                            total_count=counts.total_count + len(reserved_runtime_ids),
+                        )
+                        self._host_budget_blocked_count += 1
+                        break
                     runtime_id = str(uuid4())
                     lock_session.add(
                         SandboxRuntimeInstanceModel(
@@ -330,12 +457,69 @@ class WarmPoolManager:
         )
         return len(reserved_runtime_ids)
 
-    async def capacity_snapshot(self) -> dict[str, int | str]:
+    async def _host_resources(self) -> dict[str, float | None] | None:
+        probe = getattr(self._docker, "host_resources", None)
+        if probe is None:
+            return None
+        result = probe()
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result if isinstance(result, dict) else None
+
+    async def _host_runtime_count(self) -> int | None:
+        probe = getattr(self._docker, "host_managed_runtime_count", None)
+        if probe is None:
+            return None
+        result = probe()
+        if asyncio.iscoroutine(result):
+            result = await result
+        try:
+            return max(0, int(result))
+        except (TypeError, ValueError):
+            return None
+
+    async def _host_allows_create(self, *, total_count: int, reserved_count: int = 0) -> bool:
+        host_runtime_count = await self._host_runtime_count()
+        host_total_max = max(0, int(settings.NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX))
+        effective_total_count = total_count
+        if host_runtime_count is not None:
+            effective_total_count = max(effective_total_count, host_runtime_count + reserved_count)
+        resources = await self._host_resources()
+        if resources is None:
+            # Non-Docker adapters may not expose host telemetry. Docker's
+            # cross-Compose count still protects the shared host budget.
+            total_max = host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX
+            return effective_total_count < total_max
+        available_memory = resources.get("available_memory_mb")
+        disk_free = resources.get("disk_free_gb")
+        if available_memory is not None and disk_free is not None:
+            return host_capacity_allows_create(
+                total_count=effective_total_count,
+                total_max=host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX,
+                available_memory_mb=float(available_memory),
+                memory_reserve_mb=settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB,
+                runtime_memory_mb=DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb,
+                disk_free_gb=float(disk_free),
+                disk_reserve_gb=settings.NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB,
+            )
+        if disk_free is not None and float(disk_free) < settings.NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB:
+            return False
+        if available_memory is not None and float(available_memory) < settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB + DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb:
+            return False
+        total_max = host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX
+        return effective_total_count < total_max
+
+    async def capacity_snapshot(self) -> dict[str, object]:
         """Management-plane capacity data for dashboards and alert thresholds."""
         async with self._session_factory() as session:
             counts = await self._counts(session)
         target = await self._effective_ready_target()
-        return {
+        host_runtime_count: int | None = None
+        try:
+            host_runtime_count = await self._host_runtime_count()
+        except Exception as error:
+            self._trace("sandbox.manager.host_count.unavailable", error=type(error).__name__)
+        snapshot: dict[str, object] = {
             "resource_profile": self._resource_profile_id,
             "ready": counts.ready_count,
             "creating": counts.creating_count,
@@ -344,11 +528,30 @@ class WarmPoolManager:
                 target=target,
                 ready_count=counts.ready_count,
                 creating_count=counts.creating_count,
+                total_count=counts.total_count,
+                total_max=settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX,
             ),
+            "assigned": counts.assigned_count,
+            "total": counts.total_count,
+            "total_max": settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX,
+            "execution_limit": max(1, int(settings.NLP_AGENT_SANDBOX_EXECUTION_CONCURRENCY_MAX)),
             # Report the target actually selected after reading the durable
             # metrics/cooldown state, not the static environment estimate.
             "adaptive_target": target,
+            "target_source": "manual" if self._requested_target is not None else "adaptive",
+            "manual_target_expires_at": self._requested_target_expires_at,
+            "host_total": host_runtime_count,
+            "host_total_max": settings.NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX,
+            "host_available": (
+                max(0, settings.NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX - host_runtime_count)
+                if host_runtime_count is not None else None
+            ),
+            "host_budget_blocked_count": self._host_budget_blocked_count,
         }
+        resources = await self._host_resources()
+        if resources is not None:
+            snapshot["host"] = resources
+        return snapshot
 
     async def claim(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
         self._trace("sandbox.manager.claim.started", lease_id=lease_id)
@@ -392,7 +595,7 @@ class WarmPoolManager:
             environment = await session.get(SandboxEnvironmentModel, lease.environment_id)
             if environment is None or lease.generation != environment.generation:
                 return None
-            claim = await warm_pool_service.claim(session, scope)
+            claim = await warm_pool_service.claim(session, scope, lease_id=lease_id)
             if claim is not None:
                 lease.runtime_instance_id = claim.runtime.id
             return claim
@@ -609,7 +812,12 @@ class WarmPoolManager:
                 pass
         await self._retry_draining_runtimes()
         await self._destroy_unleased_assigned_runtimes()
-        if self._metrics_store is not None:
+        if (
+            self._metrics_store is not None
+            and time.monotonic() - self._last_metrics_sample_at
+            >= max(5, int(settings.NLP_AGENT_SANDBOX_METRICS_SAMPLE_INTERVAL_S))
+        ):
+            self._last_metrics_sample_at = time.monotonic()
             try:
                 from .metrics import record_sandbox_capacity_sample
 
@@ -701,7 +909,8 @@ class WarmPoolManager:
         if not external_id:
             raise RuntimeError("claimed runtime has no container id")
         try:
-            result = await self._docker.execute(external_id, source=source)
+            async with self._execution_semaphore:
+                result = await self._docker.execute(external_id, source=source)
             self._trace(
                 "sandbox.manager.execute.completed",
                 runtime_id=runtime_id,
@@ -862,17 +1071,29 @@ class WarmPoolManager:
     class _Counts:
         ready_count: int
         creating_count: int
+        assigned_count: int
+        total_count: int
 
     async def _counts(self, session: AsyncSession) -> _Counts:
         rows = list(
             (await session.scalars(
                 select(SandboxRuntimeInstanceModel.state).where(
                     SandboxRuntimeInstanceModel.resource_profile_id == self._resource_profile_id,
-                    SandboxRuntimeInstanceModel.state.in_((RuntimeState.READY_UNBOUND, "creating")),
+                    SandboxRuntimeInstanceModel.state.in_(
+                        (
+                            RuntimeState.READY_UNBOUND,
+                            "creating",
+                            RuntimeState.CLAIMING,
+                            RuntimeState.ASSIGNED,
+                            RuntimeState.DRAINING,
+                        )
+                    ),
                 )
             )).all()
         )
         return self._Counts(
             ready_count=sum(state == RuntimeState.READY_UNBOUND for state in rows),
             creating_count=sum(state == "creating" for state in rows),
+            assigned_count=sum(state == RuntimeState.ASSIGNED for state in rows),
+            total_count=len(rows),
         )

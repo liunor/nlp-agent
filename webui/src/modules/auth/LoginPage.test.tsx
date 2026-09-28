@@ -8,8 +8,14 @@ import { AuthProvider } from "@/platform/auth/AuthContext";
 import { LoginPage } from "./LoginPage";
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn(),
-  api: { login: vi.fn() },
+  api: {
+    login: vi.fn(),
+    getCaptcha: vi.fn(),
+    sendEmailCode: vi.fn(),
+    register: vi.fn(),
+  },
 }));
 
 const session: AuthSession = {
@@ -24,6 +30,9 @@ describe("LoginPage", () => {
   beforeEach(() => {
     vi.mocked(ensureAuth).mockRejectedValue(new Error("HTTP 401"));
     vi.mocked(api.login).mockReset();
+    vi.mocked(api.getCaptcha).mockReset();
+    vi.mocked(api.getCaptcha).mockResolvedValue({ captcha_id: "captcha-1", image: "data:image/png;base64,abc" });
+    vi.mocked(api.sendEmailCode).mockReset();
   });
 
   it("logs in with the database account and returns to the protected destination", async () => {
@@ -40,7 +49,7 @@ describe("LoginPage", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.change(screen.getByLabelText("用户名"), { target: { value: "new-user" } });
+    fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "new-user" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "password" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "登录" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "登录" }));
@@ -65,5 +74,40 @@ describe("LoginPage", () => {
 
     await waitFor(() => expect(screen.getByText("用户管理页")).toBeVisible());
     expect(screen.queryByRole("heading", { name: "NLP 学习平台" })).not.toBeInTheDocument();
+  });
+
+  it("shows readable registration captchas and resets sent state when email changes", async () => {
+    vi.mocked(api.getCaptcha)
+      .mockReset()
+      .mockResolvedValueOnce({ captcha_id: "email-1", image: "data:image/png;base64,email1" })
+      .mockResolvedValueOnce({ captcha_id: "reg-1", image: "data:image/png;base64,reg1" })
+      .mockResolvedValueOnce({ captcha_id: "email-2", image: "data:image/png;base64,email2" });
+    let finishSending!: () => void;
+    vi.mocked(api.sendEmailCode).mockImplementation(() => new Promise((resolve) => {
+      finishSending = () => resolve({ message: "sent" });
+    }));
+    render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <AuthProvider><LoginPage /></AuthProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "立即注册" }));
+    const email = screen.getByLabelText("邮箱");
+    fireEvent.change(email, { target: { value: "first@example.com" } });
+    fireEvent.change(await screen.findByPlaceholderText("输入图中字符"), { target: { value: "ABCD" } });
+
+    const captcha = await screen.findByAltText("验证码");
+    expect(captcha).toHaveClass("h-16", "w-40");
+    fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+    expect(email).toBeDisabled();
+    finishSending();
+    await waitFor(() => expect(screen.getByPlaceholderText("6位验证码")).toBeEnabled());
+
+    fireEvent.change(email, { target: { value: "second@example.com" } });
+    expect(screen.getByPlaceholderText("6位验证码")).toBeDisabled();
+    expect(screen.queryByText("注册验证")).not.toBeInTheDocument();
+    await waitFor(() => expect(api.getCaptcha).toHaveBeenCalledTimes(3));
+    expect(screen.getByAltText("验证码")).toHaveAttribute("src", "data:image/png;base64,email2");
   });
 });

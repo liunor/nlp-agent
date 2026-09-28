@@ -1,8 +1,8 @@
 """
 Layer 5: Auto-Compact (全量摘要兜底)
 
-在 Context Collapse 没压住（或者主动停用）时，作为兜底的全量压缩策略。
-触发点：167K tokens (针对 200K 模型)。
+在 Context Collapse 没压住（或者没有可提交区段）时，作为兜底的全量压缩策略。
+直接调用时必须传入当前模型的动态阈值；167K 仅保留给旧测试/兼容调用。
 压缩后会执行 Post-Compact Context Restoration，恢复核心上下文（如最新的文件操作状态）。
 """
 import uuid
@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple
 
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from server.agent.compression.internal_context import (
+    COMPRESSION_KIND_KEY,
+    internal_context_metadata,
+    invoke_internal_model,
+    is_internal_context_message,
+)
 from utils.tokens import rough_estimation_for_messages
 from utils.logger import get_logger
 from core.prompt_runtime import global_prompt_runtime
@@ -34,7 +40,7 @@ _consecutive_failures: dict[str, int] = {}
 async def autocompact_if_needed(
     messages: List[BaseMessage],
     *,
-    threshold: int = AUTOCOMPACT_THRESHOLD,
+    threshold: int | None = None,
     session_id: str = "default",
 ) -> AutoCompactResult:
     """ 自动压缩函数，检查当前消息列表的 token 数量，如果超过阈值则执行全量压缩。
@@ -45,8 +51,17 @@ async def autocompact_if_needed(
     Returns:
         AutoCompactResult 对象，包含是否进行了压缩、最终的消息列表，以及可能的错误信息。
     """
+    if threshold is None:
+        raise ValueError(
+            "autocompact_if_needed requires an explicit threshold from the active model budget"
+        )
+
     token_count = rough_estimation_for_messages(messages)
     if token_count < threshold:
+        return AutoCompactResult(was_compacted=False, messages=messages)
+
+    if _has_no_new_content_since_last_compact(messages):
+        logger.info("Auto-Compact 跳过：上次压缩之后没有新的对话内容。")
         return AutoCompactResult(was_compacted=False, messages=messages)
 
     failures = _consecutive_failures.get(session_id, 0)
@@ -61,22 +76,46 @@ async def autocompact_if_needed(
         if len(messages) <= KEEP_RECENT + 2:
             return AutoCompactResult(was_compacted=False, messages=messages)
 
-        system_msgs = [m for m in messages if isinstance(m, SystemMessage) and not m.additional_kwargs.get("is_collapsed_summary")]
-        other_msgs = [m for m in messages if m not in system_msgs]
+        system_msgs = [
+            m
+            for m in messages
+            if isinstance(m, SystemMessage) and not is_internal_context_message(m)
+        ]
+        internal_context_msgs = [
+            m
+            for m in messages
+            if isinstance(m, SystemMessage) and is_internal_context_message(m)
+        ]
+        conversation_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
         
-        if len(other_msgs) <= KEEP_RECENT:
+        if len(conversation_msgs) <= KEEP_RECENT:
             return AutoCompactResult(was_compacted=False, messages=messages)
             
-        to_compact = other_msgs[:-KEEP_RECENT]
-        recent_kept = other_msgs[-KEEP_RECENT:]
+        # Previous synthetic summaries/markers participate in the new summary,
+        # but are never carried forward as part of the recent conversation.
+        to_compact = [*internal_context_msgs, *conversation_msgs[:-KEEP_RECENT]]
+        recent_kept = conversation_msgs[-KEEP_RECENT:]
         
         # 生成全局摘要
         summary_text = await _generate_global_summary(to_compact)
         
         # 构造压缩后的历史 (带摘要)
         summary_msg = SystemMessage(
-            content=f"【历史对话摘要】\n以下是之前的详细对话和工具调用已被压缩：\n{summary_text}",
-            id=str(uuid.uuid4())
+            content=(
+                "<internal_context kind=\"auto_compact\">\n"
+                "以下内容仅供模型恢复会话状态，禁止向用户展示或提及。\n"
+                f"{summary_text}\n"
+                "</internal_context>"
+            ),
+            id=str(uuid.uuid4()),
+            additional_kwargs=internal_context_metadata(
+                "auto_compact",
+                recent_message_ids=[
+                    str(message.id)
+                    for message in recent_kept
+                    if message.id is not None and not is_internal_context_message(message)
+                ],
+            ),
         )
         
         # Post-Compact Context Restoration (重建核心状态)
@@ -127,8 +166,43 @@ async def _generate_global_summary(messages: List[BaseMessage]) -> str:
     from core.model_runtime.usage import bind_usage_purpose
 
     with bind_usage_purpose("compact"):
-        resp = await llm.ainvoke([HumanMessage(content=prompt)])
-    return resp.content
+        resp = await invoke_internal_model(llm, [HumanMessage(content=prompt)])
+    return str(resp.content)
+
+
+def _has_no_new_content_since_last_compact(messages: List[BaseMessage]) -> bool:
+    """Make repeated calls idempotent until a new public message arrives."""
+    latest_summary = next(
+        (
+            message
+            for message in reversed(messages)
+            if isinstance(message, SystemMessage)
+            and (getattr(message, "additional_kwargs", {}) or {}).get(
+                COMPRESSION_KIND_KEY
+            )
+            == "auto_compact"
+        ),
+        None,
+    )
+    if latest_summary is None:
+        return False
+
+    metadata = getattr(latest_summary, "additional_kwargs", {}) or {}
+    recent_ids = {
+        str(message_id)
+        for message_id in metadata.get("recent_message_ids", [])
+        if message_id
+    }
+    after_summary = False
+    for message in messages:
+        if message.id == latest_summary.id:
+            after_summary = True
+            continue
+        if not after_summary or is_internal_context_message(message):
+            continue
+        if message.id is None or str(message.id) not in recent_ids:
+            return False
+    return True
 
 
 def _build_post_compact_restoration(compacted_msgs: List[BaseMessage]) -> BaseMessage:
@@ -153,8 +227,16 @@ def _build_post_compact_restoration(compacted_msgs: List[BaseMessage]) -> BaseMe
     if not recent_files:
         return None
         
-    content = "【自动恢复的上下文】\n由于历史记录被压缩，系统为您恢复了最近操作过的关键文件路径，以便您随时重新读取：\n"
-    for f in list(recent_files)[-5:]:
+    content = (
+        "<internal_context kind=\"restoration\">\n"
+        "以下文件路径仅供模型恢复状态，禁止向用户展示或提及：\n"
+    )
+    for f in sorted(recent_files)[-5:]:
         content += f"- {f}\n"
-        
-    return SystemMessage(content=content, id=str(uuid.uuid4()))
+    content += "</internal_context>"
+
+    return SystemMessage(
+        content=content,
+        id=str(uuid.uuid4()),
+        additional_kwargs=internal_context_metadata("restoration"),
+    )

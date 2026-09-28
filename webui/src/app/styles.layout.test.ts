@@ -2,7 +2,53 @@ import { readFileSync } from "node:fs";
 
 const stylesheet = readFileSync("src/app/styles.css", "utf8");
 
+describe("message image sizing", () => {
+  it("uses readable proportional thumbnails and wraps multiple images", () => {
+    const imageRules = [...stylesheet.matchAll(/\.message-attachment-image\s*\{([^}]*)\}/g)].map((match) => match[1]);
+    expect(imageRules[0]).toContain("width: clamp(220px, 32vw, 320px)");
+    expect(imageRules[0]).toContain("max-width: 100%");
+    expect(imageRules[0]).toContain("max-height: 240px");
+    expect(imageRules[0]).toContain("object-fit: contain");
+    expect(imageRules[1]).toContain("width: min(72vw, 280px)");
+    expect(stylesheet.match(/\.message-attachments\s*\{([^}]*)\}/)?.[1]).toContain("flex-wrap: wrap");
+  });
+
+  it("bounds original-image previews to the viewport without cropping", () => {
+    const previewRule = stylesheet.match(/\.image-preview-image\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(previewRule).toContain("max-width: calc(100vw - 48px)");
+    expect(previewRule).toContain("max-height: calc(100dvh - 48px)");
+    expect(previewRule).toContain("object-fit: contain");
+  });
+});
+
 describe("sandbox titlebar layout", () => {
+  it("keeps long student release notes in a borderless fixed-height scroller", () => {
+    const releaseRule = [...stylesheet.matchAll(/\.release-notes-list\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";
+
+    expect(releaseRule).toContain("max-height: 300px");
+    expect(releaseRule).toContain("overflow-y: auto");
+    expect(releaseRule).toContain("border: 0");
+    expect(releaseRule).toContain("background: transparent");
+  });
+
+  it("keeps the developer control plane white and full-width", () => {
+    const compact = (value: string) => value.replace(/\s+/g, "");
+    const matchingRule = (pattern: RegExp, fragment: string) => [...stylesheet.matchAll(pattern)]
+      .map((match) => compact(match[1]))
+      .find((rule) => rule.includes(fragment)) ?? "";
+    const shellRule = matchingRule(/\.developer-shell\s*\{([^}]*)\}/g, "background:#fafafa");
+    const contentRule = matchingRule(/\.developer-content\s*\{([^}]*)\}/g, "width:100%");
+    const pageRule = matchingRule(/\.developer-page-grid\s*\{([^}]*)\}/g, "width:100%");
+
+    expect(shellRule).toContain("--bg:#fff");
+    expect(shellRule).toContain("--dev-panel:#fff");
+    expect(shellRule).toContain("color:#27272a");
+    expect(contentRule).toContain("width:100%");
+    expect(contentRule).toContain("max-width:none");
+    expect(contentRule).toContain("box-sizing:border-box");
+    expect(pageRule).toContain("width:100%");
+  });
+
   it("fills the dock and clips trailing actions instead of letting them overlap the file tab", () => {
     const workbenchRule = stylesheet.match(/\.sandbox-workbench\s*\{([^}]*)\}/)?.[1] ?? "";
     const titlebarRule = stylesheet.match(/\.sandbox-workbench-titlebar\s*\{([^}]*)\}/)?.[1] ?? "";
@@ -22,12 +68,30 @@ describe("sandbox titlebar layout", () => {
     expect(gutterRule).toContain("padding:16px 8px 16px 0");
   });
 
+  it("keeps the learning-topic trigger behind an expanded tool workbench", () => {
+    const rule = stylesheet.match(/\.student-app-shell\.tool-dock-expanded \.thread-shell \.learning-context-menu\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(rule).toContain("visibility:hidden");
+    expect(rule).toContain("pointer-events:none");
+  });
+
   it("reserves a complete safe area for the tool picker trigger beside fixed header actions", () => {
     const tabRules = [...stylesheet.matchAll(/\.tool-dock-tabs\s*\{([^}]*)\}/g)].map((match) => match[1]);
 
     expect(tabRules[0]).toContain("padding: 0 124px 0 8px");
     expect(tabRules.slice(1)).toHaveLength(2);
     expect(tabRules.slice(1).every((rule) => rule.includes("padding-right: 124px"))).toBe(true);
+  });
+
+  it("keeps the dock resize handle and add-tool picker above the learning panel", () => {
+    const handleRule = stylesheet.match(/\.tool-dock-resize-handle\s*\{([^}]*)\}/)?.[1] ?? "";
+    const dockLearningRule = stylesheet.match(/\.tool-dock \.learning-panel\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    // The handle stays fully inside the dock so overflow:hidden no longer clips it to ~4px.
+    expect(handleRule).toContain("left: 0");
+    expect(handleRule).not.toContain("left: -4px");
+    // The panel must not leak its floating-rail z-index above the dock chrome.
+    expect(dockLearningRule).toContain("z-index: auto");
   });
 
   it("lets a narrow knowledge-book toolbar scroll instead of overlapping its controls", () => {
@@ -69,6 +133,13 @@ describe("sandbox titlebar layout", () => {
     expect(bookContentRule).toContain("overflow: hidden");
     expect(bookLayoutRule).toContain("height: 100%");
     expect(bookLayoutRule).toContain("overflow: hidden");
+  });
+
+  it("keeps the teacher book directory collapsed after desktop sizing rules run", () => {
+    const collapsedRules = [...stylesheet.matchAll(/\.teacher-content-book \.teacher-book-layout\.directory-collapsed\s*\{([^}]*)\}/g)].map((match) => match[1]);
+    const desktopCollapsedRule = collapsedRules.at(-1) ?? "";
+
+    expect(desktopCollapsedRule).toContain("grid-template-columns: 46px minmax(0, 1fr)");
   });
 
   it("allocates the teacher book in the remaining viewport row so the editor reaches the bottom", () => {
@@ -158,5 +229,126 @@ describe("sandbox titlebar layout", () => {
     const feedbackMessagesRule = [...stylesheet.matchAll(/\.developer-feedback-messages\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";
 
     expect(feedbackMessagesRule).toContain("align-content: start");
+  });
+
+  it("keeps the quota daily and weekly grids at the same seven-row height", () => {
+    const activityGridRule = [...stylesheet.matchAll(/\.quota-activity-grid\s*\{([^}]*)\}/g)].at(-1)?.[1] ?? "";
+    const weeklyColumnRule = stylesheet.match(/\.quota-activity-week-column\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(activityGridRule).toContain("grid-template-rows: repeat(7, 14px)");
+    expect(activityGridRule).toContain("min-height: 122px");
+    expect(weeklyColumnRule).toContain("height: 122px");
+  });
+
+  it("lets developer quota management fill the control-plane workspace with compact controls", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) =>
+      [...stylesheet.matchAll(pattern)].map((match) => match[1]).find((rule) => rule.includes(fragment)) ?? "";
+    const pageRule = matchingRule(/\.developer-quota-page\s*\{([^}]*)\}/g, "width:100%");
+    const tabsRule = matchingRule(/\.developer-quota-page \.quota-management-tabs\s*\{([^}]*)\}/g, "width:max-content");
+    const tabButtonRule = matchingRule(/\.developer-quota-page \.quota-management-tabs button\s*\{([^}]*)\}/g, "flex:0 0 auto");
+    const panelRule = matchingRule(/\.developer-quota-page \.quota-panel\s*\{([^}]*)\}/g, "margin-bottom:0");
+
+    expect(pageRule).toContain("width:100%");
+    expect(pageRule).toContain("max-width:none");
+    expect(pageRule).toContain("min-height:100%");
+    expect(pageRule).toContain("box-sizing:border-box");
+    expect(tabsRule).toContain("width:max-content");
+    expect(tabsRule).toContain("max-width:100%");
+    expect(tabButtonRule).toContain("flex:0 0 auto");
+    expect(tabButtonRule).toContain("min-height:34px");
+    expect(panelRule).toContain("margin-bottom:0");
+  });
+
+  it("keeps developer quota collections fixed with internal scrolling", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) =>
+      [...stylesheet.matchAll(pattern)].map((match) => match[1]).find((rule) => rule.includes(fragment)) ?? "";
+    const pageRule = matchingRule(/\.developer-quota-page\s*\{([^}]*)\}/g, "overflow:hidden");
+    const controlRule = matchingRule(/\.developer-quota-page \.quota-control-grid\s*\{([^}]*)\}/g, "grid-template-rows:repeat(2,minmax(0,1fr))");
+    const panelRule = matchingRule(/\.developer-quota-page \.quota-control-grid \.quota-panel\s*\{([^}]*)\}/g, "display:flex");
+    const tableRule = matchingRule(/\.developer-quota-page \.quota-control-grid \.quota-panel \.quota-table-wrap\s*\{([^}]*)\}/g, "overflow:auto");
+    const operationsRule = matchingRule(/\.developer-quota-page \.quota-operations-grid\s*\{([^}]*)\}/g, "grid-template-rows:minmax(0,auto) minmax(0,1fr)");
+    const recoveryRule = matchingRule(/\.developer-quota-page \.quota-recovery-grid\s*\{([^}]*)\}/g, "overflow:hidden");
+
+    expect(pageRule).toContain("overflow:hidden");
+    expect(controlRule).toContain("grid-template-rows:repeat(2,minmax(0,1fr))");
+    expect(controlRule).toContain("min-height:0");
+    expect(panelRule).toContain("display:flex");
+    expect(panelRule).toContain("flex-direction:column");
+    expect(tableRule).toContain("overflow:auto");
+    expect(operationsRule).toContain("min-height:0");
+    expect(recoveryRule).toContain("flex:1");
+  });
+
+  it("keeps developer quota subroutes in one fixed panel with internal collection scrolling", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) =>
+      [...stylesheet.matchAll(pattern)].map((match) => match[1]).find((rule) => rule.includes(fragment)) ?? "";
+    const subrouteRule = matchingRule(/\.developer-quota-page \.quota-subroute-tabs\s*\{([^}]*)\}/g, "overflow-x:auto");
+    const routeRule = matchingRule(/\.developer-quota-page > \.quota-route-panel\s*\{([^}]*)\}/g, "overflow:hidden");
+    const contentRule = matchingRule(/\.developer-quota-page \.quota-route-panel > \.quota-route-content\s*\{([^}]*)\}/g, "flex-direction:column");
+    const tableRule = matchingRule(/\.developer-quota-page \.quota-route-content \.quota-table-wrap\s*\{([^}]*)\}/g, "overflow:auto");
+
+    expect(subrouteRule).toContain("flex:0 0 auto");
+    expect(routeRule).toContain("min-height:0");
+    expect(routeRule).toContain("flex:1 1 auto");
+    expect(contentRule).toContain("min-height:0");
+    expect(contentRule).toContain("overflow:hidden");
+    expect(tableRule).toContain("min-height:0");
+    expect(tableRule).toContain("flex:1 1 auto");
+  });
+
+  it("keeps user management fixed with an internal user table scroller", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) => [...stylesheet.matchAll(pattern)]
+      .map((match) => match[1])
+      .find((rule) => rule.includes(fragment)) ?? "";
+    const pageRule = matchingRule(/\.user-manage-page\s*\{([^}]*)\}/g, "height: 100%");
+    const tableRule = matchingRule(/\.user-table-card\s*\{([^}]*)\}/g, "flex: 1 1 auto");
+    const scrollRule = matchingRule(/\.user-table-scroll\s*\{([^}]*)\}/g, "overflow: auto");
+
+    expect(pageRule).toContain("height: 100%");
+    expect(pageRule).toContain("min-height: 0");
+    expect(pageRule).toContain("overflow: hidden");
+    expect(tableRule).toContain("min-height: 0");
+    expect(tableRule).toContain("flex: 1 1 auto");
+    expect(tableRule).toContain("overflow: hidden");
+    expect(scrollRule).toContain("min-height: 0");
+    expect(scrollRule).toContain("overflow: auto");
+  });
+
+  it("keeps the role permission workbench fixed with scrolling only in the permission catalog", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) => [...stylesheet.matchAll(pattern)]
+      .map((match) => match[1])
+      .find((rule) => rule.includes(fragment)) ?? "";
+    const shellRule = matchingRule(/\.developer-shell:has\(\.developer-role-page\)\s*\{([^}]*)\}/g, "height: 100%");
+    const mainRule = matchingRule(/\.developer-shell:has\(\.developer-role-page\) \.developer-main\s*\{([^}]*)\}/g, "height: 100%");
+    const contentRule = matchingRule(/\.developer-content:has\(\.developer-role-page\)\s*\{([^}]*)\}/g, "height: 100%");
+    const pageRule = matchingRule(/\.developer-role-page\s*\{([^}]*)\}/g, "height: 100%");
+    const layoutRule = matchingRule(/\.developer-role-layout\s*\{([^}]*)\}/g, "min-height: 0");
+    const permissionScrollRule = matchingRule(/\.developer-role-permission-scroll\s*\{([^}]*)\}/g, "overflow: auto");
+
+    expect(shellRule).toContain("height: 100%");
+    expect(shellRule).toContain("overflow: hidden");
+    expect(stylesheet).toContain(".developer-eyebrow,.user-eyebrow { display: none; }");
+    expect(mainRule).toContain("height: 100%");
+    expect(mainRule).toContain("min-height: 0");
+    expect(mainRule).toContain("overflow: hidden");
+    expect(contentRule).toContain("height: 100%");
+    expect(contentRule).toContain("overflow: hidden");
+    expect(pageRule).toContain("height: 100%");
+    expect(pageRule).toContain("overflow: hidden");
+    expect(layoutRule).toContain("min-height: 0");
+    expect(permissionScrollRule).toContain("overflow: auto");
+  });
+
+  it("keeps settings content inside the dialog with an internal scroller", () => {
+    const matchingRule = (pattern: RegExp, fragment: string) => [...stylesheet.matchAll(pattern)]
+      .map((match) => match[1])
+      .find((rule) => rule.includes(fragment)) ?? "";
+    const contentRule = matchingRule(/\.settings-content\s*\{([^}]*)\}/g, "min-height: 0");
+    const scrollRule = matchingRule(/\.settings-scroll\s*\{([^}]*)\}/g, "flex: 1 1 auto");
+
+    expect(contentRule).toContain("min-height: 0");
+    expect(scrollRule).toContain("min-height: 0");
+    expect(scrollRule).toContain("flex: 1 1 auto");
+    expect(scrollRule).toContain("overflow-y: auto");
   });
 });

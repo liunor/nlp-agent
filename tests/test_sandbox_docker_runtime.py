@@ -1,9 +1,43 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+def test_docker_runtime_reports_host_headroom_for_capacity_guard(monkeypatch) -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+
+    monkeypatch.setattr("server.sandbox.docker_runtime._available_memory_mb", lambda: 4096.0)
+    monkeypatch.setattr(
+        "server.sandbox.docker_runtime.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=20 * 1024**3),
+    )
+    adapter = DockerRuntimeAdapter(
+        DockerRuntimeConfig(image="ghcr.io/example/runtime@sha256:" + "a" * 64)
+    )
+
+    assert adapter.host_resources() == {"available_memory_mb": 4096.0, "disk_free_gb": 20.0}
+
+
+def test_docker_runtime_uses_linux_memavailable_for_capacity_guard(monkeypatch) -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+
+    meminfo = "MemFree:        242428 kB\nMemAvailable:  4289836 kB\n"
+
+    def fake_open(_path, _mode="r", *, encoding=None):
+        assert encoding == "ascii"
+        return StringIO(meminfo)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    adapter = DockerRuntimeAdapter(
+        DockerRuntimeConfig(image="ghcr.io/example/runtime@sha256:" + "b" * 64)
+    )
+
+    assert adapter.host_resources()["available_memory_mb"] == pytest.approx(4289836 / 1024)
 
 
 def test_docker_runtime_command_has_no_host_or_network_escape_hatches() -> None:
@@ -23,7 +57,9 @@ def test_docker_runtime_command_has_no_host_or_network_escape_hatches() -> None:
     assert "--volume" not in command
     assert "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m" in command
     assert command[-1] == "registry.example/nova@sha256:" + "a" * 64
-    assert "nova.sandbox.managed=true" in command
+    assert "nova.sandbox.managed=local" in command
+    assert "nova.sandbox.managed=true" not in command
+    assert "nova.sandbox.namespace=local" in command
 
 
 def test_docker_runtime_rejects_mutable_image_references() -> None:
@@ -145,7 +181,84 @@ def test_managed_runtime_listing_preserves_full_container_ids() -> None:
 
     ids, command = asyncio.run(exercise())
     assert ids == {"full-container-id"}
-    assert command == ("docker", "ps", "--all", "--no-trunc", "--quiet", "--filter", "label=nova.sandbox.managed=true")
+    assert command == (
+        "docker", "ps", "--all", "--no-trunc", "--quiet",
+        "--filter", "label=nova.sandbox.managed=local",
+        "--filter", "label=nova.sandbox.namespace=local",
+    )
+
+
+def test_managers_keep_foreign_namespace_runtimes_out_of_reconcile_listing() -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+
+    test_adapter = DockerRuntimeAdapter(
+        DockerRuntimeConfig(image="registry.example/nova@sha256:" + "a" * 64, namespace="test")
+    )
+    production_adapter = DockerRuntimeAdapter(
+        DockerRuntimeConfig(image="registry.example/nova@sha256:" + "a" * 64, namespace="prod")
+    )
+
+    async def exercise() -> tuple[set[str], set[str], list[tuple[object, ...]]]:
+        calls: list[tuple[object, ...]] = []
+
+        def spawn(*command: object, **_kwargs: object) -> AsyncMock:
+            calls.append(command)
+            process = AsyncMock()
+            process.returncode = 0
+            namespace = next(value for value in command if isinstance(value, str) and value.startswith("label=nova.sandbox.namespace="))
+            process.communicate.return_value = (
+                (b"test-runtime\n" if namespace.endswith("=test") else b"prod-runtime\n"),
+                b"",
+            )
+            return process
+
+        with patch("server.sandbox.docker_runtime.asyncio.create_subprocess_exec", side_effect=spawn):
+            test_ids, production_ids = await asyncio.gather(
+                test_adapter.managed_runtime_ids(), production_adapter.managed_runtime_ids()
+            )
+        return test_ids, production_ids, calls
+
+    test_ids, production_ids, calls = asyncio.run(exercise())
+    assert test_ids == {"test-runtime"}
+    assert production_ids == {"prod-runtime"}
+    assert {command[-1] for command in calls} == {
+        "label=nova.sandbox.namespace=test",
+        "label=nova.sandbox.namespace=prod",
+    }
+
+
+def test_managed_runtime_count_includes_all_namespaces_for_host_budget() -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+
+    adapter = DockerRuntimeAdapter(
+        DockerRuntimeConfig(image="registry.example/nova@sha256:" + "6" * 64, namespace="test")
+    )
+
+    async def exercise() -> tuple[int, tuple[object, ...]]:
+        with patch("server.sandbox.docker_runtime.asyncio.create_subprocess_exec") as spawn:
+            process = AsyncMock()
+            process.returncode = 0
+            process.communicate.return_value = (b"test-id\nprod-id\n", b"")
+            spawn.return_value = process
+            count = await adapter.host_managed_runtime_count()
+            return count, spawn.call_args.args
+
+    count, command = asyncio.run(exercise())
+    assert count == 2
+    assert command == (
+        "docker", "ps", "--all", "--no-trunc", "--quiet",
+        "--filter", "label=nova.sandbox.managed",
+    )
+
+
+def test_namespace_must_be_a_lowercase_docker_label_value() -> None:
+    from server.sandbox.docker_runtime import DockerRuntimeConfig
+
+    with pytest.raises(ValueError, match="namespace"):
+        DockerRuntimeConfig(
+            image="registry.example/nova@sha256:" + "7" * 64,
+            namespace="Production/Blue",
+        )
 
 
 def test_scratch_timeout_force_removes_the_named_container() -> None:

@@ -90,6 +90,40 @@ async def test_context_manager_keeps_staged_spans_per_session(tmp_path: Path):
     assert len(first_store.staged) > len(second_store.staged)
 
 
+@pytest.mark.asyncio
+async def test_context_manager_isolates_shared_session_id_between_principals_and_workers(
+    tmp_path: Path,
+):
+    repository = LocalContextStateRepository(tmp_path)
+    manager = ContextManager(repository)
+    budget = build_context_budget(context_window=50_000, output_reserve=2_000)
+    messages = [
+        HumanMessage(content=f"turn {index}", id=f"h{index}")
+        if index % 2 == 0
+        else AIMessage(content=f"reply {index}", id=f"a{index}")
+        for index in range(24)
+    ]
+    alice = SessionContext(
+        session_id="shared-conversation",
+        user_id="alice",
+        workspace_id="w1",
+        channel="web",
+    )
+    bob = alice.model_copy(update={"user_id": "bob"})
+    alice_worker = alice.model_copy(
+        update={"channel": "worker", "agent_id": "worker-1"}
+    )
+
+    await manager.prepare(alice, messages, budget)
+    await manager.prepare(bob, messages, budget)
+    await manager.prepare(alice_worker, messages, budget)
+
+    stores = [manager._stores[context.storage_key] for context in (alice, bob, alice_worker)]
+    assert len({id(store) for store in stores}) == 3
+    assert len({repository.path_for(context) for context in (alice, bob, alice_worker)}) == 3
+    assert all(store.staged for store in stores)
+
+
 def test_hard_trim_preserves_complete_tool_call_turn():
     messages = [
         SystemMessage(content="policy"),

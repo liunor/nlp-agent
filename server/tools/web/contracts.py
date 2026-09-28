@@ -53,6 +53,7 @@ class WebFetchResponse(BaseModel):
     extractor: Literal["html", "text", "json"] = "text"
     text: str = ""
     truncated: bool = False
+    cache_hit: bool = False
     untrusted: bool = True
     citation: Citation
     warnings: list[str] = Field(default_factory=list)

@@ -23,6 +23,24 @@ def test_capacity_snapshot_reports_pool_deficit() -> None:
     }
 
 
+def test_capacity_alerts_report_waiting_leases_even_when_pool_is_at_max() -> None:
+    from server.sandbox.developer import capacity_alerts
+
+    alerts = capacity_alerts(
+        deficit=0,
+        failed_runtime_count=0,
+        unassigned_count=2,
+    )
+
+    assert alerts == [
+        {
+            "code": "lease_waiting",
+            "severity": "warning",
+            "message": "2 个在线租约正在等待沙箱运行时。",
+        }
+    ]
+
+
 def test_execution_latency_has_dashboard_percentiles() -> None:
     from server.sandbox.developer import summarize_execution_latency
 

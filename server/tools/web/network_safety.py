@@ -109,6 +109,27 @@ def is_blocked_address(
     return False
 
 
+def check_literal_host(
+    parsed: ParsedUrl,
+    *,
+    blocked_cidrs: tuple[str, ...] | list[str] = DEFAULT_BLOCKED_CIDRS,
+) -> None:
+    """Reject a literal restricted IP without relying on DNS resolution."""
+
+    try:
+        address = _to_ipaddress(parsed.host.split("%", 1)[0])
+    except ValueError:
+        return
+    if address.is_loopback or address.is_link_local or address.is_multicast:
+        raise WebAccessError(
+            "blocked_address", f"主机 {parsed.host!r} 是受限地址"
+        )
+    if is_blocked_address(address, blocked_cidrs):
+        raise WebAccessError(
+            "blocked_address", f"主机 {parsed.host!r} 是内网/保留地址"
+        )
+
+
 async def resolve_addresses(host: str, port: int) -> list[str]:
     try:
         records = await asyncio.to_thread(
@@ -132,6 +153,7 @@ async def resolve_and_check(
     blocked_cidrs: tuple[str, ...] | list[str] = DEFAULT_BLOCKED_CIDRS,
     trusted_hosts: frozenset[str] | set[str] = frozenset(),
 ) -> list[str]:
+    check_literal_host(parsed, blocked_cidrs=blocked_cidrs)
     port = parsed.port if parsed.port is not None else _default_port(parsed.scheme)
     resolved = await resolve_addresses(parsed.host, port)
     if parsed.host.lower() in {item.lower() for item in trusted_hosts}:

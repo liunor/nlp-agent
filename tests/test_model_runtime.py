@@ -1,9 +1,12 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
+import core.coordinator_runtime as coordinator_runtime_module
+import core.model_runtime.runtime as model_runtime_module
 from core.model_runtime.adapters.deepseek import DeepSeekChatModel
 from core.model_runtime.adapters.qwen import QwenAdapter
 from core.model_runtime.contracts import (
@@ -28,6 +31,9 @@ from core.model_runtime.runtime import (
     StreamInterruptedError,
     classify_model_error,
 )
+from core.observability.context import TelemetryContext, bind_telemetry_context
+from core.observability.runtime import TelemetryRuntime
+from core.observability.models import SpanStatus
 
 
 def preset(*, attempts=1):
@@ -97,6 +103,125 @@ class FakeStreamModel(FakeModel):
             if isinstance(value, BaseException):
                 raise value
             yield value
+
+
+class DelayedStreamModel(FakeStreamModel):
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        yield AIMessageChunk(content="first")
+        await asyncio.sleep(0.08)
+        yield AIMessageChunk(content="second")
+
+
+class DelayedFirstStreamModel(FakeStreamModel):
+    def __init__(self, delay_s):
+        super().__init__([])
+        self.delay_s = delay_s
+
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        await asyncio.sleep(self.delay_s)
+        yield AIMessageChunk(content="first")
+        yield AIMessageChunk(content="second")
+
+
+class FinishThenHangModel(FakeStreamModel):
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        yield AIMessageChunk(content="partial")
+        yield AIMessageChunk(
+            content="", response_metadata={"finish_reason": "stop"}
+        )
+        await asyncio.Event().wait()
+
+
+class FinishThenCancellationHangsModel(FakeStreamModel):
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        yield AIMessageChunk(content="partial")
+        yield AIMessageChunk(
+            content="", response_metadata={"finish_reason": "stop"}
+        )
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # Simulate a provider transport that swallows cancellation while
+            # closing its response stream.
+            await asyncio.Event().wait()
+
+
+class FinishThenUsageModel(FakeStreamModel):
+    async def astream(self, _input, config=None, **_kwargs):
+        self.calls += 1
+        yield AIMessageChunk(content="partial")
+        yield AIMessageChunk(
+            content="", response_metadata={"finish_reason": "stop"}
+        )
+        yield AIMessageChunk(
+            content="",
+            usage_metadata={
+                "input_tokens": 3,
+                "output_tokens": 4,
+                "total_tokens": 7,
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_span_ttft_is_recorded_when_the_first_chunk_arrives(tmp_path, monkeypatch):
+    telemetry = TelemetryRuntime(tmp_path / "telemetry.sqlite3", flush_interval_s=0.01)
+    monkeypatch.setattr(model_runtime_module, "global_telemetry", telemetry)
+    monkeypatch.setattr(coordinator_runtime_module, "global_telemetry", telemetry)
+    context = TelemetryContext.create(
+        session_id="ttft-session", turn_id="ttft-turn", workspace_id="workspace-1"
+    )
+    model = ResilientChatModel([candidate("stream", DelayedStreamModel([]))])
+
+    telemetry.start_trace(context)
+    with bind_telemetry_context(context):
+        await coordinator_runtime_module.invoke_model_with_telemetry(
+            model, [HumanMessage(content="hello")], {}, name="coordinator.model"
+        )
+    telemetry.complete_trace(context, status=SpanStatus.OK)
+    await telemetry.flush()
+
+    trace = telemetry.repository.list_traces(limit=1)[0]
+    assert trace["duration_ms"] >= 70
+    spans = telemetry.repository.trace_detail(trace["trace_id"])["spans"]
+    model_span = next(span for span in spans if span["name"] == "model.request")
+    assert trace["ttft_ms"] is None
+    assert model_span["attributes"]["ttft_ms"] < model_span["duration_ms"] - 40
+    await telemetry.close()
+
+
+@pytest.mark.asyncio
+async def test_trace_ttft_waits_for_the_public_gateway_boundary(tmp_path, monkeypatch):
+    telemetry = TelemetryRuntime(tmp_path / "telemetry.sqlite3", flush_interval_s=0.01)
+    monkeypatch.setattr(model_runtime_module, "global_telemetry", telemetry)
+    monkeypatch.setattr(coordinator_runtime_module, "global_telemetry", telemetry)
+    context = TelemetryContext.create(
+        session_id="ttft-worker-session", turn_id="ttft-worker-turn", workspace_id="workspace-1"
+    )
+    worker_model = ResilientChatModel(
+        [candidate("worker", FakeStreamModel([AIMessageChunk(content="worker")]))]
+    )
+    coordinator_model = ResilientChatModel(
+        [candidate("coordinator", DelayedFirstStreamModel(0.08))]
+    )
+
+    telemetry.start_trace(context)
+    with bind_telemetry_context(context.child(worker_id="worker-first")):
+        await worker_model.ainvoke([HumanMessage(content="worker")], config={})
+    with bind_telemetry_context(context):
+        await coordinator_runtime_module.invoke_model_with_telemetry(
+            coordinator_model, [HumanMessage(content="coordinator")], {}, name="coordinator.model"
+        )
+    telemetry.complete_trace(context, status=SpanStatus.OK)
+    await telemetry.flush()
+
+    trace = telemetry.repository.list_traces(limit=1)[0]
+    assert trace["ttft_ms"] is None
+    await telemetry.close()
 
 
 def test_typed_config_rejects_incapable_fallback():
@@ -367,7 +492,6 @@ def test_qwen_adapter_adds_search_only_for_an_opted_in_preset():
     payload = model._get_request_payload([HumanMessage(content="今天有什么新闻？")])
     assert payload["extra_body"] == {
         "enable_thinking": False,
-        "preserve_thinking": False,
         "enable_search": True,
         "search_options": {
             "forced_search": True,
@@ -388,6 +512,28 @@ def test_deepseek_usage_normalization_includes_kv_cache():
     assert usage["input_token_details"]["cache_miss"] == 25
 
 
+def test_kimi_usage_normalization_extracts_cached_tokens():
+    usage = normalize_usage({
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cached_tokens": 75,
+    })
+    assert usage["input_token_details"]["cache_read"] == 75
+    assert usage["prompt_cache_hit_tokens"] == 75
+
+
+def test_glm_usage_normalization_extracts_nested_cached_tokens():
+    usage = normalize_usage({
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "prompt_tokens_details": {"cached_tokens": 60},
+    })
+    assert usage["input_token_details"]["cache_read"] == 60
+    assert usage["prompt_cache_hit_tokens"] == 60
+
+
 def test_deepseek_replays_reasoning_only_for_tool_call_messages():
     model = DeepSeekChatModel(
         model="deepseek-v4-pro", api_base="https://api.deepseek.com",
@@ -403,6 +549,47 @@ def test_deepseek_replays_reasoning_only_for_tool_call_messages():
     ])
     assert "reasoning_content" not in payload["messages"][1]
     assert payload["messages"][3]["reasoning_content"] == "needed"
+
+
+def test_deepseek_replays_all_reasoning_when_tools_in_payload():
+    model = DeepSeekChatModel(
+        model="deepseek-v4-pro", api_base="https://api.deepseek.com",
+        api_key="test", max_retries=0,
+    )
+    plain = AIMessage(
+        content="answer", additional_kwargs={"reasoning_content": "first-turn"}
+    )
+    tool = AIMessage(
+        content="", additional_kwargs={"reasoning_content": "tool-turn"},
+        tool_calls=[{
+            "id": "call-1", "name": "lookup", "args": {"q": "x"},
+            "type": "tool_call",
+        }],
+    )
+    payload = model._get_request_payload(
+        [
+            HumanMessage(content="one"),
+            plain,
+            HumanMessage(content="two"),
+            tool,
+            ToolMessage(content="result", tool_call_id="call-1"),
+        ],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a value",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            },
+        }],
+    )
+
+    assert payload["messages"][1]["reasoning_content"] == "first-turn"
+    assert payload["messages"][3]["reasoning_content"] == "tool-turn"
 
 
 @pytest.mark.asyncio
@@ -452,6 +639,91 @@ async def test_stream_never_replays_after_visible_delta():
     with pytest.raises(StreamInterruptedError):
         await anext(stream)
     assert fallback.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_stream_failure_retries_before_answer_output():
+    class ReasoningThenDisconnect:
+        def __init__(self):
+            self.calls = 0
+
+        async def astream(self, _input, config=None, **_kwargs):
+            del config
+            self.calls += 1
+            if self.calls == 1:
+                yield AIMessageChunk(
+                    content="",
+                    additional_kwargs={"reasoning_content": "partial reasoning"},
+                )
+                raise ConnectionResetError("connection lost mid-stream")
+            yield AIMessageChunk(content="complete answer")
+
+    model = ReasoningThenDisconnect()
+    runtime = ResilientChatModel([candidate("primary", model, attempts=2)])
+
+    chunks = [
+        chunk async for chunk in runtime.astream([HumanMessage(content="hello")])
+    ]
+
+    assert model.calls == 2
+    assert chunks[0].additional_kwargs["reasoning_content"] == "partial reasoning"
+    assert chunks[-1].content == "complete answer"
+
+
+@pytest.mark.asyncio
+async def test_stream_ends_when_provider_emits_finish_reason(monkeypatch):
+    monkeypatch.setattr(
+        model_runtime_module,
+        "global_telemetry",
+        SimpleNamespace(event=lambda *_args, **_kwargs: None),
+    )
+    runtime = ResilientChatModel(
+        [candidate("finish", FinishThenHangModel([]))]
+    )
+
+    async def consume():
+        return [chunk async for chunk in runtime.astream([HumanMessage(content="hello")])]
+
+    chunks = await asyncio.wait_for(consume(), timeout=1.5)
+    assert [chunk.content for chunk in chunks] == ["partial", ""]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_name", ["qwen", "deepseek", "kimi", "glm"])
+async def test_stream_finish_drain_is_bounded_for_all_provider_families(provider_name):
+    runtime = ResilientChatModel(
+        [
+            ModelCandidate(
+                preset_name=provider_name,
+                provider_name=provider_name,
+                model_name=provider_name,
+                definition=definition(provider_name),
+                preset=preset(),
+                model=FinishThenCancellationHangsModel([]),
+            )
+        ]
+    )
+
+    async def consume():
+        return [chunk async for chunk in runtime.astream([HumanMessage(content="hello")])]
+
+    chunks = await asyncio.wait_for(consume(), timeout=0.75)
+    assert [chunk.content for chunk in chunks] == ["partial", ""]
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_usage_tail_after_finish_reason():
+    runtime = ResilientChatModel(
+        [candidate("finish-usage", FinishThenUsageModel([]))]
+    )
+
+    response = await runtime.ainvoke([HumanMessage(content="hello")])
+
+    assert response.content == "partial"
+    assert response.usage_metadata is not None
+    assert response.usage_metadata["input_tokens"] == 3
+    assert response.usage_metadata["output_tokens"] == 4
+    assert response.usage_metadata["total_tokens"] == 7
 
 
 def test_bind_tools_applies_to_every_fallback_candidate():

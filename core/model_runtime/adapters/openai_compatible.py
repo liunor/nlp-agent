@@ -16,6 +16,7 @@ from langchain_core.messages import (
 from langchain_openai import ChatOpenAI
 from typing_extensions import override
 
+from core.model_runtime.network import model_http_client_kwargs
 from core.model_runtime.contracts import (
     ModelDefinition,
     ModelPresetConfig,
@@ -78,20 +79,24 @@ class OpenAICompatibleChatModel(ChatOpenAI):
         )
         if result is None:
             return None
-        response_id = chunk.get("id") or chunk.get("chunk", {}).get("id")
-        if response_id:
-            result.message.response_metadata["provider_response_id"] = response_id
-            result.message.additional_kwargs["provider_response_id"] = response_id
         choices = chunk.get("choices") or chunk.get("chunk", {}).get("choices") or []
         if choices:
             reasoning = (choices[0].get("delta") or {}).get("reasoning_content")
             if reasoning:
                 result.message.additional_kwargs["reasoning_content"] = reasoning
         if chunk.get("usage"):
+            # Compatible providers commonly repeat the response id on every
+            # streamed chunk. Keep it only on the terminal usage chunk so
+            # LangChain's chunk merge cannot concatenate it repeatedly.
+            response_id = chunk.get("id") or chunk.get("chunk", {}).get("id")
+            if response_id:
+                result.message.response_metadata["provider_response_id"] = response_id
+                result.message.additional_kwargs["provider_response_id"] = response_id
             raw_usage = chunk["usage"]
-            usage = normalize_usage(raw_usage)
+            usage = normalize_usage(raw_usage, default_semantics="cumulative")
             result.message.additional_kwargs["provider_usage"] = usage
             result.message.additional_kwargs["provider_usage_raw"] = raw_usage
+            result.message.additional_kwargs["provider_usage_semantics"] = usage["usage_semantics"]
             if isinstance(result.message, AIMessageChunk):
                 result.message.usage_metadata = self._usage_metadata(chunk["usage"])
         return result
@@ -122,6 +127,7 @@ class OpenAICompatibleAdapter:
             "max_retries": 0,
             "default_headers": provider.default_headers or None,
         }
+        kwargs.update(model_http_client_kwargs(provider.base_url, timeout))
         if preset.generation.temperature is not None:
             kwargs["temperature"] = preset.generation.temperature
         if preset.generation.top_p is not None:

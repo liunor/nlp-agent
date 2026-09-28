@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/sandbox-phase3-develop
+      - feature/sandbox-capacity-phase1
   pull_request:
   workflow_dispatch:
 
@@ -15,7 +16,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      sandbox: ${{ github.event_name != 'pull_request' || steps.filter.outputs.sandbox == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            sandbox:
+              - 'configs/sandbox_preload_matrix.json'
+              - 'migrations/versions/*sandbox*.py'
+              - 'sandbox-runtime/**'
+              - 'scripts/benchmark_sandbox_startup.py'
+              - 'server/sandbox/**'
+              - 'tests/test_sandbox_*.py'
+              - 'tests/api_http/sandbox/**'
+
   sandbox-runtime:
+    needs: changes
+    if: needs.changes.outputs.sandbox == 'true'
     runs-on: ubuntu-latest
     services:
       redis:
@@ -85,6 +107,8 @@ jobs:
             configs/sandbox_preload_matrix.json
 
   sandbox-auth-lifecycle:
+    needs: changes
+    if: needs.changes.outputs.sandbox == 'true'
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -116,6 +140,8 @@ jobs:
   # runsc installation restarts Docker, so this job starts MySQL only after
   # the runtime is registered instead of using a GitHub service container.
   sandbox-manager-runsc:
+    needs: changes
+    if: needs.changes.outputs.sandbox == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -187,7 +213,7 @@ jobs:
         # A writeback creates a new branch head and retriggers pull-request
         # checks.  Keep normal push/PR validation read-only; an operator can
         # explicitly dispatch this workflow when a matrix update is wanted.
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/feature/sandbox-phase3-develop' && github.actor != 'github-actions[bot]'
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/feature/sandbox-') && github.actor != 'github-actions[bot]'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

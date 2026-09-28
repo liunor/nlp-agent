@@ -26,6 +26,7 @@ def test_linux_smoke_uses_the_registered_gvisor_runtime() -> None:
     assert "Persist preload compatibility matrix" in workflow
     assert "git push origin HEAD:${GITHUB_REF_NAME}" in workflow
     assert "feature/sandbox-phase3-develop" in workflow
+    assert "feature/sandbox-capacity-phase1" in workflow
     assert "pip install -e ." not in workflow
     assert "pip install -r requirements.txt" in workflow
 
@@ -46,3 +47,4 @@ def test_matrix_writeback_dispatches_main_ci_for_the_new_branch_head() -> None:
     assert 'git commit -m "ci(sandbox): update preload compatibility matrix"' in persistence
     assert "[skip ci]" not in persistence
     assert 'gh workflow run CI --ref "${GITHUB_REF_NAME}"' in persistence
+    assert "startsWith(github.ref, 'refs/heads/feature/sandbox-')" in persistence

@@ -1,11 +1,16 @@
 """Deterministic, evidence-based aggregation for teacher analytics.
 
-The teacher "student questions" module reports aggregates only; it never
-returns raw question text.  All inputs are structured rows produced by the
-MySQL read model (``gateway.mysql_repository``) plus the teacher catalogue for
-name resolution.  No keyword-based topic/type classification happens here:
-topic, level and mode come from the structured learning context already stored
-on each turn.
+All inputs are structured rows produced by the MySQL read model
+(``gateway.mysql_repository``) plus the teacher catalogue for name resolution.
+No keyword-based topic/type classification happens here: topic, level and mode
+come from the structured learning context already stored on each turn.
+
+Student *question* text never reaches this module: ``list_question_turns``
+deliberately omits ``input_text``, so the "student questions" view reports
+aggregates only.  The exercise *question examples* surfaced by
+``exercise_evidence_stats`` are distinct: they are teacher-authored practice
+items, and their text is intentionally retained (bounded to three per knowledge
+point) so teachers can recognize which exercise a diagnosis refers to.
 """
 
 from __future__ import annotations
@@ -31,6 +36,23 @@ LEARNING_ANALYSIS_PROBLEM_TYPES = (
 )
 _DEFAULT_LEVEL = "beginner"
 _DEFAULT_MODE = "explain"
+
+# Diagnostic thresholds.  Grouped as named constants so boundary behaviour is
+# testable, and the policy behind "risk", "trend" and "problem_type" is visible
+# in one place instead of scattered as inline magic numbers.
+_RISK_HIGH_PASS_RATE = 60
+_RISK_MEDIUM_PASS_RATE = 80
+_RISK_HIGH_MISCONCEPTIONS = 3
+_RISK_MEDIUM_ERRORS = 2
+_RISK_UNMEASURED_QUESTION_FLOOR = 5
+_TREND_DELTA_PERCENT = 10
+_DIAGNOSIS_MIN_ATTEMPTS = 4
+_DIAGNOSIS_MIN_STUDENTS = 2
+_COVERAGE_ATTEMPT_FLOOR = 5
+_CONCEPT_MASTERY_LOW = 60
+_METHOD_MASTERY_LOW = 80
+_CONCERN_TREND_DOWN_PENALTY = 20
+_CONCERN_PROBLEM_PENALTY = 10
 
 
 def _percent(numerator: int, denominator: int) -> float:
@@ -80,19 +102,33 @@ def _criterion_key(match: dict[str, Any]) -> str:
 
 
 def _risk(questions: int, exercises: int, pass_rate: float | None, misconceptions: int, errors: int) -> str:
-    if (pass_rate is not None and pass_rate < 60) or misconceptions >= 3:
+    if (pass_rate is not None and pass_rate < _RISK_HIGH_PASS_RATE) or misconceptions >= _RISK_HIGH_MISCONCEPTIONS:
         return "high"
-    if (pass_rate is not None and pass_rate < 80) or errors >= 2:
+    if (pass_rate is not None and pass_rate < _RISK_MEDIUM_PASS_RATE) or errors >= _RISK_MEDIUM_ERRORS:
         return "medium"
     # A topic students ask about a lot but never practice is unmeasured, not
     # "low risk": it deserves attention instead of being silently cleared.
-    if exercises == 0 and questions >= 5:
+    if exercises == 0 and questions >= _RISK_UNMEASURED_QUESTION_FLOOR:
         return "medium"
     return "low"
 
 
 def _average_score(score_sum: int, count: int) -> float | None:
     return round(score_sum / count, 2) if count else None
+
+
+def _concern_score(mastery_rate: float | None, trend: str, problem_type: str) -> float:
+    """Ranking heuristic only — not a field-grade metric.
+
+    Combines the complement of mastery on a 0-100 scale with fixed penalties for
+    a declining trend and an actionable problem type.  The magnitude has no
+    standalone meaning; it only orders the diagnoses list.
+    """
+    return (
+        (100 - (mastery_rate or 0))
+        + (_CONCERN_TREND_DOWN_PENALTY if trend == "down" else 0)
+        + (_CONCERN_PROBLEM_PENALTY if problem_type not in {"—", "数据不足，暂不判断"} else 0)
+    )
 
 
 def _role_codes(value: Any) -> list[str]:
@@ -160,6 +196,17 @@ def _analysis_in_window(row: dict[str, Any], start: date, end: date) -> bool:
 
 def _analysis_period_rows(rows: list[dict[str, Any]], start: date, end: date) -> list[dict[str, Any]]:
     return [row for row in rows if _analysis_in_window(row, start, end)]
+
+
+def filter_period_rows(rows: list[dict[str, Any]], start: date, end: date) -> list[dict[str, Any]]:
+    """Return rows whose completion day falls within ``[start, end]`` inclusive.
+
+    Rows without a usable day are kept (they are treated as in-window), matching
+    ``build_learning_analysis``.  Exposed so ``TeacherService.analytics`` can
+    derive the period-scoped overview rows from a single broad evidence/criterion
+    fetch instead of issuing a second, narrower query.
+    """
+    return _analysis_period_rows(rows, start, end)
 
 
 def _analysis_evidence_aggregate(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -278,6 +325,11 @@ def build_learning_analysis(
     previous_end = period_start - timedelta(days=1)
     previous_start = previous_end - timedelta(days=period_days - 1)
     current_evidence = _analysis_period_rows(evidence, period_start, period_end)
+    # The diagnosis trend compares against the immediately preceding windows of
+    # the same length (not calendar months).  ``mastery_trend`` below uses
+    # calendar months, so the two series can disagree on short windows; that is
+    # intentional — "trend" is a quick before/after delta, "mastery_trend" is
+    # the longer month-over-month history.
     previous_evidence = _analysis_period_rows(evidence, previous_start, previous_end)
     current_criteria = _analysis_period_rows(criteria, period_start, period_end)
     current_by_kp = _analysis_evidence_aggregate(current_evidence)
@@ -320,6 +372,10 @@ def build_learning_analysis(
     for knowledge_point_id, current in current_by_kp.items():
         attempts = current["attempt_count"]
         students = len(current["student_ids"])
+        # Per-point mastery is the exercise-level pass rate of every exercise
+        # touching this point (整题级).  A "passed" exercise credits all of its
+        # knowledge points, so this is attribution granularity, not per-rubric
+        # criterion evaluation.
         mastery_rate = _percent(current["correct_count"], attempts) if attempts else None
         previous = previous_by_kp.get(knowledge_point_id)
         previous_rate = (
@@ -329,9 +385,9 @@ def build_learning_analysis(
         )
         if previous_rate is None or mastery_rate is None:
             trend = "stable"
-        elif mastery_rate - previous_rate <= -10:
+        elif mastery_rate - previous_rate <= -_TREND_DELTA_PERCENT:
             trend = "down"
-        elif mastery_rate - previous_rate >= 10:
+        elif mastery_rate - previous_rate >= _TREND_DELTA_PERCENT:
             trend = "up"
         else:
             trend = "stable"
@@ -348,16 +404,16 @@ def build_learning_analysis(
             and criterion_stats[weak_criteria[0]["criterion"]][1] > 2
             and weak_criteria[0]["error_rate"] >= 50
         )
-        sufficient = attempts >= 4 and students >= 2
+        sufficient = attempts >= _DIAGNOSIS_MIN_ATTEMPTS and students >= _DIAGNOSIS_MIN_STUDENTS
         if not sufficient:
             problem_type = "数据不足，暂不判断"
         elif concentrated:
             problem_type = "易错点集中"
-        elif mastery_rate is not None and mastery_rate < 60:
+        elif mastery_rate is not None and mastery_rate < _CONCEPT_MASTERY_LOW:
             problem_type = "概念掌握不足"
-        elif mastery_rate is not None and mastery_rate < 80:
+        elif mastery_rate is not None and mastery_rate < _METHOD_MASTERY_LOW:
             problem_type = "解题方法不熟"
-        elif attempts < max(5, students * 2):
+        elif attempts < max(_COVERAGE_ATTEMPT_FLOOR, students * 2):
             problem_type = "练习覆盖不足"
         else:
             problem_type = "—"
@@ -368,7 +424,7 @@ def build_learning_analysis(
         question_count = len(current["question_ids"]) or attempts
         error_criterion = weak_criteria[0]["criterion"] if weak_criteria else None
         conclusion, action = _analysis_recommendation(problem_type, point_name, mastery_rate, error_criterion)
-        concern = (100 - (mastery_rate or 0)) + (20 if trend == "down" else 0) + (10 if problem_type not in {"—", "数据不足，暂不判断"} else 0)
+        concern = _concern_score(mastery_rate, trend, problem_type)
         diagnoses.append(
             {
                 "content_id": str(topic_id or "unrecognized"),
@@ -384,6 +440,9 @@ def build_learning_analysis(
                     count >= 2 for count in current["failed_student_attempts"].values()
                 ),
                 "mastery_rate": mastery_rate,
+                # Signals that ``mastery_rate``/``average_score`` are exercise-
+                # level attributions, not rubric-criterion evaluations.
+                "mastery_basis": "exercise",
                 "previous_mastery_rate": previous_rate,
                 "trend": trend,
                 "problem_type": problem_type,
@@ -401,12 +460,12 @@ def build_learning_analysis(
         (
             item
             for item in diagnoses
-            if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] < 60
+            if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] < _CONCEPT_MASTERY_LOW
         ),
         None,
     )
     declining = next((item for item in diagnoses if item["trend"] == "down"), None)
-    good = next((item for item in reversed(diagnoses) if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] >= 80 and item["trend"] != "down"), None)
+    good = next((item for item in reversed(diagnoses) if item["data_sufficiency"] == "sufficient" and item["mastery_rate"] is not None and item["mastery_rate"] >= _METHOD_MASTERY_LOW and item["trend"] != "down"), None)
 
     problem_counts = Counter(item["problem_type"] for item in diagnoses if item["problem_type"] != "—")
     problem_total = sum(problem_counts.values())
@@ -442,7 +501,9 @@ def build_learning_analysis(
             "period_label": f"近 {period_days} 天",
             "role_label": "学生",
             "student_count": len(current_students),
-            "attempt_count": sum(item["attempt_count"] for item in diagnoses),
+            # Unique evidence rows in the period, not the per-point sum: an
+            # exercise touching several knowledge points must count once here.
+            "attempt_count": len(current_evidence),
         },
         "conclusions": {"weak": weak, "declining": declining, "good": good},
         "diagnoses": diagnoses,

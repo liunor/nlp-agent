@@ -44,10 +44,16 @@ class PhysicalToolManager:
     def refresh_config(self) -> None:
         self.config = load_agent_runtime_config()
 
+    def ensure_custom_tools(self) -> list[str]:
+        """Load local custom tools without starting external MCP clients."""
+        if self._extensions_loaded:
+            return []
+        registered = load_custom_tools(self.config.tools.custom, self.runtime.catalog)
+        self._extensions_loaded = True
+        return registered
+
     async def start_extensions(self) -> None:
-        if not self._extensions_loaded:
-            load_custom_tools(self.config.tools.custom, self.runtime.catalog)
-            self._extensions_loaded = True
+        self.ensure_custom_tools()
         await self.runtime.start_mcp(self.config.tools.mcp_servers)
 
     async def close(self) -> None:

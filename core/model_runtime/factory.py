@@ -9,6 +9,8 @@ from dotenv import dotenv_values
 
 from configs.settings import BASE_DIR, settings
 from core.model_runtime.adapters.deepseek import DeepSeekAdapter
+from core.model_runtime.adapters.glm import GLMAdapter
+from core.model_runtime.adapters.kimi import KimiAdapter
 from core.model_runtime.adapters.openai_compatible import OpenAICompatibleAdapter
 from core.model_runtime.adapters.qwen import QwenAdapter
 from core.model_runtime.contracts import ModelPresetConfig, ModelRuntimeConfig
@@ -28,6 +30,10 @@ def _register_builtins(registry: ProviderRegistry) -> None:
         registry.register("openai_compatible", OpenAICompatibleAdapter)
     if "qwen" not in registry.names:
         registry.register("qwen", QwenAdapter)
+    if "kimi" not in registry.names:
+        registry.register("kimi", KimiAdapter)
+    if "glm" not in registry.names:
+        registry.register("glm", GLMAdapter)
 
 
 class ModelFactory:

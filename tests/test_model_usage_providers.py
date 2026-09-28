@@ -31,17 +31,20 @@ def test_canonical_usage_deepseek_fields():
     canon = canonical_usage(raw_deepseek, provider_response_id="deepseek-resp-1")
     assert canon.input_tokens == 1000
     assert canon.cached_input_tokens == 600
+    assert canon.cache_miss_input_tokens == 400
     assert canon.cache_write_input_tokens == 0
     assert canon.output_tokens == 200
     assert canon.reasoning_output_tokens == 80
     assert canon.total_tokens == 1200
     assert canon.source == "provider"
+    assert canon.cache_status == "measured"
     assert canon.provider_response_id == "deepseek-resp-1"
 
     # Observability normalize_usage still retains prompt_cache_miss_tokens
     norm = normalize_usage(raw_deepseek)
     assert norm["prompt_cache_miss_tokens"] == 400
     assert norm["prompt_cache_hit_tokens"] == 600
+    assert norm["cache_status"] == "measured"
 
 
 def test_canonical_usage_qwen_fields():
@@ -63,7 +66,54 @@ def test_canonical_usage_qwen_fields():
     assert canon.reasoning_output_tokens == 50
     assert canon.total_tokens == 650
     assert canon.source == "provider"
+    assert canon.cache_status == "measured"
     assert canon.provider_response_id == "qwen-resp-1"
+
+
+def test_canonical_usage_kimi_fields():
+    raw_kimi = {
+        "prompt_tokens": 800,
+        "completion_tokens": 120,
+        "total_tokens": 920,
+        "cached_tokens": 300,
+    }
+    canon = canonical_usage(raw_kimi, provider_response_id="kimi-resp-1")
+    assert canon.input_tokens == 800
+    assert canon.cached_input_tokens == 300
+    assert canon.cache_write_input_tokens == 0
+    assert canon.output_tokens == 120
+    assert canon.total_tokens == 920
+    assert canon.source == "provider"
+    assert canon.cache_status == "measured"
+    assert canon.provider_response_id == "kimi-resp-1"
+
+    norm = normalize_usage(raw_kimi)
+    assert norm["prompt_cache_hit_tokens"] == 300
+    assert norm["input_token_details"]["cache_read"] == 300
+
+
+def test_canonical_usage_glm_fields():
+    raw_glm = {
+        "prompt_tokens": 600,
+        "completion_tokens": 150,
+        "total_tokens": 750,
+        "prompt_tokens_details": {
+            "cached_tokens": 200,
+        },
+    }
+    canon = canonical_usage(raw_glm, provider_response_id="glm-resp-1")
+    assert canon.input_tokens == 600
+    assert canon.cached_input_tokens == 200
+    assert canon.cache_write_input_tokens == 0
+    assert canon.output_tokens == 150
+    assert canon.total_tokens == 750
+    assert canon.source == "provider"
+    assert canon.cache_status == "measured"
+    assert canon.provider_response_id == "glm-resp-1"
+
+    norm = normalize_usage(raw_glm)
+    assert norm["prompt_cache_hit_tokens"] == 200
+    assert norm["input_token_details"]["cache_read"] == 200
 
 
 def test_canonical_usage_raw_total_mismatch_is_recalculated():
@@ -76,6 +126,22 @@ def test_canonical_usage_raw_total_mismatch_is_recalculated():
     assert canon.input_tokens == 100
     assert canon.output_tokens == 50
     assert canon.total_tokens == 150  # Canonical calculates input + output
+    assert canon.cache_status == "unavailable"
+
+
+def test_explicit_zero_cache_details_remain_a_provider_measurement():
+    canon = canonical_usage(
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 100,
+        }
+    )
+
+    assert canon.source == "provider"
+    assert canon.cache_status == "measured"
+    assert canon.cached_input_tokens == 0
 
 
 def test_canonical_usage_empty_and_none():
@@ -226,6 +292,57 @@ def test_qwen_adapter_preserves_response_id():
     assert msg.additional_kwargs["provider_response_id"] == "chatcmpl-qwen-456"
     assert msg.additional_kwargs["provider_usage_raw"] == raw_response["usage"]
     assert msg.usage_metadata["input_tokens"] == 120
+
+
+def test_qwen_stream_response_id_is_recorded_once_on_usage_chunk():
+    chat = QwenChatModel(model="qwen3-vl-plus", api_key="test")
+    response_id = "chatcmpl-qwen-stream-456"
+    raw_chunks = [
+        {
+            "id": response_id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": "猫"},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": response_id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "咪"},
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+        {
+            "id": response_id,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 2,
+                "total_tokens": 122,
+            },
+        },
+    ]
+
+    messages = [
+        chat._convert_chunk_to_generation_chunk(
+            chunk,
+            AIMessageChunk,
+            None,
+        ).message
+        for chunk in raw_chunks
+    ]
+
+    assert extract_provider_response_id(messages[0]) is None
+    assert extract_provider_response_id(messages[1]) is None
+    assert extract_provider_response_id(messages[2]) == response_id
+    combined = messages[0] + messages[1] + messages[2]
+    assert extract_provider_response_id(combined) == response_id
 
 
 def test_openai_compatible_adapter_preserves_response_id():

@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from .inventory import Operation, fetch_openapi, operation_matches
+from .inventory import Operation, fetch_openapi, observed_operation_keys
 
 
 REGISTRY_PATH = Path(__file__).resolve().parents[1] / "coverage" / "api_coverage.json"
@@ -120,15 +120,7 @@ def build_coverage_report(
     registry_keys = [entry.key for entry in registry]
     observed_requests = tuple(observed)
 
-    covered = tuple(
-        operation.key
-        for operation in operations
-        if any(
-            service == operation.service
-            and operation_matches(operation, method=method, path=path)
-            for service, method, path in observed_requests
-        )
-    )
+    covered = tuple(sorted(observed_operation_keys(operations, observed_requests)))
     exempt = tuple(
         operation.key
         for operation in operations

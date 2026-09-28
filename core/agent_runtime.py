@@ -149,7 +149,13 @@ def configured_budget(role: str, **overrides: Any) -> AgentRunBudget:
 
     from configs.settings import settings
 
-    values = settings.get_agent_runtime(role)
+    values = dict(settings.get_agent_runtime(role))
+    if role == "coordinator":
+        from core.vision_execution import current_image_turn
+
+        image_turn = current_image_turn()
+        if image_turn is not None:
+            values["max_duration_s"] = image_turn.timeout_s
     values.update({key: value for key, value in overrides.items() if value is not None})
     return AgentRunBudget.model_validate(values)
 

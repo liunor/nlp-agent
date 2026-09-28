@@ -42,6 +42,13 @@ def render_markdown(report_path: Path, *, suite_name: str, telemetry_db: Path) -
         ])
     if any("worker_count" in item.metrics for item in results):
         lines.append(f"- Worker：平均每用例 {_mean([item.metrics.get('worker_count', 0) for item in results]):.2f} 个；平均成功率 {_pct(_mean([item.metrics.get('worker_success_rate', 1) for item in results]))}。")
+    if "academic_search_recall" in report.metrics:
+        lines.append(
+            "- 学术检索：应检索召回率 "
+            f"{_pct(report.metrics.get('academic_search_recall'))}；误触发率 "
+            f"{_pct(report.metrics.get('academic_false_positive_rate'))}；引用完整率 "
+            f"{_pct(report.metrics.get('citation_integrity_rate'))}。"
+        )
     lines.extend(["", "## 工具维度", "", "| 工具 | 调用次数 | 覆盖用例 | 成功率 | 平均工具耗时 | 失败用例 |", "|---|---:|---:|---:|---:|---:|"])
     grouped: dict[str, list[tuple[object, int, str]]] = defaultdict(list)
     for result in results:

@@ -1,4 +1,5 @@
 from core.tool_runtime import ToolCatalog, ToolRisk, ToolScope, ToolSource
+from server.tools.api.academic_search_tool import academic_search
 from server.tools.api.image_analyze_tool import image_analyze
 from server.tools.tool_manager import ALL_AVAILABLE_TOOLS, register_builtin_tools
 
@@ -27,3 +28,27 @@ def test_image_analyze_builtin_descriptor_is_worker_scoped_and_read_only():
     # Visual analysis can be expensive and source uploads may expire, so it is
     # deliberately excluded from the generic micro-compaction/re-fetch list.
     assert image_analyze not in ALL_AVAILABLE_TOOLS
+
+
+def test_academic_search_builtin_descriptor_and_scopes():
+    catalog = ToolCatalog()
+
+    registered = register_builtin_tools(catalog)
+    descriptor = catalog.get("academic_search")
+
+    assert "academic_search" in registered
+    assert descriptor is not None
+    assert descriptor.source is ToolSource.BUILTIN
+    assert descriptor.provider == "academic-open-apis"
+    assert descriptor.scopes == frozenset({ToolScope.COORDINATOR, ToolScope.WORKER})
+    assert descriptor.capabilities == frozenset({"academic.search"})
+    assert descriptor.risk is ToolRisk.MEDIUM
+    assert descriptor.read_only is True
+    assert descriptor.concurrency_safe is True
+    assert descriptor.timeout_s == 35
+    assert descriptor.max_concurrency == 4
+    assert descriptor.retry.max_attempts == 1
+    assert descriptor.factory().name == academic_search.name
+    # Academic search returns structured citation data that should not be
+    # automatically cleared/refetched by generic micro-compaction.
+    assert academic_search not in ALL_AVAILABLE_TOOLS

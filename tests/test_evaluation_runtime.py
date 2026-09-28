@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 from evaluation.core.judge import ToolRoutingJudge
 from evaluation.core.models import EvaluationCase, ToolCallEvidence, TurnEvidence, WorkerEvidence
 from evaluation.core.runner import EvaluationRunner, EvaluationTurnTimeout, RemoteApiExecutor, _evidence_from_trace
+from evaluation.core.runner import MonitorHttpEvidenceReader
 from evaluation.core.reporting import TraceMetrics, render_report
 from evaluation.core.models import CaseResult, EvaluationReport
 from evaluation.generate_result_report import render_markdown
@@ -68,6 +70,43 @@ def test_tool_routing_judge_handles_order_and_no_tool_cases():
     no_tool = _case(expectation={"expected_no_tool": True})
     assert judge.judge(no_tool, _evidence()).verdict == "PASS"
     assert judge.judge(no_tool, _evidence("nlp_bleu_score")).verdict == "FAIL"
+
+
+def test_academic_citation_integrity_requires_link_evidence_from_tool_result():
+    case = _case(
+        expectation={
+            "required_tools": ["academic_search"],
+            "require_citation_integrity": True,
+        }
+    )
+    call = ToolCallEvidence(
+        trace_id="trace",
+        turn_id="turn",
+        tool_name="academic_search",
+        sequence=1,
+        status="ok",
+        result_urls=("https://arxiv.org/abs/1706.03762",),
+    )
+    evidence = TurnEvidence(
+        trace_id="trace", turn_id="turn", trace_status="ok", calls=(call,)
+    )
+
+    valid = ToolRoutingJudge().judge(
+        case,
+        evidence,
+        final_text="论文链接：https://arxiv.org/abs/1706.03762",
+    )
+    invalid = ToolRoutingJudge().judge(
+        case,
+        evidence,
+        final_text="论文链接：https://arxiv.org/abs/9999.99999",
+    )
+
+    assert valid.verdict == "PASS"
+    assert valid.metrics["citation_integrity"] == 1
+    assert invalid.verdict == "FAIL"
+    assert "citation_not_in_tool_result" in invalid.hard_failures
+    assert invalid.metrics["citation_integrity"] == 0
 
 
 def test_tool_routing_judge_requires_worker_allocation_and_worker_owned_tools():
@@ -141,6 +180,59 @@ async def test_evaluation_runner_aggregates_fake_live_execution_without_model_ap
     assert executor.evaluation_contexts == [(report.run_id, "suite", "case")]
 
 
+async def test_evaluation_runner_reports_academic_recall_false_positives_and_citations():
+    positive = EvaluationCase(
+        id="academic-positive",
+        input="find paper",
+        tags=["academic"],
+        expectation={
+            "required_tools": ["academic_search"],
+            "require_citation_integrity": True,
+        },
+    )
+    negative = EvaluationCase(
+        id="academic-negative",
+        input="write code",
+        tags=["negative"],
+        expectation={"expected_no_tool": True, "forbidden_tools": ["academic_search"]},
+    )
+
+    class AcademicEvidenceReader:
+        async def read(self, turn_id: str) -> TurnEvidence:
+            calls = ()
+            if turn_id == "academic-positive":
+                calls = (
+                    ToolCallEvidence(
+                        trace_id="trace-positive",
+                        turn_id=turn_id,
+                        tool_name="academic_search",
+                        sequence=1,
+                        status="ok",
+                        result_urls=("https://arxiv.org/abs/1706.03762",),
+                    ),
+                )
+            return TurnEvidence(
+                trace_id=f"trace-{turn_id}",
+                turn_id=turn_id,
+                trace_status="ok",
+                calls=calls,
+            )
+
+    report = await EvaluationRunner(
+        FakeExecutor(), AcademicEvidenceReader()
+    ).run(
+        suite_id="academic-routing-v1",
+        dataset_sha256="hash",
+        cases=[positive, negative],
+        workspace_id="eval",
+        timeout_s=2,
+    )
+
+    assert report.metrics["academic_search_recall"] == 1
+    assert report.metrics["academic_false_positive_rate"] == 0
+    assert report.metrics["citation_integrity_rate"] == 1
+
+
 class TimedOutExecutor(FakeExecutor):
     async def run(self, *_args, **_kwargs):
         raise EvaluationTurnTimeout("timed-out-turn")
@@ -196,6 +288,90 @@ async def test_remote_executor_cancels_submitted_turn_when_case_deadline_expires
         await executor.run(_case(), workspace_id="eval", timeout_s=0.01, evaluation_run_id="run", suite_id="suite")
 
     assert client.cancelled == ["/api/v1/chat/turns/turn/cancel"]
+
+
+@pytest.mark.asyncio
+async def test_remote_executor_uses_production_login_without_retaining_password(
+    monkeypatch,
+):
+    class Client:
+        def __init__(self):
+            self.cookies = httpx.Cookies({"nlp_session": "signed-session"})
+            self.calls = []
+
+        async def post(self, path, **kwargs):
+            self.calls.append((path, kwargs))
+            return httpx.Response(
+                200,
+                json={"csrf_token": "csrf"},
+                request=httpx.Request("POST", f"http://testserver{path}"),
+            )
+
+        async def aclose(self):
+            return None
+
+    client = Client()
+    monkeypatch.setattr(
+        "evaluation.core.runner.httpx.AsyncClient", lambda **_kwargs: client
+    )
+    executor = RemoteApiExecutor(
+        "http://testserver", username="evaluation-user", password="secret"
+    )
+
+    await executor.start()
+
+    assert client.calls == [
+        (
+            "/api/v1/auth/login",
+            {
+                "headers": {"Origin": "http://testserver"},
+                "json": {
+                    "username": "evaluation-user",
+                    "password": "secret",
+                },
+            },
+        )
+    ]
+    assert executor._password is None
+    assert executor._write_headers["X-CSRF-Token"] == "csrf"
+    assert executor.session_cookies().get("nlp_session") == "signed-session"
+
+
+@pytest.mark.asyncio
+async def test_monitor_reader_reuses_web_session_cookie(monkeypatch):
+    captured = {}
+
+    class Client:
+        async def get(self, path, **kwargs):
+            captured["request"] = (path, kwargs)
+            return httpx.Response(
+                200,
+                json={"csrf_token": "rotated"},
+                request=httpx.Request("GET", f"http://monitor{path}"),
+            )
+
+        async def aclose(self):
+            return None
+
+    def client_factory(**kwargs):
+        captured["cookies"] = kwargs["cookies"]
+        return Client()
+
+    monkeypatch.setattr("evaluation.core.runner.httpx.AsyncClient", client_factory)
+    reader = MonitorHttpEvidenceReader(
+        "http://monitor",
+        session_cookie_provider=lambda: httpx.Cookies(
+            {"nlp_session": "signed-session"}
+        ),
+    )
+
+    await reader._ensure_client()
+
+    assert captured["cookies"].get("nlp_session") == "signed-session"
+    assert captured["request"] == (
+        "/api/v1/auth/session",
+        {"headers": {"Origin": "http://monitor"}},
+    )
 
 
 def test_monitor_trace_evidence_uses_tool_spans_not_gateway_tool_node_events():

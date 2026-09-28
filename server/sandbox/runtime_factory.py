@@ -20,12 +20,13 @@ def create_runtime_adapter(
     kernel_image: str | None = None,
     rootfs_image: str | None = None,
     client: object | None = None,
+    namespace: str = "local",
 ) -> SandboxRuntimeAdapter:
     selected = backend.strip().lower()
     if selected in {"runsc", "gvisor", "docker"}:
-        return DockerRuntimeAdapter(DockerRuntimeConfig(image=image))
+        return DockerRuntimeAdapter(DockerRuntimeConfig(image=image, namespace=namespace))
     if selected in {"kata", "kata-qemu"}:
-        return KataRuntimeAdapter(KataRuntimeConfig(image=image))
+        return KataRuntimeAdapter(KataRuntimeConfig(image=image, namespace=namespace))
     if selected in {"kubernetes", "k8s"}:
         return KubernetesRuntimeAdapter(image=image, client=client)
     if selected in {"firecracker", "fc"}:

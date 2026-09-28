@@ -1,0 +1,43 @@
+name: Scheduled academic API smoke
+
+on:
+  schedule:
+    # Weekly and isolated from ordinary CI so an external API outage cannot
+    # block pull requests or releases.
+    - cron: "23 3 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: academic-api-smoke
+  cancel-in-progress: false
+
+jobs:
+  live-academic-search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SEMANTIC_SCHOLAR_API_KEY: ${{ secrets.SEMANTIC_SCHOLAR_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --group dev
+      - name: Verify Transformer paper through live academic APIs
+        run: >-
+          uv run python scripts/smoke_academic_search.py
+          --query "Attention Is All You Need"
+          --max-results 10
+          --expected-arxiv-id 1706.03762
+      - name: Verify LoRA paper through live academic APIs
+        run: >-
+          uv run python scripts/smoke_academic_search.py
+          --query "LoRA: Low-Rank Adaptation of Large Language Models"
+          --max-results 10
+          --expected-arxiv-id 2106.09685

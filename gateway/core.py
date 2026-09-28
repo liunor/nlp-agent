@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import uuid
 from collections import defaultdict
+from functools import partial
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -20,7 +22,7 @@ from core.rbac import (
     required_permission_for_high_risk_tool,
 )
 from core.session_context import SessionContext
-from core.learning import LearningContext, TeachingMaterials, default_progress
+from core.learning import KnowledgeBookContext, LearningContext, TeachingMaterials, default_progress
 from gateway.contracts import (
     GatewayEvent,
     GatewayEventType,
@@ -57,9 +59,16 @@ from server.storage.service import (
     purge_expired_storage_trash,
     reconcile_all_storage_accounts,
 )
+from server.quota.contracts import AdmitTurn, QuotaProblem
+from server.quota.errors import QuotaErrorCode, QuotaRejectedError
+from server.quota.operations import QuotaOperationsService
+from server.quota.reaper import QuotaReservationReaper
+from server.session.summary import schedule_summary
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
+logger = logging.getLogger(__name__)
+_WHITEBOARD_LIBRARY_MANAGER_ROLES = frozenset({"teacher", "developer", "admin"})
 
 
 def _session_uploads_root(context: SessionContext) -> Path:
@@ -101,6 +110,25 @@ def _is_explicit_exercise_start(content: str) -> bool:
     return bool(_EXPLICIT_EXERCISE_START_RE.search(content.strip()))
 
 
+async def _resolve_knowledge_book_context(
+    repository: Any, context: SessionContext, candidate: KnowledgeBookContext | None
+) -> KnowledgeBookContext | None:
+    """Replace client-supplied page text with the published server copy."""
+    if candidate is None:
+        return None
+    get_published_page = getattr(repository, "get_published_knowledge_page", None)
+    if not callable(get_published_page):
+        return candidate
+    page = await asyncio.to_thread(
+        get_published_page, context.workspace_id, candidate.knowledge_point_id
+    )
+    if page is None:
+        return candidate.model_copy(update={"content_markdown": ""})
+    return candidate.model_copy(
+        update={"content_markdown": str(page.get("published_markdown") or "")}
+    )
+
+
 class BackendGateway:
     """The single writer and lifecycle owner for all backend Agent traffic."""
 
@@ -129,12 +157,29 @@ class BackendGateway:
             if not dsn:
                 raise RuntimeError("MySQL persistence mode requires NLP_AGENT_DATABASE_URL")
             self._database_runtime = MySQLRuntime.from_runtime(settings.database_runtime)
-            self.repository = MySQLGatewayRepository(dsn, knowledge_point_prompt_budget=max(1, int(gateway_config.get("knowledge_point_prompt_budget", 12_000))))
+            quota_enforcement = runtime_settings.quota_enforcement_enabled
+            self.repository = MySQLGatewayRepository(
+                dsn,
+                knowledge_point_prompt_budget=max(
+                    1, int(gateway_config.get("knowledge_point_prompt_budget", 12_000))
+                ),
+                quota_enforcement=quota_enforcement,
+            )
         else:
             raise RuntimeError("runtime persistence must be mysql; SQLite is migration-CLI only")
+        self._quota_rollout = settings.quota_rollout
+        self.quota_service = getattr(self.repository, "quota_service", None)
         self.sessions = sessions
         self.events = GatewayEventBroker()
-        self._remote_execution = dispatcher is not None or gateway_config.get("transport") == "redis"
+        self._in_process_executor: InProcessTurnExecutor | None = None
+        # Explicit repositories and dispatchers are used by tests and local
+        # integrations; only the fully automatic runtime path should create
+        # the production Redis/MySQL dispatcher.
+        self._remote_execution = (
+            dispatcher is None
+            and repository is None
+            and gateway_config.get("transport") == "redis"
+        )
         self._event_bridge = None
         if dispatcher is None and self._remote_execution:
             redis_config = RedisTransportConfig(
@@ -144,6 +189,12 @@ class BackendGateway:
                 event_channel=str(gateway_config.get("redis_event_channel", "nlp-agent:events")),
                 control_channel=str(gateway_config.get("redis_control_channel", "nlp-agent:control")),
                 reclaim_idle_ms=int(gateway_config.get("redis_reclaim_idle_ms", 60_000)),
+                poll_block_ms=int(gateway_config.get("redis_poll_block_ms", 2_000)),
+                quota_snapshot_channel=str(
+                    gateway_config.get(
+                        "redis_quota_snapshot_channel", "nlp-agent:quota-snapshot"
+                    )
+                ),
                 cancel_key_prefix=str(
                     gateway_config.get("redis_cancel_key_prefix", "nlp-agent:cancel:")
                 ),
@@ -169,8 +220,16 @@ class BackendGateway:
             )
         else:
             executor = InProcessTurnExecutor(
-                self.engine, self.repository, self._emit_from_engine
+                self.engine,
+                self.repository,
+                self._emit_from_engine,
+                on_turn_completed=(
+                    partial(schedule_summary, self._database_runtime.session_factory)
+                    if self._database_runtime is not None
+                    else None
+                ),
             )
+            self._in_process_executor = executor
             self.dispatcher = dispatcher or InProcessTurnDispatcher(executor.run)
         self._session_turn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.shutdown_grace_s = max(
@@ -205,9 +264,18 @@ class BackendGateway:
                 else gateway_config.get("retention_cleanup_interval_s", 3_600)
             ),
         )
+        self.quota_reap_interval_s = max(
+            1.0,
+            float(gateway_config.get("quota_reap_interval_s", 30)),
+        )
+        self.quota_operations_interval_s = max(
+            1.0,
+            float(gateway_config.get("quota_operations_interval_s", 3_600)),
+        )
         self._maintenance_stop = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
         self._storage_reconciled = False
+        self._quota_reaper: QuotaReservationReaper | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
         self._accepting = False
@@ -223,6 +291,8 @@ class BackendGateway:
                 return
             if self._database_runtime is not None:
                 await self._database_runtime.start()
+            if self.quota_service is not None:
+                await asyncio.to_thread(self.quota_service.verify_schema)
             if not self._remote_execution:
                 await self.engine.start(self._emit_from_engine)
             if self._event_bridge is not None:
@@ -241,6 +311,14 @@ class BackendGateway:
                 self._event_maintenance_loop(),
                 name="gateway-event-retention",
             )
+            if self.quota_service is not None:
+                self._quota_reaper = QuotaReservationReaper(
+                    self.quota_service,
+                    interval_seconds=self.quota_reap_interval_s,
+                    operations_service=QuotaOperationsService(self.quota_service.engine),
+                    operations_interval_seconds=self.quota_operations_interval_s,
+                )
+                self._quota_reaper.start()
             self._started = True
             self._accepting = True
 
@@ -306,6 +384,11 @@ class BackendGateway:
         if auth_session_id:
             context = context.model_copy(update={"auth_session_id": auth_session_id})
         authorization_service.require(principal, Permission.AGENT_TURN_SUBMIT, workspace_id=context.workspace_id)
+        if request.knowledge_book_context is not None and request.knowledge_book_context.workspace_id != context.workspace_id:
+            raise ValueError("知识教材上下文不属于当前工作区")
+        knowledge_book_context = await _resolve_knowledge_book_context(
+            self.repository, context, request.knowledge_book_context
+        )
         if request.model_profile is not None:
             from core.model_runtime.factory import get_global_model_factory
 
@@ -451,11 +534,46 @@ class BackendGateway:
             guided_blueprint=guided_session.get("guided_blueprint", {}),
         )
         turn_id = str(uuid.uuid4())
+        quota_admission = None
+        reservation_id = None
+        if self.quota_service is not None and self._quota_rollout.enabled_for(
+            context.user_id, context.workspace_id
+        ):
+            from core.model_runtime.factory import get_global_model_factory
+
+            factory = get_global_model_factory()
+            profile_name = request.model_profile or factory.config.default_model_profile
+            if not profile_name:
+                raise QuotaRejectedError(
+                    QuotaProblem(
+                        code=QuotaErrorCode.ADMISSION_DENIED,
+                        reason="额度校验需要明确的模型 Profile",
+                        remaining_micro=0,
+                        retryable=False,
+                    )
+                )
+            identity = factory.profile_identity(profile_name, "coordinator")
+            quota_admission = AdmitTurn(
+                request_id=request.idempotency_key or turn_id,
+                user_id=context.user_id,
+                workspace_id=context.workspace_id,
+                turn_id=turn_id,
+                model_profile=profile_name,
+                model_role="coordinator",
+                estimated_input_tokens=factory.estimate_input_tokens(
+                    profile_name, [enriched_content]
+                ),
+                estimated_output_tokens=identity.max_output_tokens or 0,
+                pricing_key=identity.pricing_key,
+                idempotency_key=request.idempotency_key or turn_id,
+            )
+            reservation_id = self.quota_service.reservation_id_for_turn(turn_id)
         task = TurnTask(
             context=context,
             turn_id=turn_id,
             content=enriched_content,
             learning_context=learning_context,
+            knowledge_book_context=knowledge_book_context,
             learning_progress=progress,
             exercise_state=exercise,
             teaching_materials=teaching_materials,
@@ -467,6 +585,7 @@ class BackendGateway:
                 workspace_id=context.workspace_id,
                 authorization_version=principal.authorization_version,
             ),
+            reservation_id=reservation_id,
         )
         turn, duplicate = await asyncio.to_thread(
             self.repository.create_turn,
@@ -490,6 +609,9 @@ class BackendGateway:
             guided_session_status=str(guided_session.get("status") or "active"),
             exercise_state=exercise,
             dispatch_payload=TurnTaskCodec.dumps(task) if self._remote_execution else None,
+            quota_admission=quota_admission,
+            quota_role_codes=tuple(principal.roles),
+            quota_classroom_ids=tuple(principal.classroom_ids),
         )
         resubmitted = bool(
             duplicate
@@ -518,10 +640,16 @@ class BackendGateway:
         )
         task = task.__class__(
             context=task.context, turn_id=turn.turn_id, content=task.content,
-            learning_context=task.learning_context, learning_progress=task.learning_progress,
+            learning_context=task.learning_context, knowledge_book_context=task.knowledge_book_context,
+            learning_progress=task.learning_progress,
             exercise_state=task.exercise_state, teaching_materials=task.teaching_materials,
             guided_session_id=task.guided_session_id, exercise_session_id=task.exercise_session_id,
             model_profile=task.model_profile, authorization=task.authorization,
+            reservation_id=(
+                self.quota_service.reservation_id_for_turn(turn.turn_id)
+                if self.quota_service is not None
+                else None
+            ),
         )
         try:
             await self.dispatcher.submit(task)
@@ -533,6 +661,13 @@ class BackendGateway:
                 error_kind="dispatch_failed",
                 error_message=str(error),
             )
+            if self.quota_service is not None and task.reservation_id:
+                await asyncio.to_thread(
+                    self.quota_service.release_reservation,
+                    task.reservation_id,
+                    turn_id=turn.turn_id,
+                    idempotency_key=f"dispatch-failed:{turn.turn_id}",
+                )
             await self._emit(
                 turn.turn_id,
                 context.session_id,
@@ -599,7 +734,31 @@ class BackendGateway:
             )
             if updated is not None:
                 turn = updated
-        await self.dispatcher.cancel(turn_id)
+        else:
+            turn = await asyncio.to_thread(
+                self.repository.update_turn,
+                turn_id,
+                TurnStatus.CANCELLED,
+            )
+        event = await asyncio.to_thread(
+            self.repository.ensure_event,
+            turn_id=turn_id,
+            session_id=context.session_id,
+            event_type=GatewayEventType.TURN_CANCELLED,
+            payload={"status": TurnStatus.CANCELLED.value},
+        )
+        self.events.publish(event)
+        try:
+            await self.dispatcher.cancel(turn_id)
+        except Exception:
+            # Cancellation is already durable in the repository and its event
+            # has been published. A transient Redis control-plane failure must
+            # not turn the user-facing cancel request into HTTP 500.
+            logger.warning(
+                "Turn cancellation dispatch failed after durable cancellation",
+                exc_info=True,
+                extra={"turn_id": turn_id},
+            )
         updated = await asyncio.to_thread(self.repository.get_turn, turn_id)
         return updated or turn
 
@@ -695,6 +854,27 @@ class BackendGateway:
             changes,
         )
 
+    async def list_whiteboard_library(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
+        return await asyncio.to_thread(self.repository.list_whiteboard_library)
+
+    async def create_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        name: str,
+        elements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        return await asyncio.to_thread(
+            self.repository.create_whiteboard_library_item,
+            name=name,
+            elements=elements,
+            created_by=principal.user_id,
+        )
+
     async def get_teaching_catalog(self, principal: AuthenticatedPrincipal, workspace_id: str) -> dict[str, Any]:
         authorization_service.require(
             principal,
@@ -784,17 +964,21 @@ class BackendGateway:
         knowledge_point_id: str,
         *,
         expected_revision: int,
+        published_file_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         authorization_service.require(
             principal,
             Permission.LEARNING_CONTENT_MANAGE,
             workspace_id=workspace_id,
         )
+        kwargs: dict[str, Any] = {"expected_revision": expected_revision}
+        if published_file_ids is not None:
+            kwargs["published_file_ids"] = published_file_ids
         return await asyncio.to_thread(
             self.repository.publish_knowledge_page,
             workspace_id,
             knowledge_point_id,
-            expected_revision=expected_revision,
+            **kwargs,
         )
 
     async def apply_knowledge_book_import(
@@ -803,17 +987,19 @@ class BackendGateway:
         workspace_id: str,
         pages: list[dict[str, Any]],
         assets: list[dict[str, Any]],
+        file_refs: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         authorization_service.require(
             principal,
             Permission.LEARNING_CONTENT_MANAGE,
             workspace_id=workspace_id,
         )
+        args: tuple[Any, ...] = (workspace_id, pages, assets)
+        if file_refs is not None:
+            args += (file_refs,)
         return await asyncio.to_thread(
             self.repository.apply_knowledge_book_import,
-            workspace_id,
-            pages,
-            assets,
+            *args,
         )
 
     async def get_knowledge_book_asset(
@@ -831,6 +1017,180 @@ class BackendGateway:
             self.repository.get_knowledge_book_asset,
             workspace_id,
             asset_path,
+        )
+
+    async def create_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        *,
+        original_name: str,
+        display_name: str,
+        media_type: str,
+        content: bytes,
+        created_by: str,
+        file_id: str | None = None,
+    ) -> dict[str, Any]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.create_knowledge_book_file,
+            workspace_id=workspace_id,
+            knowledge_point_id=knowledge_point_id,
+            original_name=original_name,
+            display_name=display_name,
+            media_type=media_type,
+            content=content,
+            created_by=created_by,
+            file_id=file_id,
+        )
+
+    async def get_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+    ) -> dict[str, Any] | None:
+        authorization_service.require(
+            principal, Permission.LEARNING_PROGRESS_READ_CLASSROOM, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.get_knowledge_book_file, workspace_id, file_id
+        )
+
+    async def list_knowledge_book_files(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[dict[str, Any]]:
+        authorization_service.require(
+            principal, Permission.LEARNING_PROGRESS_READ_CLASSROOM, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.list_knowledge_book_files,
+            workspace_id,
+            knowledge_point_id,
+        )
+
+    async def list_published_knowledge_book_files(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[dict[str, Any]]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.list_published_knowledge_book_files,
+            workspace_id,
+            knowledge_point_id,
+        )
+
+    async def update_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+        *,
+        original_name: str | None = None,
+        display_name: str | None = None,
+        media_type: str | None = None,
+        content: bytes | None = None,
+    ) -> dict[str, Any]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.update_knowledge_book_file,
+            workspace_id,
+            file_id,
+            original_name=original_name,
+            display_name=display_name,
+            media_type=media_type,
+            content=content,
+        )
+
+    async def delete_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+    ) -> bool:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.delete_knowledge_book_file, workspace_id, file_id
+        )
+
+    async def set_knowledge_book_file_refs(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        state: str,
+        file_ids: list[str],
+    ) -> None:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        await asyncio.to_thread(
+            self.repository.set_knowledge_book_file_refs,
+            workspace_id,
+            knowledge_point_id,
+            state,
+            file_ids,
+        )
+
+    async def list_knowledge_book_file_refs(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        state: str,
+    ) -> list[str]:
+        authorization_service.require(
+            principal, Permission.LEARNING_PROGRESS_READ_CLASSROOM, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.list_knowledge_book_file_refs,
+            workspace_id,
+            knowledge_point_id,
+            state,
+        )
+
+    async def publish_knowledge_book_file_refs(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[str]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.publish_knowledge_book_file_refs,
+            workspace_id,
+            knowledge_point_id,
+        )
+
+    async def get_published_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+    ) -> dict[str, Any] | None:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.get_published_knowledge_book_file,
+            workspace_id,
+            file_id,
         )
 
     async def stream_events(
@@ -958,6 +1318,8 @@ class BackendGateway:
         event_type: GatewayEventType,
         payload: dict,
     ) -> None:
+        if self._in_process_executor is not None:
+            self._in_process_executor.mark_activity(turn_id, event_type)
         await self._emit(turn_id, session_id, event_type, payload)
 
     async def _emit(
@@ -1002,6 +1364,9 @@ class BackendGateway:
             if self._maintenance_task is not None:
                 await asyncio.gather(self._maintenance_task, return_exceptions=True)
                 self._maintenance_task = None
+            if self._quota_reaper is not None:
+                await self._quota_reaper.stop()
+                self._quota_reaper = None
             if self._event_bridge is not None:
                 await self._event_bridge.close()
             await self.dispatcher.close(

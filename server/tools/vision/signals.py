@@ -305,6 +305,16 @@ class OpenCVSignalProvider:
 
         lines = _line_boxes(components, width, height)
         aligned_ratio = _aligned_text_ratio(lines, width)
+        # Texture components are not evidence of text. Only use the weak text
+        # signals on a predominantly plain, low-chroma page background. Uncertain
+        # scans/photos go to the VLM; this is deliberately a conservative gate.
+        histogram = np.bincount((gray // 16).ravel(), minlength=16)
+        background = (int(histogram.argmax()) + 0.5) * 16
+        chroma = array.max(axis=2).astype(np.int16) - array.min(axis=2)
+        plain_background = (np.abs(gray.astype(float) - background) <= 16) & (chroma <= 24)
+        has_text_layout = bool(
+            background >= 160 and plain_background.mean() >= 0.65 and len(components) >= 4
+        )
         formula_bars = [
             line
             for line in formula_horizontals
@@ -314,6 +324,7 @@ class OpenCVSignalProvider:
         formula_like = (
             not has_grid
             and not has_axes
+            and has_text_layout
             and 0 < coverage < 0.15
             and len(components) >= 3
             and len(lines) <= 4
@@ -343,7 +354,7 @@ class OpenCVSignalProvider:
             category = "chart"
         elif formula_like:
             category = "formula"
-        elif coverage >= 0.15:
+        elif has_text_layout and coverage >= 0.15:
             category = "document"
         elif coverage <= 0.02:
             category = "photo"
@@ -353,6 +364,7 @@ class OpenCVSignalProvider:
         return VisionSignals(
             text_coverage=round(coverage, 4),
             aligned_text_ratio=round(aligned_ratio, 4),
+            has_text_layout=has_text_layout,
             has_grid_lines=has_grid,
             has_axes=has_axes,
             has_legend=False,

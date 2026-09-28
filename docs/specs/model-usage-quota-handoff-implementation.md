@@ -307,6 +307,7 @@ class UsageAttributionContext(UsageFrozenModel):
 class CanonicalTokenUsage(UsageFrozenModel):
     input_tokens: StrictNonNegativeInt = 0
     cached_input_tokens: StrictNonNegativeInt = 0
+    cache_miss_input_tokens: StrictNonNegativeInt = 0
     cache_write_input_tokens: StrictNonNegativeInt = 0
     output_tokens: StrictNonNegativeInt = 0
     reasoning_output_tokens: StrictNonNegativeInt = 0
@@ -319,6 +320,11 @@ class CanonicalTokenUsage(UsageFrozenModel):
         if self.cached_input_tokens + self.cache_write_input_tokens > self.input_tokens:
             raise ValueError(
                 "cached_input_tokens + cache_write_input_tokens "
+                "must not exceed input_tokens"
+            )
+        if self.cached_input_tokens + self.cache_miss_input_tokens > self.input_tokens:
+            raise ValueError(
+                "cached_input_tokens + cache_miss_input_tokens "
                 "must not exceed input_tokens"
             )
         if self.reasoning_output_tokens > self.output_tokens:
@@ -666,13 +672,14 @@ AIMessageChunk.response_metadata["provider_response_id"]
 |---|---|---|
 | `input_tokens` | `prompt_tokens` | 包含缓存命中 Token |
 | `cached_input_tokens` | `prompt_cache_hit_tokens` | input 子集 |
+| `cache_miss_input_tokens` | `prompt_cache_miss_tokens` | Provider 观测，非独立计费项 |
 | `cache_write_input_tokens` | 当前不可用 | 0 |
 | `output_tokens` | `completion_tokens` | 标准化后包含 Reasoning |
 | `reasoning_output_tokens` | `completion_tokens_details.reasoning_tokens` 或现有兼容字段 | output 子集；缺失为 0 |
 | `total_tokens` | 不直接采用 | 计算 input + output |
 | `provider_response_id` | 响应顶层 `id` | Adapter 显式保留 |
 
-`prompt_cache_miss_tokens` 继续进入 Observability，但不新增到 Canonical，因为可通过实际输入和缓存字段处理，且它不是独立计费加项。
+`prompt_cache_miss_tokens` 同时进入 Observability 和 Canonical/UsageEvent，作为 Provider 观测字段保留；它不是独立计费加项。
 
 ### 9.2 Qwen
 
@@ -1116,7 +1123,7 @@ M04、M05、M07 都修改 `core/model_runtime/runtime.py`，必须由同一个�
 ### 14.2 Adapter 测试
 
 - DeepSeek cache hit 正确；
-- DeepSeek cache miss 仍保留给 Observability；
+- DeepSeek cache miss 同时保留给 Observability 和 UsageEvent；
 - Qwen cached 和 reasoning 正确；
 - Response ID 在非流式和流式中都保留；
 - 无 Usage 不伪装成精确零；

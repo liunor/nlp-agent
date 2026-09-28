@@ -30,10 +30,11 @@ function uploadErrorMessage(reason: unknown): string {
   return "上传失败，请检查网络后重试";
 }
 
-export function Composer({ sessionId, disabled, running, centered = false, onSend, onCancel, onEnsureSession, contextControl }: {
+export function Composer({ sessionId, disabled, running, cancelling = false, centered = false, onSend, onCancel, onEnsureSession, contextControl }: {
   sessionId?: string | null;
   disabled: boolean;
   running: boolean;
+  cancelling?: boolean;
   centered?: boolean;
   onSend: (content: string, attachments?: ChatAttachment[]) => void;
   onCancel: () => void;
@@ -197,7 +198,7 @@ export function Composer({ sessionId, disabled, running, centered = false, onSen
         <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={!canUploadAttachments} aria-label="上传附件"><Plus size={18} /></button>
         <span><GraduationCap size={15} />Nova · LSNU NLP Learning Agent</span>
         {contextControl}
-        {running ? <button className="send-button stop" type="button" onClick={onCancel} aria-label="停止生成"><Square size={14} fill="currentColor" /></button> : <button className="send-button" type="button" onClick={submit} disabled={disabled || !attachmentsReady || (!content.trim() && readyAttachments.length === 0)} aria-label="发送"><ArrowUp size={18} /></button>}
+        {running ? <button className="send-button stop" type="button" onClick={onCancel} disabled={cancelling} aria-label={cancelling ? "停止中" : "停止生成"}><Square size={14} fill="currentColor" /></button> : <button className="send-button" type="button" onClick={submit} disabled={disabled || !attachmentsReady || (!content.trim() && readyAttachments.length === 0)} aria-label="发送"><ArrowUp size={18} /></button>}
       </div>
     </div>
     <p className="composer-hint">Nova 也可能犯错，重要结论请结合教材验证</p>

@@ -79,7 +79,7 @@ async def test_manager_destroys_unregistered_managed_container() -> None:
     engine = create_engine(DatabaseConfig(os.environ["NLP_AGENT_DATABASE_URL"], pool_size=1, max_overflow=0))
     try:
         container = _run_docker(
-            ["run", "--detach", "--name", name, "--label", "nova.sandbox.managed=true", *_docker_runtime_args(), TEST_IMAGE, "sleep", "300"],
+            ["run", "--detach", "--name", name, "--label", "nova.sandbox.managed=local", "--label", "nova.sandbox.namespace=local", *_docker_runtime_args(), TEST_IMAGE, "sleep", "300"],
             timeout=DOCKER_COMMAND_TIMEOUT_SECONDS,
         )
         if container.returncode != 0:
@@ -126,7 +126,7 @@ async def test_manager_rejects_and_reclaims_runtime_after_auth_lifecycle_change(
     now = datetime.now(UTC).replace(tzinfo=None)
     try:
         container = _run_docker(
-            ["run", "--detach", "--name", name, "--label", "nova.sandbox.managed=true", *_docker_runtime_args(), TEST_IMAGE, "sleep", "300"],
+            ["run", "--detach", "--name", name, "--label", "nova.sandbox.managed=local", "--label", "nova.sandbox.namespace=local", *_docker_runtime_args(), TEST_IMAGE, "sleep", "300"],
             timeout=DOCKER_COMMAND_TIMEOUT_SECONDS,
         )
         if container.returncode != 0:

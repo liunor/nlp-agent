@@ -4,11 +4,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import io
 import json
+import time
 import zipfile
 
 import pytest
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from starlette.websockets import WebSocketDisconnect
 
 from core.identity import AuthenticatedPrincipal
@@ -184,6 +186,23 @@ def test_login_requires_valid_credentials_and_logout_revokes_cookie_session(web_
         assert client.get("/api/v1/sessions").status_code == 401
 
 
+def test_developer_session_management_stats_endpoint_is_not_exposed(web_app):
+    app, _engine = web_app
+
+    assert "/api/v1/sessions/stats" not in {
+        route.path for route in app.routes if hasattr(route, "path")
+    }
+
+
+def test_retired_menu_management_endpoints_are_not_exposed(web_app):
+    app, _engine = web_app
+
+    paths = {route.path for route in app.routes if hasattr(route, "path")}
+
+    assert "/api/v1/system/menus" not in paths
+    assert "/api/v1/system/roles/{role_code}/menus" not in paths
+
+
 def test_guest_session_has_only_guest_capabilities(web_app):
     app, _engine = web_app
     with TestClient(app) as client:
@@ -214,6 +233,134 @@ def test_auth_session_exposes_human_readable_account_identity(web_app):
         assert session.json()["display_name"] == "nova"
 
 
+def test_usage_me_requires_authentication_and_reports_persistence_unavailable_without_mysql(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        assert client.get("/api/v1/usage/me").status_code == 401
+        authenticate(client)
+        response = client.get("/api/v1/usage/me")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "usage_unavailable"
+
+
+def test_usage_me_forwards_workspace_scope_to_usage_reader(web_app):
+    app, _engine = web_app
+
+    class Reader:
+        def __init__(self):
+            self.kwargs = None
+
+        def user_snapshot(self, user_id, **kwargs):
+            self.kwargs = (user_id, kwargs)
+            return {"user_id": user_id, "workspace_id": kwargs["workspace_id"]}
+
+    reader = Reader()
+    app.state.quota_usage_reader = reader
+    with TestClient(app) as client:
+        authenticate(client)
+        response = client.get("/api/v1/usage/me?workspace_id=default&days=7&granularity=week")
+
+    assert response.status_code == 200
+    assert response.json() == {"user_id": "nova", "workspace_id": "default"}
+    assert reader.kwargs == ("nova", {"workspace_id": "default", "days": 7, "granularity": "week"})
+
+
+def test_quota_me_reports_database_schema_upgrade_instead_of_internal_error(web_app):
+    app, _engine = web_app
+
+    class OutdatedQuotaService:
+        def snapshot(self, **_kwargs):
+            raise OperationalError(
+                "select quota policy",
+                {},
+                RuntimeError("(1054, 'Unknown column weekly_limit_micro')"),
+            )
+
+    app.state.quota_read_service = OutdatedQuotaService()
+    with TestClient(app) as client:
+        authenticate(client)
+        response = client.get("/api/v1/quota/me")
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "quota_schema_outdated"
+
+
+def test_developer_quota_grant_supports_rest_revoke_route(web_app):
+    app, _engine = web_app
+
+    routes = [
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/v1/developer/quota/grants/{grant_id}"
+    ]
+
+    assert any("DELETE" in getattr(route, "methods", set()) for route in routes)
+
+
+def test_developer_quota_pricing_rule_management_routes_are_exposed(web_app):
+    app, _engine = web_app
+
+    collection_methods = {
+        method
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/v1/developer/quota/pricing-rules"
+        for method in getattr(route, "methods", set())
+    }
+    item_methods = {
+        method
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/v1/developer/quota/pricing-rules/{pricing_rule_id}"
+        for method in getattr(route, "methods", set())
+    }
+
+    assert {"GET", "POST"}.issubset(collection_methods)
+    assert {"GET", "DELETE"}.issubset(item_methods)
+
+
+def test_login_sets_httponly_cookie_reports_expiry_and_refreshes_on_activity(web_app):
+    """The real login link: response body, Set-Cookie attributes and the
+    sliding-cookie refresh that keeps a TTL increase from stranding existing
+    sessions."""
+    app, _engine = web_app
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"username": "nova", "password": "test-password"},
+            headers={"Origin": "http://testserver"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["csrf_token"]
+        assert body["expires_at"] > time.time()
+        csrf = body["csrf_token"]
+
+        set_cookie = response.headers.get("set-cookie", "")
+        assert set_cookie.startswith("nlp_session=")
+        assert "HttpOnly" in set_cookie
+        assert "Max-Age=86400" in set_cookie
+        assert "SameSite=lax" in set_cookie
+
+        # The issued cookie authenticates a follow-up request, and that request
+        # re-issues the cookie with the current Max-Age (sliding session).
+        refreshed = client.get("/api/v1/auth/session")
+        assert refreshed.status_code == 200
+        assert refreshed.json()["user_id"] == "nova"
+        assert refreshed.json()["csrf_token"] == csrf
+        restored_again = client.get("/api/v1/auth/session")
+        assert restored_again.status_code == 200
+        assert restored_again.json()["csrf_token"] == csrf
+        refreshed_cookie = refreshed.headers.get("set-cookie", "")
+        assert "Max-Age=86400" in refreshed_cookie
+
+        created = client.post(
+            "/api/v1/sessions",
+            json={"workspace_id": "default"},
+            headers=write_headers(csrf),
+        )
+        assert created.status_code == 201
+
+
 def test_student_cannot_call_teacher_or_developer_control_planes(student_web_app):
     app, _engine = student_web_app
     with TestClient(app) as client:
@@ -221,12 +368,15 @@ def test_student_cannot_call_teacher_or_developer_control_planes(student_web_app
 
         teacher = client.get("/api/v1/teacher/overview?workspace_id=default")
         developer = client.get("/api/v1/developer/snapshot")
+        developer_health = client.get("/api/v1/developer/health")
         release_notes = client.get("/api/v1/developer/release-notes")
 
         assert teacher.status_code == 403
         assert teacher.json()["code"] == "forbidden"
         assert developer.status_code == 403
         assert developer.json()["code"] == "forbidden"
+        assert developer_health.status_code == 403
+        assert developer_health.json()["code"] == "forbidden"
         assert release_notes.status_code == 403
         assert release_notes.json()["code"] == "forbidden"
         assert client.post("/api/v1/auth/session", headers={"Origin": "http://testserver"}).status_code == 405
@@ -314,8 +464,21 @@ def test_http_lifecycle_sessions_chat_settings_and_csrf(web_app, monkeypatch):
         csrf = authenticate(client)
         developer = client.get("/api/v1/developer/snapshot")
         assert developer.status_code == 200
-        assert developer.json()["runtime"]["status"] == "ok"
-        assert "tools" in developer.json()
+        developer_payload = developer.json()
+        assert developer_payload["runtime"]["status"] == "ok"
+        assert "tools" in developer_payload
+        providers = developer_payload["models"]["providers"]
+        assert providers["kimi"]["adapter"] == "kimi"
+        assert providers["kimi"]["api_key_env"] == "KIMI_API_KEY"
+        assert providers["glm"]["adapter"] == "glm"
+        assert providers["glm"]["api_key_env"] == "GLM_API_KEY"
+        for provider in providers.values():
+            assert isinstance(provider["api_key_configured"], bool)
+            assert "api_key" not in provider
+        developer_health = client.get("/api/v1/developer/health")
+        assert developer_health.status_code == 200
+        assert developer_health.json()["status"] == "ok"
+        assert developer_health.json()["active_turns"] == 0
         teacher = client.get("/api/v1/teacher/overview?workspace_id=default")
         assert teacher.status_code == 200
         assert teacher.json()["summary"]["questions"] == 0
@@ -528,6 +691,74 @@ def test_learning_catalog_only_exposes_enabled_topics_and_enabled_knowledge_poin
         ]
 
 
+def test_whiteboard_library_is_global_and_teacher_managed(web_app, student_web_app):
+    app, _engine = web_app
+    with TestClient(app) as teacher_client:
+        csrf = authenticate(teacher_client)
+        assert teacher_client.get("/api/v1/whiteboard/library").json() == {"items": []}
+
+        created = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "注意力流程",
+                "elements": [{"id": "shape-1", "type": "rectangle"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert created.status_code == 201
+        item = created.json()["item"]
+        assert item["name"] == "注意力流程"
+        assert item["status"] == "published"
+        assert item["elements"] == [{"id": "shape-1", "type": "rectangle"}]
+
+        listed = teacher_client.get("/api/v1/whiteboard/library")
+        assert listed.status_code == 200
+        assert listed.json() == {"items": [item]}
+
+        rejected_element = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "不安全素材",
+                "elements": [{"id": "embed-1", "type": "embeddable"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert rejected_element.status_code == 422
+
+        rejected_image = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "图片素材",
+                "elements": [{"id": "image-1", "type": "image"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert rejected_image.status_code == 422
+
+        rejected_non_finite = teacher_client.post(
+            "/api/v1/whiteboard/library",
+            content=json.dumps({
+                "name": "非有限值",
+                "elements": [{"id": "shape-3", "type": "rectangle", "x": float("nan")}],
+            }).encode(),
+            headers={**write_headers(csrf), "Content-Type": "application/json"},
+        )
+        assert rejected_non_finite.status_code == 422
+
+    student_app, _student_engine = student_web_app
+    with TestClient(student_app) as student_client:
+        csrf = authenticate(student_client)
+        rejected = student_client.post(
+            "/api/v1/whiteboard/library",
+            json={
+                "name": "学生素材",
+                "elements": [{"id": "shape-2", "type": "ellipse"}],
+            },
+            headers=write_headers(csrf),
+        )
+        assert rejected.status_code == 403
+
+
 def test_teacher_book_page_is_draft_first_and_student_reads_only_published_content(web_app):
     app, _engine = web_app
     with TestClient(app) as client:
@@ -592,6 +823,190 @@ def test_teacher_book_page_is_draft_first_and_student_reads_only_published_conte
             headers=write_headers(csrf),
         )
         assert stale_update.status_code == 409
+
+
+def test_teacher_book_files_have_crud_and_page_publish_refs(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        headers = write_headers(csrf)
+        catalog = {
+            "topics": [{
+                "id": "basic", "name": "基础", "description": "", "status": "enabled",
+                "knowledge_points": [{"id": "attention", "name": "注意力", "status": "enabled", "sort_order": 0}],
+            }],
+            "exercise_blueprints": [], "review_blueprints": [], "guided_blueprints": [],
+        }
+        assert client.put("/api/v1/teacher/catalog/default", json=catalog, headers=headers).status_code == 200
+
+        uploaded = client.post(
+            "/api/v1/teacher/book/default/pages/attention/files",
+            files={"file": ("demo.py", b"print(1)\n", "text/x-python")},
+            data={"display_name": "演示.py"},
+            headers=headers,
+        )
+        assert uploaded.status_code == 201
+        file = uploaded.json()["file"]
+        assert file["token"] == f"book-file:{file['id']}"
+
+        listed = client.get("/api/v1/teacher/book/default/pages/attention/files")
+        assert listed.status_code == 200
+        assert listed.json()["items"][0]["id"] == file["id"]
+
+        renamed = client.patch(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            json={"display_name": "演示新名字.py"},
+            headers=headers,
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["file"]["display_name"] == "演示新名字.py"
+
+        replaced = client.put(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}/content",
+            files={"file": ("replacement.py", b"print(2)\n", "text/x-python")},
+            headers=headers,
+        )
+        assert replaced.status_code == 200
+        assert replaced.json()["file"]["size_bytes"] == len(b"print(2)\n")
+        assert replaced.json()["file"]["original_name"] == "replacement.py"
+
+        saved = client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={
+                "content_markdown": f"# 注意力\n\n[{file['display_name']}]({file['token']})",
+                "expected_revision": 0,
+            },
+            headers=headers,
+        )
+        assert saved.status_code == 200
+        published = client.post(
+            "/api/v1/teacher/book/default/pages/attention/publish",
+            json={"expected_revision": 1},
+            headers=headers,
+        )
+        assert published.status_code == 200
+
+        blocked_delete = client.delete(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            headers=headers,
+        )
+        assert blocked_delete.status_code == 422
+
+        cleared = client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={"content_markdown": "# 注意力", "expected_revision": 1},
+            headers=headers,
+        )
+        assert cleared.status_code == 200
+        assert client.post(
+            "/api/v1/teacher/book/default/pages/attention/publish",
+            json={"expected_revision": 2},
+            headers=headers,
+        ).status_code == 200
+        assert client.get(f"/api/v1/learning/book/default/files/{file['id']}").status_code == 404
+        assert client.delete(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            headers=headers,
+        ).status_code == 204
+
+
+def test_teacher_book_page_rejects_deleted_unsaved_file_reference(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        headers = write_headers(csrf)
+        catalog = {
+            "topics": [{
+                "id": "basic", "name": "基础", "description": "", "status": "enabled",
+                "knowledge_points": [{"id": "attention", "name": "注意力", "status": "enabled", "sort_order": 0}],
+            }],
+            "exercise_blueprints": [], "review_blueprints": [], "guided_blueprints": [],
+        }
+        assert client.put("/api/v1/teacher/catalog/default", json=catalog, headers=headers).status_code == 200
+        uploaded = client.post(
+            "/api/v1/teacher/book/default/pages/attention/files",
+            files={"file": ("demo.py", b"print(1)\n", "text/x-python")},
+            headers=headers,
+        )
+        assert uploaded.status_code == 201
+        file = uploaded.json()["file"]
+        assert client.delete(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            headers=headers,
+        ).status_code == 204
+
+        rejected = client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={
+                "content_markdown": f"# 注意力\n\n[已删除文件]({file['token']})",
+                "expected_revision": 0,
+            },
+            headers=headers,
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "book_file_not_found"
+
+
+def test_learning_book_exposes_published_file_preview_and_download(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        headers = write_headers(csrf)
+        catalog = {
+            "topics": [{
+                "id": "basic", "name": "基础", "description": "", "status": "enabled",
+                "knowledge_points": [{"id": "attention", "name": "注意力", "status": "enabled", "sort_order": 0}],
+            }],
+            "exercise_blueprints": [], "review_blueprints": [], "guided_blueprints": [],
+        }
+        assert client.put("/api/v1/teacher/catalog/default", json=catalog, headers=headers).status_code == 200
+        uploaded = client.post(
+            "/api/v1/teacher/book/default/pages/attention/files",
+            files={"file": ("demo.py", b"print(1)\n", "text/x-python")},
+            data={"display_name": "演示.py"},
+            headers=headers,
+        )
+        assert uploaded.status_code == 201
+        file = uploaded.json()["file"]
+        assert client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={
+                "content_markdown": f"# 注意力\n\n[演示]({file['token']})",
+                "expected_revision": 0,
+            },
+            headers=headers,
+        ).status_code == 200
+        assert client.post(
+            "/api/v1/teacher/book/default/pages/attention/publish",
+            json={"expected_revision": 1},
+            headers=headers,
+        ).status_code == 200
+
+        page = client.get("/api/v1/learning/book/default/pages/attention")
+        assert page.status_code == 200
+        assert page.json()["page"]["files"] == [{
+            "id": file["id"],
+            "token": file["token"],
+            "original_name": "demo.py",
+            "display_name": "演示.py",
+            "media_type": "text/x-python",
+            "size_bytes": len(b"print(1)\n"),
+            "sha256": file["sha256"],
+            "preview_url": f"/api/v1/learning/book/default/files/{file['id']}",
+            "download_url": f"/api/v1/learning/book/default/files/{file['id']}/download",
+        }]
+
+        preview = client.get(f"/api/v1/learning/book/default/files/{file['id']}")
+        assert preview.status_code == 200
+        assert preview.content == b"print(1)\n"
+        assert preview.headers["content-type"].startswith("text/x-python")
+        assert "inline" in preview.headers["content-disposition"]
+        assert preview.headers["etag"] == f'"{file["sha256"]}"'
+
+        download = client.get(f"/api/v1/learning/book/default/files/{file['id']}/download")
+        assert download.status_code == 200
+        assert download.content == b"print(1)\n"
+        assert "attachment" in download.headers["content-disposition"]
 
 
 def test_teacher_book_import_preview_keeps_only_pytorch_code_segments(web_app):
@@ -999,7 +1414,41 @@ def test_websocket_hub_enforces_global_and_per_user_limits():
     assert hub.try_add(connection(AuthenticatedPrincipal(user_id="carol"))) is False
 
 
-def test_session_list_exposes_page_metadata_and_usage_stats(web_app):
+@pytest.mark.asyncio
+async def test_websocket_hub_broadcast_targets_workspace_members():
+    hub = WebSocketHub(max_connections=4, max_connections_per_user=1)
+    delivered: dict[str, int] = {}
+
+    def connection(principal):
+        item = WebSocketConnection(
+            SlowWebSocket(),
+            gateway=None,
+            principal=principal,
+            max_queue=10,
+            send_queue_size=1,
+            send_timeout_s=0.1,
+        )
+
+        async def capture(_event, *, wait=False):
+            delivered[principal.user_id] = delivered.get(principal.user_id, 0) + 1
+            return True
+
+        item.send = capture
+        return item
+
+    assert hub.try_add(connection(AuthenticatedPrincipal(user_id="alice", workspace_ids=frozenset({"workspace-1"})))) is True
+    assert hub.try_add(connection(AuthenticatedPrincipal(user_id="bob", workspace_ids=frozenset({"workspace-2"})))) is True
+    assert hub.try_add(connection(AuthenticatedPrincipal(user_id="developer", workspace_ids=frozenset({"*"})))) is True
+
+    await hub.broadcast(
+        ServerEventEnvelope(type="usage.snapshot", payload={"refresh_required": True}),
+        workspace_id="workspace-1",
+    )
+
+    assert delivered == {"alice": 1, "developer": 1}
+
+
+def test_session_list_exposes_page_metadata(web_app):
     app, _engine = web_app
     with TestClient(app) as client:
         csrf = authenticate(client)
@@ -1017,7 +1466,3 @@ def test_session_list_exposes_page_metadata_and_usage_stats(web_app):
         assert page.json()["offset"] == 1
         assert len(page.json()["items"]) == 1
         assert page.json()["has_more"] is False
-
-        stats = client.get("/api/v1/sessions/stats")
-        assert stats.status_code == 200
-        assert stats.json()["sessions_total"] == 2

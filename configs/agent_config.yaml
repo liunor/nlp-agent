@@ -27,6 +27,16 @@ gateway:
   max_events_per_session: 50000
   retention_cleanup_interval_s: 3600
   knowledge_point_prompt_budget: 12000
+  # Phase 2 fail-closed admission/settlement switch. Enable only after the
+  # quota migrations and developer policies have been provisioned.
+  quota_enforcement: false
+  # Optional deterministic rollout targets. User/workspace IDs opt in even
+  # when the global switch is false; a non-zero percentage enables a stable
+  # percentage cohort without enabling every user.
+  quota_enforcement_percentage: 0
+  quota_enforcement_users: []
+  quota_enforcement_workspaces: []
+  quota_reap_interval_s: 30
   transport: in_process
   redis_url: redis://127.0.0.1:6379/0
   redis_turn_stream: nlp-agent:turns
@@ -34,6 +44,8 @@ gateway:
   redis_event_channel: nlp-agent:events
   redis_control_channel: nlp-agent:control
   redis_reclaim_idle_ms: 60000
+  # Keep XREADGROUP comfortably below redis-py 8's 5-second socket timeout.
+  redis_poll_block_ms: 2000
   redis_cancel_key_prefix: "nlp-agent:cancel:"
   redis_cancel_ttl_s: 604800
   redis_dead_letter_stream: nlp-agent:turns:dead
@@ -49,11 +61,6 @@ web:
   host: 127.0.0.1
   port: 8765
   cookie_name: nlp_session
-  cookie_ttl_s: 1800
-  cookie_secure: false
-  auth_idle_timeout_s: 900
-  auth_max_login_attempts: 5
-  auth_rate_window_s: 300
   allowed_hosts: [127.0.0.1, localhost, testserver]
   allowed_origins: [http://127.0.0.1:8765, http://localhost:8765, http://127.0.0.1:5173]
   max_ws_message_bytes: 1048576
@@ -71,11 +78,16 @@ monitor:
   host: 127.0.0.1
   port: 8766
   cookie_name: nlp_monitor_session
-  cookie_ttl_s: 28800
-  cookie_secure: false
   allowed_hosts: [127.0.0.1, localhost, testserver]
   allowed_origins: [http://127.0.0.1:8766, http://localhost:8766, http://127.0.0.1:5174]
   static_dir: webui/monitor-dist
+  retention:
+    enabled: true
+    trace_days: 30
+    event_days: 30
+    audit_days: 180
+    interval_s: 2592000
+    initial_delay_s: 60
 
 providers:
   deepseek:
@@ -90,6 +102,18 @@ providers:
     # compatible DashScope API key instead of a collaborator's workspace key.
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_key_env: QWEN_API_KEY
+    default_headers: {}
+
+  kimi:
+    adapter: kimi
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: KIMI_API_KEY
+    default_headers: {}
+
+  glm:
+    adapter: glm
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: GLM_API_KEY
     default_headers: {}
 
 models:
@@ -133,6 +157,30 @@ models:
     max_output_tokens: 32768
     capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true, vision: true, structured_output: true}
 
+  kimi-k2.6:
+    provider: kimi
+    model_id: kimi-k2.6
+    pricing_key: kimi/kimi-k2.6
+    context_window_tokens: 262144
+    max_output_tokens: 32768
+    capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true}
+
+  glm-5.3:
+    provider: glm
+    model_id: glm-5.3
+    pricing_key: glm/glm-5.3
+    context_window_tokens: 1048576
+    max_output_tokens: 131072
+    capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true}
+
+  glm-5.2:
+    provider: glm
+    model_id: glm-5.2
+    pricing_key: glm/glm-5.2
+    context_window_tokens: 1048576
+    max_output_tokens: 131072
+    capabilities: {streaming: true, tool_calls: true, thinking: true, cache_usage: true, json_mode: true}
+
 model_presets:
   coordinator-pro:
     model: deepseek-v4-pro
@@ -174,6 +222,54 @@ model_presets:
     retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
     circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
 
+  coordinator-kimi:
+    model: kimi-k2.6
+    thinking: {enabled: true, effort: max}
+    generation: {max_output_tokens: 32000}
+    timeouts: {connect_s: 10, first_token_s: 180, stream_idle_s: 90, total_s: 600}
+    retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
+    circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
+
+  worker-kimi:
+    model: kimi-k2.6
+    thinking: {enabled: true, effort: high}
+    generation: {max_output_tokens: 24000}
+    timeouts: {connect_s: 10, first_token_s: 120, stream_idle_s: 60, total_s: 360}
+    retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
+    circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
+
+  utility-kimi:
+    model: kimi-k2.6
+    thinking: {enabled: false, effort: none}
+    generation: {max_output_tokens: 12000}
+    timeouts: {connect_s: 10, first_token_s: 90, stream_idle_s: 45, total_s: 240}
+    retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
+    circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
+
+  coordinator-glm:
+    model: glm-5.3
+    thinking: {enabled: true, effort: max}
+    generation: {max_output_tokens: 32000}
+    timeouts: {connect_s: 10, first_token_s: 180, stream_idle_s: 90, total_s: 600}
+    retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
+    circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
+
+  worker-glm:
+    model: glm-5.3
+    thinking: {enabled: true, effort: high}
+    generation: {max_output_tokens: 24000}
+    timeouts: {connect_s: 10, first_token_s: 120, stream_idle_s: 60, total_s: 360}
+    retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
+    circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
+
+  utility-glm:
+    model: glm-5.2
+    thinking: {enabled: false, effort: none}
+    generation: {max_output_tokens: 12000, temperature: 0.1}
+    timeouts: {connect_s: 10, first_token_s: 90, stream_idle_s: 45, total_s: 240}
+    retry: {max_attempts: 3, base_delay_s: 1, max_delay_s: 12, jitter: full}
+    circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
+
   coordinator-qwen-max:
     model: qwen3.8-max
     thinking: {enabled: true, effort: max}
@@ -208,6 +304,7 @@ model_presets:
     circuit_breaker: {failure_threshold: 5, cooldown_s: 60}
 
   vision-qwen-plus:
+    # Project-wide image service. Chat profiles never replace this preset.
     model: qwen3-vl-plus
     thinking: {enabled: false, effort: none}
     generation: {max_output_tokens: 8192, temperature: 0.1}
@@ -228,6 +325,8 @@ model_routes:
     primary: utility-flash
     fallbacks: []
   vision-worker:
+    # Keep this Qwen-only and fallback-free. Kimi/GLM/DeepSeek remain text
+    # chat choices even if a provider later adds native multimodal input.
     primary: vision-qwen-plus
     fallbacks: []
 model_profiles:
@@ -243,6 +342,18 @@ model_profiles:
     coordinator: coordinator-qwen-max
     worker: worker-qwen-plus
     utility: utility-qwen-plus
+  kimi:
+    label: Kimi
+    provider: kimi
+    coordinator: coordinator-kimi
+    worker: worker-kimi
+    utility: utility-kimi
+  glm:
+    label: GLM
+    provider: glm
+    coordinator: coordinator-glm
+    worker: worker-glm
+    utility: utility-glm
 
 # Local memory stays under one root (.data/memory) and is internally scoped by
 # workspace/user/session. Durable Markdown is injected directly; no vector RAG.
@@ -258,7 +369,7 @@ memory:
 # is introduced; undeclared or missing template variables fail before an LLM call.
 prompts:
   versions:
-    coordinator: "1.3"
+    coordinator: "1.5"
     worker: "1.3"
     learning.policy: "1.2"
 
@@ -267,6 +378,9 @@ prompts:
 agent_runtime:
   coordinator:
     max_iterations: 12
+    # Keep the turn ceiling aligned with the long-thinking model preset.
+    # First-token and stream-idle limits are enforced separately by the model
+    # runtime and the Gateway activity monitor.
     max_duration_s: 600
     max_tokens: 128000
     max_tool_calls: 32
@@ -290,6 +404,8 @@ tools:
         - TaskStop
         - read_local_file
         - get_current_time
+        - get_knowledge_book_context
+        - academic_search
         # Phase 4 model-facing Sandbox surface. High-risk entries still need
         # a ToolRuntime grant and explicit confirmation at invocation time.
         - sandbox_status
@@ -301,6 +417,8 @@ tools:
       allowed_capabilities:
         - context.manage
         - nlp.analyze
+        - academic.search
+        - knowledge_book.read
       denied_capabilities:
         - business.write
     worker:
@@ -331,6 +449,7 @@ tools:
   web:
     enabled: true
     proxy_url: ""                          # 只允许运维配置
+    proxy_url_env: "HTTPS_PROXY"           # 显式信任运维注入的出站代理
     user_agent: "Nova/1.0 (+web-fetch)"
     network:
       connect_timeout_s: 5
@@ -368,12 +487,51 @@ tools:
       language_default: auto
       confidence_threshold: 0.75
     vlm:
+      # Fixed application route; model profile overrides cannot change it.
       model_route: vision-worker
       max_image_bytes: 6000000
       send_ocr_context: true
+      # Fallback billing tiers when the Provider omits visual Token details.
+      # The current VLM path sends the validated upload bytes without resizing,
+      # so these thresholds apply to the decoded dimensions actually sent.
+      standard_image_max_pixels: 1048576
+      high_image_max_pixels: 4194304
     result:
       max_chars: 20000
       retain_raw_ocr: true
+  academic:
+    enabled: true
+    max_results: 5
+    search_cache_ttl_s: 86400
+    metadata_cache_ttl_s: 2592000
+    arxiv:
+      enabled: true
+      base_url: "https://export.arxiv.org/api/query"
+      min_interval_s: 3
+      timeout_s: 15
+    semantic_scholar:
+      enabled: true
+      base_url: "https://api.semanticscholar.org/graph/v1"
+      api_key_env: "SEMANTIC_SCHOLAR_API_KEY"
+      timeout_s: 10
+    crossref:
+      enabled: false
+      base_url: "https://api.crossref.org"
+      mailto_env: "ACADEMIC_CROSSREF_MAILTO"
+      timeout_s: 10
+    reliability:
+      # Without a Redis URL, one local process uses its in-memory limiter/cache.
+      # Once configured, Redis limiter failure pauses arXiv; other providers and
+      # the in-memory cache remain available.
+      redis_enabled: true
+      redis_url_env: "NLP_AGENT_REDIS_URL"
+      redis_key_prefix: "nova:academic"
+      redis_operation_timeout_s: 1
+      circuit_failure_threshold: 3
+      circuit_cooldown_s: 60
+      retry_attempts: 2
+      retry_base_delay_s: 0.5
+      retry_max_delay_s: 4
   # 示例：
   # mcp_servers:
   #   filesystem:

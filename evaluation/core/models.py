@@ -25,6 +25,7 @@ class Expectation(BaseModel):
     required_wait_mode: Literal["all", "any", "quorum"] | None = None
     orchestration_mode: Literal["parallel", "sequential"] | None = None
     final_response_terms: list[str] = Field(default_factory=list)
+    require_citation_integrity: bool = False
 
 
 class EvaluationCase(BaseModel):
@@ -57,6 +58,7 @@ class ToolCallEvidence(BaseModel):
     argument_keys: tuple[str, ...] = ()
     duration_ms: int = 0
     worker_id: str | None = None
+    result_urls: tuple[str, ...] = ()
 
 
 class WorkerEvidence(BaseModel):

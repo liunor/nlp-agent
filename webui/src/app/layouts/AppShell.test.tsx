@@ -4,6 +4,13 @@ import { render, screen } from "@testing-library/react";
 
 import { AppShell } from "./AppShell";
 
+vi.mock("@/platform/auth/AuthContext", () => ({
+  useAuth: () => ({
+    isAuthExpired: false,
+    login: async () => undefined,
+  }),
+}));
+
 const stylesheet = readFileSync("src/app/styles.css", "utf8");
 
 describe("student ICP record bar", () => {

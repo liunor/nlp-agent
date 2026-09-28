@@ -19,7 +19,7 @@ from server.tools.vision.contracts import (
     ImageCitation,
     OCRBlock,
     OCRResult,
-    OCRTableCell,
+    TableDataCell,
     TableResult,
     VisionModelResult,
     VisionErrorCode,
@@ -85,7 +85,7 @@ class MockVLMProvider:
             table = TableResult(
                 markdown="| A |\n|---|\n| 1 |",
                 cells=[
-                    OCRTableCell(
+                    TableDataCell(
                         cell_id="cell-1",
                         row=0,
                         column=0,
@@ -251,13 +251,62 @@ async def test_auto_uses_injected_signals_for_route(tmp_path: Path) -> None:
     service = ImageAnalyzeService(
         resolver=resolver,
         ocr_provider=ocr,
-        signal_provider=StaticSignalProvider(VisionSignals(text_coverage=0.4)),
+        signal_provider=StaticSignalProvider(VisionSignals(text_coverage=0.4, has_text_layout=True)),
     )
 
     response = await service.analyze(ImageAnalyzeInput(image=str(path), task="auto"))
 
     assert (response.task_executed, response.route) == ("ocr", "ocr")
     assert ocr.calls == 1
+
+
+async def test_auto_question_over_dense_text_uses_ocr_and_vlm(
+    tmp_path: Path,
+) -> None:
+    path, resolver = _image(tmp_path)
+    ocr = MockOCRProvider(text="合同金额 100 元")
+    vlm = MockVLMProvider(summary="合同金额是 100 元")
+    service = ImageAnalyzeService(
+        resolver=resolver,
+        ocr_provider=ocr,
+        vlm_provider=vlm,
+        signal_provider=StaticSignalProvider(VisionSignals(text_coverage=0.4, has_text_layout=True)),
+    )
+
+    response = await service.analyze(
+        ImageAnalyzeInput(
+            image=str(path),
+            task="auto",
+            question="合同金额是多少？",
+        )
+    )
+
+    assert (response.task_executed, response.route) == ("question", "fusion")
+    assert ocr.calls == 1
+    assert vlm.calls[0]["question"] == "合同金额是多少？"
+    assert vlm.calls[0]["ocr_context"] is response.ocr
+
+
+async def test_question_response_prefers_answer_over_summary(tmp_path: Path) -> None:
+    path, resolver = _image(tmp_path)
+
+    class AnswerVLMProvider(MockVLMProvider):
+        async def analyze(self, *args, **kwargs):
+            await super().analyze(*args, **kwargs)
+            return VisionModelResult(
+                summary="简短摘要",
+                answer="这是针对用户问题的直接答案。",
+            )
+
+    service = ImageAnalyzeService(
+        resolver=resolver,
+        vlm_provider=AnswerVLMProvider(),
+    )
+    response = await service.analyze(
+        ImageAnalyzeInput(image=str(path), task="question", question="答案是什么？")
+    )
+
+    assert "这是针对用户问题的直接答案。" in response.summary
 
 
 async def test_service_truncates_text_at_effective_limit(tmp_path: Path) -> None:

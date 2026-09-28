@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import http from "node:http";
@@ -62,7 +63,7 @@ function networkFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise
       });
     });
     request.once("error", reject);
-    request.setTimeout(1_000, () => request.destroy(new Error("HTTP request timed out")));
+    request.setTimeout(5_000, () => request.destroy(new Error("HTTP request timed out")));
     if (typeof init.body === "string") request.write(init.body);
     request.end();
   });
@@ -76,8 +77,9 @@ function waitUntil<T>(subscribe: (resolve: (value: T) => void) => void, timeoutM
 }
 
 describe.sequential("real frontend API client to FastAPI integration", () => {
-  const integrationUsername = process.env.PRO_NLP_INTEGRATION_USERNAME ?? "integration";
-  const integrationPassword = process.env.PRO_NLP_INTEGRATION_PASSWORD ?? "integration-password";
+  const testRunId = randomUUID().replaceAll("-", "");
+  const integrationUsername = process.env.PRO_NLP_INTEGRATION_USERNAME ?? `integrationtest${testRunId.slice(0, 24)}`;
+  const integrationPassword = process.env.PRO_NLP_INTEGRATION_PASSWORD ?? `Integration-${testRunId}!`;
   let serverProcess: ChildProcess;
   let origin = "";
   let cookie = "";
@@ -93,7 +95,15 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
       : path.join(repositoryRoot, ".venv", "bin", "python");
     const python = process.env.PRO_NLP_PYTHON ?? (existsSync(virtualEnvironmentPython) ? virtualEnvironmentPython : "python");
     const script = path.join(repositoryRoot, "tests", "support", "run_web_api_server.py");
-    serverProcess = spawn(python, [script, String(port)], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    serverProcess = spawn(python, [script, String(port)], {
+      cwd: repositoryRoot,
+      // This test exercises the real HTTP/WebSocket recovery path with the
+      // deterministic FakeEngine. No standalone Redis worker is started, so
+      // keep execution in-process while retaining the real MySQL repository.
+      env: { ...process.env, PRO_NLP_INTEGRATION_USERNAME: integrationUsername, PRO_NLP_INTEGRATION_PASSWORD: integrationPassword, NLP_AGENT_GATEWAY_TRANSPORT: "inprocess" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
     serverProcess.stdout?.on("data", (chunk: Buffer) => { serverStdout += chunk.toString(); });
     serverProcess.stderr?.on("data", (chunk: Buffer) => { serverStderr += chunk.toString(); });
     try {
@@ -167,6 +177,7 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
     let connectionCount = 0;
     let firstConnectionObservedAck = false;
     const sentChatRequestIds: string[] = [];
+    const disconnectRequestId = `request_disconnect_${testRunId}`;
 
     class InterruptingWebSocket {
       static readonly CONNECTING = NetworkWebSocket.CONNECTING;
@@ -183,7 +194,7 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
         this.socket.on("message", (data) => {
           const value = data.toString();
           const event = JSON.parse(value) as { type?: string; request_id?: string };
-          if (this.connectionNumber === 1 && event.type === "command.ack" && event.request_id === "request_disconnect_1") {
+          if (this.connectionNumber === 1 && event.type === "command.ack" && event.request_id === disconnectRequestId) {
             firstConnectionObservedAck = true;
           }
           this.onmessage?.({ data: value });
@@ -220,17 +231,18 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
         (status) => {
           if (status === "connected" && dropFirstChat) {
             client.setSession(session.session_id);
-            client.sendChat(session.session_id, "integration disconnect", "request_disconnect_1");
+            client.sendChat(session.session_id, "integration disconnect", disconnectRequestId);
           }
         },
       );
       client.connect();
     });
 
-    expect(await completed).toMatchObject({ content: "answer:integration disconnect" });
+    const completedPayload = await completed;
+    expect(completedPayload).toMatchObject({ content: "answer:integration disconnect" });
     expect(firstConnectionObservedAck).toBe(false);
     expect(connectionCount).toBeGreaterThanOrEqual(2);
-    expect(sentChatRequestIds).toEqual(["request_disconnect_1", "request_disconnect_1"]);
+    expect(sentChatRequestIds).toEqual([disconnectRequestId, disconnectRequestId]);
     const turns = (await api.listTurns(session.session_id)).items;
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ status: "completed", final_text: "answer:integration disconnect" });

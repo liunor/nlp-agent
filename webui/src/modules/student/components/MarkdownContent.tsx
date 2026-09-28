@@ -1,4 +1,4 @@
-import { Check, Copy, ExternalLink, MessageCircleQuestion } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, FileText, MessageCircleQuestion } from "lucide-react";
 import { Children, Fragment, isValidElement, lazy, memo, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { renderToString } from "katex";
 import ReactMarkdown from "react-markdown";
@@ -8,6 +8,10 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 import "katex/dist/katex.min.css";
+
+import type { LearningBookFile } from "@/shared/types";
+
+import { KnowledgeBookPromptComposer } from "./KnowledgeBookPromptComposer";
 
 const LazyCode = lazy(async () => {
   const [{ default: SyntaxHighlighter }, { default: oneLight }] = await Promise.all([
@@ -22,8 +26,33 @@ const LazyCode = lazy(async () => {
 });
 
 export interface MarkdownCodeActions {
-  onAskNova?: (code: string, language: string) => void;
+  onAskNova?: (code: string, language: string, prompt: string) => void;
   onOpenInSandbox?: (code: string, language: string) => void;
+}
+
+function formatBookFileSize(sizeBytes: number): string {
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function MarkdownBookFileCard({ file, onPreview }: { file: LearningBookFile; onPreview?: (file: LearningBookFile) => void }) {
+  const preview = onPreview
+    ? <button type="button" className="knowledge-book-file-preview" onClick={() => onPreview(file)} aria-label={`预览教材文件：${file.display_name}`} title="在文件工具中预览">
+      <strong>{file.display_name}</strong>
+      <span>{file.media_type} · {formatBookFileSize(file.size_bytes)}</span>
+    </button>
+    : <a className="knowledge-book-file-preview" href={file.preview_url} target="_blank" rel="noopener noreferrer" aria-label={`预览教材文件：${file.display_name}`}>
+      <strong>{file.display_name}</strong>
+      <span>{file.media_type} · {formatBookFileSize(file.size_bytes)}</span>
+    </a>;
+  return <span className="knowledge-book-file markdown-book-file-card" role="group" aria-label={`教材文件：${file.display_name}`}>
+    <FileText size={18} aria-hidden="true" />
+    {preview}
+    <a className="knowledge-book-file-download" href={file.download_url} download aria-label={`下载教材附件：${file.display_name}`} title="下载到本地">
+      <Download size={16} aria-hidden="true" />
+    </a>
+  </span>;
 }
 
 async function copyText(text: string): Promise<void> {
@@ -45,6 +74,7 @@ async function copyText(text: string): Promise<void> {
 
 function LessonCodeBlock({ code, language, actions, streaming = false }: { code: string; language: string; actions?: MarkdownCodeActions; streaming?: boolean }) {
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [askOpen, setAskOpen] = useState(false);
   const [codeReady, setCodeReady] = useState(() => typeof IntersectionObserver === "undefined");
   const codeRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -89,13 +119,17 @@ function LessonCodeBlock({ code, language, actions, streaming = false }: { code:
 
   const supportsLessonActions = /^(?:python|pytorch|py)$/i.test(language);
   const lessonActions = supportsLessonActions ? actions : undefined;
+  const submitAsk = (prompt: string) => {
+    lessonActions?.onAskNova?.(code, language, prompt);
+    setAskOpen(false);
+  };
   return <div ref={codeRef} className="code-shell">
     <div className="code-toolbar">
       <div className="code-label">{language}</div>
       <div className="code-actions">
         <button className="code-copy-button" type="button" aria-label={`${copyStatus === "copied" ? "已复制" : "复制"} ${language} 代码`} onClick={() => void copy()}>{copyStatus === "copied" ? <Check size={14} /> : <Copy size={14} />}<span className="code-action-text">{copyStatus === "copied" ? "已复制" : "复制"}</span></button>
         {lessonActions && <>
-        {lessonActions.onAskNova && <button type="button" aria-label="询问 Nova" onClick={() => lessonActions.onAskNova?.(code, language)}><MessageCircleQuestion size={13} />询问 Nova</button>}
+        {lessonActions.onAskNova && <button type="button" aria-label="询问 Nova" aria-expanded={askOpen} onClick={() => setAskOpen((open) => !open)}><MessageCircleQuestion size={13} />询问 Nova</button>}
         {lessonActions.onOpenInSandbox && <button type="button" aria-label="在沙箱中打开" onClick={() => lessonActions.onOpenInSandbox?.(code, language)}><ExternalLink size={13} />在沙箱中打开</button>}
         </>}
         <span className="sr-only" aria-live="polite">{copyStatus === "copied" ? `已复制 ${language} 代码` : copyStatus === "error" ? `复制 ${language} 代码失败` : ""}</span>
@@ -103,6 +137,7 @@ function LessonCodeBlock({ code, language, actions, streaming = false }: { code:
       </div>
     </div>
     {codeReady && !streaming ? <Suspense fallback={<pre><code>{code}</code></pre>}><LazyCode language={language} code={code} /></Suspense> : <pre className="code-lazy-fallback"><code>{code}</code></pre>}
+    {lessonActions?.onAskNova && askOpen && <KnowledgeBookPromptComposer className="code-ask-composer" ariaLabel="询问 Nova" placeholder="这段代码是什么意思？" onSubmit={submitAsk} />}
   </div>;
 }
 
@@ -454,16 +489,57 @@ function normalizeLatexDelimiters(markdown: string): string {
   return result + normalizeTextOutsideCode(markdown.slice(cursor));
 }
 
-function isSameOriginMarkdownLink(href: string | undefined): href is string {
+function isSafeMarkdownLink(href: string | undefined): href is string {
   if (!href) return false;
   if (href.startsWith("#")) return true;
-  if (!href.startsWith("/")) return false;
   if (/\\|%5c/i.test(href)) return false;
   try {
-    return new URL(href, window.location.href).origin === window.location.origin;
+    const url = new URL(href, window.location.href);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (href.startsWith("/")) return url.origin === window.location.origin;
+    return /^https?:\/\//i.test(href) && !url.username && !url.password && !url.port;
   } catch {
     return false;
   }
+}
+
+function isExternalMarkdownLink(href: string): boolean {
+  try {
+    return /^https?:\/\//i.test(href) && new URL(href, window.location.href).origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+export const TRUSTED_ACADEMIC_HOSTS = new Set([
+  "arxiv.org",
+  "doi.org",
+  "aclanthology.org",
+  "www.semanticscholar.org",
+  "scholar.google.com",
+]);
+
+export function normalizeTrustedAcademicLink(href: string | undefined): string | null {
+  if (!href) return null;
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "https:"
+      || url.username
+      || url.password
+      || url.port
+      || !TRUSTED_ACADEMIC_HOSTS.has(url.hostname.toLowerCase())) return null;
+    if (url.hostname.toLowerCase() === "www.semanticscholar.org") {
+      url.searchParams.set("utm_source", "api");
+      return url.toString();
+    }
+    return href;
+  } catch {
+    return null;
+  }
+}
+
+export function isTrustedAcademicLink(href: string | undefined): href is string {
+  return normalizeTrustedAcademicLink(href) !== null;
 }
 
 function isSafeMarkdownImage(src: string | undefined, allowDataImages = false): src is string {
@@ -491,7 +567,7 @@ export function stripInternalChatMetadata(content: string): string {
   return content.replace(/\s*<!--\s*guided-result\s*:\s*(?:\{[\s\S]*?\}\s*-->|[\s\S]*$)/gi, "").trimEnd();
 }
 
-export function MarkdownContent({ children, streaming = false, streamRenderIntervalMs = 30, headingIds, headingIdsByLine, codeActions, allowDataImages = false }: { children: string; streaming?: boolean; streamRenderIntervalMs?: number; headingIds?: string[]; headingIdsByLine?: Record<number, string>; codeActions?: MarkdownCodeActions; allowDataImages?: boolean }) {
+export function MarkdownContent({ children, streaming = false, streamRenderIntervalMs = 30, headingIds, headingIdsByLine, codeActions, allowDataImages = false, bookFileLinks, onPreviewBookFile }: { children: string; streaming?: boolean; streamRenderIntervalMs?: number; headingIds?: string[]; headingIdsByLine?: Record<number, string>; codeActions?: MarkdownCodeActions; allowDataImages?: boolean; bookFileLinks?: Record<string, LearningBookFile>; onPreviewBookFile?: (file: LearningBookFile) => void }) {
   const renderedChildren = useThrottledValue(children, streaming, Math.max(0, streamRenderIntervalMs));
   const renderedMarkdown = useMemo(() => {
     if (streaming) return null;
@@ -542,9 +618,24 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
             if (!match) return <code className={className} {...props}>{value}</code>;
             return <LessonCodeBlock language={match[1]} code={content} actions={codeActions} streaming={streaming} />;
           },
-          a: ({ children: value, href, ...props }) => isSameOriginMarkdownLink(href)
-            ? <a {...props} href={href}>{value}</a>
-            : <span className="external-link-removed">{value}</span>,
+          a: ({ children: value, href, ...props }) => {
+            const resolvedBookFile = href ? bookFileLinks?.[href.toLowerCase()] : undefined;
+            if (resolvedBookFile) {
+              return <MarkdownBookFileCard file={resolvedBookFile} onPreview={onPreviewBookFile} />;
+            }
+            if (isSafeMarkdownLink(href)) {
+              if (isExternalMarkdownLink(href)) {
+                const academicHref = normalizeTrustedAcademicLink(href) ?? href;
+                return <a {...props} href={academicHref} target="_blank" rel="noopener noreferrer">{value}</a>;
+              }
+              return <a {...props} href={href}>{value}</a>;
+            }
+            const academicHref = normalizeTrustedAcademicLink(href);
+            if (academicHref) {
+              return <a {...props} href={academicHref} target="_blank" rel="noopener noreferrer">{value}</a>;
+            }
+            return <span className="external-link-removed">{value}</span>;
+          },
           img: ({ node, src, alt, title, ...props }) => {
             void node;
             const imageWidth = readMarkdownImageWidth(title);
@@ -557,7 +648,7 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
         {normalizeLatexDelimiters(stripInternalChatMetadata(renderedChildren) || (streaming ? "" : "暂无内容"))}
       </ReactMarkdown>
     );
-  }, [allowDataImages, codeActions, headingIds, headingIdsByLine, renderedChildren, streaming]);
+  }, [allowDataImages, bookFileLinks, codeActions, headingIds, headingIdsByLine, onPreviewBookFile, renderedChildren, streaming]);
 
   return (
     <div className="markdown-content prose prose-zinc max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-pre:p-0">

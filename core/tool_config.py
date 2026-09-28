@@ -31,6 +31,7 @@ class ToolPoliciesConfig(StrictConfigModel):
                 "TaskStop",
                 "read_local_file",
                 "get_current_time",
+                "get_knowledge_book_context",
             },
             allowed_capabilities={"context.manage"},
             denied_capabilities={"business.write"},
@@ -149,6 +150,9 @@ class WebFetchConfig(StrictConfigModel):
 class WebToolsConfig(StrictConfigModel):
     enabled: bool = True
     proxy_url: str = ""
+    proxy_url_env: str = Field(
+        default="", pattern=r"^$|^[A-Z][A-Z0-9_]{1,79}$"
+    )
     user_agent: str = "Nova/1.0 (+web-fetch)"
     network: WebNetworkConfig = Field(default_factory=WebNetworkConfig)
     fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
@@ -177,17 +181,40 @@ class VisionOCRConfig(StrictConfigModel):
 
 
 class VisionVLMConfig(StrictConfigModel):
-    model_route: str = "vision-worker"
+    # Image understanding is an application service, not a chat-profile
+    # capability.  Keep one route so profile changes cannot swap providers.
+    model_route: Literal["vision-worker"] = "vision-worker"
     max_image_bytes: int = Field(default=6_000_000, ge=1_024, le=100_000_000)
     send_ocr_context: bool = True
+    standard_image_max_pixels: int = Field(
+        default=1_048_576, ge=2_304, le=200_000_000
+    )
+    high_image_max_pixels: int = Field(
+        default=4_194_304, ge=2_304, le=200_000_000
+    )
 
-    @field_validator("model_route")
-    @classmethod
-    def validate_model_route(cls, value: str) -> str:
-        route = value.strip()
-        if not route:
-            raise ValueError("vision VLM model route cannot be blank")
-        return route
+    @model_validator(mode="after")
+    def validate_image_unit_tiers(self) -> "VisionVLMConfig":
+        if self.high_image_max_pixels <= self.standard_image_max_pixels:
+            raise ValueError(
+                "vision VLM high_image_max_pixels must exceed "
+                "standard_image_max_pixels"
+            )
+        return self
+
+    def fallback_image_units(self, *, width: int, height: int, task: str) -> int:
+        """Map the application-sent image dimensions and mode to 1/2/3 units."""
+
+        pixels = width * height
+        if pixels <= self.standard_image_max_pixels:
+            units = 1
+        elif pixels <= self.high_image_max_pixels:
+            units = 2
+        else:
+            units = 3
+        if task in {"table", "chart", "formula"}:
+            return 3
+        return units
 
 
 class VisionResultConfig(StrictConfigModel):
@@ -224,12 +251,74 @@ class VisionToolsConfig(StrictConfigModel):
         return self
 
 
+class AcademicArxivConfig(StrictConfigModel):
+    enabled: bool = True
+    base_url: str = "https://export.arxiv.org/api/query"
+    min_interval_s: float = Field(default=3.0, ge=3.0)
+    timeout_s: float = Field(default=15.0, gt=0, le=60)
+
+
+class AcademicSemanticScholarConfig(StrictConfigModel):
+    enabled: bool = True
+    base_url: str = "https://api.semanticscholar.org/graph/v1"
+    api_key_env: str = "SEMANTIC_SCHOLAR_API_KEY"
+    timeout_s: float = Field(default=10.0, gt=0, le=60)
+
+
+class AcademicCrossrefConfig(StrictConfigModel):
+    enabled: bool = True
+    base_url: str = "https://api.crossref.org"
+    mailto_env: str = "ACADEMIC_CROSSREF_MAILTO"
+    timeout_s: float = Field(default=10.0, gt=0, le=60)
+
+
+class AcademicReliabilityConfig(StrictConfigModel):
+    redis_enabled: bool = True
+    redis_url_env: str = Field(
+        default="NLP_AGENT_REDIS_URL", pattern=r"^[A-Z][A-Z0-9_]{1,79}$"
+    )
+    redis_key_prefix: str = Field(
+        default="nova:academic",
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9:_-]+$",
+    )
+    redis_operation_timeout_s: float = Field(default=1.0, gt=0, le=10)
+    circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    circuit_cooldown_s: float = Field(default=60.0, gt=0, le=3600)
+    retry_attempts: int = Field(default=1, ge=1, le=3)
+    retry_base_delay_s: float = Field(default=0.5, ge=0, le=10)
+    retry_max_delay_s: float = Field(default=4.0, ge=0, le=30)
+
+    @model_validator(mode="after")
+    def validate_retry_delay(self) -> "AcademicReliabilityConfig":
+        if self.retry_max_delay_s < self.retry_base_delay_s:
+            raise ValueError("retry_max_delay_s must be >= retry_base_delay_s")
+        return self
+
+
+class AcademicToolsConfig(StrictConfigModel):
+    enabled: bool = True
+    max_results: int = Field(default=5, ge=1, le=10)
+    search_cache_ttl_s: int = Field(default=86400, ge=0, le=604800)
+    metadata_cache_ttl_s: int = Field(default=2592000, ge=0)
+    arxiv: AcademicArxivConfig = Field(default_factory=AcademicArxivConfig)
+    semantic_scholar: AcademicSemanticScholarConfig = Field(
+        default_factory=AcademicSemanticScholarConfig
+    )
+    crossref: AcademicCrossrefConfig = Field(default_factory=AcademicCrossrefConfig)
+    reliability: AcademicReliabilityConfig = Field(
+        default_factory=AcademicReliabilityConfig
+    )
+
+
 class ToolRuntimeConfig(StrictConfigModel):
     policies: ToolPoliciesConfig = Field(default_factory=ToolPoliciesConfig)
     custom: CustomToolsConfig = Field(default_factory=CustomToolsConfig)
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     vision: VisionToolsConfig = Field(default_factory=VisionToolsConfig)
+    academic: AcademicToolsConfig = Field(default_factory=AcademicToolsConfig)
 
 
 class WorkerProfileSpec(StrictConfigModel):

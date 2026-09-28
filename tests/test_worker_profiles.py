@@ -266,7 +266,7 @@ def test_pinned_coordinator_and_worker_prompt_versions_exist():
         (root / "configs" / "agent_config.yaml").read_text(encoding="utf-8")
     )
     versions = raw["prompts"]["versions"]
-    assert versions["coordinator"] == "1.3"
+    assert versions["coordinator"] == "1.5"
     assert versions["worker"] == "1.3"
     registry = PromptRegistry(versions=versions)
     coordinator_spec, coordinator_template = registry.load("coordinator")
@@ -275,6 +275,94 @@ def test_pinned_coordinator_and_worker_prompt_versions_exist():
     assert "{{worker_profiles}}" in coordinator_template
     assert spec.version == versions["worker"]
     assert "{{today}}" in template
+
+
+def test_worker_kv_cache_prefix_excludes_every_runtime_field():
+    from server.tools.worker_tool import _build_worker_initial_messages
+
+    first = _build_worker_initial_messages(
+        "first profile SOP",
+        "first task directive",
+        current_time="2026-09-08 08:00:00 Tuesday",
+    )
+    second = _build_worker_initial_messages(
+        "second profile SOP",
+        "second task directive",
+        current_time="2026-09-08 09:00:00 Tuesday",
+    )
+
+    assert first[0].content == second[0].content
+    for dynamic_value in (
+        "first profile SOP",
+        "second profile SOP",
+        "first task directive",
+        "second task directive",
+        "2026-09-08 08:00:00 Tuesday",
+        "2026-09-08 09:00:00 Tuesday",
+    ):
+        assert dynamic_value not in str(first[0].content)
+        assert dynamic_value not in str(second[0].content)
+
+    assert "first profile SOP" in str(first[1].content)
+    assert "second profile SOP" in str(second[1].content)
+    assert "2026-09-08 08:00:00 Tuesday" in str(first[2].content)
+    assert "2026-09-08 09:00:00 Tuesday" in str(second[2].content)
+    assert "first task directive" in str(first[3].content)
+    assert "second task directive" in str(second[3].content)
+
+
+def test_background_worker_rebinds_inherited_coordinator_usage():
+    from core.model_runtime.usage import (
+        UsageAttributionContext,
+        bind_usage_attribution,
+        worker_usage_attribution,
+    )
+
+    parent = UsageAttributionContext(
+        request_id="turn-1",
+        user_id="user-1",
+        workspace_id="workspace-1",
+        conversation_id="session-1",
+        turn_id="turn-1",
+        reservation_id="reservation-1",
+        purpose="coordinator",
+    )
+
+    with bind_usage_attribution(parent):
+        worker = worker_usage_attribution("worker-research-1")
+
+    assert worker is not None
+    assert worker.request_id == parent.request_id
+    assert worker.user_id == parent.user_id
+    assert worker.workspace_id == parent.workspace_id
+    assert worker.reservation_id == parent.reservation_id
+    assert worker.worker_id == "worker-research-1"
+    assert worker.purpose == "worker"
+
+
+def test_background_worker_without_parent_usage_keeps_existing_fallback():
+    from core.model_runtime.usage import worker_usage_attribution
+
+    assert worker_usage_attribution("worker-research-1") is None
+
+
+def test_coordinator_prompt_v1_5_teaches_academic_search_routing():
+    root = Path(__file__).resolve().parents[1]
+    prompt = (root / "core" / "prompt_runtime" / "templates" / "coordinator.v1.5.md").read_text(encoding="utf-8")
+    assert "无法核验学术出处" in prompt
+    assert "不得凭记忆补写" in prompt
+    assert "只能引用成功来源实际返回" in prompt
+
+    assert "学术检索路由" in prompt
+    assert "必须先调用 academic_search" in prompt
+    assert "论文标题、作者、时间、Abstract 和 URL 只能使用工具返回字段" in prompt
+    assert "区分预印本首次提交时间与会议、期刊的正式出版时间" in prompt
+    assert "每个可点击论文链接都必须来自当前 academic_search 结果" in prompt
+    assert "Google Scholar 链接仅作为二次核验入口" in prompt
+    assert "技术报告必须先调用 academic_search" in prompt
+    assert "只寻找发布机构自身域名" in prompt
+    assert "再启动 web_reader 读取该完整 URL" in prompt
+    assert "{{worker_profiles}}" in prompt
 
 
 @pytest.mark.asyncio

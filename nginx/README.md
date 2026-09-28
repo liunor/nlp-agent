@@ -10,9 +10,28 @@ Browser -> Nginx :80/:443 -> nova-web :8765
                            `- /ws/v1  WebSocket
 ```
 
-Nova Monitor is not routed through Nginx, and Compose no longer publishes its
-port. Authentication, CSRF, RBAC, and sandbox authorization continue to run
-in Nova rather than Nginx.
+Nova Monitor is not routed through this per-environment Compose Nginx, and
+Compose no longer publishes its port publicly. In a domain deployment, the
+host Nginx terminates TLS and sends `/monitor/` to the monitor UI and
+`/monitor-api/` to the monitor API. The monitor frontend uses that separate
+API prefix so its `nlp_monitor_session` cookie cannot be confused with the
+main Web `nlp_session` cookie. Authentication, CSRF, RBAC, and sandbox
+authorization continue to run in Nova rather than Nginx.
+
+The host Nginx locations should preserve the `/monitor-api/` prefix externally
+and remove it before forwarding. For example, an upstream named
+`nova_monitor` can use:
+
+```nginx
+location ^~ /monitor-api/ {
+    proxy_pass http://nova_monitor/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
 
 ## HTTP/IP bootstrap
 

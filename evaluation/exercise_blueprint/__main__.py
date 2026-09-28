@@ -10,6 +10,7 @@ from evaluation.exercise_blueprint.dataset import load_exercise_dataset
 from evaluation.exercise_blueprint.http_executor import HttpExerciseGatewayExecutor
 from evaluation.exercise_blueprint.runner import ExerciseEvaluationRunner
 from evaluation.exercise_blueprint.student_simulator import FlashExerciseStudentSimulator
+from server.quota.bootstrap import configure_usage_reporter, shutdown_usage_reporter
 
 
 def parser() -> argparse.ArgumentParser:
@@ -28,28 +29,32 @@ def parser() -> argparse.ArgumentParser:
 async def run(args: argparse.Namespace) -> int:
     if not args.live:
         raise SystemExit("Real evaluation is disabled. Re-run with --live after confirming API cost.")
-    dataset, digest = load_exercise_dataset(args.suite)
-    cases = [case for case in dataset.cases if not args.case or case.id in args.case]
-    if not cases:
-        raise SystemExit("No exercise cases selected")
-    executor = HttpExerciseGatewayExecutor(args.web_url, workspace_id=args.workspace, suite_id=dataset.suite.id, timeout_s=args.timeout)
+    usage_reporter = configure_usage_reporter(required=True)
     try:
-        if args.provision_fixture:
-            await executor.provision_fixture(dataset.blueprint)
-        runner = ExerciseEvaluationRunner(executor, FlashExerciseStudentSimulator())
-        outcomes = []
-        for case in cases:
-            snapshot, architecture = await runner.run_case(case=case, blueprint=dataset.blueprint)
-            outcomes.append({"case_id": case.id, "snapshot": snapshot.model_dump(mode="json"), "architecture": architecture.model_dump(mode="json")})
+        dataset, digest = load_exercise_dataset(args.suite)
+        cases = [case for case in dataset.cases if not args.case or case.id in args.case]
+        if not cases:
+            raise SystemExit("No exercise cases selected")
+        executor = HttpExerciseGatewayExecutor(args.web_url, workspace_id=args.workspace, suite_id=dataset.suite.id, timeout_s=args.timeout)
+        try:
+            if args.provision_fixture:
+                await executor.provision_fixture(dataset.blueprint)
+            runner = ExerciseEvaluationRunner(executor, FlashExerciseStudentSimulator())
+            outcomes = []
+            for case in cases:
+                snapshot, architecture = await runner.run_case(case=case, blueprint=dataset.blueprint)
+                outcomes.append({"case_id": case.id, "snapshot": snapshot.model_dump(mode="json"), "architecture": architecture.model_dump(mode="json")})
+        finally:
+            await executor.close()
+        payload = {"run_id": executor.run_id, "suite_id": dataset.suite.id, "dataset_sha256": digest, "created_at": datetime.now().astimezone().isoformat(), "outcomes": outcomes, "verdict": "PASS" if all(item["architecture"]["verdict"] == "PASS" for item in outcomes) else "FAIL"}
+        target = args.output or args.suite.parent.parent.parent / "runs" / dataset.suite.id / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{executor.run_id[:8]}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(f"Saved exercise blueprint evaluation report: {target}")
+        return 0 if payload["verdict"] == "PASS" else 1
     finally:
-        await executor.close()
-    payload = {"run_id": executor.run_id, "suite_id": dataset.suite.id, "dataset_sha256": digest, "created_at": datetime.now().astimezone().isoformat(), "outcomes": outcomes, "verdict": "PASS" if all(item["architecture"]["verdict"] == "PASS" for item in outcomes) else "FAIL"}
-    target = args.output or args.suite.parent.parent.parent / "runs" / dataset.suite.id / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{executor.run_id[:8]}.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    print(f"Saved exercise blueprint evaluation report: {target}")
-    return 0 if payload["verdict"] == "PASS" else 1
+        shutdown_usage_reporter(usage_reporter)
 
 
 def main() -> None:

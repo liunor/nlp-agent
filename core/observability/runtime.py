@@ -24,7 +24,10 @@ from core.observability.models import (
     TokenUsage,
     TraceRecord,
 )
+from core.observability.redaction import redact_telemetry_mapping
+from core.observability.traces import derive_trace_identity
 from core.observability.mysql_repository import MySQLTelemetryRepository
+from core.observability.repository import TelemetryRepository
 from utils.logger import get_logger
 
 
@@ -35,8 +38,14 @@ def usage_from_metadata(metadata: dict[str, Any] | None) -> TokenUsage:
     data = metadata or {}
     input_tokens = int(data.get("input_tokens", data.get("prompt_tokens", 0)) or 0)
     output_tokens = int(data.get("output_tokens", data.get("completion_tokens", 0)) or 0)
-    cached_tokens = int(data.get("cached_tokens", data.get("input_token_details", {}).get("cache_read", 0)) or 0)
-    cache_miss_tokens = int(data.get("prompt_cache_miss_tokens", data.get("input_token_details", {}).get("cache_miss", 0)) or 0)
+    input_token_details = data.get("input_token_details") or {}
+    cached_tokens = data.get("prompt_cache_hit_tokens")
+    if cached_tokens is None:
+        cached_tokens = data.get("cached_tokens")
+    if cached_tokens is None:
+        cached_tokens = input_token_details.get("cache_read", 0)
+    cached_tokens = int(cached_tokens or 0)
+    cache_miss_tokens = int(data.get("prompt_cache_miss_tokens", input_token_details.get("cache_miss", 0)) or 0)
     reasoning_tokens = int(data.get("reasoning_tokens", data.get("output_token_details", {}).get("reasoning", 0)) or 0)
     total = int(data.get("total_tokens", input_tokens + output_tokens) or 0)
     return TokenUsage(
@@ -60,12 +69,13 @@ class Span(AbstractAsyncContextManager["Span"]):
         self.parent_span_id = parent_span_id
         self.worker_id = worker_id
         self.attempt = attempt
-        self.attributes = dict(attributes or {})
+        self.attributes = redact_telemetry_mapping(attributes)
         self.started_at = datetime.now(timezone.utc)
         self._started_perf = time.perf_counter()
         self._binding = None
         self.usage = TokenUsage()
         self.status = SpanStatus.RUNNING
+        self.ttft_ms: int | None = None
         self.error_kind: str | None = None
         self.error_message: str | None = None
 
@@ -79,7 +89,7 @@ class Span(AbstractAsyncContextManager["Span"]):
         if exc is not None:
             self.status = SpanStatus.CANCELLED if isinstance(exc, asyncio.CancelledError) else SpanStatus.ERROR
             self.error_kind = type(exc).__name__
-            self.error_message = str(exc)[:500]
+            self.error_message = None
         elif self.status == SpanStatus.RUNNING:
             self.status = SpanStatus.OK
         self.runtime.emit_span(self._record(completed=True))
@@ -94,10 +104,21 @@ class Span(AbstractAsyncContextManager["Span"]):
                    error_message: str | None = None) -> None:
         self.status = status
         self.error_kind = error_kind
-        self.error_message = error_message[:500] if error_message else None
+        # Error kinds and status are useful operational signals.  Provider and
+        # application messages may contain prompts, outputs, credentials or
+        # personal data, so they never cross the telemetry boundary.
+        self.error_message = None
 
     def annotate(self, **attributes: Any) -> None:
-        self.attributes.update(attributes)
+        sanitized = redact_telemetry_mapping(attributes)
+        if "ttft_ms" in sanitized:
+            try:
+                value = int(sanitized["ttft_ms"])
+            except (TypeError, ValueError):
+                value = -1
+            if value >= 0:
+                self.ttft_ms = value
+        self.attributes.update(sanitized)
 
     def _record(self, completed: bool = False) -> SpanRecord:
         return SpanRecord(
@@ -107,6 +128,7 @@ class Span(AbstractAsyncContextManager["Span"]):
             kind=self.kind, name=self.name, started_at=self.started_at,
             completed_at=datetime.now(timezone.utc) if completed else None,
             duration_ms=max(0, int((time.perf_counter() - self._started_perf) * 1000)) if completed else None,
+            ttft_ms=self.ttft_ms,
             status=self.status, attempt=self.attempt, usage=self.usage,
             error_kind=self.error_kind, error_message=self.error_message,
             attributes=self.attributes,
@@ -116,13 +138,16 @@ class Span(AbstractAsyncContextManager["Span"]):
 class TelemetryRuntime:
     def __init__(self, path: str | None = None, *, queue_size: int = 5000,
                  batch_size: int = 100, flush_interval_s: float = .25) -> None:
-        database_url = settings.NLP_AGENT_DATABASE_URL.strip()
-        if not database_url:
-            raise RuntimeError("NLP_AGENT_DATABASE_URL is required for MySQL observability")
-        self.repository = MySQLTelemetryRepository(database_url)
         if path is not None:
-            # Explicit test/reset instances are isolated from the process-wide production store.
-            self.repository.clear()
+            # An explicit path is an opt-in isolated store for tests and local
+            # tools. It must never construct or clear the process-wide MySQL
+            # repository.
+            self.repository = TelemetryRepository(path)
+        else:
+            database_url = settings.NLP_AGENT_DATABASE_URL.strip()
+            if not database_url:
+                raise RuntimeError("NLP_AGENT_DATABASE_URL is required for MySQL observability")
+            self.repository = MySQLTelemetryRepository(database_url)
         self.queue_size = queue_size
         self.batch_size = batch_size
         self.flush_interval_s = flush_interval_s
@@ -204,17 +229,28 @@ class TelemetryRuntime:
             event_id=uuid.uuid4().hex, level=level, name=name,
             trace_id=ctx.trace_id if ctx else None, span_id=ctx.span_id if ctx else None,
             session_id=ctx.session_id if ctx else None, turn_id=ctx.turn_id if ctx else None,
-            worker_id=ctx.worker_id if ctx else None, payload=dict(payload or {}),
+            worker_id=ctx.worker_id if ctx else None,
+            payload=redact_telemetry_mapping(payload),
         )
         self._emit(TelemetryEnvelope(kind="event", payload=event))
 
     def start_trace(self, context: TelemetryContext, *, source: str = "user",
                     attributes: dict[str, Any] | None = None) -> None:
+        trace_attributes = redact_telemetry_mapping(attributes)
+        identity = derive_trace_identity(
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            source=source,
+            channel=context.channel,
+            attributes=trace_attributes,
+        )
         record = TraceRecord(
             trace_id=context.trace_id, request_id=context.request_id,
             session_id=context.session_id, turn_id=context.turn_id,
+            chain_id=identity["chain_id"], chain_name=identity["chain_name"],
+            entrypoint=identity["entrypoint"],
             workspace_id=context.workspace_id, user_id=context.user_id,
-            channel=context.channel, source=source, attributes=dict(attributes or {}),
+            channel=context.channel, source=source, attributes=trace_attributes,
         )
         self._trace_starts[context.trace_id] = (record, time.perf_counter())
         self._trace_usage[context.trace_id] = TokenUsage()
@@ -243,8 +279,11 @@ class TelemetryRuntime:
             "ttft_ms": ttft_ms if ttft_ms is not None else self._trace_ttft.pop(context.trace_id, None),
             "status": status, "usage": usage or self._trace_usage.pop(context.trace_id, original.usage),
             "error_kind": type(error).__name__ if error else None,
-            "error_message": str(error)[:500] if error else None,
-            "attributes": {**original.attributes, **(attributes or {})},
+            "error_message": None,
+            "attributes": {
+                **original.attributes,
+                **redact_telemetry_mapping(attributes),
+            },
         })
         self._emit(TelemetryEnvelope(kind="trace", payload=record))
 
@@ -314,6 +353,7 @@ class TelemetryRuntime:
             **self.repository.health(), "queue_size": self._queue.qsize() if self._queue else 0,
             "queue_capacity": self.queue_size, "dropped_events": self.dropped_events,
             "live_subscribers": len(self._subscribers),
+            "active_traces": len(self._trace_starts),
         }
 
 

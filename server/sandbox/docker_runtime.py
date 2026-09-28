@@ -9,7 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 import json
+import os
 import re
+import shutil
 from uuid import uuid4
 
 from .runtime_profile import DEFAULT_SANDBOX_RUNTIME_LIMITS
@@ -17,6 +19,36 @@ from .runtime_profile import DEFAULT_SANDBOX_RUNTIME_LIMITS
 
 DOCKER_COMMAND_TIMEOUT_SECONDS = 15
 PROCESS_REAP_TIMEOUT_SECONDS = 2
+
+
+def _available_memory_mb() -> float | None:
+    """Return Linux host available memory when the platform exposes it.
+
+    ``SC_AVPHYS_PAGES`` reports immediately free pages on Linux, not the
+    reclaimable memory represented by ``MemAvailable``.  Using the former
+    makes a healthy host with filesystem cache look exhausted and prevents
+    every warm-runtime refill.  Prefer the kernel's ``MemAvailable`` metric
+    and retain the sysconf path for non-Linux platforms.
+    """
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as meminfo:
+            for line in meminfo:
+                key, separator, raw_value = line.partition(":")
+                if separator and key.strip() == "MemAvailable":
+                    value_kb = float(raw_value.strip().split()[0])
+                    if value_kb > 0:
+                        return value_kb / 1024
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        available_pages = os.sysconf("SC_AVPHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, OSError, ValueError):
+        return None
+    if available_pages <= 0 or page_size <= 0:
+        return None
+    return available_pages * page_size / (1024 * 1024)
 
 
 async def _kill_and_reap(process: asyncio.subprocess.Process) -> None:
@@ -60,6 +92,7 @@ class DockerRuntimeConfig:
     shm_size: str = f"{DEFAULT_SANDBOX_RUNTIME_LIMITS.shm_mb}m"
     runtime: str = "runsc"
     allow_local_image_id: bool = False
+    namespace: str = "local"
 
     def __post_init__(self) -> None:
         local_image_id = re.fullmatch(r"sha256:[0-9a-fA-F]{64}", self.image) is not None
@@ -67,6 +100,8 @@ class DockerRuntimeConfig:
             raise ValueError("sandbox runtime image must be pinned by immutable digest")
         if self.runtime != "runsc":
             raise ValueError("Phase 3 sandbox runtime must use gVisor runsc")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]", self.namespace) and not re.fullmatch(r"[a-z0-9]", self.namespace):
+            raise ValueError("sandbox namespace must be a lowercase Docker label value")
 
 
 class DockerRuntimeAdapter:
@@ -81,11 +116,23 @@ class DockerRuntimeAdapter:
         """Expose immutable image identity without leaking backend config."""
         return self.config.image
 
+    def host_resources(self) -> dict[str, float | None]:
+        """Expose only coarse host headroom needed by the Manager guard."""
+        disk = shutil.disk_usage("/")
+        return {
+            "available_memory_mb": _available_memory_mb(),
+            "disk_free_gb": disk.free / (1024**3),
+        }
+
     def create_command(self, *, name: str, claim_nonce: str) -> tuple[str, ...]:
         return (
             "docker", "run", "--detach", "--name", name,
             "--runtime", self.config.runtime,
-            "--label", "nova.sandbox.managed=true",
+            # Scope the managed marker to this deployment namespace.  A
+            # rolling upgrade can leave an older Manager on the same host;
+            # its legacy ``managed=true`` filter must not see this runtime.
+            "--label", f"nova.sandbox.managed={self.config.namespace}",
+            "--label", f"nova.sandbox.namespace={self.config.namespace}",
             "--label", "nova.sandbox.state=ready_unbound",
             "--read-only", "--network", "none", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges=true",
@@ -292,9 +339,11 @@ class DockerRuntimeAdapter:
         return json.loads(stdout.decode("utf-8"))
 
     async def managed_runtime_ids(self) -> set[str]:
-        """List only Manager-owned containers; never enumerate arbitrary Docker work."""
+        """List only this deployment's containers; unknown namespaces are untouched."""
         process = await asyncio.create_subprocess_exec(
-            "docker", "ps", "--all", "--no-trunc", "--quiet", "--filter", "label=nova.sandbox.managed=true",
+            "docker", "ps", "--all", "--no-trunc", "--quiet",
+            "--filter", f"label=nova.sandbox.managed={self.config.namespace}",
+            "--filter", f"label=nova.sandbox.namespace={self.config.namespace}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -302,3 +351,18 @@ class DockerRuntimeAdapter:
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
         return {line for line in stdout.decode("utf-8", "replace").splitlines() if line}
+
+    async def host_managed_runtime_count(self) -> int:
+        """Count all managed namespaces for the shared host budget guard."""
+        process = await asyncio.create_subprocess_exec(
+            "docker", "ps", "--all", "--no-trunc", "--quiet",
+            # ``label=key`` matches both legacy ``managed=true`` containers
+            # and namespace-scoped values used by the current Manager.
+            "--filter", "label=nova.sandbox.managed",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await _communicate(process)
+        if process.returncode != 0:
+            raise RuntimeError(stderr.decode("utf-8", "replace").strip())
+        return sum(bool(line.strip()) for line in stdout.decode("utf-8", "replace").splitlines())

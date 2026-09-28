@@ -1,6 +1,8 @@
 # 数据库迁移约定（Alembic）
 
-运行时 schema 仅由 Alembic 管理；应用不调用 `create_all`、不执行运行时 DDL。本文约定迁移脚本的编写规则。
+运行时 schema 仅由 Alembic 管理；应用不调用 `create_all`、不执行运行时 DDL。部署入口统一为 `python main.py bootstrap-db`：先执行 `alembic upgrade head`，再安装内置定价并验证生产覆盖。定价属于版本化运行数据，不写进 Alembic 迁移。
+
+`bootstrap-db` 可安全重复运行。系统创建的旧开放定价规则会在同一事务内闭合并切换到新版本；人工或来源不明的重叠规则不会被自动修改。配额开启时，冲突或缺失会返回非零退出码，Compose 的常驻服务因此不会启动；配额关闭时，缺失项会作为警告输出，相关用量保持 `pending`。
 
 ## RBAC 权限 / 角色播种必须幂等
 

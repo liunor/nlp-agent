@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 from sqlalchemy.dialects.mysql import DATETIME
 
 
-revision = "20260927_43_storage_quota_backfill"
+revision = "20260927_43_storage_backfill"
 down_revision = "20260927_42_storage_quota"
 branch_labels = None
 depends_on = None
@@ -70,7 +70,6 @@ def _add_upload_bytes(bind) -> None:
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
     uuid_type = sa.String(36, collation="ascii_bin")
     op.create_table(
         "nlp_storage_quota_audits",
@@ -95,6 +94,14 @@ def upgrade() -> None:
         "nlp_storage_quota_audits",
         ["actor_user_id", "created_at"],
     )
+
+    # The ledger rebuild reads existing rows and filesystem metadata.  It is
+    # intentionally online-only; offline SQL generation must still emit the
+    # schema changes without attempting SELECTs against a mock connection.
+    if context.is_offline_mode():
+        return
+
+    bind = op.get_bind()
 
     bind.execute(
         sa.text(

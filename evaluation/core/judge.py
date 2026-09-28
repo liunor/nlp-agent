@@ -1,13 +1,48 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
+from urllib.parse import urlsplit, urlunsplit
 
-from evaluation.core.models import CaseResult, EvaluationCase, TurnEvidence
+from evaluation.core.models import (
+    CaseResult,
+    EvaluationCase,
+    ToolCallEvidence,
+    TurnEvidence,
+)
 
 
 # These calls are runtime orchestration, not user-domain work. They remain in
 # validation evidence, but must not lower business tool routing quality.
 _ORCHESTRATION_TOOLS = frozenset({"spawn_worker", "send_message", "TaskStop", "SnipTool"})
+_ACADEMIC_HOSTS = frozenset(
+    {"arxiv.org", "doi.org", "aclanthology.org", "www.semanticscholar.org", "scholar.google.com"}
+)
+_URL_PATTERN = re.compile(r"https://[^\s<>\])}]+")
+
+
+def _normalized_academic_urls(text: str) -> set[str]:
+    urls: set[str] = set()
+    for raw in _URL_PATTERN.findall(text):
+        candidate = raw.rstrip(".,;:'\"")
+        try:
+            parsed = urlsplit(candidate)
+            if parsed.hostname not in _ACADEMIC_HOSTS:
+                continue
+            path = parsed.path.rstrip("/") or "/"
+            urls.add(urlunsplit(parsed._replace(path=path)))
+        except ValueError:
+            continue
+    return urls
+
+
+def _normalized_evidence_urls(calls: tuple[ToolCallEvidence, ...]) -> set[str]:
+    return {
+        normalized
+        for call in calls
+        for value in call.result_urls
+        for normalized in _normalized_academic_urls(value)
+    }
 
 
 def _is_ordered(expected: list[str], actual: list[str]) -> bool:
@@ -90,6 +125,14 @@ class ToolRoutingJudge:
         missing_terms = [term for term in expectation.final_response_terms if term.lower() not in final_lower]
         if missing_terms:
             failures.append(f"final_response_missing_terms:{','.join(missing_terms)}")
+        citation_integrity = 1.0
+        if expectation.require_citation_integrity:
+            final_urls = _normalized_academic_urls(final_text or "")
+            evidence_urls = _normalized_evidence_urls(calls)
+            unsupported_urls = sorted(final_urls - evidence_urls)
+            if unsupported_urls:
+                citation_integrity = 0.0
+                failures.append("citation_not_in_tool_result")
 
         business_order = [tool for tool in actual_order if tool not in _ORCHESTRATION_TOOLS]
         business_actual = set(business_order)
@@ -114,6 +157,6 @@ class ToolRoutingJudge:
             verdict = "CRITICAL_FAIL"
         return CaseResult(
             case_id=case.id, verdict=verdict, score=score, hard_failures=tuple(failures),
-            metrics={"tool_precision": precision, "tool_recall": recall, "status_score": status_score, "order_score": order_score, "efficiency": efficiency, "worker_count": float(len(evidence.workers)), "worker_success_rate": (sum(worker.status == "ok" for worker in evidence.workers) / len(evidence.workers) if evidence.workers else (1.0 if expectation.min_workers == 0 else 0.0)), "delegation_preference_met": float(delegation_preference_met)},
+            metrics={"tool_precision": precision, "tool_recall": recall, "status_score": status_score, "order_score": order_score, "efficiency": efficiency, "worker_count": float(len(evidence.workers)), "worker_success_rate": (sum(worker.status == "ok" for worker in evidence.workers) / len(evidence.workers) if evidence.workers else (1.0 if expectation.min_workers == 0 else 0.0)), "delegation_preference_met": float(delegation_preference_met), "citation_integrity": citation_integrity},
             trace_id=evidence.trace_id, tool_calls=calls, final_text=final_text,
         )

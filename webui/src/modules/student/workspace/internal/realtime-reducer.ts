@@ -23,6 +23,31 @@ function toolDetail(event: ServerEvent): string | undefined {
   return detail && !["tool", "tools"].includes(detail.toLowerCase()) ? detail : undefined;
 }
 
+function quotaErrorMessage(event: ServerEvent): string | undefined {
+  const messages: Record<string, string> = {
+    quota_daily_exhausted: "今日额度已用尽",
+    quota_weekly_exhausted: "本周额度已用尽",
+    quota_workspace_exhausted: "工作区额度已用尽",
+    quota_request_limit: "本次请求预计超过单次额度限制",
+    quota_concurrency_limit: "当前并发请求已达上限，请稍后重试",
+    quota_model_not_allowed: "当前模型不在可用额度范围内",
+    quota_policy_not_found: "暂未配置可用额度策略，请联系开发者",
+    admission_denied: "额度校验暂时无法完成，请稍后重试",
+  };
+  const code = typeof event.payload.code === "string" ? event.payload.code : "";
+  return messages[code] ?? undefined;
+}
+
+function reconcileCompletedContent(streamed: string, final: string): string {
+  if (!final || !streamed || final === streamed) return final || streamed;
+  // A completion event may carry the authoritative full response after only
+  // part of it was streamed. Accept that monotonic extension. If the payload
+  // is unrelated (for example a late fallback error), keep what the learner
+  // has already seen instead of replacing it with a surprising jump.
+  if (final.startsWith(streamed)) return final;
+  return streamed;
+}
+
 function activityLabel(event: ServerEvent): Pick<ActivityItem, "kind" | "label" | "status" | "detail"> | null {
   const detail = eventDetail(event);
   const readableTool = toolDetail(event);
@@ -43,6 +68,7 @@ interface RealtimeHandlerOptions {
   activeSessionRef: MutableRefObject<string | null>;
   pendingRequests: MutableRefObject<Map<string, string>>;
   inFlightTurnIds: MutableRefObject<Set<string>>;
+  cancelledTurnIds?: MutableRefObject<Set<string>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setActiveSessionId: Dispatch<SetStateAction<string | null>>;
   setRequestError: Dispatch<SetStateAction<string>>;
@@ -57,6 +83,7 @@ export function createRealtimeEventHandler({
   activeSessionRef,
   pendingRequests,
   inFlightTurnIds,
+  cancelledTurnIds,
   setMessages,
   setActiveSessionId,
   setRequestError,
@@ -94,7 +121,7 @@ export function createRealtimeEventHandler({
         void loadSessions();
         return;
       }
-      setRequestError(typeof event.payload.message === "string" ? event.payload.message : "请求未能提交，请稍后重试。");
+      setRequestError(quotaErrorMessage(event) ?? (typeof event.payload.message === "string" ? event.payload.message : "请求未能提交，请稍后重试。"));
       return;
     }
     if (["session.created", "session.deleted", "session.updated"].includes(event.type)) void loadSessions();
@@ -108,11 +135,23 @@ export function createRealtimeEventHandler({
     }
     if (!event.session_id || event.session_id !== activeSessionRef.current || !event.turn_id) return;
     if (event.type === "stream.gap") void loadTurns(event.session_id);
+    if (event.type === "chat.cancelled") cancelledTurnIds?.current.add(event.turn_id);
+    if (["chat.completed", "chat.message.completed", "chat.error", "chat.cancelled"].includes(event.type)) {
+      inFlightTurnIds.current.delete(event.turn_id);
+    }
+    const cancellationRequested = cancelledTurnIds?.current.has(event.turn_id) ?? false;
+    if ((event.type === "chat.completed" || event.type === "chat.message.completed") && cancellationRequested) return;
     if (event.type === "chat.completed" && typeof event.payload.content === "string") {
       updateSessionMeta(event.session_id, {
         summary: event.payload.content.replace(/[#*_`]/g, "").slice(0, 180),
         concepts: extractConcepts(event.payload.content),
       });
+      // Refresh the sidebar so the backend-generated title is picked up. The
+      // summary is generated asynchronously after turn completion, so the
+      // immediate refresh races it; a delayed refresh surfaces the title once
+      // the background write has landed.
+      void loadSessions();
+      window.setTimeout(() => void loadSessions(), 2500);
     }
     setMessages((current) => {
       const next = [...current];
@@ -126,11 +165,18 @@ export function createRealtimeEventHandler({
       if (event.type.startsWith("chat.") || event.type.startsWith("tool.") || event.type.startsWith("worker.") || event.type === "stream.gap") ensureAssistant();
       if (index < 0) return next;
       const message = { ...next[index], activities: [...(next[index].activities ?? [])] };
+      if (["cancelled", "completed", "failed", "interrupted"].includes(message.status ?? "")) return next;
+      if (message.status === "cancelling" && !["chat.cancelled", "chat.error"].includes(event.type)) return next;
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
       if (event.type === "chat.delta") message.content += delta;
       if (event.type === "chat.reasoning.delta") message.reasoning = `${message.reasoning ?? ""}${delta}`;
       if (event.type === "chat.started") { message.status = "running"; message.startedAt ??= event.timestamp; }
-      if (event.type === "chat.message.completed" || event.type === "chat.completed") { const final = typeof event.payload.content === "string" ? event.payload.content : ""; if (final) message.content = final; message.status = "completed"; message.completedAt = event.timestamp; }
+      if (event.type === "chat.message.completed" || event.type === "chat.completed") {
+        const final = typeof event.payload.content === "string" ? event.payload.content : "";
+        message.content = reconcileCompletedContent(message.content, final);
+        message.status = "completed";
+        message.completedAt = event.timestamp;
+      }
       if (event.type === "chat.cancelled") { message.status = "cancelled"; message.completedAt = event.timestamp; }
       if (event.type === "chat.error") { message.status = "failed"; message.completedAt = event.timestamp; }
       const activity = activityLabel(event);

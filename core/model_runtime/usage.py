@@ -16,6 +16,8 @@ from core.observability.context import current_telemetry_context
 
 
 UsageSource = Literal["provider", "estimated", "none"]
+UsageSemantics = Literal["final", "cumulative", "delta", "partial"]
+CacheMeasurementStatus = Literal["measured", "unavailable"]
 UsagePurpose = Literal[
     "coordinator",
     "worker",
@@ -32,6 +34,10 @@ StrictPositiveInt = Annotated[int, Field(strict=True, ge=1)]
 
 class MissingUsageAttributionError(RuntimeError):
     """Raised when an LLM invocation cannot resolve mandatory usage attribution."""
+
+
+class UsageReporterUnavailableError(RuntimeError):
+    """Raised when a required model-process usage Reporter is not configured."""
 
 
 class UsageFrozenModel(BaseModel):
@@ -64,15 +70,23 @@ class UsageAttributionContext(UsageFrozenModel):
 class CanonicalTokenUsage(UsageFrozenModel):
     input_tokens: StrictNonNegativeInt = 0
     cached_input_tokens: StrictNonNegativeInt = 0
+    cache_miss_input_tokens: StrictNonNegativeInt = 0
     cache_write_input_tokens: StrictNonNegativeInt = 0
     output_tokens: StrictNonNegativeInt = 0
     reasoning_output_tokens: StrictNonNegativeInt = 0
     total_tokens: StrictNonNegativeInt = 0
     source: UsageSource = "none"
+    cache_status: CacheMeasurementStatus = "unavailable"
+    semantics: UsageSemantics = "final"
     provider_response_id: str | None = None
 
     @model_validator(mode="after")
     def validate_subsets_and_total(self) -> "CanonicalTokenUsage":
+        if self.cached_input_tokens + self.cache_miss_input_tokens > self.input_tokens:
+            raise ValueError(
+                "cached_input_tokens + cache_miss_input_tokens "
+                "must not exceed input_tokens"
+            )
         if self.cached_input_tokens + self.cache_write_input_tokens > self.input_tokens:
             raise ValueError(
                 "cached_input_tokens + cache_write_input_tokens "
@@ -85,12 +99,32 @@ class CanonicalTokenUsage(UsageFrozenModel):
         if self.source == "none" and any((
             self.input_tokens,
             self.cached_input_tokens,
+            self.cache_miss_input_tokens,
             self.cache_write_input_tokens,
             self.output_tokens,
             self.reasoning_output_tokens,
             self.total_tokens,
         )):
             raise ValueError("source=none cannot carry token values")
+        if self.cache_status == "measured" and self.source != "provider":
+            raise ValueError("cache_status=measured requires source=provider")
+        return self
+
+
+class BillableFeatureUsage(UsageFrozenModel):
+    """Non-text usage facts carried beside, never inside, canonical Token usage."""
+
+    visual_input_tokens: StrictNonNegativeInt = 0
+    image_units: StrictNonNegativeInt = 0
+    search_calls: StrictNonNegativeInt = 0
+    link_pages: StrictNonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def validate_vision_fallback(self) -> "BillableFeatureUsage":
+        if self.visual_input_tokens and self.image_units:
+            raise ValueError(
+                "visual_input_tokens and image_units are mutually exclusive"
+            )
         return self
 
 
@@ -101,6 +135,9 @@ class ModelInvocation(UsageFrozenModel):
     attempt: StrictPositiveInt
     fallback_index: StrictNonNegativeInt
     started_at: datetime
+    feature_usage: BillableFeatureUsage = Field(
+        default_factory=BillableFeatureUsage
+    )
 
     @field_validator("operation_id")
     @classmethod
@@ -156,10 +193,32 @@ _CURRENT_ATTRIBUTION: contextvars.ContextVar[UsageAttributionContext | None] = (
 _CURRENT_PURPOSE: contextvars.ContextVar[UsagePurpose | None] = (
     contextvars.ContextVar("nlp_usage_purpose", default=None)
 )
+_CURRENT_FEATURE_USAGE: contextvars.ContextVar[BillableFeatureUsage | None] = (
+    contextvars.ContextVar("nlp_billable_feature_usage", default=None)
+)
 
 
 def current_usage_attribution() -> UsageAttributionContext | None:
     return _CURRENT_ATTRIBUTION.get()
+
+
+def worker_usage_attribution(worker_id: str) -> UsageAttributionContext | None:
+    """Derive Worker attribution from the current parent turn, when available.
+
+    Background tasks inherit ``ContextVar`` values. Explicitly changing the
+    Worker boundary prevents its model calls from being reported as
+    Coordinator usage while preserving the request and billing identifiers.
+    """
+    parent = current_usage_attribution()
+    if parent is None:
+        return None
+    return parent.model_copy(
+        update={"worker_id": worker_id, "purpose": "worker"}
+    )
+
+
+def current_billable_feature_usage() -> BillableFeatureUsage:
+    return _CURRENT_FEATURE_USAGE.get() or BillableFeatureUsage()
 
 
 @contextmanager
@@ -186,6 +245,17 @@ def bind_usage_purpose(purpose: UsagePurpose) -> Iterator[None]:
         if token_attr is not None:
             _CURRENT_ATTRIBUTION.reset(token_attr)
         _CURRENT_PURPOSE.reset(token_purpose)
+
+
+@contextmanager
+def bind_billable_feature_usage(
+    usage: BillableFeatureUsage,
+) -> Iterator[BillableFeatureUsage]:
+    token = _CURRENT_FEATURE_USAGE.set(usage)
+    try:
+        yield usage
+    finally:
+        _CURRENT_FEATURE_USAGE.reset(token)
 
 
 def resolve_usage_attribution() -> UsageAttributionContext:
