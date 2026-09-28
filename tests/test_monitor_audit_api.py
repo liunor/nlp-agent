@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-
-os.environ.setdefault("NLP_AGENT_DATABASE_URL", "mysql+aiomysql://test:test@localhost/test")
 
 from fastapi.testclient import TestClient
 

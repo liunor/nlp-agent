@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import delete, select
@@ -24,6 +25,7 @@ from server.infrastructure.mysql.models import (  # noqa: E402
     WorkspaceMemberModel,
     WorkspaceModel,
 )
+from server.quota.models import PolicyBindingModel, QuotaPolicyModel  # noqa: E402
 from server.user.schemas import UserCreate  # noqa: E402
 from server.user.service import UserService  # noqa: E402
 from server.web.app import create_app  # noqa: E402
@@ -104,6 +106,56 @@ async def seed_integration_user() -> None:
                         status="active",
                     )
                 )
+            policy_code = f"integration-unlimited-{INTEGRATION_USERNAME}"
+            policy = await session.scalar(
+                select(QuotaPolicyModel).where(
+                    QuotaPolicyModel.code == policy_code,
+                    QuotaPolicyModel.version == "1",
+                )
+            )
+            if policy is None:
+                policy = QuotaPolicyModel(
+                    id=str(uuid.uuid4()),
+                    code=policy_code,
+                    version="1",
+                    name="Integration test unlimited policy",
+                    status="active",
+                    request_limit_micro=None,
+                    daily_limit_micro=None,
+                    weekly_limit_micro=None,
+                    concurrency_limit=None,
+                    max_overdraft_micro=0,
+                    allowed_model_profiles=[],
+                    unlimited=True,
+                    effective_from=datetime.now(timezone.utc).replace(tzinfo=None),
+                    effective_until=None,
+                    created_by=user.id,
+                )
+                session.add(policy)
+                await session.flush()
+            binding = await session.scalar(
+                select(PolicyBindingModel).where(
+                    PolicyBindingModel.subject_type == "user",
+                    PolicyBindingModel.subject_id == user.id,
+                )
+            )
+            if binding is None:
+                session.add(
+                    PolicyBindingModel(
+                        id=str(uuid.uuid4()),
+                        subject_type="user",
+                        subject_id=user.id,
+                        policy_id=policy.id,
+                        priority=100,
+                        status="active",
+                        effective_from=datetime.now(timezone.utc).replace(tzinfo=None),
+                        effective_until=None,
+                    )
+                )
+            else:
+                binding.policy_id = policy.id
+                binding.status = "active"
+                binding.effective_until = None
     finally:
         await runtime.close()
 
