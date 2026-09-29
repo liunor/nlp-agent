@@ -312,6 +312,27 @@ button { color: inherit; }
   text-align: center !important;
 }.login-dialog-submit { display: flex; min-height: 43px; align-items: center; justify-content: center; gap: 7px; margin-top: 4px; border: 0; border-radius: 10px; background: var(--accent); color: white; font-size: 14px; font-weight: 650; cursor: pointer; }.login-dialog-submit:disabled { cursor: not-allowed; opacity: .55; }
 
+.legal-document-overlay { position: fixed; z-index: 120; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgb(15 23 42 / 45%); backdrop-filter: blur(5px); }
+.legal-document-modal { display: flex; width: min(100%, 720px); max-height: min(88vh, 760px); flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--bg); color: var(--fg); box-shadow: 0 24px 80px rgb(15 23 42 / 30%); }
+.legal-document-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 24px 14px; border-bottom: 1px solid var(--border); }
+.legal-document-header h2 { margin: 0; font-size: 21px; text-align: left; }
+.legal-document-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.legal-document-close { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 25px; line-height: 1; cursor: pointer; }
+.legal-document-close:hover { background: var(--muted-bg); color: var(--fg); }
+.legal-document-body { overflow-y: auto; padding: 20px 24px; font-size: 13px; line-height: 1.75; }
+.legal-document-body p { margin: 0 0 12px; }
+.legal-document-intro { color: var(--fg); }
+.legal-document-section { margin-top: 20px; }
+.legal-document-section h3 { margin: 0 0 8px; color: var(--fg); font-size: 15px; }
+.legal-document-section ul { margin: 0 0 12px; padding-left: 22px; }
+.legal-document-section li { margin: 4px 0; }
+.legal-document-footer { display: flex; justify-content: flex-end; padding: 12px 24px 16px; border-top: 1px solid var(--border); }
+.legal-document-confirm { min-height: 36px; padding: 7px 18px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13px; font-weight: 650; cursor: pointer; }
+.legal-document-confirm:hover { filter: brightness(.96); }
+.login-dialog-content .legal-consent-notice { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
+.login-dialog-content .legal-consent-checkbox { width: 16px; min-height: 16px; margin-top: 2px; flex: 0 0 16px; }
+.login-dialog-content .legal-consent-notice span { display: inline; }
+
 .unauthenticated-app-shell .sidebar { min-height: 100vh; }.account-dialog-overlay { position: fixed; z-index: 90; inset: 0; background: rgb(26 33 44 / 25%); backdrop-filter: blur(10px); }.account-dialog-content { position: fixed; z-index: 91; top: 50%; left: 50%; width: min(92vw, 360px); padding: 28px; border: 1px solid var(--border); border-radius: 20px; outline: none; background: var(--bg); color: var(--fg); box-shadow: 0 24px 70px rgb(20 29 45 / 22%); transform: translate(-50%, -50%); }.account-dialog-avatar { display: grid; width: 58px; height: 58px; place-items: center; margin: 0 auto 14px; border-radius: 18px; background: var(--accent-soft); color: var(--accent); }.account-dialog-content h2 { margin: 0; font-size: 21px; text-align: center; }.account-dialog-content > p { margin: 8px auto 22px; color: var(--muted); font-size: 13px; line-height: 1.6; text-align: center; }.account-dialog-content dl { display: grid; gap: 9px; margin: 0 0 20px; }.account-dialog-content dl div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border-radius: 10px; background: var(--muted-bg); }.account-dialog-content dt { color: var(--muted); font-size: 12px; }.account-dialog-content dd { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--fg); font-size: 13px; font-weight: 650; }.account-dialog-content dd svg { color: var(--accent); }.account-dialog-profile { display: flex; width: 100%; min-height: 42px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--fg); font-size: 13px; font-weight: 650; cursor: pointer; }.account-dialog-profile:hover { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }.account-dialog-profile + .account-dialog-logout { margin-top: 8px; }
 .account-dialog-logout { display: flex; width: 100%; min-height: 42px; align-items: center; justify-content: center; gap: 7px; border: 1px solid color-mix(in srgb, #dc2626 35%, var(--border)); border-radius: 10px; background: transparent; color: #c2410c; font-size: 13px; font-weight: 650; cursor: pointer; }.account-dialog-logout:hover { background: color-mix(in srgb, #dc2626 8%, var(--bg)); }
 
