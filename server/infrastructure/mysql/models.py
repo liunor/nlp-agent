@@ -846,6 +846,11 @@ class LangGraphCheckpointWriteModel(Base):
 class ConversationTranscriptModel(Base):
     __tablename__ = "nlp_conversation_transcripts"
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+    )
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     message_uuid: Mapped[str] = mapped_column(String(128), nullable=False)
     parent_uuid: Mapped[str | None] = mapped_column(String(128))
