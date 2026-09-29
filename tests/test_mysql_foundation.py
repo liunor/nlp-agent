@@ -21,6 +21,7 @@ from server.infrastructure.mysql.models import (
     AuthorizationAuditLogModel,
     ConversationMessageModel,
     ConversationModel,
+    ConversationTranscriptModel,
     ExerciseSessionModel,
     GuidedSessionModel,
     SessionModel,
@@ -91,6 +92,13 @@ def test_conversation_models_accept_runtime_session_identifiers() -> None:
 
     assert len(context.session_id) <= 128
     assert {column.property.columns[0].type.length for column in columns} == {128}
+
+
+def test_conversation_transcripts_have_a_persistent_ordering_timestamp() -> None:
+    column = ConversationTranscriptModel.__table__.c.created_at
+
+    assert column.nullable is False
+    assert column.server_default is not None
 
 
 def test_rbac_models_define_normalized_role_permission_relationships() -> None:
