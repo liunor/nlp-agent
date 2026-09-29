@@ -374,8 +374,8 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
       }
 
       let clearFailed = false;
-      let sharedFailed = false;
-      let failedAssetNames: string[] = [];
+      let sharedFailed: boolean | undefined;
+      const failedAssetNames: string[] = [];
       const migratedLibraryItems: Array<LibraryItems[number]> = [];
       const migratedLegacyIds = new Set<string>();
       try {

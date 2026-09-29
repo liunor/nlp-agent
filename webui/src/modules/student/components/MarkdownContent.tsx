@@ -611,7 +611,7 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
             const headingId = nextHeadingId(node);
             return <><span id={headingId} className="knowledge-book-heading-anchor" data-knowledge-book-heading-anchor="true" aria-hidden="true" /><h4 {...props} data-knowledge-book-heading-id={headingId}>{value}</h4></>;
           },
-          p: ({ children: value, node: _node, ...props }) => {
+          p: ({ children: value, ...props }) => {
             const isWhiteboardMarker = containsWhiteboardAnchor(value);
             return <p {...props} className={isWhiteboardMarker ? "knowledge-book-whiteboard-paragraph" : props.className} data-whiteboard-marker={isWhiteboardMarker ? "true" : undefined}>{value}</p>;
           },

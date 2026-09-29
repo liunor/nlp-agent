@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from alembic import context
 from alembic import op
 import sqlalchemy as sa
 
@@ -11,7 +12,7 @@ from gateway.whiteboard_bundled import load_bundled_whiteboard_items
 
 
 revision = "20260929_45_wb_catalog"
-down_revision = ("20260927_42_whiteboard_asset_codes", "20260927_45_merge_storage_heads")
+down_revision = ("20260927_42_wb_asset_codes", "20260927_45_merge_storage_heads")
 branch_labels = None
 depends_on = None
 
@@ -19,12 +20,42 @@ _SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000"
 
 
 def upgrade() -> None:
+    if context.is_offline_mode():
+        op.execute(
+            sa.text(
+                "CREATE TABLE IF NOT EXISTS nlp_whiteboard_library_catalog_meta ("
+                "catalog_key VARCHAR(128) NOT NULL PRIMARY KEY, "
+                "seeded_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6))"
+            )
+        )
+        op.execute(
+            sa.text(
+                "INSERT IGNORE INTO nlp_whiteboard_library_catalog_meta(catalog_key) "
+                "VALUES ('vendored-excalidraw-v1')"
+            )
+        )
+        for item in load_bundled_whiteboard_items():
+            op.execute(
+                sa.text(
+                    "INSERT IGNORE INTO nlp_whiteboard_library_items "
+                    "(id,asset_code,name,item_json,created_by,created_at,updated_at) "
+                    "VALUES (:id,:asset_code,:name,:item_json,:created_by,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))"
+                ).bindparams(
+                    id=item["id"],
+                    asset_code=item["asset_code"],
+                    name=item["name"],
+                    item_json=json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+                    created_by=_SYSTEM_USER_ID,
+                )
+            )
+        return
+
     bind = op.get_bind()
     bind.execute(
         sa.text(
             "CREATE TABLE IF NOT EXISTS nlp_whiteboard_library_catalog_meta ("
             "catalog_key VARCHAR(128) NOT NULL PRIMARY KEY, "
-            "seeded_at DATETIME(6) NOT NULL DEFAULT UTC_TIMESTAMP(6))"
+            "seeded_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6))"
         )
     )
     items = load_bundled_whiteboard_items()

@@ -43,17 +43,18 @@ export function WhiteboardLibraryManager({ items, onItemsChange }: {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [renameTarget, setRenameTarget] = useState<WhiteboardLibraryItem | null>(null);
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
+  const previewId = preview?.id;
 
   useEffect(() => {
-    if (!preview) return undefined;
+    if (!previewId) return undefined;
     const updatePosition = () => {
-      const row = rowRefs.current.get(preview.id);
+      const row = rowRefs.current.get(previewId);
       if (!row) {
         setPreview(null);
         return;
       }
       const position = previewPosition(row);
-      setPreview((current) => current?.id === preview.id ? { id: preview.id, ...position } : current);
+      setPreview((current) => current?.id === previewId ? { id: previewId, ...position } : current);
     };
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
@@ -62,7 +63,7 @@ export function WhiteboardLibraryManager({ items, onItemsChange }: {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [items, preview?.id]);
+  }, [items, previewId]);
 
   const rename = async (item: WhiteboardLibraryItem, nextName: string) => {
     const trimmedName = nextName.trim();

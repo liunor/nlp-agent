@@ -303,7 +303,8 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     return () => window.clearTimeout(timer);
   }, [loadNavigation]);
   useEffect(() => {
-    void loadWhiteboardLibrary();
+    const timer = window.setTimeout(() => void loadWhiteboardLibrary(), 0);
+    return () => window.clearTimeout(timer);
   }, [loadWhiteboardLibrary]);
   useEffect(() => {
     const timer = window.setTimeout(() => void loadPage(), 0);
