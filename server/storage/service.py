@@ -538,6 +538,13 @@ class StorageService:
         self.db.add(item)
         try:
             await self.db.flush()
+            # MySQL fills ``status`` and the timestamp columns from server
+            # defaults during the flush.  SQLAlchemy expires those attributes;
+            # reading them from an async session while serializing the response
+            # would then attempt an implicit lazy load and raise
+            # ``MissingGreenlet`` (HTTP 500).  Refresh explicitly while we are
+            # still inside the async greenlet.
+            await self.db.refresh(item)
         except Exception:
             _safe_file_path(self.scope, item.storage_key).rmdir()
             raise
@@ -598,6 +605,9 @@ class StorageService:
         try:
             await self.db.flush()
             await self.quota.finalize(reservation, reconcile=True)
+            # See the folder path above: server-generated fields must be
+            # loaded explicitly before ``serialize`` touches them.
+            await self.db.refresh(item)
         except Exception:
             await self.quota.release(reservation)
             target.unlink(missing_ok=True)

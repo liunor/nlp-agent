@@ -15,6 +15,7 @@ from gateway.contracts import (
     TurnConflictError,
     TurnStatus,
     TeachingConfigurationError,
+    WhiteboardLibraryInUseError,
 )
 from gateway.core import BackendGateway
 from gateway.dispatch import TurnTask
@@ -214,6 +215,38 @@ async def test_gateway_rejects_student_teaching_catalog_updates(tmp_path, princi
                 "guided_blueprints": [],
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_gateway_blocks_whiteboard_deletion_when_a_knowledge_page_references_it(tmp_path):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    item = repository.create_whiteboard_library_item(
+        name="注意力图",
+        elements=[{"id": "element-1", "type": "rectangle"}],
+        created_by="teacher-1",
+    )
+    repository.update_knowledge_page(
+        "w1",
+        "point-1",
+        f'<!-- nova-whiteboard asset="{item["id"]}" code="{item["asset_code"]}" name="注意力图" -->',
+        expected_revision=None,
+    )
+    gateway = BackendGateway(
+        engine=FakeEngine(),
+        repository=repository,
+        sessions=FakeSessions(),
+        dispatcher=RecordingTurnDispatcher(),
+    )
+    teacher = AuthenticatedPrincipal(
+        user_id="teacher-1",
+        workspace_ids=frozenset({"w1"}),
+        roles=frozenset({"teacher"}),
+    )
+
+    with pytest.raises(WhiteboardLibraryInUseError, match="1 knowledge-book pages"):
+        await gateway.delete_whiteboard_library_item(teacher, item["id"])
+
+    assert repository.list_whiteboard_library() == [item]
 
 
 @pytest.mark.asyncio

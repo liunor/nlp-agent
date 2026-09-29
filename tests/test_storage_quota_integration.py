@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import os
 import asyncio
+import shutil
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, select
 
+from core.identity import AuthenticatedPrincipal
 from server.infrastructure.mysql import DatabaseConfig, create_engine, create_session_factory
 from server.infrastructure.mysql.models import (
     ConversationMessageModel,
@@ -27,8 +29,16 @@ from server.infrastructure.mysql.models import (
 )
 from server.storage.policy import StorageBucket, policy_with_overrides
 from server.storage.quota import AsyncStorageQuota, StorageQuotaExceeded
-from server.storage.service import reconcile_all_storage_accounts
+from server.storage.service import StorageService, reconcile_all_storage_accounts, storage_root
 import server.storage.quota as quota_module
+
+
+class _StorageUploadProbe:
+    filename = "storage-service-probe.txt"
+    content_type = "text/plain"
+
+    async def read(self, _limit: int = -1) -> bytes:
+        return b"storage service probe"
 
 
 @pytest.fixture
@@ -215,3 +225,46 @@ async def test_concurrent_reservations_cannot_oversubscribe_global_pool(mysql_se
                     await session.execute(delete(StorageReservationModel).where(StorageReservationModel.owner_user_id == user_id))
                     await session.execute(delete(StorageAccountModel).where(StorageAccountModel.owner_user_id == user_id))
                     await session.execute(delete(UserModel).where(UserModel.id == user_id))
+
+
+@pytest.mark.asyncio
+async def test_new_file_and_folder_responses_load_server_defaults(mysql_session_factory) -> None:
+    """Async ORM serialization must not trigger an implicit MissingGreenlet load.
+
+    ``created_at``, ``updated_at`` and ``status`` are MySQL server defaults.
+    After ``flush`` SQLAlchemy expires them, so the service must explicitly
+    refresh a newly inserted row before returning its JSON representation.
+    """
+
+    async with mysql_session_factory() as session:
+        workspace_id = await session.scalar(select(WorkspaceModel.id).limit(1))
+        if workspace_id is None:
+            pytest.skip("migrated database has no workspace fixture")
+        user_id = str(uuid4())
+        session.add(
+            UserModel(
+                id=user_id,
+                username=f"storage-probe-{uuid4().hex[:12]}",
+                password_hash="test",
+                display_name="Storage Probe",
+            )
+        )
+        await session.flush()
+        principal = AuthenticatedPrincipal(
+            user_id=user_id,
+            workspace_ids=frozenset({str(workspace_id)}),
+            roles=frozenset({"student"}),
+        )
+        user_root = storage_root() / str(workspace_id) / user_id
+        try:
+            service = StorageService(session, principal, str(workspace_id))
+            folder = await service.create_folder("probe-folder")
+            assert folder["kind"] == "folder"
+            uploaded = await service.create_file(_StorageUploadProbe(), folder["id"])
+            assert uploaded["kind"] == "file"
+            assert uploaded["created_at"]
+            assert uploaded["updated_at"]
+        finally:
+            await session.rollback()
+            if user_root.is_dir():
+                shutil.rmtree(user_root)

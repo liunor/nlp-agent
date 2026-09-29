@@ -4,9 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { TeacherBookEditor } from "./TeacherBookEditor";
 import type { TeacherCatalog } from "@/shared/types";
 
-const { getNavigationMock, getPageMock, updateCatalogMock, updatePageMock, previewImportMock, applyImportMock } = vi.hoisted(() => ({
+const { getNavigationMock, getPageMock, getWhiteboardLibraryMock, updateCatalogMock, updatePageMock, previewImportMock, applyImportMock } = vi.hoisted(() => ({
   getNavigationMock: vi.fn(),
   getPageMock: vi.fn(),
+  getWhiteboardLibraryMock: vi.fn(),
   updateCatalogMock: vi.fn(),
   updatePageMock: vi.fn(),
   previewImportMock: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("@/platform/http/api", () => ({
   api: {
     getTeacherBookNavigation: getNavigationMock,
     getTeacherBookPage: getPageMock,
+    getWhiteboardLibrary: getWhiteboardLibraryMock,
     updateTeacherCatalog: updateCatalogMock,
     updateTeacherBookPage: updatePageMock,
     publishTeacherBookPage: vi.fn(),
@@ -80,6 +82,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
         updated_at: null,
       },
     });
+    getWhiteboardLibraryMock.mockResolvedValue({ items: [] });
   });
 
   const catalog: TeacherCatalog = {
@@ -140,6 +143,33 @@ describe("TeacherBookEditor Markdown authoring", () => {
     fireEvent.click(screen.getByRole("button", { name: "预览正文" }));
     expect(screen.getByAltText("diagram.png")).toBeVisible();
     expect(screen.getByText("diagram.png")).toHaveClass("markdown-image-caption");
+  });
+
+  it("inserts a whiteboard marker above the line at the editor cursor", async () => {
+    getWhiteboardLibraryMock.mockResolvedValue({ items: [{ id: "asset-1", asset_code: "WB-000001", status: "published", created: 1, name: "注意力图", elements: [] }] });
+    render(<TeacherBookEditor workspaceId="workspace-1" />);
+    const editor = await screen.findByRole("textbox", { name: "教材正文 Markdown" }) as HTMLTextAreaElement;
+    fireEvent.change(editor, { target: { value: "第一段\n\n第二段\n第三段" } });
+    editor.setSelectionRange(editor.value.indexOf("第三段") + 2, editor.value.indexOf("第三段") + 2);
+
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "选择白板图画" })).not.toBeDisabled());
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "选择白板图画" }), "asset-1");
+    await userEvent.setup().click(screen.getByRole("button", { name: "插入图画" }));
+
+    expect(editor).toHaveValue("第一段\n\n第二段\n<!-- nova-whiteboard asset=\"asset-1\" code=\"WB-000001\" name=\"%E6%B3%A8%E6%84%8F%E5%8A%9B%E5%9B%BE\" -->\n\n第三段");
+  });
+
+  it("refreshes the teacher dropdown from the shared whiteboard library", async () => {
+    getWhiteboardLibraryMock
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValueOnce({ items: [{ id: "asset-2", elements: [], name: "历史图画" }] });
+    render(<TeacherBookEditor workspaceId="workspace-1" />);
+
+    const refreshButton = await screen.findByRole("button", { name: "刷新目录" });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+    await userEvent.setup().click(refreshButton);
+
+    await waitFor(() => expect(screen.getByRole("option", { name: "历史图画 · WB-ASSET2" })).toBeInTheDocument());
   });
 
   it("keeps an attached image preview after the asset is saved to the page", async () => {

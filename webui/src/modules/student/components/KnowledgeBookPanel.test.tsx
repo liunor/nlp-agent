@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LearningBookNavigationItem, LearningBookPage } from "@/shared/types";
+import type { LearningBookNavigationItem, LearningBookPage, WhiteboardLibraryItem } from "@/shared/types";
 
 import { api } from "@/platform/http/api";
 
@@ -12,6 +12,7 @@ vi.mock("@/platform/http/api", () => ({
   api: {
     getLearningBookNavigation: vi.fn(),
     getLearningBookPage: vi.fn(),
+    getWhiteboardLibrary: vi.fn(),
   },
 }));
 
@@ -36,6 +37,7 @@ describe("KnowledgeBookPanel", () => {
     window.history.replaceState({}, "", "/");
     vi.mocked(api.getLearningBookNavigation).mockResolvedValue({ workspace_id: "workspace-1", items: navigation });
     vi.mocked(api.getLearningBookPage).mockImplementation((_workspaceId, knowledgePointId) => Promise.resolve({ page: { ...page, knowledge_point_id: knowledgePointId, title: knowledgePointId === "point-2" ? "句法分析" : page.title } }));
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
@@ -70,6 +72,43 @@ describe("KnowledgeBookPanel", () => {
 
     expect(await screen.findByText("教师还没有发布知识教材。")).toBeInTheDocument();
     expect(screen.getByText("从左侧目录选择一个知识点开始阅读。")).toBeInTheDocument();
+  });
+
+  it("shows an inline whiteboard anchor at the referenced lesson line and opens the selected material", async () => {
+    const item: WhiteboardLibraryItem = { id: "asset-1", asset_code: "WB-000001", status: "published", created: 1, name: "注意力计算过程", elements: [{ id: "element-1", type: "rectangle" }] };
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '# 注意力\n\n<!-- nova-whiteboard asset="asset-1" name="%E6%B3%A8%E6%84%8F%E5%8A%9B%E8%AE%A1%E7%AE%97%E8%BF%87%E7%A8%8B" -->\n\n正文' } });
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [item] });
+    const onViewWhiteboard = vi.fn();
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onViewWhiteboard={onViewWhiteboard} />);
+
+    const button = await screen.findByRole("button", { name: "查看图画 注意力计算过程" });
+    expect(button).toHaveAttribute("title", "查看图画：注意力计算过程");
+    expect(button.closest("p")).not.toBeNull();
+    await userEvent.setup().click(button);
+    await waitFor(() => expect(onViewWhiteboard).toHaveBeenCalledWith(item));
+  });
+
+  it("renders the published marker format used by the teacher editor as a visible circle", async () => {
+    const item: WhiteboardLibraryItem = { id: "193c7240-ee91-4570-981c-a3db65c8deba", asset_code: "WB-193C7240", status: "published", created: 1, name: "transformer", elements: [] };
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '代码\n```python\nbreak\n```\n<!-- nova-whiteboard asset="193c7240-ee91-4570-981c-a3db65c8deba" code="WB-193C7240" name="transformer" -->\n\n正文' } });
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [item] });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onViewWhiteboard={vi.fn()} />);
+
+    const button = await screen.findByRole("button", { name: "查看图画 transformer" });
+    expect(button).toHaveClass("knowledge-book-whiteboard-anchor");
+    expect(button.closest("p")).toHaveClass("knowledge-book-whiteboard-paragraph");
+  });
+
+  it("explains when a textbook whiteboard reference no longer exists", async () => {
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '<!-- nova-whiteboard asset="missing-asset" name="旧图画" -->\n\n正文' } });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+
+    const button = await screen.findByRole("button", { name: /旧图画/ });
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("素材不可用");
   });
 
   it("restores the last knowledge point when the reader is reopened", async () => {

@@ -26,6 +26,14 @@ export interface MarkdownCodeActions {
   onOpenInSandbox?: (code: string, language: string) => void;
 }
 
+function containsWhiteboardAnchor(node: ReactNode): boolean {
+  return Children.toArray(node).some((child) => {
+    if (!isValidElement<{ "data-whiteboard-anchor"?: string; className?: string; href?: string; children?: ReactNode }>(child)) return false;
+    if (child.props.href?.startsWith("nova-whiteboard://") || child.props["data-whiteboard-anchor"] === "true" || child.props.className?.includes("knowledge-book-whiteboard-anchor")) return true;
+    return containsWhiteboardAnchor(child.props.children);
+  });
+}
+
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -491,7 +499,7 @@ export function stripInternalChatMetadata(content: string): string {
   return content.replace(/\s*<!--\s*guided-result\s*:\s*(?:\{[\s\S]*?\}\s*-->|[\s\S]*$)/gi, "").trimEnd();
 }
 
-export function MarkdownContent({ children, streaming = false, streamRenderIntervalMs = 30, headingIds, headingIdsByLine, codeActions, allowDataImages = false }: { children: string; streaming?: boolean; streamRenderIntervalMs?: number; headingIds?: string[]; headingIdsByLine?: Record<number, string>; codeActions?: MarkdownCodeActions; allowDataImages?: boolean }) {
+export function MarkdownContent({ children, streaming = false, streamRenderIntervalMs = 30, headingIds, headingIdsByLine, codeActions, allowDataImages = false, whiteboardLink }: { children: string; streaming?: boolean; streamRenderIntervalMs?: number; headingIds?: string[]; headingIdsByLine?: Record<number, string>; codeActions?: MarkdownCodeActions; allowDataImages?: boolean; whiteboardLink?: (href: string, label: string) => ReactNode }) {
   const renderedChildren = useThrottledValue(children, streaming, Math.max(0, streamRenderIntervalMs));
   const renderedMarkdown = useMemo(() => {
     if (streaming) return null;
@@ -527,6 +535,10 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
             const headingId = nextHeadingId(node);
             return <><span id={headingId} className="knowledge-book-heading-anchor" data-knowledge-book-heading-anchor="true" aria-hidden="true" /><h4 {...props} data-knowledge-book-heading-id={headingId}>{value}</h4></>;
           },
+          p: ({ children: value, node: _node, ...props }) => {
+            const isWhiteboardMarker = containsWhiteboardAnchor(value);
+            return <p {...props} className={isWhiteboardMarker ? "knowledge-book-whiteboard-paragraph" : props.className} data-whiteboard-marker={isWhiteboardMarker ? "true" : undefined}>{value}</p>;
+          },
           pre: ({ children: value }) => {
             const child = Children.toArray(value)[0];
             if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
@@ -542,7 +554,9 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
             if (!match) return <code className={className} {...props}>{value}</code>;
             return <LessonCodeBlock language={match[1]} code={content} actions={codeActions} streaming={streaming} />;
           },
-          a: ({ children: value, href, ...props }) => isSameOriginMarkdownLink(href)
+          a: ({ children: value, href, ...props }) => href?.startsWith("nova-whiteboard://")
+            ? whiteboardLink?.(href, Children.toArray(value).join("")) ?? <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true">{value}</span>
+            : isSameOriginMarkdownLink(href)
             ? <a {...props} href={href}>{value}</a>
             : <span className="external-link-removed">{value}</span>,
           img: ({ node, src, alt, title, ...props }) => {
@@ -557,7 +571,7 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
         {normalizeLatexDelimiters(stripInternalChatMetadata(renderedChildren) || (streaming ? "" : "暂无内容"))}
       </ReactMarkdown>
     );
-  }, [allowDataImages, codeActions, headingIds, headingIdsByLine, renderedChildren, streaming]);
+  }, [allowDataImages, codeActions, headingIds, headingIdsByLine, renderedChildren, streaming, whiteboardLink]);
 
   return (
     <div className="markdown-content prose prose-zinc max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-pre:p-0">

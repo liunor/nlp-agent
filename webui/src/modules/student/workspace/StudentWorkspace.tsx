@@ -1,5 +1,5 @@
 import { Maximize2, Minimize2, Moon, PanelRightClose, PanelRightOpen, Sun, Wifi, WifiOff, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/platform/http/api";
 
 import { Composer } from "@/modules/student/components/Composer";
@@ -18,7 +18,9 @@ import { ToolDock, type ToolDockTabDropPosition, type ToolDockTool } from "@/mod
 import { useStudentWorkspace } from "@/modules/student/workspace/public";
 import { useSessionScrollRestoration } from "@/modules/student/workspace/hooks/useSessionScrollRestoration";
 import { useOptionalAuth } from "@/platform/auth/AuthContext";
-import type { CourseTopic, TeacherCatalog } from "@/shared/types";
+import type { CourseTopic, TeacherCatalog, WhiteboardLibraryItem } from "@/shared/types";
+
+const WhiteboardPanel = lazy(() => import("@/modules/student/components/whiteboard/WhiteboardPanel").then(({ WhiteboardPanel: panel }) => ({ default: panel })));
 
 export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigateTo?: (path: string) => void; onOpenInSandbox?: (code: string, language: string) => void } = {}) {
   const workspace = useStudentWorkspace();
@@ -34,6 +36,7 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   const [openTools, setOpenTools] = useState<ToolDockTool[]>(() => typeof window !== "undefined" && readKnowledgeBookUrl(window.location.search).tool === "knowledge-book" ? ["book"] : []);
   const [activeTool, setActiveTool] = useState<ToolDockTool | null>(() => typeof window !== "undefined" && readKnowledgeBookUrl(window.location.search).tool === "knowledge-book" ? "book" : null);
   const [sandboxSource, setSandboxSource] = useState<string | null>(null);
+  const [whiteboardPresentRequest, setWhiteboardPresentRequest] = useState<{ requestId: string; assetId: string; elements: unknown[]; name: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -100,6 +103,10 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
     setOpenTools((current) => current.includes("sandbox") ? current : [...current, "sandbox"]);
     setActiveTool("sandbox");
   }, [onOpenInSandbox]);
+  const openWhiteboardAsset = useCallback((item: WhiteboardLibraryItem) => {
+    setWhiteboardPresentRequest({ requestId: `${item.id}:${Date.now()}`, assetId: item.id, elements: item.elements, name: item.name || "白板图画" });
+    openTool("whiteboard");
+  }, [openTool]);
   const closeTool = (tool: ToolDockTool) => {
     const next = openTools.filter((item) => item !== tool);
     setOpenTools(next);
@@ -198,7 +205,8 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
         void workspace.send("请解释以下 Python 代码：\n\n```python\n" + source + "\n```");
       }}
       learningPanel={<LearningPanel open onClose={() => closeTool("learning")} title={activeTitle} context={workspace.preferences.context} meta={workspace.activeMeta} messages={workspace.messages} onPrompt={(content) => { setToolDockOpen(false); setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(content); }} onMeta={(patch) => { if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, patch); }} />}
-      knowledgeBookPanel={<KnowledgeBookPanel workspaceId={workspace.workspaceId} onAskNova={statusOnline && !workspace.isRunning ? (prompt) => { setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(prompt); } : undefined} onOpenInSandbox={openCodeInSandbox} />}
+      knowledgeBookPanel={<KnowledgeBookPanel workspaceId={workspace.workspaceId} onAskNova={statusOnline && !workspace.isRunning ? (prompt) => { setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(prompt); } : undefined} onOpenInSandbox={openCodeInSandbox} onViewWhiteboard={openWhiteboardAsset} />}
+      whiteboardPanel={<Suspense fallback={<div className="whiteboard-loading" role="status">正在加载白板…</div>}><WhiteboardPanel userId={workspace.authSession?.user_id ?? null} canManageLibrary={Boolean(workspace.authSession?.roles?.some((role) => role === "teacher" || role === "developer" || role === "admin"))} presentRequest={whiteboardPresentRequest} /></Suspense>}
       sandboxSource={sandboxSource}
       workspaceId={workspace.workspaceId}
     />

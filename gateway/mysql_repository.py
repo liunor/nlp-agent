@@ -39,7 +39,6 @@ class MySQLGatewayRepository:
             raise ValueError("MySQL Gateway repository requires mysql+aiomysql DSN")
         self._engine = create_engine(url.replace("mysql+aiomysql://", "mysql+pymysql://"), pool_pre_ping=True)
         self.knowledge_point_prompt_budget = max(1, knowledge_point_prompt_budget)
-
     def _row(self, turn_id: str) -> dict[str, Any] | None:
         with self._engine.connect() as c:
             row = c.execute(text("SELECT * FROM nlp_turns WHERE id=:id"), {"id": turn_id}).mappings().first()
@@ -574,6 +573,113 @@ class MySQLGatewayRepository:
         current = self.get_user_settings(user_id); settings = {**current["settings"], **changes}; revision = current["revision"] + 1
         with self._engine.begin() as c: c.execute(text("INSERT INTO nlp_user_preferences(user_id,preferences_json,revision) VALUES(:id,:settings,:revision) ON DUPLICATE KEY UPDATE preferences_json=VALUES(preferences_json),revision=VALUES(revision)"), {"id": user_id, "settings": json.dumps(settings, ensure_ascii=False), "revision": revision})
         return self.get_user_settings(user_id)
+
+    def list_whiteboard_library(self) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT id, item_json, asset_code FROM nlp_whiteboard_library_items ORDER BY created_at ASC, id ASC")
+            ).mappings().all()
+        return [{
+            **self._json(row["item_json"]),
+            "asset_code": self._json(row["item_json"]).get("asset_code") or row["asset_code"] or f"WB-{str(row['id']).replace('-', '')[:8].upper()}",
+        } for row in rows]
+
+    def create_whiteboard_library_item(self, *, name: str, elements: list[dict[str, Any]], created_by: str) -> dict[str, Any]:
+        item_id = str(uuid.uuid4())
+        item = {
+            "id": item_id,
+            "asset_code": f"WB-{item_id.replace('-', '')[:8].upper()}",
+            "status": "published",
+            "created": int(_now().timestamp() * 1000),
+            "name": name,
+            "elements": elements,
+        }
+        with self._engine.begin() as connection:
+            connection.execute(
+                text("INSERT INTO nlp_whiteboard_library_items (id,asset_code,name,item_json,created_by,created_at) VALUES(:id,:asset_code,:name,:item_json,:created_by,:created_at)"),
+                {
+                    "id": item["id"],
+                    "asset_code": item["asset_code"],
+                    "name": name,
+                    "item_json": json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False),
+                    "created_by": created_by,
+                    "created_at": _now(),
+                },
+            )
+        return item
+
+    def rename_whiteboard_library_item(self, item_id: str, *, name: str) -> dict[str, Any] | None:
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                text("SELECT item_json, asset_code FROM nlp_whiteboard_library_items WHERE id=:id FOR UPDATE"),
+                {"id": item_id},
+            ).mappings().first()
+            if row is None:
+                return None
+            item = {**self._json(row["item_json"]), "asset_code": self._json(row["item_json"]).get("asset_code") or row["asset_code"]}
+            item["name"] = name
+            connection.execute(
+                text("UPDATE nlp_whiteboard_library_items SET name=:name, item_json=:item_json, updated_at=:updated_at WHERE id=:id"),
+                {
+                    "id": item_id,
+                    "name": name,
+                    "item_json": json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False),
+                    "updated_at": _now(),
+                },
+            )
+        return item
+
+    def delete_whiteboard_library_item(self, item_id: str) -> bool:
+        deleted, _ = self.delete_whiteboard_library_item_if_unreferenced(item_id)
+        return deleted
+
+    def delete_whiteboard_library_item_if_unreferenced(self, item_id: str) -> tuple[bool, int]:
+        """Check references and delete under one row lock/transaction."""
+
+        with self._engine.begin() as connection:
+            item = connection.execute(
+                text("SELECT asset_code FROM nlp_whiteboard_library_items WHERE id=:id FOR UPDATE"),
+                {"id": item_id},
+            ).mappings().first()
+            if item is None:
+                return False, 0
+            rows = connection.execute(
+                text("SELECT draft_markdown, published_markdown FROM nlp_knowledge_pages")
+            ).mappings().all()
+            markers = [f'asset="{item_id}"']
+            if item["asset_code"]:
+                markers.append(f'code="{item["asset_code"]}"')
+            reference_count = sum(
+                1
+                for row in rows
+                if any(
+                    marker in (row["draft_markdown"] or "")
+                    or marker in (row["published_markdown"] or "")
+                    for marker in markers
+                )
+            )
+            if reference_count:
+                return False, reference_count
+            result = connection.execute(
+                text("DELETE FROM nlp_whiteboard_library_items WHERE id=:id"),
+                {"id": item_id},
+            )
+            return result.rowcount > 0, 0
+
+    def count_whiteboard_library_references(self, item_id: str) -> int:
+        with self._engine.connect() as connection:
+            item = connection.execute(
+                text("SELECT asset_code FROM nlp_whiteboard_library_items WHERE id=:id"),
+                {"id": item_id},
+            ).mappings().first()
+            rows = connection.execute(
+                text("SELECT draft_markdown, published_markdown FROM nlp_knowledge_pages")
+            ).mappings().all()
+        markers = [f'asset="{item_id}"']
+        if item is not None and item["asset_code"]:
+            markers.append(f'code="{item["asset_code"]}"')
+        return sum(1 for row in rows if any(marker in (row["draft_markdown"] or "") or marker in (row["published_markdown"] or "") for marker in markers))
+
     def delete_session(self, session_id: str) -> None:
         with self._engine.begin() as c:
             c.execute(text("DELETE FROM nlp_turn_events WHERE turn_id IN (SELECT id FROM nlp_turns WHERE conversation_id=:s)"), {"s": session_id})

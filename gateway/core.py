@@ -34,6 +34,7 @@ from gateway.contracts import (
     TurnConflictError,
     TurnRecord,
     TurnStatus,
+    WhiteboardLibraryInUseError,
 )
 from gateway.dispatch import (
     ExecutionAuthorizationContext,
@@ -60,6 +61,7 @@ from server.storage.service import (
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
+_WHITEBOARD_LIBRARY_MANAGER_ROLES = frozenset({"teacher", "developer", "admin"})
 
 
 def _session_uploads_root(context: SessionContext) -> Path:
@@ -832,6 +834,63 @@ class BackendGateway:
             workspace_id,
             asset_path,
         )
+
+    async def list_whiteboard_library(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
+        return await asyncio.to_thread(self.repository.list_whiteboard_library)
+
+    async def create_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        name: str,
+        elements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        return await asyncio.to_thread(
+            self.repository.create_whiteboard_library_item,
+            name=name,
+            elements=elements,
+            created_by=principal.user_id,
+        )
+
+    async def rename_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        item_id: str,
+        *,
+        name: str,
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        item = await asyncio.to_thread(
+            self.repository.rename_whiteboard_library_item,
+            item_id,
+            name=name,
+        )
+        if item is None:
+            raise ResourceNotFoundError("whiteboard library item not found")
+        return item
+
+    async def delete_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        item_id: str,
+    ) -> None:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        deleted, reference_count = await asyncio.to_thread(
+            self.repository.delete_whiteboard_library_item_if_unreferenced,
+            item_id,
+        )
+        if reference_count > 0:
+            raise WhiteboardLibraryInUseError(item_id, reference_count)
+        if not deleted:
+            raise ResourceNotFoundError("whiteboard library item not found")
 
     async def stream_events(
         self,
