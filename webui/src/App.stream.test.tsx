@@ -101,6 +101,22 @@ vi.mock("@/platform/http/api", () => ({
     executeSandbox: stream.executeSandbox,
     getLearningBookNavigation: stream.getLearningBookNavigation,
     getLearningBookPage: stream.getLearningBookPage,
+    getStorageUsage: vi.fn().mockResolvedValue({
+      role: "student",
+      core: { used_bytes: 0, quota_bytes: 128 * 1024 * 1024, used_ratio: 0, state: "normal" },
+      files: { used_bytes: 0, quota_bytes: 128 * 1024 * 1024, used_ratio: 0, state: "normal" },
+      files_count: 0,
+      max_file_bytes: 10 * 1024 * 1024,
+      max_items: 500,
+    }),
+    listStorageFiles: vi.fn().mockResolvedValue({ items: [] }),
+    listStorageTrash: vi.fn().mockResolvedValue({ items: [] }),
+    createStorageFolder: vi.fn(),
+    uploadStorageFile: vi.fn(),
+    renameStorageFile: vi.fn(),
+    deleteStorageFile: vi.fn(),
+    restoreStorageFile: vi.fn(),
+    permanentlyDeleteStorageFile: vi.fn(),
   },
 }));
 

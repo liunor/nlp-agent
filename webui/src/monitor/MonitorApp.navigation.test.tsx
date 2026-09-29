@@ -15,6 +15,7 @@ const { monitorApi } = vi.hoisted(() => ({
     systemUsageDimension: vi.fn().mockResolvedValue({ items: [], total: 0, offset: 0, limit: 12, has_more: false }),
     errors: vi.fn().mockResolvedValue({ items: [] }),
     events: vi.fn().mockResolvedValue({ items: [] }), storage: vi.fn().mockResolvedValue({}),
+    space: vi.fn().mockResolvedValue(null),
     authorizationAudit: vi.fn().mockResolvedValue({ items: [], total: 0, offset: 0, limit: 50, has_more: false }),
     authorizationAuditStats: vi.fn().mockResolvedValue({ period_days: 30, since: "2026-08-01T00:00:00", total: 0, by_decision: {}, top_reasons: [] }),
   },

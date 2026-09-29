@@ -31,6 +31,54 @@ async def test_claim_increments_generation_and_heartbeat_requires_the_same_owner
 
 
 @pytest.mark.asyncio
+async def test_recovery_invalidates_old_generation_and_emits_handover_without_resetting_sequence(monkeypatch) -> None:
+    from server.application import turn_reliability
+
+    class _Quota:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def reserve(self, *args, **kwargs):
+            return object()
+
+        async def finalize(self, *args, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(turn_reliability, "AsyncStorageQuota", _Quota)
+    turn = TurnModel(
+        id="turn-1",
+        conversation_id="conversation-1",
+        workspace_id="workspace-1",
+        user_id="user-1",
+        input_text="hi",
+        status="running",
+        claim_generation=2,
+        lease_expires_at=utc_now() - timedelta(seconds=1),
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    scalars = MagicMock()
+    scalars.all.return_value = [turn]
+    latest_sequence = MagicMock()
+    latest_sequence.first.return_value = 7
+    session.scalars.side_effect = [scalars, latest_sequence]
+    session.scalar.return_value = {"turn_id": "turn-1", "task": "encoded-turn-task"}
+    service = TurnReliabilityService()
+
+    recovered = await service.recover_stuck_turns(session)
+
+    assert recovered == ["turn-1"]
+    assert turn.claim_generation == 3
+    added = [call.args[0] for call in session.add.call_args_list]
+    assert any(getattr(item, "event_type", None) == "turn.handover" and getattr(item, "sequence", None) == 8 for item in added)
+    assert any(
+        getattr(item, "topic", None) == "turn.dispatch"
+        and getattr(item, "payload_json", None) == {"turn_id": "turn-1", "task": "encoded-turn-task"}
+        for item in added
+    )
+
+
+@pytest.mark.asyncio
 async def test_claim_reports_durable_cancellation_as_a_distinct_outcome() -> None:
     turn = TurnModel(
         id="turn-1",
@@ -58,7 +106,20 @@ async def test_claim_reports_durable_cancellation_as_a_distinct_outcome() -> Non
 
 
 @pytest.mark.asyncio
-async def test_recovery_repairs_legacy_unleased_zombie_and_preserves_sequence() -> None:
+async def test_recovery_repairs_legacy_unleased_zombie_and_preserves_sequence(monkeypatch) -> None:
+    from server.application import turn_reliability
+
+    class _Quota:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def reserve(self, *args, **kwargs):
+            return object()
+
+        async def finalize(self, *args, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(turn_reliability, "AsyncStorageQuota", _Quota)
     turn = TurnModel(
         id="turn-1",
         conversation_id="conversation-1",

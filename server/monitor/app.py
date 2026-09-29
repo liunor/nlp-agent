@@ -754,6 +754,13 @@ def create_monitor_app(
     async def storage(identity: Principal):
         return {**(await service.health(identity)), "retention": app.state.monitor_retention}
 
+    @app.get("/api/v1/observability/space", tags=["observability"])
+    async def space(
+        identity: Principal,
+        db: Annotated[AsyncSession, Depends(monitor_db_session)],
+    ):
+        return await service.space(identity, db)
+
     @app.post("/api/v1/observability/storage/prune", tags=["observability"])
     async def prune(
         _identity: Principal,

@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     NLP_AGENT_REDIS_URL: str = ""
     NLP_AGENT_STATE_FACTORY: str = ""
     NLP_AGENT_DATABASE_URL: str = ""
+    # Test and production use separate databases. Monitor labels the selected
+    # process explicitly and never combines sibling environments.
+    NLP_AGENT_DEPLOYMENT_ENV: str = "unknown"
     NLP_AGENT_QUOTA_ENFORCEMENT: bool = False
     NLP_AGENT_QUOTA_ENFORCEMENT_PERCENT: int | None = None
     NLP_AGENT_QUOTA_ENFORCEMENT_USERS: str = ""
@@ -113,6 +116,12 @@ class Settings(BaseSettings):
     NLP_AGENT_SANDBOX_PROJECT_STORAGE_ENABLED: bool = False
     NLP_AGENT_SANDBOX_PROJECT_STORAGE_ROOT: str = ""
     NLP_AGENT_SANDBOX_SNAPSHOTS_ENABLED: bool = False
+    NLP_AGENT_USER_FILES_ROOT: str = ""
+    NLP_AGENT_USER_FILES_GLOBAL_LIMIT_BYTES: int = 30 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES: int = 30 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_MIN_FREE_BYTES: int = 15 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_TRASH_RETENTION_DAYS: int = 7
+    NLP_AGENT_GUEST_STORAGE_RETENTION_DAYS: int = 30
 
     _config: dict = {}
 

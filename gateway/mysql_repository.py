@@ -29,6 +29,8 @@ from gateway.contracts import (
     TurnRecord,
     TurnStatus,
 )
+from server.storage.policy import StorageBucket
+from server.storage.quota import SyncStorageQuota
 from server.quota.contracts import AdmitTurn
 from server.quota.service import QuotaService, retry_mysql_transaction
 
@@ -165,9 +167,34 @@ class MySQLGatewayRepository:
                         classroom_ids=quota_classroom_ids,
                     )
                 state = {"context": learning_context.model_dump(mode="json") if learning_context else None, "progress": learning_progress.model_dump(mode="json") if learning_progress else None, "exercise": exercise_state.model_dump(mode="json") if exercise_state else None}
-                c.execute(text("INSERT INTO nlp_turns(id,conversation_id,workspace_id,user_id,status,input_text,learning_state_json,idempotency_key) VALUES(:id,:s,:w,:u,'accepted',:input,:state,:key)"), {"id": turn_id, "s": session_id, "w": workspace_id, "u": user_id, "input": input_text, "state": json.dumps(state), "key": idempotency_key})
+                state_json = json.dumps(state, ensure_ascii=False)
+                storage = SyncStorageQuota(c, owner_user_id=user_id)
+                storage_reservation = storage.reserve(
+                    StorageBucket.CORE,
+                    len(input_text.encode("utf-8")) * 2
+                    + len(state_json.encode("utf-8"))
+                    + len(input_text.encode("utf-8"))
+                    + 1024,
+                    resource_type="turn",
+                    resource_key=turn_id,
+                )
+                c.execute(text("INSERT INTO nlp_turns(id,conversation_id,workspace_id,user_id,status,input_text,learning_state_json,idempotency_key) VALUES(:id,:s,:w,:u,'accepted',:input,:state,:key)"), {"id": turn_id, "s": session_id, "w": workspace_id, "u": user_id, "input": input_text, "state": state_json, "key": idempotency_key})
+                message_sequence = int(
+                    c.execute(
+                        text("SELECT COALESCE(MAX(sequence),0)+1 FROM nlp_conversation_messages WHERE conversation_id=:session"),
+                        {"session": session_id},
+                    ).scalar_one()
+                )
+                c.execute(
+                    text(
+                        "INSERT INTO nlp_conversation_messages(id,conversation_id,turn_id,sequence,role,content) "
+                        "VALUES(UUID(),:session,:turn,:sequence,'user',:content)"
+                    ),
+                    {"session": session_id, "turn": turn_id, "sequence": message_sequence, "content": input_text},
+                )
                 if dispatch_payload is not None:
                     c.execute(text("INSERT INTO nlp_outbox_messages(id,topic,payload_json,status) VALUES(UUID(),'turn.dispatch',:payload,'pending')"), {"payload": json.dumps({"turn_id": turn_id, "task": dispatch_payload})})
+                storage.finalize(storage_reservation, reconcile=True)
             return None, False
 
         existing_record, duplicate = retry_mysql_transaction(create_once)
@@ -185,7 +212,7 @@ class MySQLGatewayRepository:
         preserve_terminal = False
         with self._runtime_begin() as c:
             current = c.execute(
-                text("SELECT status,error_kind,claim_generation FROM nlp_turns WHERE id=:id FOR UPDATE"),
+                text("SELECT user_id,result_text,error_message,status,error_kind,claim_generation FROM nlp_turns WHERE id=:id FOR UPDATE"),
                 {"id": turn_id},
             ).mappings().first()
             if current is None:
@@ -206,10 +233,26 @@ class MySQLGatewayRepository:
                 and not retrying_dispatch_failure
             ):
                 preserve_terminal = True
+            storage = None
+            storage_reservation = None
             if not preserve_terminal:
-                c.execute(text("UPDATE nlp_turns SET status=:status,result_text=:result,error_kind=:kind,error_message=:message,started_at=CASE WHEN :running='running' THEN UTC_TIMESTAMP(6) ELSE started_at END,completed_at=CASE WHEN :terminal=1 THEN UTC_TIMESTAMP(6) ELSE completed_at END WHERE id=:id"), {"status": status.value, "result": final_text, "kind": error_kind, "message": (error_message or "")[:1000] or None, "running": status.value, "terminal": int(terminal), "id": turn_id})
+                stored_error = (error_message or "")[:1000] or None
+                old_result_size = len((current["result_text"] or "").encode("utf-8")) + len((current["error_message"] or "").encode("utf-8"))
+                new_result_size = len((final_text or "").encode("utf-8")) + len((stored_error or "").encode("utf-8"))
+                result_delta = max(0, new_result_size - old_result_size)
+                if result_delta:
+                    storage = SyncStorageQuota(c, owner_user_id=str(current["user_id"]))
+                    storage_reservation = storage.reserve(
+                        StorageBucket.CORE,
+                        result_delta,
+                        resource_type="turn_result",
+                        resource_key=turn_id,
+                    )
+                c.execute(text("UPDATE nlp_turns SET status=:status,result_text=:result,error_kind=:kind,error_message=:message,started_at=CASE WHEN :running='running' THEN UTC_TIMESTAMP(6) ELSE started_at END,completed_at=CASE WHEN :terminal=1 THEN UTC_TIMESTAMP(6) ELSE completed_at END WHERE id=:id"), {"status": status.value, "result": final_text, "kind": error_kind, "message": stored_error, "running": status.value, "terminal": int(terminal), "id": turn_id})
             if not preserve_terminal and dispatch_payload is not None:
                 c.execute(text("INSERT INTO nlp_outbox_messages(id,topic,payload_json,status) VALUES(UUID(),'turn.dispatch',:payload,'pending')"), {"payload": json.dumps({"turn_id": turn_id, "task": dispatch_payload})})
+            if storage is not None:
+                storage.finalize(storage_reservation, reconcile=True)
         row = self._row(turn_id)
         if row is None:
             raise KeyError(turn_id)
@@ -270,14 +313,28 @@ class MySQLGatewayRepository:
             ).scalar_one_or_none()
             if current_generation is None:
                 raise KeyError(turn_id)
+            current_generation = int(current_generation)
             if (
                 expected_claim_generation is not None
                 and int(current_generation) != expected_claim_generation
             ):
                 raise TurnClaimMismatchError(turn_id)
+            current_user_id = c.execute(
+                text("SELECT user_id FROM nlp_turns WHERE id=:id FOR UPDATE"),
+                {"id": turn_id},
+            ).scalar_one()
+            payload_json = json.dumps(payload or {}, ensure_ascii=False)
+            storage = SyncStorageQuota(c, owner_user_id=str(current_user_id))
+            storage_reservation = storage.reserve(
+                StorageBucket.CORE,
+                len(payload_json.encode("utf-8")) + 256,
+                resource_type="turn_event",
+                resource_key=f"{turn_id}:{event_type.value}",
+            )
             sequence = int(c.execute(text("SELECT COALESCE(MAX(sequence),0)+1 FROM nlp_turn_events WHERE turn_id=:id"), {"id": turn_id}).scalar_one())
             event_id = str(uuid.uuid4())
-            c.execute(text("INSERT INTO nlp_turn_events(id,turn_id,sequence,claim_generation,event_type,payload_json) VALUES(:event,:turn,:seq,:generation,:type,:payload)"), {"event": event_id, "turn": turn_id, "seq": sequence, "generation": int(current_generation), "type": event_type.value, "payload": json.dumps(payload or {})})
+            c.execute(text("INSERT INTO nlp_turn_events(id,turn_id,sequence,claim_generation,event_type,payload_json) VALUES(:event,:turn,:seq,:generation,:type,:payload)"), {"event": event_id, "turn": turn_id, "seq": sequence, "generation": current_generation, "type": event_type.value, "payload": payload_json})
+            storage.finalize(storage_reservation, reconcile=True)
         return GatewayEvent(event_id=event_id, turn_id=turn_id, session_id=session_id, sequence=sequence, type=event_type, payload=payload or {})
 
     def events_after(self, turn_id: str, *, after_sequence: int = 0, limit: int = 500) -> list[GatewayEvent]:
@@ -532,7 +589,18 @@ class MySQLGatewayRepository:
             c.execute(text("UPDATE nlp_guided_sessions SET status=:status,state_json=:state,completed_at=CASE WHEN :completed THEN UTC_TIMESTAMP(6) ELSE NULL END WHERE id=:id"), {"id": guided_session_id, "status": "completed" if completed else "active", "state": json.dumps(state, ensure_ascii=False), "completed": completed})
     def update_turn_guided_status(self, turn_id: str, *, status: str) -> None:
         with self._runtime_begin() as c:
+            turn = c.execute(text("SELECT user_id FROM nlp_turns WHERE id=:id FOR UPDATE"), {"id": turn_id}).mappings().first()
+            if turn is None:
+                raise KeyError(turn_id)
+            storage = SyncStorageQuota(c, owner_user_id=str(turn["user_id"]))
+            reservation = storage.reserve(
+                StorageBucket.CORE,
+                len(status.encode("utf-8")) + 128,
+                resource_type="turn_state",
+                resource_key=turn_id,
+            )
             c.execute(text("UPDATE nlp_turns SET learning_state_json=JSON_SET(COALESCE(learning_state_json, JSON_OBJECT()), '$.guided_session_status', :status) WHERE id=:id"), {"id": turn_id, "status": status})
+            storage.finalize(reservation, reconcile=True)
     def end_guided_sessions(self, *, session_id: str, status: str = "cancelled") -> int:
         if status not in {"completed", "cancelled", "expired"}: raise ValueError("invalid guided session terminal status")
         with self._runtime_begin() as c:

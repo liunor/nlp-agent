@@ -48,6 +48,7 @@ from server.web.auth import (
 from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 from server.rbac.catalog import permission_display, role_display
 from server.agent.session_service import DatabaseSessionService, local_session_service
+from server.storage.quota import StorageQuotaExceeded
 from server.quota.errors import QuotaDomainError, QuotaRejectedError
 from server.quota.management import QuotaManagementService
 from server.quota.notifications import (
@@ -3093,6 +3094,16 @@ def create_app(
             model_factory=model_factory,
         )
 
+    @app.exception_handler(StorageQuotaExceeded)
+    async def storage_quota_error(request: Request, error: StorageQuotaExceeded):
+        return _problem(
+            request,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            code="storage_quota_exceeded",
+            title="Account storage quota exceeded",
+            detail=str(error),
+        )
+
     @app.get("/api/v1/teacher/goals/{workspace_id}", tags=["teacher"])
     async def get_teacher_goals(workspace_id: str, request: Request, principal: Principal):
         return await teacher_service.goals(principal, request.app.state.gateway, workspace_id)
@@ -3765,6 +3776,8 @@ def create_app(
     # Image upload endpoints (registered before the SPA mount so /api routes win).
     from server.uploads import router as uploads_router
     app.include_router(uploads_router)
+    from server.storage import router as storage_router
+    app.include_router(storage_router)
 
     if static_dir is not None and static_dir.is_dir():
         app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="webui")

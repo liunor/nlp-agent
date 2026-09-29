@@ -54,6 +54,11 @@ from gateway.redis_transport import TurnTaskCodec
 from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.storage.service import (
+    purge_expired_guest_data,
+    purge_expired_storage_trash,
+    reconcile_all_storage_accounts,
+)
 from server.quota.contracts import AdmitTurn, QuotaProblem
 from server.quota.errors import QuotaErrorCode, QuotaRejectedError
 from server.quota.operations import QuotaOperationsService
@@ -269,6 +274,7 @@ class BackendGateway:
         )
         self._maintenance_stop = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
+        self._storage_reconciled = False
         self._quota_reaper: QuotaReservationReaper | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
@@ -327,11 +333,21 @@ class BackendGateway:
                 await self.prune_events()
 
     async def prune_events(self) -> dict[str, int]:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self.repository.prune_events,
             retention_days=self.event_retention_days,
             max_events_per_session=self.max_events_per_session,
         )
+        factory = self.authorization_session_factory
+        if factory is not None:
+            async with factory() as session:
+                async with session.begin():
+                    if not self._storage_reconciled:
+                        result["storage_accounts_reconciled"] = await reconcile_all_storage_accounts(session)
+                        self._storage_reconciled = True
+                    result["storage_trash_removed"] = await purge_expired_storage_trash(session)
+                    result["guest_data_accounts_removed"] = await purge_expired_guest_data(session)
+        return result
 
     async def begin_shutdown(self) -> None:
         """Enter draining state before network channels are stopped."""

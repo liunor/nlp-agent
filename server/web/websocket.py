@@ -37,6 +37,7 @@ from server.web.contracts import (
     parse_command_payload,
 )
 from server.web.protocol import control_event, gateway_event_envelope
+from server.storage.quota import StorageQuotaExceeded
 from server.quota.errors import QuotaRejectedError
 
 
@@ -521,6 +522,8 @@ class WebSocketConnection:
 
 def _command_error(error: Exception) -> tuple[str, str, dict[str, Any]]:
     name = type(error).__name__
+    if isinstance(error, StorageQuotaExceeded):
+        return "storage_quota_exceeded", "账户通用存储空间已达到配额，请清理会话、记忆或图片后重试", {}
     if isinstance(error, QuotaRejectedError):
         problem = error.problem
         return (
@@ -801,7 +804,7 @@ async def _receive_commands(
             except AuthenticationError:
                 await connection.close(code=4401, reason="authentication expired")
                 return
-            except (json.JSONDecodeError, ValidationError, ValueError, PermissionError, RuntimeError, LookupError, FileNotFoundError) as error:
+            except (json.JSONDecodeError, ValidationError, ValueError, PermissionError, RuntimeError, LookupError, FileNotFoundError, StorageQuotaExceeded, QuotaRejectedError) as error:
                 code, message, details = _command_error(error)
                 session_id = command.payload.get("session_id") if command is not None else None
                 await connection.send(

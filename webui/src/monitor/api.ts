@@ -43,6 +43,15 @@ export interface TraceGroupSummary {
 export interface TraceGroupPage { scope: "system"; items: TraceGroupSummary[]; total: number; offset: number; limit: number; has_more: boolean; period_days?: number; analysis?: AnalysisBounds; }
 export interface TraceGroupDetail { chain: TraceGroupSummary; traces: Trace[]; spans: Array<Span & { trace_id?: string }>; events: TelemetryEvent[]; detail_limits?: { traces?: number; children: number; traces_truncated?: boolean; children_truncated?: boolean }; }
 export interface UsageRow { day: string; component: string; name: string; requests: number; successes: number; errors: number; duration_sum_ms: number; input_tokens: number; output_tokens: number; cached_tokens: number; cache_miss_tokens: number; reasoning_tokens: number; total_tokens: number; }
+export interface SessionRow { session_id: string; workspace_id: string; user_id: string; channel: string; turns: number; errors: number; avg_duration_ms: number; total_tokens: number; last_seen: string; }
+export interface StorageSpace {
+  generated_at: string;
+  environment: { code: string; label: string };
+  scope: "current_environment_only";
+  database: { name: string; host: string };
+  account_pool: { used_bytes: number; reserved_bytes: number; total_bytes: number; limit_bytes: number; available_bytes: number; ratio: number; state: string; account_count: number };
+  disk: { used_bytes: number; free_bytes: number; total_bytes: number; ratio: number; state: string; shared_physical_disk: boolean };
+}
 export interface ErrorRow { fingerprint?: string; error_kind: string; kind: string; name: string; count: number; trace_count?: number; affected_users?: number; affected_workspaces?: number; first_seen?: string | null; last_seen: string | null; latency_ms?: PercentileMetrics; provider_models?: string[]; chains?: string[]; recovery_status?: "ongoing" | "recovered" | "stale"; sample_trace_id: string; }
 export interface SystemUsageDimension { user_id?: string; workspace_id?: string; provider?: string; purpose?: string; provider_model?: string; events: number; priced_events: number; unpriced_events: number; credits_complete: boolean; credit_status: string; credits_micro: number | null; priced_credits_micro: number; tokens: Record<string, number>; cache_hit_rate?: number | null; cache_input_tokens?: number | null; cache_cached_input_tokens?: number | null; cache_measured_events?: number; cache_unmeasured_events?: number; }
 export interface SystemUsageBreakdown { day: string; period_start?: string; period_end?: string; granularity?: string; purpose?: string; provider?: string; provider_model?: string; events?: number; priced_events?: number; unpriced_events?: number; priced_credits_micro?: number; total_tokens?: number; tokens?: Record<string, number>; }
@@ -124,6 +133,7 @@ export const monitorApi = {
     return request<ErrorAnalysis>(`/observability/errors?${query.toString()}`);
   },
   storage: () => request<Record<string, unknown>>("/observability/storage"),
+  space: () => request<StorageSpace>("/observability/space"),
   sandboxOverview: (historyMinutes = 30) => request<SandboxOverview>(`/observability/sandbox/overview?history_window_minutes=${historyMinutes}`),
   sandboxLogs: (limit = 80, sinceSeconds = 600) => request<{ items: SandboxLogEntry[]; retention_seconds: number; sampled_at: string }>(`/observability/sandbox/logs?limit=${limit}&since_seconds=${sinceSeconds}`),
   sandboxRuntimes: (limit = 12, offset = 0) => request<SandboxPage<SandboxRuntime>>(`/observability/sandbox/runtimes?limit=${limit}&offset=${offset}`),
