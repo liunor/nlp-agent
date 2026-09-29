@@ -476,3 +476,17 @@ def test_learning_analysis_trend_uses_evidence_backed_points_before_placeholders
     )
 
     assert [item["knowledge_point_id"] for item in result["mastery_trend"]["series"]] == ["attention"]
+
+
+def test_risk_thresholds_respect_exact_boundaries():
+    def risk_at(passes: int, total: int) -> str:
+        evidence_rows = [
+            evidence("transformer", ["attention"], 100 if index < passes else 30, index < passes)
+            for index in range(total)
+        ]
+        return build_analytics([], evidence_rows, [], [], catalog())["weak_topics"][0]["risk"]
+
+    # A pass rate exactly at the floor must not fall into the higher band:
+    # 60.0% is "medium" (not "high"), 80.0% is "low" (not "medium").
+    assert risk_at(3, 5) == "medium"
+    assert risk_at(4, 5) == "low"

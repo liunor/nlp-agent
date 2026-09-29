@@ -25,8 +25,15 @@ SECRET = "test-secret-that-is-long-enough-for-hmac"
 
 
 class FakeSession:
+    class _EmptyScalarResult:
+        def all(self):
+            return []
+
     def add(self, obj):
         return None
+
+    async def scalars(self, _statement):
+        return self._EmptyScalarResult()
 
     @asynccontextmanager
     async def begin(self):

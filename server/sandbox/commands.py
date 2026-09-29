@@ -45,6 +45,7 @@ class RedisSandboxManagerCommandStore:
         target: int,
         reason: str,
         execute_at: str | None = None,
+        target_ttl_seconds: int | None = None,
     ) -> str:
         self._faults.fail_if_configured("redis.xadd")
         issued_at = time.time()
@@ -57,6 +58,7 @@ class RedisSandboxManagerCommandStore:
                 "target": str(target),
                 "reason": reason,
                 "execute_at": execute_at or "",
+                "target_ttl_seconds": str(max(1, int(target_ttl_seconds or settings.NLP_AGENT_SANDBOX_PREWARM_TARGET_TTL_S))),
                 "issued_at": str(issued_at),
                 "expires_at": str(expires_at),
             },

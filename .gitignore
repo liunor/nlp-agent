@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.pytest-tmp/
 # ── 虚拟环境 ──
 .venv/
 venv/
@@ -14,6 +15,7 @@ venv/
 .env
 .env.*
 !.env-example
+!.env-example.zh
 !.env.example
 
 # 私钥、证书与本地数据库的兜底保护

@@ -24,6 +24,7 @@ from gateway.contracts import (
     TurnStatus,
 )
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
+from gateway.analytics_time import localize_turn_time
 
 
 def _now() -> str:
@@ -95,6 +96,15 @@ class GatewayRepository:
                     settings_json TEXT NOT NULL DEFAULT '{}',
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS gateway_whiteboard_library_items (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    item_json TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_gateway_whiteboard_library_created
+                    ON gateway_whiteboard_library_items(created_at, id);
                 -- Teaching assets are deliberately independent from chat sessions,
                 -- turns, and user UI settings.  Editing a course cannot mutate a
                 -- learner transcript or LangGraph checkpoint.
@@ -135,6 +145,34 @@ class GatewayRepository:
                 );
                 CREATE INDEX IF NOT EXISTS idx_gateway_whiteboard_library_created
                     ON gateway_whiteboard_library_items(created_at, id);
+                CREATE TABLE IF NOT EXISTS gateway_knowledge_book_files (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    knowledge_point_id TEXT NOT NULL,
+                    original_name TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    content BLOB NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_gateway_knowledge_book_files_point
+                    ON gateway_knowledge_book_files(workspace_id, knowledge_point_id, created_at, id);
+                CREATE TABLE IF NOT EXISTS gateway_knowledge_book_file_refs (
+                    workspace_id TEXT NOT NULL,
+                    knowledge_point_id TEXT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('draft', 'published')),
+                    sort_order INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(workspace_id, knowledge_point_id, state, file_id),
+                    FOREIGN KEY(file_id) REFERENCES gateway_knowledge_book_files(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_gateway_knowledge_book_file_refs_file
+                    ON gateway_knowledge_book_file_refs(workspace_id, file_id, state);
                 CREATE TABLE IF NOT EXISTS gateway_blueprints (
                     workspace_id TEXT NOT NULL, blueprint_id TEXT NOT NULL, kind TEXT NOT NULL,
                     topic_id TEXT NOT NULL, knowledge_point_id TEXT NOT NULL, level TEXT,
@@ -258,6 +296,14 @@ class GatewayRepository:
         guided_session_status: str | None = None,
         exercise_state: ExerciseState | None = None,
         dispatch_payload: str | None = None,
+        # The MySQL repository performs quota admission in the same
+        # transaction as turn creation.  Keep the in-memory repository
+        # compatible with that gateway contract; quota-aware callers may use
+        # this repository in tests and local development where admission is
+        # intentionally disabled.
+        quota_admission: Any = None,
+        quota_role_codes: tuple[str, ...] = (),
+        quota_classroom_ids: tuple[str, ...] = (),
     ) -> tuple[TurnRecord, bool]:
         with self._lock, self._conn:
             if idempotency_key:
@@ -333,12 +379,32 @@ class GatewayRepository:
             fields["exercise_state_json"] = exercise_state.model_dump_json()
         assignments = ",".join(f"{key}=?" for key in fields)
         with self._lock, self._conn:
-            cursor = self._conn.execute(
+            current = self._conn.execute(
+                "SELECT * FROM gateway_turns WHERE turn_id=?", (turn_id,)
+            ).fetchone()
+            if current is None:
+                raise KeyError(turn_id)
+            terminal_statuses = {
+                TurnStatus.COMPLETED.value,
+                TurnStatus.FAILED.value,
+                TurnStatus.CANCELLED.value,
+                TurnStatus.INTERRUPTED.value,
+            }
+            retrying_dispatch_failure = (
+                current["status"] == TurnStatus.FAILED.value
+                and current["error_kind"] == "dispatch_failed"
+                and status == TurnStatus.ACCEPTED
+            )
+            if (
+                current["status"] in terminal_statuses
+                and current["status"] != status.value
+                and not retrying_dispatch_failure
+            ):
+                return self._turn(current)
+            self._conn.execute(
                 f"UPDATE gateway_turns SET {assignments} WHERE turn_id=?",
                 (*fields.values(), turn_id),
             )
-            if cursor.rowcount != 1:
-                raise KeyError(turn_id)
             row = self._conn.execute(
                 "SELECT * FROM gateway_turns WHERE turn_id=?", (turn_id,)
             ).fetchone()
@@ -629,6 +695,7 @@ class GatewayRepository:
         *,
         workspace_id: str,
         since: str,
+        timezone_name: str = "UTC",
     ) -> list[dict[str, Any]]:
         """Teacher read model: structured question rows (no question text).
 
@@ -649,6 +716,10 @@ class GatewayRepository:
                 created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
             except ValueError:
                 created_at = None
+            if created_at is None:
+                day, hour, weekday = created[:10], None, None
+            else:
+                day, hour, weekday = localize_turn_time(created_at, timezone_name)
             result.append(
                 {
                     "session_id": row["session_id"],
@@ -660,9 +731,9 @@ class GatewayRepository:
                     "topic_id": context.get("topic_id"),
                     "level": context.get("level"),
                     "mode": context.get("mode"),
-                    "day": created[:10],
-                    "hour": created_at.hour if created_at else None,
-                    "weekday": created_at.weekday() if created_at else None,
+                    "day": day,
+                    "hour": hour,
+                    "weekday": weekday,
                 }
             )
         return result
@@ -684,7 +755,8 @@ class GatewayRepository:
         since: str,
         until: str | None = None,
         limit: int = 10_000,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
+        cap = min(max(1, limit), 10_000)
         with self._lock:
             rows = self._conn.execute(
                 """SELECT e.normalized_score,e.passed,e.knowledge_point_ids_json,e.blueprint_snapshot_json,q.id AS question_id,q.question,s.user_id,s.topic_id,s.mode,s.completed_at
@@ -693,8 +765,10 @@ class GatewayRepository:
                    JOIN gateway_exercise_sessions s ON s.id=e.exercise_session_id
                    WHERE s.workspace_id=? AND s.completed_at>=? AND (? IS NULL OR s.completed_at<?)
                    ORDER BY s.completed_at DESC LIMIT ?""",
-                (workspace_id, since, until, until, min(max(1, limit), 10_000)),
+                (workspace_id, since, until, until, cap + 1),
             ).fetchall()
+        truncated = len(rows) > cap
+        rows = rows[:cap]
         result: list[dict[str, Any]] = []
         for row in rows:
             kp_ids = json.loads(row["knowledge_point_ids_json"] or "[]") if row["knowledge_point_ids_json"] else []
@@ -714,7 +788,7 @@ class GatewayRepository:
                     "completed_at": row["completed_at"],
                 }
             )
-        return result
+        return result, truncated
 
     def exercise_criterion_stats(
         self,
@@ -723,7 +797,8 @@ class GatewayRepository:
         since: str,
         until: str | None = None,
         limit: int = 20_000,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
+        cap = min(max(1, limit), 50_000)
         with self._lock:
             rows = self._conn.execute(
                 """SELECT a.rubric_matches_json,s.user_id,s.topic_id,s.blueprint_snapshot_json,s.completed_at
@@ -732,8 +807,10 @@ class GatewayRepository:
                    JOIN gateway_exercise_sessions s ON s.id=q.exercise_session_id
                    WHERE s.workspace_id=? AND s.completed_at>=? AND (? IS NULL OR s.completed_at<?)
                    ORDER BY s.completed_at DESC LIMIT ?""",
-                (workspace_id, since, until, until, min(max(1, limit), 50_000)),
+                (workspace_id, since, until, until, cap + 1),
             ).fetchall()
+        truncated = len(rows) > cap
+        rows = rows[:cap]
         result: list[dict[str, Any]] = []
         for row in rows:
             blueprint = json.loads(row["blueprint_snapshot_json"] or "{}") if row["blueprint_snapshot_json"] else {}
@@ -747,7 +824,7 @@ class GatewayRepository:
                     "completed_at": row["completed_at"],
                 }
             )
-        return result
+        return result, truncated
 
     def guided_session_stats(
         self,
@@ -1033,6 +1110,7 @@ class GatewayRepository:
         knowledge_point_id: str,
         *,
         expected_revision: int,
+        published_file_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         with self._lock, self._conn:
             current = self.get_knowledge_page(workspace_id, knowledge_point_id)
@@ -1056,6 +1134,13 @@ class GatewayRepository:
                        WHERE workspace_id=? AND asset_path=?""",
                     (_now(), workspace_id, asset_path),
                 )
+            if published_file_ids is not None:
+                self._replace_knowledge_book_file_refs_in_transaction(
+                    workspace_id,
+                    knowledge_point_id,
+                    "published",
+                    published_file_ids,
+                )
         return self.get_knowledge_page(workspace_id, knowledge_point_id)  # type: ignore[return-value]
 
     @staticmethod
@@ -1072,6 +1157,7 @@ class GatewayRepository:
         workspace_id: str,
         pages: list[dict[str, Any]],
         assets: list[dict[str, Any]],
+        file_refs: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Apply a validated package atomically after checking every revision."""
         with self._lock, self._conn:
@@ -1122,6 +1208,11 @@ class GatewayRepository:
                         _now(),
                     ),
                 )
+            if file_refs is not None:
+                for point_id, file_ids in file_refs.items():
+                    self._replace_knowledge_book_file_refs_in_transaction(
+                        workspace_id, str(point_id), "draft", file_ids
+                    )
         return [self.get_knowledge_page(workspace_id, str(page["knowledge_point_id"])) for page in pages]  # type: ignore[list-item]
 
     def get_knowledge_book_asset(self, workspace_id: str, asset_path: str) -> dict[str, Any] | None:
@@ -1135,6 +1226,279 @@ class GatewayRepository:
         if row is None or row["content"] is None:
             return None
         return dict(row)
+
+    def create_knowledge_book_file(
+        self,
+        *,
+        workspace_id: str,
+        knowledge_point_id: str,
+        original_name: str,
+        display_name: str,
+        media_type: str,
+        content: bytes,
+        created_by: str,
+        file_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist one validated教材文件 and return its complete record."""
+
+        identifier = file_id or str(uuid.uuid4())
+        now = _now()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO gateway_knowledge_book_files(
+                    id,workspace_id,knowledge_point_id,original_name,display_name,
+                    media_type,content,size_bytes,sha256,created_by,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    identifier,
+                    workspace_id,
+                    knowledge_point_id,
+                    original_name,
+                    display_name,
+                    media_type,
+                    sqlite3.Binary(content),
+                    len(content),
+                    hashlib.sha256(content).hexdigest(),
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_knowledge_book_file(workspace_id, identifier)  # type: ignore[return-value]
+
+    def get_knowledge_book_file(
+        self,
+        workspace_id: str,
+        file_id: str,
+        *,
+        include_content: bool = True,
+    ) -> dict[str, Any] | None:
+        columns = "id,workspace_id,knowledge_point_id,original_name,display_name,media_type,size_bytes,sha256,created_by,created_at,updated_at"
+        if include_content:
+            columns += ",content"
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {columns} FROM gateway_knowledge_book_files WHERE workspace_id=? AND id=?",
+                (workspace_id, file_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_knowledge_book_files(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+        *,
+        include_content: bool = False,
+    ) -> list[dict[str, Any]]:
+        columns = "id,workspace_id,knowledge_point_id,original_name,display_name,media_type,size_bytes,sha256,created_by,created_at,updated_at"
+        if include_content:
+            columns += ",content"
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {columns} FROM gateway_knowledge_book_files "
+                "WHERE workspace_id=? AND knowledge_point_id=? ORDER BY created_at, id",
+                (workspace_id, knowledge_point_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_published_knowledge_book_files(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return metadata for files attached to the published page snapshot."""
+
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT f.id,f.workspace_id,f.knowledge_point_id,f.original_name,
+                          f.display_name,f.media_type,f.size_bytes,f.sha256,
+                          f.created_by,f.created_at,f.updated_at
+                   FROM gateway_knowledge_book_files AS f
+                   JOIN gateway_knowledge_book_file_refs AS r
+                     ON r.workspace_id=f.workspace_id AND r.file_id=f.id
+                   WHERE f.workspace_id=? AND r.knowledge_point_id=f.knowledge_point_id
+                     AND r.knowledge_point_id=? AND r.state='published'
+                   ORDER BY r.sort_order,r.file_id""",
+                (workspace_id, knowledge_point_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_knowledge_book_file(
+        self,
+        workspace_id: str,
+        file_id: str,
+        *,
+        original_name: str | None = None,
+        display_name: str | None = None,
+        media_type: str | None = None,
+        content: bytes | None = None,
+    ) -> dict[str, Any]:
+        """Update metadata or replace content without changing the file ID."""
+
+        current = self.get_knowledge_book_file(workspace_id, file_id)
+        if current is None:
+            raise FileNotFoundError(file_id)
+        with self._lock:
+            published = self._conn.execute(
+                "SELECT 1 FROM gateway_knowledge_book_file_refs "
+                "WHERE workspace_id=? AND file_id=? AND state='published' LIMIT 1",
+                (workspace_id, file_id),
+            ).fetchone()
+        if published is not None:
+            raise ValueError("已发布文件不能原地更新，请上传新文件替换")
+        next_original_name = original_name if original_name is not None else str(current["original_name"])
+        next_name = display_name if display_name is not None else str(current["display_name"])
+        next_media_type = media_type if media_type is not None else str(current["media_type"])
+        next_content = content if content is not None else bytes(current["content"])
+        with self._lock, self._conn:
+            self._conn.execute(
+                """UPDATE gateway_knowledge_book_files SET original_name=?,display_name=?,media_type=?,content=?,
+                    size_bytes=?,sha256=?,updated_at=? WHERE workspace_id=? AND id=?""",
+                (
+                    next_original_name,
+                    next_name,
+                    next_media_type,
+                    sqlite3.Binary(next_content),
+                    len(next_content),
+                    hashlib.sha256(next_content).hexdigest(),
+                    _now(),
+                    workspace_id,
+                    file_id,
+                ),
+            )
+        return self.get_knowledge_book_file(workspace_id, file_id)  # type: ignore[return-value]
+
+    def delete_knowledge_book_file(self, workspace_id: str, file_id: str) -> bool:
+        with self._lock, self._conn:
+            referenced = self._conn.execute(
+                "SELECT 1 FROM gateway_knowledge_book_file_refs WHERE workspace_id=? AND file_id=? LIMIT 1",
+                (workspace_id, file_id),
+            ).fetchone()
+            if referenced is not None:
+                raise ValueError("文件仍被教材引用，不能删除")
+            result = self._conn.execute(
+                "DELETE FROM gateway_knowledge_book_files WHERE workspace_id=? AND id=?",
+                (workspace_id, file_id),
+            )
+        return result.rowcount > 0
+
+    @staticmethod
+    def _validate_knowledge_book_file_ref_state(state: str) -> None:
+        if state not in {"draft", "published"}:
+            raise ValueError("教材文件引用状态必须是 draft 或 published")
+
+    def _replace_knowledge_book_file_refs_in_transaction(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+        state: str,
+        file_ids: list[str],
+    ) -> None:
+        self._validate_knowledge_book_file_ref_state(state)
+        ordered_ids = list(dict.fromkeys(str(file_id) for file_id in file_ids))
+        for file_id in ordered_ids:
+            row = self._conn.execute(
+                "SELECT knowledge_point_id FROM gateway_knowledge_book_files WHERE workspace_id=? AND id=?",
+                (workspace_id, file_id),
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(file_id)
+            if str(row["knowledge_point_id"]) != knowledge_point_id:
+                raise ValueError("教材文件不能跨知识点引用")
+        self._conn.execute(
+            "DELETE FROM gateway_knowledge_book_file_refs WHERE workspace_id=? AND knowledge_point_id=? AND state=?",
+            (workspace_id, knowledge_point_id, state),
+        )
+        now = _now()
+        self._conn.executemany(
+            """INSERT INTO gateway_knowledge_book_file_refs(
+                workspace_id,knowledge_point_id,file_id,state,sort_order,created_at
+            ) VALUES (?,?,?,?,?,?)""",
+            [
+                (workspace_id, knowledge_point_id, file_id, state, index, now)
+                for index, file_id in enumerate(ordered_ids)
+            ],
+        )
+
+    def set_knowledge_book_file_refs(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+        state: str,
+        file_ids: list[str],
+    ) -> None:
+        """Replace one page's ordered draft/published file references atomically."""
+
+        with self._lock, self._conn:
+            self._replace_knowledge_book_file_refs_in_transaction(
+                workspace_id, knowledge_point_id, state, file_ids
+            )
+
+    def list_knowledge_book_file_refs(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+        state: str,
+    ) -> list[str]:
+        self._validate_knowledge_book_file_ref_state(state)
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT file_id FROM gateway_knowledge_book_file_refs
+                   WHERE workspace_id=? AND knowledge_point_id=? AND state=?
+                   ORDER BY sort_order,file_id""",
+                (workspace_id, knowledge_point_id, state),
+            ).fetchall()
+        return [str(row["file_id"]) for row in rows]
+
+    def publish_knowledge_book_file_refs(
+        self,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[str]:
+        """Promote the current draft references as one atomic page snapshot."""
+
+        with self._lock, self._conn:
+            draft_rows = self._conn.execute(
+                """SELECT file_id,sort_order FROM gateway_knowledge_book_file_refs
+                   WHERE workspace_id=? AND knowledge_point_id=? AND state='draft'
+                   ORDER BY sort_order,file_id""",
+                (workspace_id, knowledge_point_id),
+            ).fetchall()
+            self._conn.execute(
+                "DELETE FROM gateway_knowledge_book_file_refs WHERE workspace_id=? "
+                "AND knowledge_point_id=? AND state='published'",
+                (workspace_id, knowledge_point_id),
+            )
+            now = _now()
+            self._conn.executemany(
+                """INSERT INTO gateway_knowledge_book_file_refs(
+                    workspace_id,knowledge_point_id,file_id,state,sort_order,created_at
+                ) VALUES (?,?,?,?,?,?)""",
+                [
+                    (workspace_id, knowledge_point_id, str(row["file_id"]), "published", int(row["sort_order"]), now)
+                    for row in draft_rows
+                ],
+            )
+        return [str(row["file_id"]) for row in draft_rows]
+
+    def get_published_knowledge_book_file(
+        self,
+        workspace_id: str,
+        file_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT f.id,f.workspace_id,f.knowledge_point_id,f.original_name,
+                          f.display_name,f.media_type,f.content,f.size_bytes,f.sha256,
+                          f.created_by,f.created_at,f.updated_at
+                   FROM gateway_knowledge_book_files AS f
+                   JOIN gateway_knowledge_book_file_refs AS r
+                     ON r.workspace_id=f.workspace_id AND r.file_id=f.id
+                   WHERE f.workspace_id=? AND f.id=?
+                     AND r.knowledge_point_id=f.knowledge_point_id AND r.state='published'""",
+                (workspace_id, file_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def select_guided_blueprint(self, *, workspace_id: str, topic_id: str) -> dict[str, Any] | None:
         catalog = self.get_teaching_catalog(workspace_id)["catalog"]

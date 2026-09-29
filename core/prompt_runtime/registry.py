@@ -29,6 +29,7 @@ DEFAULT_SPECS: tuple[PromptSpec, ...] = (
     PromptSpec("memory.curate_request", "1.0", "memory/curate_request.md", frozenset({"memory", "archives"})),
     PromptSpec("compression.auto_summary", "1.0", "compression/auto_summary.md", frozenset({"conversation"})),
     PromptSpec("compression.collapse_summary", "1.0", "compression/collapse_summary.md", frozenset({"conversation"})),
+    PromptSpec("session.summary", "1.0", "session/session_summary.md", frozenset({"conversation"})),
     PromptSpec("tool.contract", "1.0", "tool/tool_contract.md"),
     PromptSpec(
         "learning.policy",

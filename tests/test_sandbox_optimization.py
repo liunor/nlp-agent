@@ -13,6 +13,102 @@ def test_adaptive_pool_target_is_bounded_and_uses_refill_p95() -> None:
     assert policy.target_for(arrival_rate_per_min=10_000, refill_p95_s=60) == 5
 
 
+def test_adaptive_pool_target_covers_unassigned_online_leases() -> None:
+    from server.sandbox.optimization import AdaptivePoolPolicy
+
+    policy = AdaptivePoolPolicy(ready_min=1, ready_max=3, burst_buffer=1)
+    assert policy.target_for(
+        arrival_rate_per_min=0,
+        refill_p95_s=4,
+        unassigned_lease_count=2,
+    ) == 3
+    assert policy.target_for(
+        arrival_rate_per_min=0,
+        refill_p95_s=4,
+        unassigned_lease_count=50,
+    ) == 3
+
+
+def test_adaptive_pool_target_uses_a_recent_demand_window() -> None:
+    from server.sandbox.optimization import AdaptivePoolPolicy
+
+    policy = AdaptivePoolPolicy(ready_min=1, ready_max=5, burst_buffer=1)
+    samples = [
+        {"arrival_rate_per_min": 12, "refill_p95_s": 10, "unassigned_count": 1},
+        {"arrival_rate_per_min": 0, "refill_p95_s": 1, "unassigned_count": 0},
+        {"arrival_rate_per_min": 0, "refill_p95_s": 1, "unassigned_count": 0},
+    ]
+
+    assert policy.target_for(
+        arrival_rate_per_min=0,
+        refill_p95_s=1,
+        unassigned_lease_count=0,
+    ) == 1
+    assert policy.target_for_samples(samples) == 3
+    assert policy.target_for_samples(
+        [{"unassigned_count": 0}],
+        fallback_arrival_rate_per_min=30,
+        fallback_refill_p95_s=4,
+    ) == 3
+
+
+def test_sandbox_claim_priority_is_developer_teacher_student_guest() -> None:
+    from server.sandbox.optimization import should_defer_claim
+
+    assert should_defer_claim(
+        current_role_codes={"student"},
+        waiting_role_codes=(frozenset({"teacher"}),),
+    ) is True
+    assert should_defer_claim(
+        current_role_codes={"guest"},
+        waiting_role_codes=(frozenset({"student"}), frozenset({"teacher"})),
+    ) is True
+    assert should_defer_claim(
+        current_role_codes={"developer"},
+        waiting_role_codes=(frozenset({"teacher"}), frozenset({"guest"})),
+    ) is False
+
+
+def test_refill_count_respects_the_global_runtime_cap() -> None:
+    from server.sandbox.optimization import refill_count
+
+    assert refill_count(target=3, ready_count=1, creating_count=0, total_count=1, total_max=4) == 2
+    assert refill_count(target=3, ready_count=1, creating_count=0, total_count=3, total_max=4) == 1
+    assert refill_count(target=3, ready_count=1, creating_count=0, total_count=4, total_max=4) == 0
+
+
+def test_host_resource_guard_blocks_creation_below_memory_or_disk_reserve() -> None:
+    from server.sandbox.optimization import host_capacity_allows_create
+
+    assert host_capacity_allows_create(
+        total_count=1,
+        total_max=4,
+        available_memory_mb=4096,
+        memory_reserve_mb=3072,
+        runtime_memory_mb=768,
+        disk_free_gb=20,
+        disk_reserve_gb=15,
+    ) is True
+    assert host_capacity_allows_create(
+        total_count=1,
+        total_max=4,
+        available_memory_mb=3700,
+        memory_reserve_mb=3072,
+        runtime_memory_mb=768,
+        disk_free_gb=20,
+        disk_reserve_gb=15,
+    ) is False
+    assert host_capacity_allows_create(
+        total_count=1,
+        total_max=4,
+        available_memory_mb=4096,
+        memory_reserve_mb=3072,
+        runtime_memory_mb=768,
+        disk_free_gb=14.9,
+        disk_reserve_gb=15,
+    ) is False
+
+
 def test_class_forecast_and_cooldown_are_deterministic() -> None:
     from server.sandbox.optimization import AdaptivePoolPolicy
 

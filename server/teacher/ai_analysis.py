@@ -52,10 +52,19 @@ class _CacheEntry:
 
 
 class LearningAnalysisAICache:
-    """Small process-local cache; intentionally no database table in v1."""
+    """Small process-local cache; intentionally no database table in v1.
 
-    def __init__(self, ttl_seconds: int = 1_800) -> None:
+    The cache is scoped to a single process: it keeps the AI report stable
+    across tab switches within the TTL for the single-replica deployment.
+    Multi-replica deployments must move this behind a shared store (Redis or the
+    application database) so replicas do not independently re-invoke DeepSeek.
+    Entries are bounded to ``max_items`` with FIFO eviction so a long-running
+    process cannot grow the dict without limit.
+    """
+
+    def __init__(self, ttl_seconds: int = 1_800, max_items: int = 128) -> None:
         self.ttl_seconds = max(1, ttl_seconds)
+        self.max_items = max(1, max_items)
         self._items: dict[str, _CacheEntry] = {}
 
     def get(self, key: str) -> dict[str, Any] | None:
@@ -69,6 +78,8 @@ class LearningAnalysisAICache:
 
     def set(self, key: str, value: dict[str, Any]) -> None:
         self._items[key] = _CacheEntry(dict(value), time.monotonic() + self.ttl_seconds)
+        while len(self._items) > self.max_items:
+            self._items.pop(next(iter(self._items)), None)
 
     def clear(self) -> None:
         self._items.clear()
@@ -100,43 +111,21 @@ def _backend_evidence(item: dict[str, Any]) -> list[str]:
     ]
 
 
-def _error_type(item: dict[str, Any]) -> str:
+# 单一映射表：确定性“错误模式”(problem_type) → 模型“认知原因”(error_type)。
+# 只有语义可严格对应的才转换；“易错点集中”“练习覆盖不足”“学习参与不足”
+# 描述的是错误／覆盖／参与模式，规则侧无法可靠推断具体认知原因，因此规则兜底时
+# 保留原始 problem_type 标签，交由模型在给定候选词表内自行判断（见 _prompt）。
+_PROBLEM_TYPE_TO_ERROR_TYPE = {
+    "概念掌握不足": "概念理解不足",
+    "解题方法不熟": "方法不熟",
+}
+
+
+def _fallback_error_type(item: dict[str, Any]) -> str:
     problem_type = str(item.get("problem_type") or "")
     if item.get("data_sufficiency") == "insufficient" or problem_type == "数据不足，暂不判断":
         return "数据不足，暂不判断"
-    if problem_type == "概念掌握不足":
-        return "概念理解不足"
-    if problem_type == "解题方法不熟":
-        return "方法不熟"
-    if problem_type == "易错点集中":
-        return "计算错误"
-    if problem_type == "练习覆盖不足":
-        return "前置知识不足"
-    return "方法不熟"
-
-
-def _rule_suggestion(item: dict[str, Any]) -> str:
-    problem_type = str(item.get("problem_type") or "")
-    if item.get("data_sufficiency") == "insufficient" or problem_type == "数据不足，暂不判断":
-        return "先补充练习或等待更多学生作答，再判断掌握情况。"
-    if problem_type == "概念掌握不足":
-        return "回顾核心概念和边界条件，安排 2～3 道基础变式题。"
-    if problem_type == "解题方法不熟":
-        return "拆解解题步骤，安排一道示范题和 2～3 道同构练习。"
-    if problem_type == "易错点集中":
-        return "针对高频错误评分点做辨析讲解，并安排基础变式题巩固。"
-    if problem_type == "练习覆盖不足":
-        return "增加不同题型和难度的练习覆盖，再观察下一周期变化。"
-    return "扩大参与面后继续观察该知识点的学习表现。"
-
-
-def _rule_problem(item: dict[str, Any]) -> str:
-    if item.get("data_sufficiency") == "insufficient":
-        return f"“{item.get('knowledge_point_name', '该知识点')}”样本量不足，暂不判断掌握情况。"
-    criterion = next(iter(item.get("weak_criteria") or []), None)
-    if item.get("problem_type") == "易错点集中" and criterion:
-        return f"错误主要集中在“{criterion.get('criterion', '高频评分点')}”，需要进行针对性辨析。"
-    return str((item.get("recommendation") or {}).get("conclusion") or "当前学习表现需要继续观察。")
+    return _PROBLEM_TYPE_TO_ERROR_TYPE.get(problem_type) or problem_type or "方法不熟"
 
 
 def _matches_filter(item: dict[str, Any], value: str, *, id_key: str, name_key: str) -> bool:
@@ -188,12 +177,12 @@ def build_ai_analysis_material(
                 "repeated_error_students": int(item.get("repeated_error_student_count") or 0),
                 "trend": {"down": "下降", "up": "上升", "stable": "稳定"}.get(str(item.get("trend")), "稳定"),
                 "problem_type": str(item.get("problem_type") or "数据不足，暂不判断"),
-                "error_type": _error_type(item),
+                "error_type": _fallback_error_type(item),
                 "data_sufficiency": str(item.get("data_sufficiency") or "insufficient"),
                 "weak_criteria": item.get("weak_criteria") or [],
                 "question_examples": examples,
-                "rule_problem": _rule_problem(item),
-                "rule_suggestion": _rule_suggestion(item),
+                "rule_problem": str((item.get("recommendation") or {}).get("conclusion") or "当前学习表现需要继续观察。"),
+                "rule_suggestion": str((item.get("recommendation") or {}).get("action") or "先补充练习并继续观察下一周期表现。"),
             }
         )
     return {
@@ -249,7 +238,7 @@ def validate_ai_analysis_response(raw: dict[str, Any], source_items: list[dict[s
         if point_id in seen:
             continue
         seen.add(point_id)
-        error_type = item.error_type if item.error_type in AI_ERROR_TYPES else _error_type(source)
+        error_type = item.error_type if item.error_type in AI_ERROR_TYPES else _fallback_error_type(source)
         visible.append(
             {
                 "knowledge_point_id": point_id,
@@ -297,7 +286,7 @@ def _rule_result(material: dict[str, Any], message: str) -> dict[str, Any]:
                 "suggestions": [str(item.get("rule_suggestion") or "先补充练习并继续观察下一周期表现。")],
                 "confidence": "medium",
                 "data_gaps": [],
-                "error_type": str(item.get("error_type") or _error_type(item)),
+                "error_type": str(item.get("error_type") or _fallback_error_type(item)),
                 "question_examples": item.get("question_examples") or [],
             }
         )
@@ -320,12 +309,13 @@ def _rule_result(material: dict[str, Any], message: str) -> dict[str, Any]:
 
 
 def _prompt(material: dict[str, Any]) -> str:
+    error_vocabulary = "、".join(AI_ERROR_TYPES)
     return (
         "你是教学数据分析助手。只分析以下聚合后的学生学习数据，不能索引学生身份，也不能自行计算或修改任何统计数字。\n"
         "请严格返回 JSON，不要 Markdown，不要解释 JSON 之外的内容。\n"
         "只返回前 5 个最需要关注且 data_sufficiency=sufficient 的知识点；每个知识点最多 3 条 suggestions。"
         "evidence 必须非空，problem 和 suggestions 必须与 evidence 对应。\n"
-        "模型只负责解释共性问题、判断问题可能属于概念理解不足/方法不熟/计算错误/前置知识不足，并给教师参考动作。"
+        f"模型只负责解释共性问题，error_type 必须从给定候选词表中选择其一：{error_vocabulary}，并给教师参考动作。"
         "不要生成完整教案，不要排名，不要调整教学计划，不要发布练习。\n"
         "返回结构：{summary:string, diagnoses:[{knowledge_point_id:string,level:high|medium|low,problem:string,cause:string,evidence:string[],suggestions:string[],confidence:high|medium|low,data_gaps:string[],error_type:string}]}\n"
         f"数据：{json.dumps(material, ensure_ascii=False, separators=(',', ':'))}"

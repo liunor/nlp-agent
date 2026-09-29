@@ -1,15 +1,17 @@
-import { BadgeInfo, BookOpenCheck, ChevronDown, ChevronRight, CircleHelp, Clock3, Database, Gauge, Globe2, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, X } from "lucide-react";
+import { ArrowRight, BadgeInfo, BookOpenCheck, ChevronDown, ChevronRight, CircleHelp, Clock3, Coins, Database, Gauge, Github, Globe2, Info, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
+import { QuotaUsagePage } from "@/modules/quota/QuotaUsagePage";
+import { JoinNovaDialog } from "@/modules/student/components/JoinNovaDialog";
 import { api } from "@/platform/http/api";
 import type { FeedbackCategory, FeedbackThread, LearningContext, ReleaseNoteEntry, UserSettings } from "@/shared/types";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { supportedLocales } from "@/shared/i18n/config";
 import { saveFeedback } from "@/shared/utils/feedback";
-import { APP_NAME, APP_VERSION } from "@/shared/version";
+import { APP_NAME } from "@/shared/version";
 
-type SettingsSection = "general" | "appearance" | "chat" | "learning" | "data" |  "feedback" | "updates";
+type SettingsSection = "general" | "appearance" | "chat" | "learning" | "data" | "quota" | "feedback" | "updates" | "about";
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings2 }> = [
   { id: "general", label: "通用", icon: Settings2 },
@@ -17,9 +19,23 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof Setting
   { id: "chat", label: "对话与流式", icon: Gauge },
   { id: "learning", label: "学习体验", icon: BookOpenCheck },
   { id: "data", label: "数据与隐私", icon: Database },
+  { id: "quota", label: "额度与用量", icon: Coins },
   { id: "feedback", label: "意见反馈", icon: MessageSquarePlus },
   { id: "updates", label: "版本与更新", icon: BadgeInfo },
+  { id: "about", label: "关于我们", icon: Info },
 ];
+
+const aboutContributionAreas = [
+  { id: "llm", label: "NLP / 大语言模型" },
+  { id: "agent", label: "Agent 开发" },
+  { id: "backend", label: "Python / 后端开发" },
+  { id: "frontend", label: "前端开发" },
+  { id: "design", label: "UI / UX" },
+  { id: "testing", label: "测试与评测" },
+  { id: "content", label: "NLP 学习内容建设" },
+] as const;
+
+const PROJECT_REPOSITORY_URL = "https://github.com/liunor/nlp-agent";
 
 const levelLabel: Record<LearningContext["level"], string> = { beginner: "入门", intermediate: "进阶", advanced: "高阶" };
 const modeLabel: Record<LearningContext["mode"], string> = { explain: "讲解", socratic: "苏格拉底追问", practice: "练习", review: "复习" };
@@ -27,13 +43,43 @@ const FEEDBACK_DISABLED_HINT = "当前身份不支持提交反馈";
 const feedbackStatusLabel: Record<string, string> = { open: "待处理", under_review: "审视中", planned: "已规划", in_progress: "进行中", complete: "已完成", closed: "已关闭" };
 const feedbackCategoryLabel: Record<string, string> = { feature: "功能建议", ux: "体验问题", bug: "Bug", other: "其他" };
 
-export function SettingsDialog({ open, settings, learningContext, roles = [], permissions, userId, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
+function versionParts(version: string): number[] {
+  return version.split(".").map((part) => Number.parseInt(part, 10) || 0);
+}
+
+function latestReleaseNote(items: ReleaseNoteEntry[]): ReleaseNoteEntry | null {
+  return [...items]
+    .filter((item) => item.status === "published")
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.released_at);
+      const rightTime = Date.parse(right.released_at);
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && rightTime !== leftTime) return rightTime - leftTime;
+      if (Number.isFinite(rightTime) && !Number.isFinite(leftTime)) return 1;
+      if (Number.isFinite(leftTime) && !Number.isFinite(rightTime)) return -1;
+
+      const leftParts = versionParts(left.version);
+      const rightParts = versionParts(right.version);
+      for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+        const delta = (rightParts[index] ?? 0) - (leftParts[index] ?? 0);
+        if (delta !== 0) return delta;
+      }
+      return 0;
+    })[0] ?? null;
+}
+
+function releaseDateLabel(value: string): string {
+  const date = value.slice(0, 10);
+  return date ? `发布日期 · ${date}` : "发布日期待补充";
+}
+
+export function SettingsDialog({ open, settings, learningContext, roles = [], permissions, userId, workspaceIds, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
   open: boolean;
   settings: UserSettings;
   learningContext: LearningContext;
   roles?: string[];
   permissions?: string[];
   userId?: string;
+  workspaceIds?: string[];
   onClose: () => void;
   onChange: (patch: Partial<UserSettings>) => void;
   onReset: () => void;
@@ -56,19 +102,28 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNoteEntry[] | null>(null);
   const [releaseNotesError, setReleaseNotesError] = useState(false);
   const [releaseNotesAttempt, setReleaseNotesAttempt] = useState(0);
+  const [joinNovaOpen, setJoinNovaOpen] = useState(false);
   const canTeach = roles.includes("teacher") || roles.includes("developer");
   const canDevelop = roles.includes("developer");
+  const hasExplicitPermissions = Boolean(permissions?.length);
+  const canViewQuota = hasExplicitPermissions
+    ? permissions?.includes("quota:usage:read_self") ?? false
+    : roles.some((role) => ["guest", "student", "teacher", "developer"].includes(role));
+  const visibleSections = canViewQuota ? sections : sections.filter((item) => item.id !== "quota");
   // Server-side permissions win when present (custom RBAC roles); legacy guest
   // sessions only carry roles, so fall back to the built-in role packages.
-  const canSubmitFeedback = permissions
-    ? permissions.includes("learning:feedback:submit")
+  const canSubmitFeedback = hasExplicitPermissions
+    ? permissions?.includes("learning:feedback:submit") ?? false
     : ["student", "teacher", "developer"].some((role) => roles.includes(role));
   useEffect(() => {
-    if (!open || section !== "updates" || releaseNotes !== null) return;
+    if (!open || section !== "updates") return;
+    let active = true;
+    queueMicrotask(() => { if (active) { setReleaseNotes(null); setReleaseNotesError(false); } });
     api.listPublishedReleaseNotes()
-      .then(({ items }) => { setReleaseNotesError(false); setReleaseNotes(items); })
-      .catch(() => setReleaseNotesError(true));
-  }, [open, section, releaseNotes, releaseNotesAttempt]);
+      .then(({ items }) => { if (active) setReleaseNotes(items); })
+      .catch(() => { if (active) setReleaseNotesError(true); });
+    return () => { active = false; };
+  }, [open, section, releaseNotesAttempt]);
   useEffect(() => {
     if (!open || section !== "feedback" || !canSubmitFeedback) return;
     void api.getFeedbackDailyState().then(setFeedbackDaily).catch(() => setFeedbackDaily(null));
@@ -116,17 +171,18 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   };
   if (!open) return null;
   const updateLearning = (patch: Partial<LearningContext>) => onLearningContextChange({ ...learningContext, ...patch });
+  const currentRelease = releaseNotes ? latestReleaseNote(releaseNotes) : null;
 
   return <>
     <div className="dialog-backdrop settings-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="settings-dialog" role="dialog" aria-modal="true" aria-label="偏好设置" onMouseDown={(event) => event.stopPropagation()}>
+      <section className={`settings-dialog${section === "quota" ? " settings-dialog-quota" : ""}`} role="dialog" aria-modal="true" aria-label="偏好设置" onMouseDown={(event) => event.stopPropagation()}>
         <aside className="settings-nav">
           <div className="settings-nav-brand"><Settings2 size={19} /><span><strong>偏好设置</strong><small>学习空间</small></span></div>
-          <nav>{sections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} disabled={id === "feedback" && !canSubmitFeedback} title={id === "feedback" && !canSubmitFeedback ? FEEDBACK_DISABLED_HINT : undefined} onClick={() => setSection(id)}><Icon size={16} /><span className="settings-nav-label">{label}</span>{id === "feedback" && (feedbackHistory?.student_unread_count ?? 0) > 0 && <span className="settings-nav-unread" aria-label="未读消息">未读</span>}</button>)}</nav>
-          <p><CircleHelp size={14} />仅显示学生模式可安全调整的选项。</p>
+          <nav>{visibleSections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} disabled={id === "feedback" && !canSubmitFeedback} title={id === "feedback" && !canSubmitFeedback ? FEEDBACK_DISABLED_HINT : undefined} onClick={() => setSection(id)}><Icon size={16} /><span className="settings-nav-label">{label}</span>{id === "feedback" && (feedbackHistory?.student_unread_count ?? 0) > 0 && <span className="settings-nav-unread" aria-label="未读消息">未读</span>}</button>)}</nav>
+          <p><CircleHelp size={14} />额度只读展示，分配和策略调整由开发者统一管理。</p>
         </aside>
         <div className="settings-content">
-          <header><div><strong>{sections.find((item) => item.id === section)?.label}</strong><p>{section === "data" ? "数据、隐私与开发者配置集中在此管理。" : "修改会立即保存，并在下次打开时恢复。"}</p></div><button className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><X size={19} /></button></header>
+          <header><div><strong>{visibleSections.find((item) => item.id === section)?.label}</strong><p>{section === "data" ? "数据、隐私与开发者配置集中在此管理。" : section === "quota" ? "查看当前额度与 Token 用量。" : section === "about" ? "了解 Nova 以及项目背后的团队。" : "修改会立即保存，并在下次打开时恢复。"}</p></div><button className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><X size={19} /></button></header>
           <div className="settings-scroll">
             {section === "general" && <>
               <SettingGroup title="界面语言" description="语言偏好会同步保存到本地后端，并立即切换学生模式的界面语言。"><label className="settings-field"><span><Globe2 size={15} />阅读语言</span><select value={settings.locale} onChange={(event) => onChange({ locale: event.target.value })}>{supportedLocales.map((locale) => <option key={locale.code} value={locale.code}>{locale.nativeLabel} · {locale.label}</option>)}</select></label></SettingGroup>
@@ -212,6 +268,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
     </SettingGroup>
   </>
 )}
+            {section === "quota" && canViewQuota && <QuotaUsagePage embedded userId={userId} workspaceIds={workspaceIds} />}
             {section === "feedback" && (canSubmitFeedback ? <>
               <SettingGroup title="提交你的建议" description="选择分类后提交，开发者可在工作台回复与更新状态。每日最多 3 条（北京时间自然日）。">
                 <div className="feedback-form">
@@ -227,7 +284,36 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
                 {!feedbackHistory || feedbackHistory.messages.length === 0 ? <div className="settings-note">暂无历史反馈，提交后可在此查看时间线。</div> : <div className="feedback-history-collapsible"><button type="button" className="feedback-history-toggle" aria-label={feedbackHistoryOpen ? "收起消息" : "展开消息"} aria-expanded={feedbackHistoryOpen} onClick={() => void toggleFeedbackHistory()}><span><strong>消息记录</strong><small>{feedbackHistory.message_total ?? feedbackHistory.messages.length} 条消息</small></span><span>{(feedbackHistory.student_unread_count ?? 0) > 0 && <b className="feedback-history-unread">未读消息</b>}<em>{feedbackHistoryOpen ? "收起消息" : "展开消息"}</em><ChevronDown size={15} className={feedbackHistoryOpen ? "is-open" : ""} /></span></button>{feedbackHistoryOpen && <div className="feedback-history">{feedbackHistory.message_has_more && <button className="feedback-history-load-more" type="button" disabled={feedbackHistoryLoadingMore} onClick={() => void loadOlderFeedbackHistory()}>{feedbackHistoryLoadingMore ? "正在加载更早消息…" : "加载更早反馈"}</button>}{feedbackHistory.messages.map((message) => <article key={message.id} className={`feedback-history-message ${message.sender_type}`}><div><strong>{message.sender_type === "student" ? "我" : "开发者"}</strong><time><Clock3 size={10} />{new Date(message.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.body}</p></article>)}</div>}</div>}
               </SettingGroup>
             </> : <SettingGroup title="意见反馈" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="settings-note">{FEEDBACK_DISABLED_HINT}</div></SettingGroup>)}
-            {section === "updates" && <><SettingGroup title="当前版本" description={`${APP_NAME} v${APP_VERSION}`}><div className="settings-note"><b>版本号随构建自动同步</b><br />来自当前发布构建，无需手动维护。</div></SettingGroup><SettingGroup title="本次更新与修复" description={releaseNotesError ? "无法读取更新说明，请稍后重试。" : releaseNotes && releaseNotes.length > 0 ? "由开发者工作台维护，学生端实时同步。" : "暂无已发布的更新说明。"}>{releaseNotesError ? <button className="settings-link-button" type="button" onClick={() => setReleaseNotesAttempt((current) => current + 1)}>重新加载 <ChevronRight size={15} /></button> : releaseNotes === null ? <div className="settings-note">正在读取…</div> : releaseNotes.length > 0 && <div className="release-notes-list">{releaseNotes.map((note) => <article className="release-note" key={note.id}><h3>v{note.version}<small>{note.released_at.slice(0, 10)}</small></h3><ul className="release-notes">{note.notes.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>}</SettingGroup></>}
+            {section === "updates" && <>
+              <SettingGroup title="当前版本" description={releaseNotesError ? "无法读取当前版本，请稍后重试。" : releaseNotes === null ? "正在读取最近一次发布。" : currentRelease ? "最近一次已发布版本，学生端当前生效。" : "还没有已发布版本。"}>
+                {releaseNotesError ? <div className="settings-note settings-release-error">无法读取当前版本，请稍后重试。</div> : releaseNotes === null ? <div className="settings-note">正在读取…</div> : currentRelease ? <div className="release-current-version"><div><span>{APP_NAME}</span><strong>v{currentRelease.version}</strong></div><time dateTime={currentRelease.released_at}>{releaseDateLabel(currentRelease.released_at)}</time></div> : <div className="settings-note">暂无已发布的更新说明。</div>}
+              </SettingGroup>
+              <SettingGroup title="本次更新与修复" description={releaseNotesError ? "无法读取更新说明，请稍后重试。" : currentRelease ? "展示最近一次发布的更新内容，历史版本不会挤在当前页面。" : "暂无已发布的更新说明。"}>
+                {releaseNotesError ? <button className="settings-link-button" type="button" onClick={() => setReleaseNotesAttempt((current) => current + 1)}>重新加载 <ChevronRight size={15} /></button> : releaseNotes === null ? <div className="settings-note">正在读取…</div> : currentRelease ? <div className="release-notes-list" aria-label={`v${currentRelease.version} 更新说明`}><ul className="release-notes">{currentRelease.notes.map((item) => <li key={item}>{item}</li>)}</ul></div> : <div className="settings-note">暂无已发布的更新说明。</div>}
+              </SettingGroup>
+            </>}
+            {section === "about" && <div className="settings-about-page">
+              <SettingGroup title="项目与团队">
+                <div className="settings-about-team-card">
+                  <div className="settings-about-school"><strong>乐山师范学院</strong><span>人工智能与机器人学院</span></div>
+                  <div className="settings-about-labs">
+                    <article><strong>四川省哲学社会科学重点实验室</strong><span>特殊教育语言智能</span></article>
+                    <article><strong>四川省高校重点实验室</strong><span>互联网自然语言智能处理</span></article>
+                  </div>
+                </div>
+              </SettingGroup>
+
+              <SettingGroup title="加入我们" description="对 NLP、AI Agent 或软件开发感兴趣？">
+                <p className="settings-about-copy">Nova 仍在持续成长，期待与你一起完善更好的 NLP 学习体验。</p>
+                <ul className="settings-about-tags" aria-label="可以参与的方向">
+                  {aboutContributionAreas.map((area) => <li key={area.id} className={`is-${area.id}`}><i aria-hidden="true" />{area.label}</li>)}
+                </ul>
+                <div className="settings-about-action">
+                  <a className="settings-link-button" href={PROJECT_REPOSITORY_URL} target="_blank" rel="noreferrer">GitHub 仓库 <Github size={15} /></a>
+                  <button className="settings-primary-button" type="button" onClick={() => setJoinNovaOpen(true)}>加入 Nova <ArrowRight size={15} /></button>
+                </div>
+              </SettingGroup>
+            </div>}
           </div>
         </div>
       </section>
@@ -243,9 +329,10 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   }}
   onClose={() => setResetConfirmOpen(false)}
 />
+<JoinNovaDialog open={joinNovaOpen} onClose={() => setJoinNovaOpen(false)} />
 </>;
 }
 
-function SettingGroup({ title, description, children }: { title: string; description: string; children?: ReactNode }) { return <section className="settings-group"><div><h2>{title}</h2><p>{description}</p></div>{children}</section>; }
+function SettingGroup({ title, description, children }: { title: string; description?: string; children?: ReactNode }) { return <section className="settings-group"><div><h2>{title}</h2>{description && <p>{description}</p>}</div>{children}</section>; }
 function ToggleRow({ title, detail, checked, onChange }: { title: string; detail: string; checked: boolean; onChange: (checked: boolean) => void }) { return <label className="settings-toggle-row"><span><strong>{title}</strong><small>{detail}</small></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>; }
 function ThemeButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) { return <button type="button" className={active ? "active" : ""} onClick={onClick}>{icon}<span>{label}</span></button>; }

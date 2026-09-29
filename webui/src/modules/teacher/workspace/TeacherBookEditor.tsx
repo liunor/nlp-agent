@@ -1,8 +1,8 @@
-import { AlertCircle, Bold, BookOpenText, ChevronDown, Code2, Eye, EyeOff, FileUp, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, Upload } from "lucide-react";
+import { AlertCircle, Bold, BookOpenText, ChevronDown, Code2, Eye, EyeOff, FileText, FileUp, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { api } from "@/platform/http/api";
-import { DEFAULT_QUESTION_TYPES, type CourseTopic, type TeacherBookArchiveImportPreview, type TeacherBookAssetInput, type TeacherBookImportPreview, type TeacherBookNavigationItem, type TeacherBookPage, type TeacherCatalog, type WhiteboardLibraryItem } from "@/shared/types";
+import { DEFAULT_QUESTION_TYPES, type CourseTopic, type TeacherBookArchiveImportPreview, type TeacherBookAssetInput, type TeacherBookFile, type TeacherBookImportPreview, type TeacherBookNavigationItem, type TeacherBookPage, type TeacherCatalog, type WhiteboardLibraryItem } from "@/shared/types";
 import { normalizeWhiteboardLibraryItem } from "@/modules/student/components/whiteboard/whiteboardLibraryOverlay";
 import { MarkdownContent } from "@/modules/student/components/MarkdownContent";
 import { createUuid } from "@/shared/utils/uuid";
@@ -69,6 +69,26 @@ function insertImageReferences(value: string, start: number, end: number, refere
   };
 }
 
+function insertBookFileReference(value: string, start: number, end: number, file: TeacherBookFile) {
+  const reference = `[${file.display_name}](${file.token})`;
+  const before = value.slice(0, start);
+  const after = value.slice(end);
+  const beforeSeparator = before && !before.endsWith("\n") ? "\n\n" : "";
+  const afterSeparator = after && !after.startsWith("\n") ? "\n\n" : "";
+  const inserted = `${beforeSeparator}${reference}${afterSeparator}`;
+  return {
+    value: `${before}${inserted}${after}`,
+    selectionStart: start + beforeSeparator.length,
+    selectionEnd: start + beforeSeparator.length + reference.length,
+  };
+}
+
+function formatTeacherBookFileSize(sizeBytes: number): string {
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function replaceLocalAssetReferences(markdown: string, previews: Record<string, string>) {
   const entries = Object.entries(previews);
   if (!entries.length) return markdown;
@@ -125,6 +145,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
   const [navigation, setNavigation] = useState<TeacherBookNavigationItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [page, setPage] = useState<TeacherBookPage | null>(null);
+  const [bookFiles, setBookFiles] = useState<TeacherBookFile[]>([]);
   const [content, setContent] = useState("");
   const [preview, setPreview] = useState(false);
   const [importPreview, setImportPreview] = useState<TeacherBookImportPreview | null>(null);
@@ -150,6 +171,9 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [pendingSelectedId, setPendingSelectedId] = useState<string | null>(null);
+  const [fileBusy, setFileBusy] = useState(false);
+  const [fileRenameTarget, setFileRenameTarget] = useState<TeacherBookFile | null>(null);
+  const [fileDeleteTarget, setFileDeleteTarget] = useState<TeacherBookFile | null>(null);
   const pageRequestId = useRef(0);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const contentHistory = useRef<{ past: string[]; future: string[]; value: string }>({ past: [], future: [], value: "" });
@@ -245,14 +269,22 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     const requestedId = selectedId;
     if (!requestedId) {
       setPage(null);
+      setBookFiles([]);
       replaceEditorContent("");
       return;
     }
     setError("");
     try {
       const result = await api.getTeacherBookPage(workspaceId, requestedId);
+      let files: TeacherBookFile[] = [];
+      try {
+        files = (await api.getTeacherBookFiles(workspaceId, requestedId)).items;
+      } catch {
+        // A file-list failure should not prevent editing the book page itself.
+      }
       if (requestId !== pageRequestId.current) return;
       setPage(result.page);
+      setBookFiles(files);
       replaceEditorContent(result.page.draft_markdown);
       setImportPreview(null);
       setImportAssets([]);
@@ -644,8 +676,95 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     }
   };
 
+  const insertFileReference = (file: TeacherBookFile) => {
+    const editor = editorRef.current;
+    const selectionStart = editor?.selectionStart ?? content.length;
+    const selectionEnd = editor?.selectionEnd ?? selectionStart;
+    const insertion = insertBookFileReference(content, selectionStart, selectionEnd, file);
+    setEditorContent(insertion.value);
+    window.requestAnimationFrame(() => {
+      editorRef.current?.focus();
+      editorRef.current?.setSelectionRange(insertion.selectionStart, insertion.selectionEnd);
+    });
+    setMessage(`已插入“${file.display_name}”引用，保存草稿后会同步到学生教材。`);
+  };
+
+  const uploadBookFile = async (file: File | undefined) => {
+    if (!file || !selectedId) return;
+    setFileBusy(true);
+    setMessage("");
+    try {
+      const result = await api.uploadTeacherBookFile(workspaceId, selectedId, file);
+      setBookFiles((current) => [...current, result.file]);
+      insertFileReference(result.file);
+    } catch (reason) {
+      setMessage(`教材文件上传失败：${reason instanceof Error ? reason.message : String(reason)}`);
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const renameBookFile = async (displayName: string) => {
+    const target = fileRenameTarget;
+    const nextName = displayName.trim();
+    if (!target || !selectedId || !nextName) return;
+    setFileBusy(true);
+    try {
+      const result = await api.updateTeacherBookFile(workspaceId, selectedId, target.id, nextName);
+      setBookFiles((current) => current.map((file) => file.id === target.id ? result.file : file));
+      setFileRenameTarget(null);
+      setMessage(`教材文件已重命名为“${result.file.display_name}”。`);
+    } catch (reason) {
+      setMessage(`教材文件重命名失败：${reason instanceof Error ? reason.message : String(reason)}`);
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const replaceBookFile = async (fileId: string, file: File | undefined) => {
+    if (!file || !selectedId) return;
+    setFileBusy(true);
+    try {
+      const result = await api.replaceTeacherBookFileContent(workspaceId, selectedId, fileId, file);
+      setBookFiles((current) => current.map((item) => item.id === fileId ? result.file : item));
+      setMessage(`教材文件“${result.file.display_name}”内容已替换。`);
+    } catch (reason) {
+      setMessage(`教材文件替换失败：${reason instanceof Error ? reason.message : String(reason)}`);
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const deleteBookFile = async () => {
+    const target = fileDeleteTarget;
+    if (!target || !selectedId) return;
+    if (content.toLowerCase().includes(target.token.toLowerCase())) {
+      setFileDeleteTarget(null);
+      setMessage("教材文件仍被当前未保存正文引用，请先移除引用后再删除。");
+      return;
+    }
+    setFileBusy(true);
+    try {
+      await api.deleteTeacherBookFile(workspaceId, selectedId, target.id);
+      setBookFiles((current) => current.filter((file) => file.id !== target.id));
+      setFileDeleteTarget(null);
+      setMessage(`教材文件“${target.display_name}”已删除。`);
+    } catch (reason) {
+      setMessage(`教材文件删除失败：${reason instanceof Error ? reason.message : String(reason)}`);
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
   const handleArchiveFile = async (file: File | undefined) => {
     if (!file) return;
+    if (file.name.toLowerCase().endsWith(".md")) {
+      setArchivePreview(null);
+      setArchiveName("");
+      setArchiveBase64("");
+      await handleFile([file]);
+      return;
+    }
     setMessage("");
     try {
       const archive_base64 = await fileToBase64(file);
@@ -716,6 +835,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
           {whiteboardLibrary.map((asset) => <option value={asset.id} key={asset.id}>{asset.name || "未命名图画"} · {asset.asset_code || asset.id}</option>)}
         </select>
         <button type="button" onClick={insertWhiteboardAsset} disabled={!selectedWhiteboardAssetId}><BookOpenText size={15} />插入图画</button>
+        <label className="teacher-book-import"><FileText size={15} />上传教材文件<input type="file" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { void uploadBookFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label>
         <button type="button" onClick={refreshDirectory} disabled={loading}><RefreshCw size={15} className={loading ? "spin" : ""} />刷新目录</button>
         {whiteboardLibraryError && <span role="alert">图画素材加载失败：{whiteboardLibraryError}</span>}
         {message && <span role="status">{message}</span>}
@@ -764,12 +884,15 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
           {page ? <>
             <header className="teacher-book-page-heading"><div className="teacher-book-page-heading-info"><div className="teacher-book-page-breadcrumb"><span className="teacher-book-page-topic">{page.topic_name}</span><span className="teacher-book-page-chevron" aria-hidden="true">›</span><h3>{page.title}</h3></div><span className="teacher-book-version"><strong>草稿 v{page.revision}</strong><span aria-hidden="true">·</span><span>{page.published_revision != null ? `已发布 v${page.published_revision}` : "尚未发布"}</span></span></div><div className="teacher-book-page-actions"><button type="button" className={preview ? "active" : ""} onClick={() => setPreview((current) => !current)}><Eye size={15} />{preview ? "返回编辑" : "预览正文"}</button><button type="button" onClick={() => void save()} disabled={saving}><Save size={15} />保存草稿</button><button type="button" className="teacher-book-publish" onClick={() => void publish()} disabled={saving || !content.trim()}><Send size={15} />发布给学生</button></div></header>
             <nav className="teacher-book-heading-outline" aria-label="本页小标题"><strong>本页小标题</strong>{headingIndex.headings.length ? <div>{headingIndex.headings.map((heading) => <a className={`level-${heading.level}`} key={heading.id} href={`#${heading.id}`} onClick={() => setPreview(true)}>{heading.text}</a>)}</div> : <small>使用 Markdown 的 ## / ### 标题，学生页面右侧目录会自动同步。</small>}</nav>
+            <section className="teacher-book-files" aria-label="教材文件"><div className="teacher-book-files-heading"><div><strong>教材文件</strong><small>上传后插入引用，保存并发布后学生可预览和下载。</small></div><span>{bookFiles.length} 个文件</span></div>{bookFiles.length ? <ul>{bookFiles.map((file) => <li key={file.id}><FileText size={17} aria-hidden="true" /><div className="teacher-book-file-info"><strong>{file.display_name}</strong><small>{file.media_type} · {formatTeacherBookFileSize(file.size_bytes)}</small></div><div className="teacher-book-file-actions"><button type="button" onClick={() => insertFileReference(file)} disabled={fileBusy} aria-label={`插入教材文件：${file.display_name}`}>插入引用</button><button type="button" onClick={() => setFileRenameTarget(file)} disabled={fileBusy} aria-label={`重命名教材文件：${file.display_name}`}><Pencil size={14} /></button><label className="teacher-book-file-replace" title="替换文件内容"><Upload size={14} /><input type="file" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { void replaceBookFile(file.id, event.target.files?.[0]); event.currentTarget.value = ""; }} aria-label={`替换教材文件：${file.display_name}`} /></label><button type="button" onClick={() => setFileDeleteTarget(file)} disabled={fileBusy} aria-label={`删除教材文件：${file.display_name}`}><Trash2 size={14} /></button></div></li>)}</ul> : <p>当前知识点还没有教材文件，点击上方“上传教材文件”即可添加。</p>}</section>
             {preview ? <div className="teacher-book-preview"><MarkdownContent allowDataImages headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} whiteboardLink={(_href, label) => <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true" title={label}>图</span>}>{renderKnowledgeBookWhiteboardRefs(replaceLocalAssetReferences(content || "暂无内容", editorAssetPreviews))}</MarkdownContent></div> : <div className="teacher-book-source"><div className="teacher-book-markdown-toolbar" aria-label="Markdown 快捷工具栏"><span>Markdown 源码</span><div>{markdownTools.map(({ format, label, icon: Icon, shortcut }) => <button key={format} type="button" title={shortcut ? `${label}（${shortcut}）` : label} aria-label={label} onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat(format)}><Icon size={14} />{label}</button>)}</div><small>支持 Ctrl/Cmd+B、I、K、S、Z、Y（撤销/重做） · 图片可写标题参数控制宽度，例如 <code>![图注](assets/figure.png "width=320px")</code></small></div><textarea ref={editorRef} className="teacher-book-textarea" aria-label="教材正文 Markdown" value={content} onChange={(event) => setEditorContent(event.target.value)} onKeyDown={handleEditorKeyDown} placeholder="# 知识点标题\n\n在这里编写面向学生的长篇教材正文。代码块建议使用 ```python，并只保留 PyTorch 示例。" /></div>}
           </> : <div className="teacher-state"><BookOpenText /><p>选择一个知识点开始编写教材。</p></div>}
         </main>
       </div>
       <WhiteboardLibraryManager items={whiteboardLibrary} onItemsChange={handleWhiteboardLibraryChange} />
       {catalogInput && <TextInputDialog key={`${catalogInput.kind}-${catalogInput.topicId ?? ""}-${catalogInput.pointId ?? ""}`} open title={catalogInput.title} description={catalogInput.description} label={catalogInput.label} initialValue={catalogInput.value} placeholder={catalogInput.placeholder} confirmLabel={catalogInput.confirmLabel} onClose={() => setCatalogInput(null)} onConfirm={(value) => { void submitCatalogInput(value); }} />}
+      {fileRenameTarget && <TextInputDialog key={`rename-file-${fileRenameTarget.id}`} open title="重命名教材文件" description="只修改教材中的显示名称，不会改变文件内容。" label="文件显示名" initialValue={fileRenameTarget.display_name} placeholder="请输入文件显示名" confirmLabel="保存名称" onClose={() => setFileRenameTarget(null)} onConfirm={(value) => { void renameBookFile(value); }} />}
+      {fileDeleteTarget && <ConfirmDialog open title={`删除教材文件“${fileDeleteTarget.display_name}”？`} description="如果文件已被当前教材草稿或已发布版本引用，删除会被拒绝。" confirmLabel="删除文件" onClose={() => setFileDeleteTarget(null)} onConfirm={() => { void deleteBookFile(); }} />}
       {catalogDeleteTarget && <ConfirmDialog open title={`删除${catalogDeleteTarget.kind === "topic" ? "主题" : "知识点"}“${catalogDeleteTarget.name}”？`} description={catalogDeleteTarget.kind === "topic" ? "该主题及其知识点会从当前教材目录移除；已有学习记录不会受影响。" : "该知识点会从当前教材目录移除；已有教材版本和学习记录不会受影响。"} onClose={() => setCatalogDeleteTarget(null)} onConfirm={() => { void confirmCatalogDelete(); }} />}
       {pendingSelectedId && <ConfirmDialog open title="有未保存的教材修改" description="切换知识点会丢弃当前 Markdown 修改和待入库图片。确定继续切换吗？" confirmLabel="继续切换" cancelLabel="留在当前编辑" onClose={() => setPendingSelectedId(null)} onConfirm={() => { const nextId = pendingSelectedId; setPendingSelectedId(null); setSelectedId(nextId); }} />}
     </div>

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["feature/**", develop, main]
+    branches: ["feature/**", "fix/**", develop, main]
   pull_request:
     branches: [develop, main]
   workflow_dispatch:
@@ -45,7 +45,12 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen --group dev
       - run: uv lock --check
-      - run: uv run alembic upgrade head
+      - name: Upgrade schema to previous release checkpoint
+        run: uv run alembic upgrade 20260914_55_email_registration
+      - name: Upgrade existing schema to head
+        run: uv run alembic upgrade head
+      - name: Compile complete offline migration SQL
+        run: uv run alembic upgrade head --sql > /dev/null
       - run: uv run ruff check configs core gateway server tests scripts migrations
       - run: uv run python -m compileall -q configs core gateway server migrations
       - run: uv run pytest

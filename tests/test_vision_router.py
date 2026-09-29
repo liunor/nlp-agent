@@ -52,7 +52,7 @@ def test_auto_routes_formula_category_to_fusion() -> None:
     "signals",
     [
         VisionSignals(has_grid_lines=True),
-        VisionSignals(aligned_text_ratio=0.65),
+        VisionSignals(aligned_text_ratio=0.65, has_text_layout=True),
     ],
 )
 def test_auto_routes_table_layout_to_fusion(signals: VisionSignals) -> None:
@@ -64,12 +64,27 @@ def test_auto_routes_table_layout_to_fusion(signals: VisionSignals) -> None:
     "signals",
     [
         VisionSignals(image_category="document"),
-        VisionSignals(text_coverage=0.15),
+        VisionSignals(text_coverage=0.15, has_text_layout=True),
     ],
 )
 def test_auto_routes_dense_text_to_ocr(signals: VisionSignals) -> None:
     decision = VisionTaskRouter().route("auto", signals)
     assert (decision.task_executed, decision.route) == ("ocr", "ocr")
+
+
+@pytest.mark.parametrize(
+    "signals",
+    [
+        VisionSignals(image_category="document"),
+        VisionSignals(text_coverage=0.15, has_text_layout=True),
+    ],
+)
+def test_auto_routes_questions_over_dense_text_to_fusion(
+    signals: VisionSignals,
+) -> None:
+    decision = VisionTaskRouter().route("auto", signals, has_question=True)
+
+    assert (decision.task_executed, decision.route) == ("question", "fusion")
 
 
 @pytest.mark.parametrize(
@@ -87,3 +102,10 @@ def test_chart_signals_take_precedence_over_dense_text() -> None:
         "auto", VisionSignals(has_axes=True, text_coverage=0.8)
     )
     assert (decision.task_executed, decision.route) == ("chart", "fusion")
+
+
+@pytest.mark.parametrize("coverage,aligned", [(0.2193, 0.7909), (0.0672, 0.8667), (0.4612, 0.6636)])
+def test_texture_without_text_layout_stays_semantic(coverage, aligned):
+    signals = VisionSignals(text_coverage=coverage, aligned_text_ratio=aligned)
+    assert VisionTaskRouter().route("auto", signals).task_executed == "describe"
+    assert VisionTaskRouter().route("auto", signals, has_question=True).task_executed == "question"

@@ -9,6 +9,7 @@ enabled on a Linux deployment.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Protocol, runtime_checkable
 
 from .docker_runtime import DockerRuntimeAdapter
@@ -51,6 +52,7 @@ class KataRuntimeConfig:
     tmp_size: str = "256m"
     shm_size: str = "64m"
     runtime: str = "kata-qemu"
+    namespace: str = "local"
 
     def __post_init__(self) -> None:
         if "@sha256:" not in self.image:
@@ -59,6 +61,8 @@ class KataRuntimeConfig:
             raise ValueError("Kata adapter only supports the kata-qemu runtime")
         if self.pids_limit < 1:
             raise ValueError("Kata pids_limit must be positive")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]", self.namespace) and not re.fullmatch(r"[a-z0-9]", self.namespace):
+            raise ValueError("Kata sandbox namespace must be a lowercase Docker label value")
 
 
 class KataRuntimeAdapter(DockerRuntimeAdapter):

@@ -4,14 +4,20 @@ import userEvent from "@testing-library/user-event";
 import { TeacherBookEditor } from "./TeacherBookEditor";
 import type { TeacherCatalog } from "@/shared/types";
 
-const { getNavigationMock, getPageMock, getWhiteboardLibraryMock, updateCatalogMock, updatePageMock, previewImportMock, applyImportMock } = vi.hoisted(() => ({
+const { getNavigationMock, getPageMock, getWhiteboardLibraryMock, getFilesMock, uploadFileMock, updateFileMock, deleteFileMock, updateCatalogMock, updatePageMock, previewImportMock, applyImportMock, previewArchiveImportMock, applyArchiveImportMock } = vi.hoisted(() => ({
   getNavigationMock: vi.fn(),
   getPageMock: vi.fn(),
   getWhiteboardLibraryMock: vi.fn(),
+  getFilesMock: vi.fn(),
+  uploadFileMock: vi.fn(),
+  updateFileMock: vi.fn(),
+  deleteFileMock: vi.fn(),
   updateCatalogMock: vi.fn(),
   updatePageMock: vi.fn(),
   previewImportMock: vi.fn(),
   applyImportMock: vi.fn(),
+  previewArchiveImportMock: vi.fn(),
+  applyArchiveImportMock: vi.fn(),
 }));
 
 vi.mock("@/platform/http/api", () => ({
@@ -19,13 +25,18 @@ vi.mock("@/platform/http/api", () => ({
     getTeacherBookNavigation: getNavigationMock,
     getTeacherBookPage: getPageMock,
     getWhiteboardLibrary: getWhiteboardLibraryMock,
+    getTeacherBookFiles: getFilesMock,
+    uploadTeacherBookFile: uploadFileMock,
+    updateTeacherBookFile: updateFileMock,
+    replaceTeacherBookFileContent: vi.fn(),
+    deleteTeacherBookFile: deleteFileMock,
     updateTeacherCatalog: updateCatalogMock,
     updateTeacherBookPage: updatePageMock,
     publishTeacherBookPage: vi.fn(),
     previewTeacherBookImport: previewImportMock,
     applyTeacherBookImport: applyImportMock,
-    previewTeacherBookArchiveImport: vi.fn(),
-    applyTeacherBookArchiveImport: vi.fn(),
+    previewTeacherBookArchiveImport: previewArchiveImportMock,
+    applyTeacherBookArchiveImport: applyArchiveImportMock,
   },
 }));
 
@@ -37,6 +48,15 @@ describe("TeacherBookEditor Markdown authoring", () => {
   beforeEach(() => {
     updateCatalogMock.mockReset();
     updatePageMock.mockReset();
+    getWhiteboardLibraryMock.mockReset();
+    getFilesMock.mockReset();
+    uploadFileMock.mockReset();
+    updateFileMock.mockReset();
+    deleteFileMock.mockReset();
+    previewImportMock.mockReset();
+    applyImportMock.mockReset();
+    previewArchiveImportMock.mockReset();
+    applyArchiveImportMock.mockReset();
     updatePageMock.mockResolvedValue({
       page: {
         workspace_id: "workspace-1",
@@ -83,6 +103,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
       },
     });
     getWhiteboardLibraryMock.mockResolvedValue({ items: [] });
+    getFilesMock.mockResolvedValue({ workspace_id: "workspace-1", knowledge_point_id: "tensor", items: [] });
   });
 
   const catalog: TeacherCatalog = {
@@ -172,6 +193,62 @@ describe("TeacherBookEditor Markdown authoring", () => {
     await waitFor(() => expect(screen.getByRole("option", { name: "历史图画 · WB-ASSET2" })).toBeInTheDocument());
   });
 
+  it("uploads a教材文件 and inserts its stable book-file reference at the cursor", async () => {
+    uploadFileMock.mockResolvedValue({ file: {
+      id: "file-1",
+      workspace_id: "workspace-1",
+      knowledge_point_id: "tensor",
+      token: "book-file:file-1",
+      original_name: "demo.py",
+      display_name: "演示代码.py",
+      media_type: "text/x-python",
+      size_bytes: 9,
+      sha256: "sha-demo",
+      created_by: "teacher-1",
+      created_at: null,
+      updated_at: null,
+    } });
+    render(<TeacherBookEditor workspaceId="workspace-1" />);
+    const editor = await screen.findByRole("textbox", { name: "教材正文 Markdown" }) as HTMLTextAreaElement;
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+    const file = new File(["print(1)\n"], "demo.py", { type: "text/x-python" });
+
+    fireEvent.change(screen.getByLabelText("上传教材文件"), { target: { files: [file] } });
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledWith("workspace-1", "tensor", file));
+    expect(editor).toHaveValue("张量\n\n[演示代码.py](book-file:file-1)");
+    expect(screen.getByText("演示代码.py")).toBeVisible();
+  });
+
+  it("does not delete an uploaded file while the unsaved draft still references it", async () => {
+    const file = {
+      id: "file-1",
+      workspace_id: "workspace-1",
+      knowledge_point_id: "tensor",
+      token: "book-file:file-1",
+      original_name: "demo.py",
+      display_name: "演示代码.py",
+      media_type: "text/x-python",
+      size_bytes: 9,
+      sha256: "sha-demo",
+      created_by: "teacher-1",
+      created_at: null,
+      updated_at: null,
+    };
+    uploadFileMock.mockResolvedValue({ file });
+    render(<TeacherBookEditor workspaceId="workspace-1" />);
+    const editor = await screen.findByRole("textbox", { name: "教材正文 Markdown" }) as HTMLTextAreaElement;
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+    fireEvent.change(screen.getByLabelText("上传教材文件"), { target: { files: [new File(["print(1)\n"], "demo.py", { type: "text/x-python" })] } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "删除教材文件：演示代码.py" })).toBeVisible());
+
+    fireEvent.click(screen.getByRole("button", { name: "删除教材文件：演示代码.py" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除文件" }));
+
+    expect(deleteFileMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("仍被当前未保存正文引用");
+  });
+
   it("keeps an attached image preview after the asset is saved to the page", async () => {
     updatePageMock.mockImplementation((_workspaceId: string, _pointId: string, markdown: string, revision: number) => ({
       page: {
@@ -222,13 +299,29 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(screen.getByAltText("imported.png")).toBeVisible();
   });
 
+  it("accepts a standalone Markdown file from the教材包 picker", async () => {
+    previewImportMock.mockResolvedValue({ content_markdown: "# 整本教材\n\n## 第一章", removed_frameworks: [], warnings: [] });
+    render(<TeacherBookEditor workspaceId="workspace-1" />);
+    await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+
+    const markdown = new File(["# 整本教材\n\n## 第一章"], "lesson.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText("导入教材包"), { target: { files: [markdown] } });
+
+    await screen.findByText("lesson.md");
+    expect(previewImportMock).toHaveBeenCalledWith("workspace-1", "lesson.md", "# 整本教材\n\n## 第一章");
+    expect(previewArchiveImportMock).not.toHaveBeenCalled();
+  });
+
   it("collapses the left catalog without hiding the writing surface", async () => {
     render(<TeacherBookEditor workspaceId="workspace-1" />);
 
     expect(await screen.findByRole("button", { name: "收起教材目录" })).toBeVisible();
     expect(await screen.findByRole("textbox", { name: "教材正文 Markdown" })).toBeVisible();
+    const layout = screen.getByRole("complementary", { name: "教材目录" }).parentElement;
+    expect(layout).not.toHaveClass("directory-collapsed");
     fireEvent.click(screen.getByRole("button", { name: "收起教材目录" }));
     expect(screen.getByRole("button", { name: "展开教材目录" })).toBeVisible();
+    expect(layout).toHaveClass("directory-collapsed");
     expect(screen.getByRole("textbox", { name: "教材正文 Markdown" })).toBeVisible();
   });
 

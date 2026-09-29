@@ -40,6 +40,7 @@ async def test_manager_command_store_round_trips_pool_target() -> None:
     assert cursor == "0-1"
     assert commands[0]["target"] == "4"
     assert commands[0]["reason"] == "class-start"
+    assert int(commands[0]["target_ttl_seconds"]) > 0
     assert float(commands[0]["expires_at"]) > time.time()
     assert await store.load_cursor() == "0-0"
     await store.save_cursor("0-1")
@@ -78,8 +79,9 @@ async def test_pool_target_is_marked_only_after_refill_succeeds() -> None:
         def __init__(self) -> None:
             self.refills = 0
 
-        async def request_target(self, target: int) -> None:
+        async def request_target(self, target: int, *, ttl_seconds: float | None = None) -> None:
             assert target == 4
+            assert ttl_seconds == 900
 
         async def refill(self) -> int:
             self.refills += 1
@@ -95,6 +97,7 @@ async def test_pool_target_is_marked_only_after_refill_succeeds() -> None:
         "type": "pool_target",
         "profile_id": "python-base",
         "target": "4",
+        "target_ttl_seconds": "900",
         "expires_at": str(time.time() + 60),
     }
     store = CommandStore()

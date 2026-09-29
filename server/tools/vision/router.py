@@ -24,7 +24,11 @@ class VisionTaskRouter:
         self.aligned_text_threshold = aligned_text_threshold
 
     def route(
-        self, task: ImageTask, signals: VisionSignals | None = None
+        self,
+        task: ImageTask,
+        signals: VisionSignals | None = None,
+        *,
+        has_question: bool = False,
     ) -> RouteDecision:
         if task == "ocr":
             return RouteDecision(
@@ -65,7 +69,10 @@ class VisionTaskRouter:
             )
         if (
             observed.has_grid_lines
-            or observed.aligned_text_ratio >= self.aligned_text_threshold
+            or (
+                observed.has_text_layout
+                and observed.aligned_text_ratio >= self.aligned_text_threshold
+            )
         ):
             return RouteDecision(
                 task_executed="table",
@@ -75,8 +82,18 @@ class VisionTaskRouter:
             )
         if (
             observed.image_category == "document"
-            or observed.text_coverage >= self.text_coverage_threshold
+            or (
+                observed.has_text_layout
+                and observed.text_coverage >= self.text_coverage_threshold
+            )
         ):
+            if has_question:
+                return RouteDecision(
+                    task_executed="question",
+                    route="fusion",
+                    reason="auto detected question over document or dense text",
+                    signals=observed,
+                )
             return RouteDecision(
                 task_executed="ocr",
                 route="ocr",
@@ -84,7 +101,7 @@ class VisionTaskRouter:
                 signals=observed,
             )
         return RouteDecision(
-            task_executed="describe",
+            task_executed="question" if has_question else "describe",
             route="vlm",
             reason="auto defaulted to semantic description",
             signals=observed,

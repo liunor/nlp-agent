@@ -15,6 +15,7 @@ from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError, VerifyMismatchError
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from server.infrastructure.mysql.models import (
     RoleModel,
@@ -28,6 +29,7 @@ from server.infrastructure.mysql.models import (
 from server.auth import code_store
 
 from .schemas import UserCreate, UserRegister, UserUpdate
+from .email import normalize_email
 
 
 class UserServiceError(Exception):
@@ -42,16 +44,28 @@ class UserAlreadyExistsError(UserServiceError):
     """Raised when attempting to create a duplicate user."""
 
 
-class PhoneNumberAlreadyUsedError(UserServiceError):
-    """Raised when a phone number is already registered."""
+class EmailAlreadyUsedError(UserServiceError):
+    """Raised when an email address is already registered."""
 
 
-class InvalidSmsCodeError(UserServiceError):
-    """Raised when an SMS verification code is invalid or expired."""
+class InvalidEmailCodeError(UserServiceError):
+    """Raised when an email verification code is invalid or expired."""
+
+
+class InvalidCaptchaError(UserServiceError):
+    """Raised when an image CAPTCHA is invalid or expired."""
 
 
 class SelfDeleteForbiddenError(UserServiceError):
     """Raised when an actor attempts to delete their own account."""
+
+
+class LastDeveloperForbiddenError(UserServiceError):
+    """Raised when an operation would leave no usable developer account."""
+
+
+class HardDeleteBlockedError(UserServiceError):
+    """Raised when protected business data still references the account."""
 
 
 DEFAULT_USER_ROLE = "guest"
@@ -111,7 +125,7 @@ class UserService:
             )
 
         # Hash password
-        password_hash = self.hasher.hash(data.password)
+        password_hash = await asyncio.to_thread(self.hasher.hash, data.password)
 
         # Create user
         user = UserModel(
@@ -337,6 +351,8 @@ class UserService:
     ) -> UserModel:
         """Update user status (admin operation)."""
         user = await self.get_user(user_id)
+        if status in ("disabled", "locked") and user.status == "active":
+            await self._ensure_not_last_developer(user_id)
         user.status = status
         user.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -350,6 +366,31 @@ class UserService:
         await self._mark_authorization_changed(user_id, "user_status_changed")
         await self.session.flush()
         return user
+
+    async def _ensure_not_last_developer(self, user_id: str) -> None:
+        # Keep the same lock order as RbacService.replace_user_roles. Without
+        # a stable role-row lock, two concurrent admin requests can both see
+        # two developers and disable/remove both of them.
+        await self.session.scalar(
+            select(RoleModel)
+            .where(RoleModel.code == "developer")
+            .with_for_update()
+        )
+        rows = await self.session.scalars(
+            select(UserModel.id)
+            .join(UserRoleModel, UserRoleModel.user_id == UserModel.id)
+            .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
+            .where(
+                RoleModel.code == "developer",
+                RoleModel.status == "active",
+                UserModel.status == "active",
+                UserModel.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        developer_ids = set(rows.all())
+        if user_id in developer_ids and len(developer_ids) <= 1:
+            raise LastDeveloperForbiddenError("cannot disable the last active developer")
 
     async def verify_password(self, user: UserModel, password: str) -> bool:
         """Verify a password against the stored hash (non-blocking)."""
@@ -409,6 +450,7 @@ class UserService:
             raise SelfDeleteForbiddenError("Admin cannot delete their own account")
 
         user = await self.get_user(user_id)
+        await self._ensure_not_last_developer(user_id)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         user.status = "disabled"
         user.deleted_at = now
@@ -419,6 +461,32 @@ class UserService:
         await self._mark_authorization_changed(user_id, "user_soft_deleted")
         await self.session.flush()
         return user
+
+    async def hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        actor_user_id: str,
+    ) -> None:
+        """Permanently remove an account after explicit administrator confirmation."""
+        if user_id == actor_user_id:
+            raise SelfDeleteForbiddenError("Admin cannot delete their own account")
+
+        user = await self.session.scalar(
+            select(UserModel).where(UserModel.id == user_id).with_for_update()
+        )
+        if user is None:
+            raise UserNotFoundError(f"User {user_id} not found")
+        await self._ensure_not_last_developer(user_id)
+        from .purge import purge_user_data
+
+        try:
+            await purge_user_data(self.session, user)
+            await self.session.flush()
+        except IntegrityError as error:
+            raise HardDeleteBlockedError(
+                "User data cannot be completely deleted because protected records still reference it"
+            ) from error
 
     async def revoke_user_sessions(
         self,
@@ -474,57 +542,60 @@ class UserService:
         self,
         data: UserRegister,
     ) -> UserModel:
-        """Register a new user via phone number with SMS verification."""
-        # 1. Check if phone number is already registered
+        """Register an email account within the caller's transaction.
+
+        This is the sole registration entry point.  The web controller only
+        maps service errors to HTTP responses; all verification, identity
+        normalization, account provisioning, and default-role policy live
+        here.
+        """
+        email = normalize_email(data.email)
+        username = f"user{uuid.uuid4().hex[:12]}"
+
+        # Consume both one-time credentials in the same request transaction.
+        if not await code_store.consume_code(
+            self.session,
+            kind="captcha",
+            subject=data.captcha_id,
+            code=data.captcha_code,
+        ):
+            raise InvalidCaptchaError("Invalid or expired CAPTCHA")
+        if not await code_store.consume_code(
+            self.session, kind="email", subject=email, code=data.email_code
+        ):
+            raise InvalidEmailCodeError("Invalid or expired verification code")
+
+        # The normalized email column is the durable identity key.
         existing = await self.session.scalar(
-            select(UserModel.id).where(UserModel.phone_number == data.phone_number)
+            select(UserModel.id).where(
+                (UserModel.email_normalized == email)
+                | (UserModel.username_lower == username.casefold())
+            )
         )
         if existing:
-            raise PhoneNumberAlreadyUsedError("This phone number is already registered")
+            raise EmailAlreadyUsedError("This email is already registered")
 
-        # 2. Verify SMS code (shared ``nlp_auth_codes`` store; the 120s expiry
-        #    is enforced here at consumption time and the code is single-use).
-        if not await code_store.consume_code(
-            self.session, kind="sms", subject=data.phone_number.strip(), code=data.sms_code
-        ):
-            raise InvalidSmsCodeError("Invalid or expired verification code")
-
-        # 3. Generate username from phone number (alphanumeric only)
-        phone_clean = data.phone_number.replace(" ", "").replace("-", "").lstrip("+")
-        # Use pure alphanumeric: user + last 8 digits of phone + first 4 chars of uuid hex
-        username = f"user{phone_clean[-8:]}{uuid.uuid4().hex[:4]}"
-        display_name = data.display_name or f"User {phone_clean[-4:]}"
-
-        # 4. Create user
-        user_create = UserCreate(username=username, display_name=display_name, password=data.password)
-        user = await self.create_user(user_create)
-        user.phone_number = data.phone_number
-        user.registration_source = "phone"
-        await self.session.flush()
-
-        # 5. Assign student role (not guest — students need AGENT_SESSION_* permissions)
-        student_role = await self.session.scalar(
-            select(RoleModel).where(RoleModel.code == "student")
+        display_name = (data.display_name or "").strip() or email.split("@")[0]
+        user_create = UserCreate(
+            username=username,
+            display_name=display_name,
+            password=data.password,
         )
-        if student_role:
-            self.session.add(
-                UserRoleModel(user_id=user.id, role_id=student_role.id)
-            )
-            await self.session.flush()
-
-        # Refresh user from DB to load server-default fields (created_at, updated_at)
-        # session.get() returns cached identity-map object; refresh() forces a SELECT
+        user = await self.create_user(user_create)
+        user.email = email
+        user.email_normalized = email
+        user.registration_source = "email"
+        await self.session.flush()
         await self.session.refresh(user)
-        await self.session.commit()  # Commit the transaction — without this, the async with block rolls back
         return user
 
 
 # ---------------------------------------------------------------------------
-# SMS code generation
+# Email code generation
 # ---------------------------------------------------------------------------
 
 
-def generate_sms_code() -> str:
+def generate_email_code() -> str:
     """Generate a 6-digit verification code.
 
     This is a pure random generator: persistence, the 120s expiry, single-use

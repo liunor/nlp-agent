@@ -54,6 +54,67 @@ describe("KnowledgeBookPanel", () => {
     expect(api.getLearningBookPage).toHaveBeenCalledWith("workspace-1", "point-1");
   });
 
+  it("renders published教材 files as standalone cards with preview and download actions", async () => {
+    const openFilePreview = vi.fn();
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({
+      page: {
+        ...page,
+        content_markdown: "## 核心概念\n\n[演示.py](book-file:file-1)",
+        files: [{
+          id: "file-1",
+          token: "book-file:file-1",
+          original_name: "demo.py",
+          display_name: "演示.py",
+          media_type: "text/x-python",
+          size_bytes: 9,
+          sha256: "sha-demo",
+          preview_url: "/api/v1/learning/book/workspace-1/files/file-1",
+          download_url: "/api/v1/learning/book/workspace-1/files/file-1/download",
+        }],
+      },
+    });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onOpenFilePreview={openFilePreview} />);
+
+    expect(screen.queryByText("教材附件")).not.toBeInTheDocument();
+    expect(await screen.findByText("演示.py")).toBeInTheDocument();
+    const previewButton = await screen.findByRole("button", { name: "预览教材文件：演示.py" });
+    await userEvent.setup().click(previewButton);
+    expect(openFilePreview).toHaveBeenCalledWith(expect.objectContaining({ id: "file-1", display_name: "演示.py" }));
+    const downloadLink = screen.getByRole("link", { name: "下载教材附件：演示.py" });
+    expect(downloadLink).toHaveAttribute("href", "/api/v1/learning/book/workspace-1/files/file-1/download");
+    expect(downloadLink).toHaveAttribute("download");
+  });
+
+  it("turns a teacher-inserted book-file reference into an inline file card", async () => {
+    const fileToken = "book-file:550e8400-e29b-41d4-a716-446655440000";
+    const openFilePreview = vi.fn();
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({
+      page: {
+        ...page,
+        content_markdown: "请先阅读：[演示.py](book-file:550E8400-E29B-41D4-A716-446655440000)",
+        files: [{
+          id: "file-1",
+          token: fileToken,
+          original_name: "demo.py",
+          display_name: "演示.py",
+          media_type: "text/x-python",
+          size_bytes: 9,
+          sha256: "sha-demo",
+          preview_url: "/api/v1/learning/book/workspace-1/files/file-1",
+          download_url: "/api/v1/learning/book/workspace-1/files/file-1/download",
+        }],
+      },
+    });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onOpenFilePreview={openFilePreview} />);
+
+    const inlineCard = await screen.findByRole("button", { name: "预览教材文件：演示.py" });
+    expect(screen.queryByRole("link", { name: "演示.py" })).not.toBeInTheDocument();
+    await userEvent.setup().click(inlineCard);
+    expect(openFilePreview).toHaveBeenCalledWith(expect.objectContaining({ id: "file-1", display_name: "演示.py" }));
+  });
+
   it("lets Markdown own the article title without showing teacher-only metadata", async () => {
     vi.mocked(api.getLearningBookPage).mockResolvedValue({
       page: { ...page, content_markdown: "# 词法分析\n\n## 核心概念\n\n正文" },
@@ -120,6 +181,26 @@ describe("KnowledgeBookPanel", () => {
     expect(api.getLearningBookPage).toHaveBeenCalledWith("workspace-1", "point-2");
   });
 
+  it("does not reuse a cached page when the workspace changes", async () => {
+    vi.mocked(api.getLearningBookNavigation).mockImplementation((workspaceId) => {
+      const currentWorkspaceId = workspaceId ?? "workspace-1";
+      return Promise.resolve({ workspace_id: currentWorkspaceId, items: navigation });
+    });
+    vi.mocked(api.getLearningBookPage).mockImplementation((workspaceId, knowledgePointId) => {
+      const currentWorkspaceId = workspaceId ?? "workspace-1";
+      return Promise.resolve({
+        page: { ...page, workspace_id: currentWorkspaceId, knowledge_point_id: knowledgePointId, content_markdown: `当前工作区：${currentWorkspaceId}` },
+      });
+    });
+    const view = render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+
+    expect(await screen.findByText("当前工作区：workspace-1")).toBeInTheDocument();
+    view.rerender(<KnowledgeBookPanel workspaceId="workspace-2" />);
+
+    expect(await screen.findByText("当前工作区：workspace-2")).toBeInTheDocument();
+    expect(api.getLearningBookPage).toHaveBeenCalledWith("workspace-2", "point-1");
+  });
+
   it("offers an explicit Nova action for selected article text", async () => {
     const user = userEvent.setup();
     const askNova = vi.fn();
@@ -135,9 +216,40 @@ describe("KnowledgeBookPanel", () => {
 
     const askButton = await screen.findByRole("button", { name: "向 Nova 提问" });
     await user.click(askButton);
-    expect(askNova).toHaveBeenCalledWith(expect.stringContaining("词元是文本处理的基本单位。"));
-    expect(askNova).toHaveBeenCalledWith(expect.stringContaining("的「核心概念」小节"));
+    const promptInput = screen.getByRole("textbox", { name: "向 Nova 提问" });
+    expect(promptInput).toHaveAttribute("placeholder", "这是什么意思？");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(askNova).toHaveBeenCalledWith("这是什么意思？", expect.objectContaining({
+      knowledge_point_id: "point-1",
+      selected_text: "词元是文本处理的基本单位。",
+      content_markdown: page.content_markdown,
+    }));
     expect(screen.queryByRole("button", { name: "向 Nova 提问" })).not.toBeInTheDocument();
+  });
+
+  it("sends a custom prompt with the lesson code context", async () => {
+    const user = userEvent.setup();
+    const askNova = vi.fn();
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({
+      page: {
+        ...page,
+        content_markdown: "## 示例\n\n```python\nscores = torch.softmax(logits, dim=-1)\n```",
+      },
+    });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onAskNova={askNova} />);
+
+    await user.click(await screen.findByRole("button", { name: "询问 Nova" }));
+    await user.type(screen.getByRole("textbox", { name: "询问 Nova" }), "这里的 scores 是什么？");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(askNova).toHaveBeenCalledOnce();
+    expect(askNova).toHaveBeenCalledWith("这里的 scores 是什么？", expect.objectContaining({
+      knowledge_point_id: "point-1",
+      code: "scores = torch.softmax(logits, dim=-1)",
+      language: "python",
+      content_markdown: expect.stringContaining("scores = torch.softmax"),
+    }));
   });
 
   it("hands Python lesson code to the sandbox callback", async () => {

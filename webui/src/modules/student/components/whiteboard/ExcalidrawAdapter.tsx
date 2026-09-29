@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Pencil } from "lucide-react";
 
-import { CaptureUpdateAction, Excalidraw, Footer, MainMenu } from "@excalidraw/excalidraw";
+import { CaptureUpdateAction, Excalidraw, Footer, loadLibraryFromBlob, MainMenu } from "@excalidraw/excalidraw";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import type {
   AppState,
@@ -20,6 +20,7 @@ import { withoutEmbeddableElements, type StoredWhiteboardScene } from "./storage
 import { cloneWhiteboardAssetElements, findNearestWhiteboardAssetOrigin, findPresentedWhiteboardAsset, type WhiteboardPresentationElement } from "./whiteboardPresentation";
 import { WhiteboardHelpDialog, WhiteboardHelpMenuItem, WhiteboardHelpTrigger } from "./WhiteboardHelp";
 import { formatWhiteboardDeleteError } from "./whiteboardLibraryMessages";
+import { WHITEBOARD_LIBRARY_ASSETS, whiteboardLibraryUrl } from "./libraryAssets";
 import {
   getWhiteboardLibraryDisplayName,
   getWhiteboardLibraryItemsRemoved,
@@ -45,6 +46,45 @@ export interface WhiteboardLibraryLoadError {
 
 const UNSUPPORTED_LIBRARY_ELEMENT_TYPES = new Set(["image", "iframe", "embeddable"]);
 
+type LoadedWhiteboardLibrary = {
+  asset: typeof WHITEBOARD_LIBRARY_ASSETS[number];
+  libraryItems: Awaited<ReturnType<typeof loadLibraryFromBlob>>;
+};
+
+type BundledLibraryLoadResult = {
+  libraries: LoadedWhiteboardLibrary[];
+  failedAssets: typeof WHITEBOARD_LIBRARY_ASSETS[number][];
+};
+
+let bundledLibrariesPromise: Promise<BundledLibraryLoadResult> | null = null;
+
+function loadBundledLibraries() {
+  if (!bundledLibrariesPromise) {
+    bundledLibrariesPromise = (async () => {
+      const failedAssets: typeof WHITEBOARD_LIBRARY_ASSETS[number][] = [];
+      const libraries = (await Promise.all(WHITEBOARD_LIBRARY_ASSETS.map(async (asset) => {
+        try {
+          const response = await fetch(whiteboardLibraryUrl(asset.fileName));
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return { asset, libraryItems: await loadLibraryFromBlob(await response.blob(), "published") };
+        } catch (error) {
+          failedAssets.push(asset);
+          console.warn(`[whiteboard] failed to load ${asset.name} library`, error);
+          return null;
+        }
+      }))).filter((library): library is LoadedWhiteboardLibrary => library !== null);
+      if (failedAssets.length > 0) bundledLibrariesPromise = null;
+      return { libraries, failedAssets };
+    })();
+  }
+  return bundledLibrariesPromise;
+}
+
+/** Test-only cache reset; successful production loads remain cached. */
+export function resetBundledLibrariesCache() {
+  bundledLibrariesPromise = null;
+}
+
 function getSafeSharedLibraryItem(value: unknown): WhiteboardLibraryItem | null {
   const item = normalizeWhiteboardLibraryItem(value);
   if (!item || item.status !== "published" || item.elements.length === 0) return null;
@@ -53,7 +93,10 @@ function getSafeSharedLibraryItem(value: unknown): WhiteboardLibraryItem | null 
     const candidate = element as { id?: unknown; type?: unknown };
     return typeof candidate.id === "string" && Boolean(candidate.id.trim()) && typeof candidate.type === "string" && Boolean(candidate.type.trim()) && !UNSUPPORTED_LIBRARY_ELEMENT_TYPES.has(candidate.type);
   })) return null;
-  return item;
+  // Keep the server payload unchanged when installing it into Excalidraw.
+  // Older rows may not have asset_code yet; the display layer supplies the
+  // deterministic fallback while preserving object identity for callers.
+  return value as WhiteboardLibraryItem;
 }
 
 interface WhiteboardLibraryHover extends WhiteboardLibraryTooltipPosition {
@@ -262,7 +305,7 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
         setLibrarySnapshot(nextLibrary);
       } catch (error) {
         publishFailed = true;
-        onLibraryPublishError?.("素材保存失败，请稍后重试。");
+        onLibraryPublishError?.("素材暂未全局共享；请删除后重新加入素材库重试。");
         console.warn("[whiteboard] failed to publish library item", error);
       } finally {
         publishingLibraryIds.current.delete(item.id);
@@ -311,16 +354,18 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
       // a transient 502 look like a successful empty catalog to the user.
       let previousLibraryItems = [...libraryItemsRef.current];
       let legacyItems: LibraryItems = [];
-      try {
-        const existingLibrary = await api.updateLibrary({
-          libraryItems: [],
-          merge: true,
-          defaultStatus: "published",
-        });
-        previousLibraryItems = [...existingLibrary];
-        legacyItems = getWhiteboardLibraryItemsToMigrate(existingLibrary) as LibraryItems;
-      } catch (error) {
-        console.warn("[whiteboard] failed to inspect legacy library items", error);
+      if (canManageLibrary) {
+        try {
+          const existingLibrary = await api.updateLibrary({
+            libraryItems: [],
+            merge: true,
+            defaultStatus: "published",
+          });
+          previousLibraryItems = [...existingLibrary];
+          legacyItems = getWhiteboardLibraryItemsToMigrate(existingLibrary) as LibraryItems;
+        } catch (error) {
+          console.warn("[whiteboard] failed to inspect legacy library items", error);
+        }
       }
 
       if (typeof httpApi.getWhiteboardLibrary !== "function") {
@@ -362,7 +407,8 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
         const libraryItems = safeSharedItems as unknown as LibraryItems;
 
         // Only replace the local catalog after the server response is known to
-        // be usable. A failed clear is restored from the pre-load snapshot.
+        // be usable. If clearing fails, continue installing the bundled assets
+        // so the board remains useful and report the degraded state to the UI.
         try {
           await api.updateLibrary({
             libraryItems: [],
@@ -371,18 +417,31 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
           });
         } catch (error) {
           clearFailed = true;
-          throw error;
+          console.warn("[whiteboard] failed to clear the local library", error);
         }
-        setLibrarySnapshot([]);
+        if (!clearFailed) setLibrarySnapshot([]);
+
+        const { libraries: bundledLibraries, failedAssets } = await loadBundledLibraries();
+        failedAssetNames.push(...failedAssets.map((asset) => asset.name));
 
         sharedLibraryItems.current = new Map(libraryItems.map((item) => [item.id, item]));
-        const nextLibrary = await api.updateLibrary({ libraryItems, merge: true, defaultStatus: "published" });
-        setLibrarySnapshot(nextLibrary);
+        let nextLibrary = libraryItemsRef.current;
+        for (const { libraryItems: bundledItems } of bundledLibraries) {
+          nextLibrary = await api.updateLibrary({ libraryItems: bundledItems as LibraryItems, merge: true, defaultStatus: "published" });
+          setLibrarySnapshot(nextLibrary);
+        }
+        if (libraryItems.length > 0) {
+          nextLibrary = await api.updateLibrary({ libraryItems, merge: true, defaultStatus: "published" });
+          setLibrarySnapshot(nextLibrary);
+        }
         sharedLibraryReady.current = true;
         if (mounted.current && canManageLibrary && excalidrawApi.current) {
           await handleLibraryChange(libraryItemsRef.current);
         }
         onLibraryLoadReady?.();
+        if (clearFailed || failedAssetNames.length > 0) {
+          onLibraryLoadError?.({ clearFailed, failedAssetNames, sharedFailed: false });
+        }
         return;
       } catch (error) {
         sharedFailed = true;

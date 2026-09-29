@@ -11,8 +11,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
+from configs.settings import settings
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
+from gateway.analytics_time import analytics_today
 from server.teacher.archive import (
     ALLOWED_ASSET_TYPES,
     MAX_ASSET_BYTES,
@@ -25,11 +27,12 @@ from server.teacher.ai_analysis import (
     generate_ai_analysis,
     learning_analysis_ai_cache,
 )
-from server.teacher.analytics import build_analytics, build_learning_analysis, build_monthly_analytics
+from server.teacher.analytics import build_analytics, build_learning_analysis, build_monthly_analytics, filter_period_rows
 from server.teacher.models import (
     ExerciseBlueprint,
     GuidedBlueprint,
     LearningBookNavigationItem,
+    LearningBookFile,
     LearningBookPage,
     ReviewBlueprint,
     TeacherBookImportApplyRequest,
@@ -42,16 +45,26 @@ from server.teacher.models import (
     TeacherBookArchiveItemPreview,
     TeacherBookNavigationItem,
     TeacherBookPage,
+    TeacherBookFile,
     TeacherCatalog,
+    TeacherAnalysisAnnotations,
     TeacherAIAnalysisRequest,
     TeachingGoals,
+    UpdateTeacherAnalysisAnnotations,
     UpdateTeacherBookPage,
+    UpdateTeacherBookFile,
     UpdateTeacherCatalog,
     UpdateTeachingGoals,
     PublishTeacherBookPage,
 )
 from server.teacher.content import normalize_teacher_markdown
 from server.teacher.archive import parse_teacher_book_archive
+from server.teacher.files import (
+    extract_knowledge_book_file_ids,
+    file_token,
+    validate_knowledge_book_file,
+    validate_knowledge_book_file_name,
+)
 
 
 class TeacherService:
@@ -79,6 +92,23 @@ class TeacherService:
         goals = TeachingGoals(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
         result = await gateway.update_user_settings(principal, {f"teacher_goals:{workspace_id}": goals})
         return {"goals": goals, "revision": result["revision"], "updated_at": result["updated_at"]}
+
+    @staticmethod
+    def _default_annotations(workspace_id: str) -> dict[str, Any]:
+        return TeacherAnalysisAnnotations(workspace_id=workspace_id).model_dump(mode="json")
+
+    async def analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        settings = await gateway.get_user_settings(principal)
+        key = f"teacher_analysis_annotations:{workspace_id}"
+        value = settings["settings"].get(key) or self._default_annotations(workspace_id)
+        return {"annotations": value, "revision": settings["revision"], "updated_at": settings["updated_at"]}
+
+    async def update_analysis_annotations(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, body: UpdateTeacherAnalysisAnnotations) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        annotations = TeacherAnalysisAnnotations(workspace_id=workspace_id, **body.model_dump()).model_dump(mode="json")
+        result = await gateway.update_user_settings(principal, {f"teacher_analysis_annotations:{workspace_id}": annotations})
+        return {"annotations": annotations, "revision": result["revision"], "updated_at": result["updated_at"]}
 
     async def catalog(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
         self.require_teacher(
@@ -173,6 +203,133 @@ class TeacherService:
         row = await gateway.get_knowledge_page(principal, workspace_id, knowledge_point_id)
         return {"page": self._teacher_book_page(workspace_id, topic, point, row)}
 
+    @staticmethod
+    def _teacher_book_file(row: dict[str, Any]) -> dict[str, Any]:
+        return TeacherBookFile(
+            id=str(row["id"]),
+            workspace_id=str(row["workspace_id"]),
+            knowledge_point_id=str(row["knowledge_point_id"]),
+            token=file_token(str(row["id"])),
+            original_name=str(row["original_name"]),
+            display_name=str(row["display_name"]),
+            media_type=str(row["media_type"]),
+            size_bytes=int(row["size_bytes"]),
+            sha256=str(row["sha256"]),
+            created_by=str(row["created_by"]),
+            created_at=TeacherService._timestamp(row.get("created_at")),
+            updated_at=TeacherService._timestamp(row.get("updated_at")),
+        ).model_dump(mode="json")
+
+    async def teacher_book_files(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        catalog = TeacherCatalog.model_validate(
+            (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
+        )
+        self._catalog_point(catalog, knowledge_point_id)
+        rows = await gateway.list_knowledge_book_files(principal, workspace_id, knowledge_point_id)
+        return {"items": [self._teacher_book_file(row) for row in rows]}
+
+    async def create_teacher_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        knowledge_point_id: str,
+        *,
+        original_name: str,
+        display_name: str | None,
+        media_type: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id)
+        catalog = TeacherCatalog.model_validate(
+            (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
+        )
+        self._catalog_point(catalog, knowledge_point_id)
+        metadata = validate_knowledge_book_file(original_name, media_type, content)
+        next_display_name = validate_knowledge_book_file_name(
+            display_name or original_name, label="教材文件显示名"
+        )
+        row = await gateway.create_knowledge_book_file(
+            principal,
+            workspace_id,
+            knowledge_point_id,
+            original_name=str(metadata["original_name"]),
+            display_name=next_display_name,
+            media_type=str(metadata["media_type"]),
+            content=content,
+            created_by=principal.user_id,
+        )
+        return {"file": self._teacher_book_file(row)}
+
+    async def update_teacher_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        knowledge_point_id: str,
+        file_id: str,
+        body: UpdateTeacherBookFile,
+    ) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id)
+        row = await gateway.get_knowledge_book_file(principal, workspace_id, file_id)
+        if row is None or str(row["knowledge_point_id"]) != knowledge_point_id:
+            raise FileNotFoundError(file_id)
+        display_name = validate_knowledge_book_file_name(body.display_name, label="教材文件显示名")
+        updated = await gateway.update_knowledge_book_file(
+            principal, workspace_id, file_id, display_name=display_name
+        )
+        return {"file": self._teacher_book_file(updated)}
+
+    async def replace_teacher_book_file_content(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        knowledge_point_id: str,
+        file_id: str,
+        *,
+        original_name: str,
+        media_type: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        self.require_teacher(principal, workspace_id)
+        row = await gateway.get_knowledge_book_file(principal, workspace_id, file_id)
+        if row is None or str(row["knowledge_point_id"]) != knowledge_point_id:
+            raise FileNotFoundError(file_id)
+        metadata = validate_knowledge_book_file(original_name, media_type, content)
+        updated = await gateway.update_knowledge_book_file(
+            principal,
+            workspace_id,
+            file_id,
+            original_name=str(metadata["original_name"]),
+            media_type=str(metadata["media_type"]),
+            content=content,
+        )
+        return {"file": self._teacher_book_file(updated)}
+
+    async def delete_teacher_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        knowledge_point_id: str,
+        file_id: str,
+    ) -> None:
+        self.require_teacher(principal, workspace_id)
+        row = await gateway.get_knowledge_book_file(principal, workspace_id, file_id)
+        if row is None or str(row["knowledge_point_id"]) != knowledge_point_id:
+            raise FileNotFoundError(file_id)
+        deleted = await gateway.delete_knowledge_book_file(principal, workspace_id, file_id)
+        if not deleted:
+            raise FileNotFoundError(file_id)
+
     async def learning_book_navigation(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
         authorization_service.require(
             principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
@@ -215,6 +372,28 @@ class TeacherService:
         row = await gateway.get_published_knowledge_page(principal, workspace_id, knowledge_point_id)
         if row is None:
             raise FileNotFoundError(knowledge_point_id)
+        files = [
+            LearningBookFile(
+                id=str(file["id"]),
+                token=file_token(str(file["id"])),
+                original_name=str(file["original_name"]),
+                display_name=str(file["display_name"]),
+                media_type=str(file["media_type"]),
+                size_bytes=int(file["size_bytes"]),
+                sha256=str(file["sha256"]),
+                preview_url=(
+                    f"/api/v1/learning/book/{quote(workspace_id, safe='')}/files/"
+                    f"{quote(str(file['id']), safe='')}"
+                ),
+                download_url=(
+                    f"/api/v1/learning/book/{quote(workspace_id, safe='')}/files/"
+                    f"{quote(str(file['id']), safe='')}/download"
+                ),
+            )
+            for file in await gateway.list_published_knowledge_book_files(
+                principal, workspace_id, knowledge_point_id
+            )
+        ]
         page = LearningBookPage(
             workspace_id=workspace_id,
             topic_id=topic.id,
@@ -223,8 +402,38 @@ class TeacherService:
             title=point.name,
             content_markdown=str(row["published_markdown"]),
             revision=int(row["published_revision"] or row["revision"]),
+            files=files,
         )
         return {"page": page.model_dump(mode="json")}
+
+    async def learning_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        gateway: Any,
+        workspace_id: str,
+        file_id: str,
+    ) -> dict[str, Any]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
+        )
+        row = await gateway.get_published_knowledge_book_file(principal, workspace_id, file_id)
+        if row is None:
+            raise FileNotFoundError(file_id)
+        catalog = TeacherCatalog.model_validate(
+            (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
+        )
+        try:
+            topic, point = self._catalog_point(catalog, str(row["knowledge_point_id"]))
+        except FileNotFoundError as error:
+            raise FileNotFoundError(file_id) from error
+        if topic.status != "enabled" or point.status != "enabled":
+            raise FileNotFoundError(file_id)
+        page = await gateway.get_published_knowledge_page(
+            principal, workspace_id, str(row["knowledge_point_id"])
+        )
+        if page is None:
+            raise FileNotFoundError(file_id)
+        return row
 
     async def knowledge_book_asset(
         self,
@@ -330,6 +539,7 @@ class TeacherService:
                 "content_markdown": rewritten,
             }],
             assets,
+            file_refs={knowledge_point_id: extract_knowledge_book_file_ids(rewritten)},
         )
         return {
             "page": self._teacher_book_page(workspace_id, topic, point, rows[0]),
@@ -342,8 +552,15 @@ class TeacherService:
             (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
         )
         topic, point = self._catalog_point(catalog, knowledge_point_id)
+        current = await gateway.get_knowledge_page(principal, workspace_id, knowledge_point_id)
+        if current is None:
+            raise ValueError("教材页面尚未保存草稿")
         row = await gateway.publish_knowledge_page(
-            principal, workspace_id, knowledge_point_id, expected_revision=body.expected_revision
+            principal,
+            workspace_id,
+            knowledge_point_id,
+            expected_revision=body.expected_revision,
+            published_file_ids=extract_knowledge_book_file_ids(str(current.get("draft_markdown", ""))),
         )
         return {"page": self._teacher_book_page(workspace_id, topic, point, row)}
 
@@ -373,6 +590,7 @@ class TeacherService:
                 "content_markdown": rewritten,
             }],
             assets,
+            file_refs={body.knowledge_point_id: extract_knowledge_book_file_ids(rewritten)},
         )
         row = rows[0]
         return {
@@ -520,7 +738,18 @@ class TeacherService:
             }
             for asset in parsed.assets
         ]
-        rows = await gateway.apply_knowledge_book_import(principal, workspace_id, pages, assets)
+        rows = await gateway.apply_knowledge_book_import(
+            principal,
+            workspace_id,
+            pages,
+            assets,
+            file_refs={
+                str(page["knowledge_point_id"]): extract_knowledge_book_file_ids(
+                    str(page["content_markdown"])
+                )
+                for page in pages
+            },
+        )
         points = {
             point.id: (topic, point)
             for topic in catalog.topics
@@ -625,7 +854,7 @@ class TeacherService:
             principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM
         )
         period_days = max(1, days)
-        period_end = period_end or datetime.now(timezone.utc).date()
+        period_end = period_end or analytics_today(settings.NLP_AGENT_ANALYTICS_TIMEZONE)
         period_start = period_start or period_end - timedelta(days=period_days - 1)
         period_days = max(1, (period_end - period_start).days + 1)
         monthly_start = period_end.replace(day=1)
@@ -637,27 +866,32 @@ class TeacherService:
         since = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         catalog = (await asyncio.to_thread(gateway.repository.get_teaching_catalog, workspace_id))["catalog"]
         student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
-        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since)
+        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE)
         question_rows = [
             row for row in monthly_question_rows
             if row.get("day") and period_start.isoformat() <= str(row["day"])[:10] <= period_end.isoformat()
         ]
-        evidence_rows = await asyncio.to_thread(gateway.repository.exercise_evidence_stats, workspace_id=workspace_id, since=since)
-        criterion_rows = await asyncio.to_thread(gateway.repository.exercise_criterion_stats, workspace_id=workspace_id, since=since)
         guided_rows = await asyncio.to_thread(gateway.repository.guided_session_stats, workspace_id=workspace_id, since=since)
         analysis_until = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
-        analysis_evidence_rows = await asyncio.to_thread(
+        # One broad evidence/criterion fetch feeds both the overview (sliced to
+        # the period just below) and the learning-analysis diagnostics (which
+        # also need the preceding window and month-trend history).  This halves
+        # the read-model queries for the page.  Each returns (rows, truncated)
+        # so a silently dropped tail of old rows can be surfaced.
+        analysis_evidence_rows, evidence_truncated = await asyncio.to_thread(
             gateway.repository.exercise_evidence_stats,
             workspace_id=workspace_id,
             since=monthly_since,
             until=analysis_until,
         )
-        analysis_criterion_rows = await asyncio.to_thread(
+        analysis_criterion_rows, criterion_truncated = await asyncio.to_thread(
             gateway.repository.exercise_criterion_stats,
             workspace_id=workspace_id,
             since=monthly_since,
             until=analysis_until,
         )
+        evidence_rows = filter_period_rows(analysis_evidence_rows, period_start, period_end)
+        criterion_rows = filter_period_rows(analysis_criterion_rows, period_start, period_end)
         result = build_analytics(
             question_rows, evidence_rows, criterion_rows, guided_rows, catalog,
             period_days=period_days,
@@ -680,7 +914,25 @@ class TeacherService:
             period_end=period_end,
             student_user_ids=student_user_ids,
         )
-        return {"workspace_id": workspace_id, "period_days": period_days, "monthly_statistics": monthly_statistics, "learning_analysis": learning_analysis, **result}
+        return {
+            "workspace_id": workspace_id,
+            "period_days": period_days,
+            "monthly_statistics": monthly_statistics,
+            "learning_analysis": learning_analysis,
+            "truncated": evidence_truncated or criterion_truncated,
+            "data_completeness": {
+                "complete": not (evidence_truncated or criterion_truncated),
+                "evidence_truncated": evidence_truncated,
+                "criterion_truncated": criterion_truncated,
+                "message": (
+                    "统计达到数据读取上限，更早的历史记录未能全部纳入分析；"
+                    "当前周期的数据完整，但上期对比与历史趋势可能不完整。"
+                    if (evidence_truncated or criterion_truncated)
+                    else None
+                ),
+            },
+            **result,
+        }
 
     async def ai_analysis(
         self,

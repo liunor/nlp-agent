@@ -1,4 +1,4 @@
-import { AlertCircle, BarChart3, BookOpen, ChevronLeft, FileQuestion, GraduationCap, LayoutDashboard, MessageCircleQuestion, RefreshCw, Sparkles, Target } from "lucide-react";
+import { AlertCircle, BarChart3, BookOpen, ChevronLeft, FileQuestion, GraduationCap, LayoutDashboard, Menu, MessageCircleQuestion, RefreshCw, Sparkles, Target, Users } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { BlueprintCatalogEditor, GuidedBlueprintCatalogEditor, TopicCatalogEditor } from "@/modules/teacher/workspace/TeacherCatalogEditor";
@@ -8,7 +8,7 @@ import { LearningAnalysisPage } from "@/modules/teacher/workspace/LearningAnalys
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { api, ensureAuth } from "@/platform/http/api";
-import type { TeacherCatalog, TeacherOverview } from "@/shared/types";
+import type { TeacherCatalog, TeacherOverview, WeakTopic } from "@/shared/types";
 import { resolveWorkspaceId } from "@/shared/utils/workspace";
 
 export type TeacherPage = "overview" | "topics" | "book" | "exercises" | "reviews" | "guided" | "questions" | "reports";
@@ -28,10 +28,29 @@ const pageFromPath = (): TeacherPage => {
 
 type PendingTeacherAction = { kind: "navigate"; page: TeacherPage } | { kind: "reload" } | { kind: "exit" };
 
-function Overview({ data, catalog }: { data: TeacherOverview; catalog: TeacherCatalog }) { return <div className="teacher-stack"><section className="teacher-welcome"><div><h1>NLP 教师空间</h1><p>在一个教学目录里维护主题、知识点与蓝图。学生端的可选主题和后端动态提示词都会使用这一份数据。</p></div><GraduationCap size={64} /></section><div className="teacher-kpis"><article><BookOpen /><span>教学主题</span><strong>{catalog.topics.length}</strong></article><article><Sparkles /><span>出题蓝图</span><strong>{catalog.exercise_blueprints.length}</strong></article><article><Target /><span>复习蓝图</span><strong>{catalog.review_blueprints.length}</strong></article><article><FileQuestion /><span>学生问题</span><strong>{data.summary.questions}</strong></article></div></div>; }
+const RISK_LABEL: Record<WeakTopic["risk"], string> = { low: "低风险", medium: "中风险", high: "高风险" };
+
+function Overview({ data }: { data: TeacherOverview }) {
+  const { summary } = data;
+  const weakTopics = (data.weak_topics ?? []).slice(0, 5);
+  return <div className="teacher-stack">
+    <section className="teacher-welcome"><div><h1>NLP 教师空间</h1><p>近 {data.period_days} 天学生的提问、会话与练习概览；下方列出当前最需要关注的弱知识点。</p></div><GraduationCap size={64} /></section>
+    <div className="teacher-kpis">
+      <article><Users /><span>学生</span><strong>{summary.students}</strong></article>
+      <article><MessageCircleQuestion /><span>会话</span><strong>{summary.sessions}</strong></article>
+      <article><FileQuestion /><span>提问</span><strong>{summary.questions}</strong></article>
+      <article><Target /><span>练习通过率</span><strong>{summary.exercises ? `${summary.exercise_pass_rate}%` : "—"}</strong></article>
+    </div>
+    <section className="teacher-panel">
+      <header><div><h2>弱知识点</h2><p>近期错误率偏高、建议优先关注的教学内容</p></div></header>
+      {weakTopics.length ? <div className="teacher-weak-list">{weakTopics.map((item) => <article key={item.topic_id}><div className="teacher-weak-main"><strong>{item.topic}</strong><small>{item.questions} 次提问 · {item.errors} 次错误{typeof item.pass_rate === "number" ? ` · 通过率 ${item.pass_rate}%` : ""}</small></div><span className={item.risk}>{RISK_LABEL[item.risk]}</span></article>)}</div> : <p className="teacher-empty-inline">本期暂无提问数据，暂无法识别弱知识点。</p>}
+    </section>
+  </div>;
+}
 
 export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: TeacherPage; onNavigate?: (page: TeacherPage) => void }) {
   const [localPage, setPage] = useState<TeacherPage>(routedPage ?? pageFromPath);
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const [data, setData] = useState<TeacherOverview | null>(null);
   const [catalog, setCatalog] = useState<TeacherCatalog | null>(null);
   const [savedCatalogSnapshot, setSavedCatalogSnapshot] = useState("");
@@ -143,7 +162,7 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
           : page === "reviews" ? <BlueprintCatalogEditor kind="review" topics={catalog.topics} blueprints={catalog.review_blueprints} onChange={(review_blueprints) => updateDraft({ ...catalog, review_blueprints: review_blueprints as TeacherCatalog["review_blueprints"] })} saveProps={saveProps} />
             : page === "guided" ? <GuidedBlueprintCatalogEditor topics={catalog.topics} blueprints={catalog.guided_blueprints} onChange={(guided_blueprints) => updateDraft({ ...catalog, guided_blueprints })} saveProps={saveProps} />
               : page === "questions" ? <StudentQuestionsPage data={data!} />
-                : page === "reports" ? <LearningAnalysisPage data={data!} workspaceId={workspaceId} onPeriodChange={changeAnalyticsPeriod} />
-                  : <Overview data={data!} catalog={catalog} />;
-  return <div className="teacher-shell"><aside className="teacher-nav"><div className="teacher-brand"><GraduationCap /><span><strong>NLP 教师空间</strong></span><button type="button" onClick={requestReload} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />刷新</button></div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} onClick={() => navigate(itemPage)}><Icon size={17} />{label}</button>)}</nav><a href="/" onClick={(event) => { if (!dirty) return; event.preventDefault(); setPendingAction({ kind: "exit" }); }}><ChevronLeft size={16} />返回学生模式</a></aside><main className={['teacher-main', page === "book" && "teacher-book-main", isCatalogEditor && "teacher-catalog-main", page === "questions" && "teacher-questions-main", page === "reports" && "teacher-analysis-main"].filter(Boolean).join(" ")}><header className="teacher-topbar"><div><h1>{PAGE_LABELS[page]}</h1><span>{workspaceId} workspace · 目录修改需保存后生效</span></div><div className="teacher-topbar-actions"><SchoolLogo /></div></header><div className={`teacher-content ${page === "book" ? "teacher-content-book" : isCatalogEditor ? "teacher-content-catalog" : ""} ${page === "questions" ? "teacher-content-questions" : ""} ${page === "reports" ? "teacher-content-analysis" : ""}`}>{loading ? <div className="teacher-state"><RefreshCw className="spin" />正在加载教学目录…</div> : error ? <div className="teacher-state error"><AlertCircle /><strong>无法进入教师模式</strong><p>{error}</p></div> : content}</div></main>{pendingAction && <ConfirmDialog open title="有未保存的修改" description="当前页面存在未保存的内容，继续操作会丢弃这些修改。" confirmLabel="继续离开" cancelLabel="留在当前页面" onClose={() => setPendingAction(null)} onConfirm={confirmPendingAction} />}</div>;
+              : page === "reports" ? <LearningAnalysisPage data={data!} workspaceId={workspaceId} onPeriodChange={changeAnalyticsPeriod} />
+              : <Overview data={data!} />;
+  return <div className={`teacher-shell ${navCollapsed ? "teacher-shell-nav-collapsed" : ""}`}><aside className={`teacher-nav ${navCollapsed ? "collapsed" : ""}`}><div className="teacher-brand"><button className="teacher-brand-mark" type="button" aria-label={navCollapsed ? "展开教师侧栏" : "NLP 教师空间"} onClick={navCollapsed ? () => setNavCollapsed(false) : undefined}><GraduationCap /></button>{!navCollapsed && <span><strong>NLP 教师空间</strong></span>}<button className="teacher-nav-refresh" type="button" aria-label="刷新" title={navCollapsed ? "刷新" : undefined} onClick={requestReload} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />{!navCollapsed && "刷新"}</button>{!navCollapsed && <button className="teacher-nav-collapse" type="button" aria-label="折叠教师侧栏" title="折叠教师侧栏" onClick={() => setNavCollapsed(true)}><Menu size={16} /></button>}</div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} aria-label={label} title={navCollapsed ? label : undefined} onClick={() => navigate(itemPage)}><Icon size={17} />{!navCollapsed && <span>{label}</span>}</button>)}</nav><a href="/" onClick={(event) => { if (!dirty) return; event.preventDefault(); setPendingAction({ kind: "exit" }); }}><ChevronLeft size={16} />{!navCollapsed && <span>返回学生模式</span>}</a></aside><main className={['teacher-main', page === "book" && "teacher-book-main", isCatalogEditor && "teacher-catalog-main", page === "questions" && "teacher-questions-main", page === "reports" && "teacher-analysis-main", page === "overview" && "teacher-overview-main"].filter(Boolean).join(" ")}><header className="teacher-topbar"><div><h1>{PAGE_LABELS[page]}</h1><span>{workspaceId} workspace · 目录修改需保存后生效</span></div><div className="teacher-topbar-actions"><SchoolLogo /></div></header><div className={`teacher-content ${page === "book" ? "teacher-content-book" : isCatalogEditor ? "teacher-content-catalog" : ""} ${page === "questions" ? "teacher-content-questions" : ""} ${page === "reports" ? "teacher-content-analysis" : ""} ${page === "overview" ? "teacher-content-overview" : ""}`}>{loading ? <div className="teacher-state"><RefreshCw className="spin" />正在加载教学目录…</div> : error ? <div className="teacher-state error"><AlertCircle /><strong>无法进入教师模式</strong><p>{error}</p></div> : content}</div></main>{pendingAction && <ConfirmDialog open title="有未保存的修改" description="当前页面存在未保存的内容，继续操作会丢弃这些修改。" confirmLabel="继续离开" cancelLabel="留在当前页面" onClose={() => setPendingAction(null)} onConfirm={confirmPendingAction} />}</div>;
 }

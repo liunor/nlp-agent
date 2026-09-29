@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn().mockResolvedValue({
     roles: ["admin", "teacher"],
     workspace_ids: ["default"],
@@ -48,4 +49,22 @@ describe("application routing", () => {
 
     expect(await screen.findByRole("heading", { name: "页面未找到" })).toBeVisible();
   });
+  it.each([
+  "/teacher/missing-page",
+  "/developer/missing-page",
+])("shows the global expired-login dialog on protected route %s", async (path) => {
+  history.pushState({}, "", path);
+
+  render(<App />);
+
+  await screen.findByRole("heading");
+
+  act(() => {
+    window.dispatchEvent(new Event("nova:auth-expired"));
+  });
+
+  expect(
+    await screen.findByText("登录状态已失效，请重新登录后继续使用。"),
+  ).toBeVisible();
+});
 });

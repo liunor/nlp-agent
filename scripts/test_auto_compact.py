@@ -53,13 +53,17 @@ async def test_auto_compact_flow(monkeypatch):
             msgs.append(make_ai(f"A{i}" * 10))
             
     print("Testing Auto-Compact...")
-    result = await autocompact_if_needed(msgs)
+    result = await autocompact_if_needed(msgs, threshold=AUTOCOMPACT_THRESHOLD)
     
     assert result.was_compacted is True, "由于消息超过 167K 且未折叠，应当触发全量压缩"
     assert len(result.messages) < len(msgs), "压缩后消息总数应减少"
     
-    has_summary = any("【历史对话摘要】" in str(m.content) for m in result.messages)
-    assert has_summary, "应包含全局摘要"
+    has_summary = any(
+        (getattr(m, "additional_kwargs", {}) or {}).get("compression_kind")
+        == "auto_compact"
+        for m in result.messages
+    )
+    assert has_summary, "应包含内部全局摘要"
     
     has_restoration = any("/important/file.py" in str(m.content) for m in result.messages)
     assert has_restoration, "应包含后置恢复的文件上下文"
@@ -70,11 +74,11 @@ async def test_auto_compact_flow(monkeypatch):
     monkeypatch.setattr(ac_module, "_generate_global_summary", failing_summary)
     
     for _ in range(3):
-        res = await autocompact_if_needed(msgs)
+        res = await autocompact_if_needed(msgs, threshold=AUTOCOMPACT_THRESHOLD)
         assert res.was_compacted is False
         
     # 第 4 次应触发 circuit breaker
-    res_breaker = await autocompact_if_needed(msgs)
+    res_breaker = await autocompact_if_needed(msgs, threshold=AUTOCOMPACT_THRESHOLD)
     assert res_breaker.error == "Circuit broken"
     assert res_breaker.was_compacted is False
 

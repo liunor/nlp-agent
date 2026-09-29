@@ -1,0 +1,58 @@
+{
+  "total": 1,
+  "offset": 0,
+  "data": [
+    {
+      "paperId": "a804a8eef4cf66ec71f9cf7eb9c2f6d20390f701",
+      "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+      "abstract": "An important paradigm of natural language processing consists of large-scale pre-training on general domain data and adaptation to particular tasks or domains. As we pre-train larger models, full fine-tuning, which retrains all model parameters, becomes less feasible. Using GPT-3 175B as an example -- deploying independent instances of fine-tuned models, each with 175B parameters, is prohibitively expensive. We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters for downstream tasks. Compared to GPT-3 175B fine-tuned with Adam, LoRA can reduce the number of trainable parameters by 10,000 times and the GPU memory requirement by 3 times. LoRA performs on-par or better than fine-tuning in model quality on RoBERTa, DeBERTa, GPT-2, and GPT-3, despite having fewer trainable parameters, a higher training throughput, and, unlike adapters, no additional inference latency. We also include an empirical investigation into rank-deficiency in language model adaptation, which sheds light on the efficacy of LoRA. We release a package facilitating the integration of LoRA with PyTorch models and provide our implementations and model checkpoints for RoBERTa, DeBERTa, and GPT-2 at https://github.com/microsoft/LoRA.",
+      "venue": "ICLR",
+      "year": 2021,
+      "publicationDate": "2021-06-17",
+      "externalIds": {
+        "ArXiv": "2106.09685",
+        "CorpusId": 235458009,
+        "DOI": "10.48550/arXiv.2106.09685"
+      },
+      "url": "https://www.semanticscholar.org/paper/a804a8eef4cf66ec71f9cf7eb9c2f6d20390f701",
+      "openAccessPdf": {
+        "url": "https://arxiv.org/pdf/2106.09685.pdf",
+        "status": "HYBRID"
+      },
+      "authors": [
+        {
+          "authorId": "2058097561",
+          "name": "Edward J. Hu"
+        },
+        {
+          "authorId": "144933924",
+          "name": "Yelong Shen"
+        },
+        {
+          "authorId": "3263051",
+          "name": "Phillip Wallis"
+        },
+        {
+          "authorId": "2607147",
+          "name": "Zeyuan Allen-Zhu"
+        },
+        {
+          "authorId": "2638841",
+          "name": "Yuanzhi Li"
+        },
+        {
+          "authorId": "145025983",
+          "name": "Shean Wang"
+        },
+        {
+          "authorId": "2525791",
+          "name": "Lu Wang"
+        },
+        {
+          "authorId": "144158488",
+          "name": "Weizhu Chen"
+        }
+      ]
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
-import { MarkdownContent, stripInternalChatMetadata } from "./MarkdownContent";
+import { MarkdownContent, normalizeTrustedAcademicLink, stripInternalChatMetadata } from "./MarkdownContent";
 
 describe("MarkdownContent LaTeX delimiters", () => {
   it("renders backslash-delimited inline and display formulas with KaTeX", () => {
@@ -63,15 +63,73 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(screen.queryByText(/guided-result/)).not.toBeInTheDocument();
   });
 
-  it("renders model-provided external links as inert text while keeping same-origin links", () => {
+  it("renders safe external links while keeping unsafe links inert", () => {
     render(
-      <MarkdownContent>{String.raw`[外部资料](https://evil.example/phishing) [反斜杠绕过](/\evil.example/phishing) [课程目录](/teacher) [本节](#attention)`}</MarkdownContent>,
+      <MarkdownContent>{String.raw`[外部资料](https://docs.example.com/guide) [反斜杠绕过](/\evil.example/phishing) [危险协议](javascript:alert(1)) [课程目录](/teacher) [本节](#attention)`}</MarkdownContent>,
     );
 
-    expect(screen.getByText("外部资料")).not.toHaveAttribute("href");
+    expect(screen.getByRole("link", { name: "外部资料" })).toHaveAttribute("href", "https://docs.example.com/guide");
+    expect(screen.getByRole("link", { name: "外部资料" })).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: "外部资料" })).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByText("反斜杠绕过")).not.toHaveAttribute("href");
+    expect(screen.getByText("危险协议")).not.toHaveAttribute("href");
     expect(screen.getByRole("link", { name: "课程目录" })).toHaveAttribute("href", "/teacher");
     expect(screen.getByRole("link", { name: "本节" })).toHaveAttribute("href", "#attention");
+  });
+
+  it("renders safe HTTP(S) links while rejecting credentialed and non-default-port URLs", () => {
+    render(
+      <MarkdownContent>{String.raw`
+[arXiv 论文](https://arxiv.org/abs/1706.03762)
+[DOI 链接](https://doi.org/10.1145/3442188.3445922)
+[ACL 论文](https://aclanthology.org/2020.acl-main.1/)
+[Semantic Scholar](https://www.semanticscholar.org/paper/1706.03762)
+[Google Scholar](https://scholar.google.com/scholar?q=Attention+Is+All+You+Need)
+[明文 HTTP](http://arxiv.org/abs/1706.03762)
+[子域名伪装](https://arxiv.org.evil.example/phish)
+[参数诱导](https://evil.example/?next=arxiv.org)
+[包含凭据](https://user:pass@arxiv.org/abs/1706.03762)
+[非默认端口](https://arxiv.org:8443/abs/1706.03762)
+      `}</MarkdownContent>,
+    );
+
+    const arxivLink = screen.getByRole("link", { name: "arXiv 论文" });
+    expect(arxivLink).toHaveAttribute("href", "https://arxiv.org/abs/1706.03762");
+    expect(arxivLink).toHaveAttribute("target", "_blank");
+    expect(arxivLink).toHaveAttribute("rel", "noopener noreferrer");
+
+    const doiLink = screen.getByRole("link", { name: "DOI 链接" });
+    expect(doiLink).toHaveAttribute("href", "https://doi.org/10.1145/3442188.3445922");
+    expect(doiLink).toHaveAttribute("target", "_blank");
+    expect(doiLink).toHaveAttribute("rel", "noopener noreferrer");
+
+    const aclLink = screen.getByRole("link", { name: "ACL 论文" });
+    expect(aclLink).toHaveAttribute("href", "https://aclanthology.org/2020.acl-main.1/");
+    expect(aclLink).toHaveAttribute("target", "_blank");
+    expect(aclLink).toHaveAttribute("rel", "noopener noreferrer");
+
+    const s2Link = screen.getByRole("link", { name: "Semantic Scholar" });
+    expect(s2Link).toHaveAttribute("href", "https://www.semanticscholar.org/paper/1706.03762?utm_source=api");
+    expect(s2Link).toHaveAttribute("target", "_blank");
+    expect(s2Link).toHaveAttribute("rel", "noopener noreferrer");
+
+    const scholarLink = screen.getByRole("link", { name: "Google Scholar" });
+    expect(scholarLink).toHaveAttribute("href", "https://scholar.google.com/scholar?q=Attention+Is+All+You+Need");
+    expect(scholarLink).toHaveAttribute("target", "_blank");
+    expect(scholarLink).toHaveAttribute("rel", "noopener noreferrer");
+
+    expect(screen.getByRole("link", { name: "明文 HTTP" })).toHaveAttribute("href", "http://arxiv.org/abs/1706.03762");
+    expect(screen.getByRole("link", { name: "子域名伪装" })).toHaveAttribute("href", "https://arxiv.org.evil.example/phish");
+    expect(screen.getByRole("link", { name: "参数诱导" })).toHaveAttribute("href", "https://evil.example/?next=arxiv.org");
+    expect(screen.getByText("包含凭据")).not.toHaveAttribute("href");
+    expect(screen.getByText("非默认端口")).not.toHaveAttribute("href");
+  });
+
+  it("normalizes Semantic Scholar attribution parameters", () => {
+    expect(normalizeTrustedAcademicLink("https://www.semanticscholar.org/paper/id?utm_source=other&x=1"))
+      .toBe("https://www.semanticscholar.org/paper/id?utm_source=api&x=1");
+    expect(normalizeTrustedAcademicLink("http://www.semanticscholar.org/paper/id")).toBeNull();
+    expect(normalizeTrustedAcademicLink("https://www.semanticscholar.org.evil.example/paper/id")).toBeNull();
   });
 
   it("renders Markdown image alt text as a figure caption", () => {
@@ -105,7 +163,7 @@ describe("MarkdownContent LaTeX delimiters", () => {
     expect(screen.getByRole("heading", { name: "10.3 注意力评分函数" })).toHaveAttribute("data-knowledge-book-heading-id", "10.3");
   });
 
-  it("exposes copy and ask-Nova actions only when lesson code actions are enabled", async () => {
+  it("opens an inline Nova composer and sends the custom prompt with the code", async () => {
     const user = userEvent.setup();
     const askNova = vi.fn();
     const openInSandbox = vi.fn();
@@ -117,9 +175,28 @@ describe("MarkdownContent LaTeX delimiters", () => {
     await user.click(screen.getByRole("button", { name: "复制 python 代码" }));
     expect(await screen.findByRole("button", { name: "已复制 python 代码" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "询问 Nova" }));
-    expect(askNova).toHaveBeenCalledWith("print('hello')", "python");
+    expect(askNova).not.toHaveBeenCalled();
+    const promptInput = screen.getByRole("textbox", { name: "询问 Nova" });
+    expect(promptInput).toBeVisible();
+    expect(promptInput).toHaveAttribute("placeholder", "这段代码是什么意思？");
+    await user.type(promptInput, "为什么这里使用 softmax？");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(askNova).toHaveBeenCalledWith("print('hello')", "python", "为什么这里使用 softmax？");
+    expect(screen.queryByRole("textbox", { name: "询问 Nova" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "在沙箱中打开" }));
     expect(openInSandbox).toHaveBeenCalledWith("print('hello')", "python");
+  });
+
+  it("can send the code composer placeholder as the default question", async () => {
+    const user = userEvent.setup();
+    const askNova = vi.fn();
+
+    render(<MarkdownContent codeActions={{ onAskNova: askNova }}>{"```python\nprint('hello')\n```"}</MarkdownContent>);
+
+    await user.click(screen.getByRole("button", { name: "询问 Nova" }));
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(askNova).toHaveBeenCalledWith("print('hello')", "python", "这段代码是什么意思？");
   });
 
   it("keeps the copy action when Nova actions are unavailable", () => {

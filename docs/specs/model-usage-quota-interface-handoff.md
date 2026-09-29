@@ -346,7 +346,7 @@ purpose
 upstream_provider_quota_exhausted
     = 项目使用的 Provider 账户没有余额
 
-quota_daily_exhausted / quota_monthly_exhausted / admission_denied
+quota_daily_exhausted / quota_weekly_exhausted / admission_denied
     = Pro_NLP 用户额度规则拒绝
 ```
 
@@ -422,7 +422,7 @@ tests/test_redis_transport.py
 
 - Durable Reporter 的具体实现；
 - Usage Event、Ledger、Reservation 的数据库迁移；
-- 用户套餐、日/月额度、共享 Workspace 额度；
+- 用户套餐、日/周额度、共享 Workspace 额度；
 - Pricing Rule 管理和历史版本；
 - Admission API 和面向用户的额度错误；
 - 余额查询、管理后台、对账任务；

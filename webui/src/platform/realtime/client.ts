@@ -1,4 +1,4 @@
-import type { ServerEvent } from "@/shared/types";
+import type { KnowledgeBookContext, ServerEvent } from "@/shared/types";
 import { createUuid } from "@/shared/utils/uuid";
 import { api } from "@/platform/http/api";
 
@@ -123,7 +123,7 @@ export class StudentSocket {
     }
   }
 
-  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>): void {
+  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, knowledgeBookContext?: KnowledgeBookContext): void {
     this.command("chat.send", {
       session_id: sessionId,
       content,
@@ -131,6 +131,7 @@ export class StudentSocket {
       ...(learningContext ? { learning_context: learningContext } : {}),
       ...(modelProfile ? { model_profile: modelProfile } : {}),
       ...(attachments?.length ? { attachments } : {}),
+      ...(knowledgeBookContext ? { knowledge_book_context: knowledgeBookContext } : {}),
     }, requestId);
   }
 

@@ -1,7 +1,7 @@
 """
 Snip 压缩核心模块。
 
-这是上下文窗口压缩的第二层：直接移除对话开头一批老消息，并插入边界标记。
+这是上下文窗口压缩的第三层：直接移除对话开头一批老消息，并插入边界标记。
 不做任何摘要，不调用 LLM，零 API 开销。
 
 核心逻辑：
@@ -22,6 +22,7 @@ import time
 from typing import List, Optional, Tuple
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
+from server.agent.compression.internal_context import internal_context_metadata
 from utils.tokens import token_count_with_estimation, rough_estimation_for_messages
 from utils.logger import get_logger
 
@@ -96,7 +97,10 @@ def _make_snip_marker(original_msg: BaseMessage) -> SystemMessage:
     return SystemMessage(
         content="[snipped]",
         id=original_msg.id,
-        additional_kwargs={_SNIP_MARKER_KEY: True}
+        additional_kwargs={
+            _SNIP_MARKER_KEY: True,
+            **internal_context_metadata("snip_marker"),
+        },
     )
 
 
@@ -118,6 +122,7 @@ def _make_snip_boundary(
         ),
         additional_kwargs={
             _SNIP_BOUNDARY_KEY: True,
+            **internal_context_metadata("snip_boundary"),
             "tokens_freed": tokens_freed,
             "messages_removed": messages_removed,
             "snipped_at": snipped_at,
@@ -136,6 +141,10 @@ class SnipCompactResult:
 def snip_compact_if_needed(
     messages: List[BaseMessage],
     force: bool = False,
+    *,
+    threshold: int = SNIP_THRESHOLD,
+    target_free: int = SNIP_TARGET_FREE,
+    keep_recent: int = KEEP_RECENT,
 ) -> SnipCompactResult:
     """
     检查 token 用量，必要时从头部移除旧消息并插入边界标记。
@@ -155,10 +164,15 @@ def snip_compact_if_needed(
 
     current_tokens = token_count_with_estimation(messages)
 
-    if not force and current_tokens <= SNIP_THRESHOLD:
+    if not force and current_tokens <= threshold:
         return SnipCompactResult(messages)
 
-    result_msgs, tokens_freed, boundary_msg = _do_snip(messages, current_tokens)
+    result_msgs, tokens_freed, boundary_msg = _do_snip(
+        messages,
+        current_tokens,
+        target_free=target_free,
+        keep_recent=keep_recent,
+    )
 
     if tokens_freed > 0:
         logger.info(
@@ -284,13 +298,16 @@ def should_nudge_for_snips(messages: List[BaseMessage]) -> bool:
 def _do_snip(
     messages: List[BaseMessage],
     current_tokens: int,
+    *,
+    target_free: int = SNIP_TARGET_FREE,
+    keep_recent: int = KEEP_RECENT,
 ) -> Tuple[List[BaseMessage], int, Optional[SystemMessage]]:
     """
     实际执行 snip：从头部移除旧的 user+assistant 轮次，直到释放了足够的 token。
 
     返回 (新消息列表, 释放的 token 数, boundary_message)
     """
-    protected_start = max(0, len(messages) - KEEP_RECENT)
+    protected_start = max(0, len(messages) - keep_recent)
     candidates = messages[:protected_start]
     protected = messages[protected_start:]
 
@@ -313,7 +330,7 @@ def _do_snip(
     tokens_freed = 0
 
     i = 0
-    while i < len(snippable) and tokens_freed < SNIP_TARGET_FREE:
+    while i < len(snippable) and tokens_freed < target_free:
         msg = snippable[i]
         # 跳过已经是 marker 的消息
         if is_snip_marker_message(msg):
@@ -348,7 +365,7 @@ def _do_snip(
 
     # 构建新消息列表：
     # [system_prefix] + [boundary_msg] + [markers for snipped] + [remaining snippable] + [protected]
-    remaining_snippable = snippable[len(snipped):]
+    remaining_snippable = snippable[i:]
     markers = [_make_snip_marker(m) for m in snipped]
 
     new_msgs = system_prefix + [boundary_msg] + markers + remaining_snippable + protected

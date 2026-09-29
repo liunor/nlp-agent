@@ -43,6 +43,10 @@ class VisionErrorCode(StrEnum):
     IMAGE_TOO_LARGE = "image_too_large"
     MULTI_FRAME_UNSUPPORTED = "multi_frame_unsupported"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
+    PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"
+    PROVIDER_AUTH_FAILED = "provider_auth_failed"
+    PROVIDER_TIMEOUT = "provider_timeout"
+    PROVIDER_RATE_LIMITED = "provider_rate_limited"
     INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
 
 
@@ -72,7 +76,7 @@ class ImageAnalyzeInput(BaseModel):
     image: str = Field(
         min_length=1,
         max_length=4096,
-        description=".data/uploads 中的本地图片路径",
+        description="当前会话上传图片的文件名，如 abc123.png；直接使用附件提供的文件名，不要自行添加 .data/uploads/ 前缀。也支持当前会话沙箱内的完整路径。",
     )
     task: ImageTask = "auto"
     question: str | None = Field(default=None, max_length=2_000)
@@ -131,9 +135,25 @@ class OCRResult(BaseModel):
     confidence: float | None = Field(default=None, ge=0, le=1)
 
 
+class TableDataCell(BaseModel):
+    """Semantic table cell returned by a VLM.
+
+    Unlike an OCR cell, a semantic cell does not have to claim pixel-accurate
+    geometry or a calibrated recognition confidence.
+    """
+
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    text: str
+    cell_id: str | None = None
+    bbox: BoundingBox | None = None
+    page: int | None = Field(default=None, ge=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class TableResult(BaseModel):
     markdown: str = ""
-    cells: list[OCRTableCell] = Field(default_factory=list)
+    cells: list[TableDataCell] = Field(default_factory=list)
     confidence: float | None = Field(default=None, ge=0, le=1)
 
 
@@ -178,6 +198,7 @@ class VisionSignals(BaseModel):
 
     text_coverage: float = Field(default=0, ge=0, le=1)
     aligned_text_ratio: float = Field(default=0, ge=0, le=1)
+    has_text_layout: bool = False
     has_grid_lines: bool = False
     has_axes: bool = False
     has_legend: bool = False
@@ -198,9 +219,10 @@ class RouteDecision(BaseModel):
 class VisionModelResult(BaseModel):
     """Provider-neutral structured result returned by a VLM adapter."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     summary: str
+    answer: str | None = None
     markdown: str | None = None
     table: TableResult | None = None
     chart: ChartResult | None = None
@@ -217,6 +239,7 @@ class ImageAnalyzeResponse(BaseModel):
     task_requested: ImageTask
     task_executed: ExecutedImageTask
     route: VisionRoute
+    degraded: bool = False
     summary: str
     markdown: str | None = None
     ocr: OCRResult | None = None

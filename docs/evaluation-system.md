@@ -242,6 +242,18 @@ uv run pytest
 
 `run` 一定要求 `--live`。先启动 Web 服务和 Monitor 服务；运行器通过 `--web-url` 创建真实 session、提交真实问题，并通过 `--monitor-url` 读取同一 Turn 的真实 Telemetry Trace。它不会启动第二个 Gateway，因此保持单进程 Gateway 所有权；这会产生模型 API 费用。建议先用单个 `--case` 冒烟验证，再运行完整套件。运行结果默认保存到 `.jbeval/runs/<suite-id>/`；`--output` 可覆盖该位置；运行产物不纳入版本管理。
 
+生产认证模式下，在当前 PowerShell 或项目根目录的 gitignored `.env` 中设置专用
+评测账号。密码只通过环境变量配置，不得写入命令行、数据集或报告：
+
+```powershell
+$env:NLP_AGENT_EVALUATION_USERNAME='evaluation-user'
+$env:NLP_AGENT_EVALUATION_PASSWORD='<password>'
+```
+
+该账号必须能在目标评测工作区创建会话；读取 Monitor 证据还需要
+`system:runtime:monitor` 权限。评测器登录 Web 后会把同一个数据库会话 Cookie
+复制到 Monitor 客户端，不会创建第二套认证会话。
+
 前端若增加评测报告页面，再执行：
 
 ```powershell

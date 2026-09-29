@@ -77,6 +77,7 @@ const stream = vi.hoisted(() => {
 
 vi.mock("@/platform/realtime/client", () => ({ StudentSocket: stream.StudentSocket }));
 vi.mock("@/platform/http/api", () => ({
+  AUTH_EXPIRED_EVENT: "nova:auth-expired",
   ensureAuth: vi.fn().mockResolvedValue({}),
   uploadAttachment: stream.uploadAttachment,
   api: {
@@ -142,6 +143,28 @@ describe("student stream rendering", () => {
     expect(document.querySelector(".tool-dock .learning-panel")).toBeInTheDocument();
   });
 
+  it("uses decorative tool marks instead of shortcut labels on the dock home", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+
+    const home = document.querySelector(".tool-dock-home");
+    expect(home).toBeInTheDocument();
+    expect(home?.querySelectorAll("kbd")).toHaveLength(0);
+    expect(home?.querySelectorAll('[data-testid="tool-dock-decoration"]')).toHaveLength(5);
+    expect([...home?.querySelectorAll<HTMLElement>('[data-testid="tool-dock-decoration"]') ?? []].every((mark) => mark.textContent === "·")).toBe(true);
+    expect(home).not.toHaveTextContent("Ctrl+Alt");
+  });
+
+  it("does not reserve global keyboard shortcuts for dock tools", async () => {
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "f", ctrlKey: true, altKey: true });
+
+    expect(screen.queryByRole("tab", { name: "文件" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "打开工具侧栏" })).toBeInTheDocument();
+  });
+
   it("selects and saves Qwen for subsequent chat sends", async () => {
     stream.updateSettings.mockClear();
     render(<App />);
@@ -179,7 +202,7 @@ describe("student stream rendering", () => {
       },
     });
 
-    expect(uploadButton).toBeEnabled();
+    await waitFor(() => expect(uploadButton).toBeEnabled());
     fireEvent(screen.getByRole("textbox", { name: "学习问题" }), paste);
 
     expect(paste.defaultPrevented).toBe(true);
@@ -320,6 +343,11 @@ describe("student stream rendering", () => {
     expect(screen.getByRole("button", { name: "展开工具面板" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "还原工具面板" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "沙箱代码" })).toHaveValue("import torch\nprint(torch.__version__)");
+
+    fireEvent.click(screen.getByRole("button", { name: "清空代码" }));
+    expect(screen.getByRole("textbox", { name: "沙箱代码" })).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "在沙箱中打开" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "沙箱代码" })).toHaveValue("import torch\nprint(torch.__version__)"));
   }, 10000);
 
   it("keeps the kernel status in the environment strip when the workbench is expanded", async () => {
@@ -485,10 +513,16 @@ describe("student stream rendering", () => {
     expect(menu.closest(".tool-dock-tab-strip")).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "打开浏览器工具" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "打开终端工具" })).not.toBeInTheDocument();
-    expect(menu.querySelectorAll("kbd")).toHaveLength(5);
-    expect(menu).toHaveTextContent("Ctrl+Alt+F");
+    expect(menu.querySelectorAll("kbd")).toHaveLength(0);
+    expect(menu.querySelectorAll('[data-testid="tool-dock-decoration"]')).toHaveLength(5);
+    expect([...menu.querySelectorAll<HTMLElement>('[data-testid="tool-dock-decoration"]')].every((mark) => mark.textContent === "·")).toBe(true);
+    expect(menu).not.toHaveTextContent("Ctrl+Alt+F");
+    expect(screen.getByRole("menuitem", { name: "打开白板工具" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "文件" })).toBeVisible();
     expect(screen.getByRole("button", { name: "显示工具列表" }).parentElement).toContainElement(menu);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "打开白板工具" }));
+    expect(await screen.findByRole("tab", { name: "白板" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "关闭工具侧栏" }));
     expect(screen.queryByRole("menu", { name: "工具列表" })).not.toBeInTheDocument();

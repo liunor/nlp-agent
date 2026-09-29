@@ -6,7 +6,7 @@ from sqlalchemy.dialects.mysql import DATETIME, SMALLINT
 
 
 revision = "20260927_44_storage_pool_lock"
-down_revision = "20260927_43_storage_quota_backfill"
+down_revision = "20260927_43_storage_backfill"
 branch_labels = None
 depends_on = None
 

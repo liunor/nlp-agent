@@ -32,4 +32,8 @@ def build_turn_execution_state(config: dict[str, Any]) -> TurnExecutionState:
     url = settings.NLP_AGENT_DATABASE_URL.strip()
     if not url:
         raise RuntimeError("NLP_AGENT_DATABASE_URL is required for MySQL worker state")
-    return MySQLGatewayRepository(url, knowledge_point_prompt_budget=max(1, int(config.get("knowledge_point_prompt_budget", 12_000))))
+    return MySQLGatewayRepository(
+        url,
+        knowledge_point_prompt_budget=max(1, int(config.get("knowledge_point_prompt_budget", 12_000))),
+        quota_enforcement=settings.quota_enforcement_enabled,
+    )

@@ -104,10 +104,10 @@ function AuthenticatedWhiteboardPanel({ userId, canManageLibrary = false, presen
     />
     {libraryLoadError && <div className="whiteboard-library-warning" role="status">
       {libraryLoadError.clearFailed
-        ? "白板素材区初始化失败，已尽力恢复，请点击重试。"
+        ? "白板素材区初始化失败，已尽力恢复，请刷新白板后重试。"
         : libraryLoadError.sharedFailed
           ? "共享素材加载失败，请点击重试。"
-          : "部分教学素材加载失败，请点击重试。"}
+          : "部分教学素材加载失败，请刷新白板后重试。"}
       <button type="button" onClick={() => setLibraryLoadAttempt((attempt) => attempt + 1)}>重试</button>
     </div>}
     {libraryPublishError && <div className="whiteboard-library-warning" role="alert">{libraryPublishError}</div>}

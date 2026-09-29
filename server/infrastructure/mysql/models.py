@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Computed,
     ForeignKey,
@@ -18,11 +19,16 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.mysql import BIGINT, DATETIME, MEDIUMTEXT
+from sqlalchemy.dialects.mysql import BIGINT, DATETIME, LONGBLOB, MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampedModel
 from .table_comments import TABLE_COMMENTS
+
+# Quota tables share the same Alembic metadata.  Importing them here keeps
+# metadata-based tooling (including foundation checks) aware of every active
+# MySQL table without requiring callers to know the quota package layout.
+from server.quota import models as _quota_models  # noqa: F401, E402
 
 
 UUID = String(36, collation="ascii_bin")
@@ -57,11 +63,13 @@ class UserModel(TimestampedModel, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DATETIME(fsp=6), nullable=True, index=True
     )
-    # 手机号注册：``phone_number`` 与 ``registration_source`` 在数据库已存在，
-    # 但 develop 合并后的模型缺失定义，导致 ``server/user/service.py`` 里的
-    # ``UserModel.phone_number`` 查询/赋值会抛 AttributeError。此处补齐保持一致。
-    phone_number: Mapped[str | None] = mapped_column(
-        String(20), nullable=True, unique=True, index=True
+    # 邮箱注册：``email`` 为展示值，``email_normalized`` 为大小写归一化的持久化
+    # 身份键（唯一），自助注册/登录均以邮箱为凭证。
+    email: Mapped[str | None] = mapped_column(
+        String(254), nullable=True, index=True
+    )
+    email_normalized: Mapped[str | None] = mapped_column(
+        String(254), nullable=True, unique=True, index=True
     )
     registration_source: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="manual"
@@ -425,6 +433,55 @@ class KnowledgeBookAssetModel(TimestampedModel, Base):
     size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
 
+class KnowledgeBookFileModel(TimestampedModel, Base):
+    """Text/code files embedded in teacher-authored knowledge-book pages."""
+
+    __tablename__ = "nlp_knowledge_book_files"
+    __table_args__ = (
+        Index(
+            "ix_nlp_knowledge_book_files_point",
+            "workspace_id",
+            "knowledge_point_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_course_catalogs.workspace_id", ondelete="CASCADE"), nullable=False
+    )
+    knowledge_point_id: Mapped[str] = mapped_column(UUID, nullable=False)
+    original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[bytes] = mapped_column(LONGBLOB, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128, collation="ascii_bin"), nullable=False)
+
+
+class KnowledgeBookFileRefModel(Base):
+    """Ordered draft/published references from a page to its embedded files."""
+
+    __tablename__ = "nlp_knowledge_book_file_refs"
+    __table_args__ = (
+        CheckConstraint("state IN ('draft', 'published')", name="ck_nlp_book_file_refs_state"),
+        ForeignKeyConstraint(
+            ["file_id"], ["nlp_knowledge_book_files.id"],
+            ondelete="CASCADE", name="fk_nlp_book_file_refs_file",
+        ),
+        Index("ix_nlp_knowledge_book_file_refs_file", "workspace_id", "file_id", "state"),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    knowledge_point_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), primary_key=True)
+    file_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), nullable=False, server_default=func.utc_timestamp(6)
+    )
 
 class WhiteboardLibraryItemModel(TimestampedModel, Base):
     """Globally shared Excalidraw library entries created by teaching roles."""
@@ -494,6 +551,28 @@ class ConversationModel(TimestampedModel, Base):
     channel: Mapped[str] = mapped_column(String(32), nullable=False, server_default="web")
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     last_message_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # Basis of the last LLM-generated title: the newest completed turn's
+    # ``completed_at``.  NULL until the first summary is written.  The
+    # conditional UPDATEs key on this both to reject out-of-order overwrites and
+    # to decide whether a newer completed turn makes regeneration due.
+    title_updated_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # True once the user manually renames the session; the summarizer never
+    # overwrites a manual title.
+    title_is_manual: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
+    # Short-lived lease taken by the background summarizer before it pays for an
+    # LLM call; prevents two workers from generating the same title concurrently.
+    # On LLM failure the lease is extended (exponential backoff) instead of
+    # cleared, so a dead model service does not trigger a retry storm.
+    summary_lease_expires_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    # How many LLM calls have been attempted for the current title generation,
+    # driving the exponential-backoff lease above; reset to 0 on a successful
+    # write.  It bounds the retry *rate*, never the retry *count*: the backoff
+    # tops out at ``MAX_BACKOFF_S``, so a session that cannot be titled costs at
+    # most one utility call per hour and starts succeeding again by itself once
+    # the model recovers.  Capping the count instead would disable titling for
+    # that session permanently, which no longer makes sense now that every
+    # completed turn re-arms generation.
+    summary_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
 class TurnModel(TimestampedModel, Base):
@@ -766,6 +845,11 @@ class LangGraphCheckpointWriteModel(Base):
 class ConversationTranscriptModel(Base):
     __tablename__ = "nlp_conversation_transcripts"
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+    )
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     message_uuid: Mapped[str] = mapped_column(String(128), nullable=False)
     parent_uuid: Mapped[str | None] = mapped_column(String(128))
@@ -1140,7 +1224,7 @@ class SandboxArtifactModel(Base):
 class AuthCodeModel(Base):
     """Shared (DB-backed) store for one-time verification codes.
 
-    Replaces the previous in-process dicts so that captcha / SMS codes
+    Replaces the previous in-process dicts so that captcha / email codes
     survive multi-instance deployments: the instance that generates a code
     and the instance that verifies it no longer need to be the same process.
     ``client_ip`` is recorded to enable server-side send-rate limiting.
@@ -1148,18 +1232,37 @@ class AuthCodeModel(Base):
 
     __tablename__ = "nlp_auth_codes"
     __table_args__ = (
+        UniqueConstraint("kind", "subject", name="uq_nlp_auth_codes_kind_subject"),
         Index("ix_nlp_auth_codes_kind_subject", "kind", "subject"),
         Index("ix_nlp_auth_codes_kind_ip_created", "kind", "client_ip", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    subject: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject: Mapped[str] = mapped_column(String(254), nullable=False)
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, index=True)
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
 
 
+class EmailSendAuditModel(Base):
+    """Immutable audit record for every verification-email send attempt."""
+
+    __tablename__ = "nlp_email_send_audits"
+    __table_args__ = (
+        Index("ix_nlp_email_send_audits_email_created", "email", "created_at"),
+        Index("ix_nlp_email_send_audits_ip_created", "client_ip", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False, server_default="sent")
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
 for _table_name, _table_comment in TABLE_COMMENTS.items():
-    Base.metadata.tables[_table_name].comment = _table_comment
+    table = Base.metadata.tables.get(_table_name)
+    if table is not None:
+        table.comment = _table_comment

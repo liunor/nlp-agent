@@ -1,4 +1,4 @@
-"""Phone registration and verification at the real HTTP boundary."""
+"""Email registration and verification at the real HTTP boundary."""
 
 from __future__ import annotations
 
@@ -10,12 +10,17 @@ import pytest
 from ..support.auth import set_test_auth_code
 from ..support.database import MySqlProbe
 from ..support.http import json_response, problem_response
+from server.user.email import normalize_email
 
 
 pytestmark = pytest.mark.api_core
 
 CAPTCHA_CODE = "ABCD"
-SMS_CODE = "123456"
+EMAIL_CODE = "123456"
+
+
+def _unique_email(prefix: str = "user") -> str:
+    return f"{prefix}{uuid.uuid4().hex[:12]}@example.com"
 
 
 def _captcha(
@@ -39,18 +44,18 @@ def _captcha(
     return captcha_id
 
 
-def _send_sms(
+def _send_email(
     client: httpx.Client,
     mysql_probe: MySqlProbe,
-    phone: str,
+    email: str,
     *,
     expired_captcha: bool = False,
 ) -> httpx.Response:
     captcha_id = _captcha(client, mysql_probe, expired=expired_captcha)
     response = client.post(
-        "/api/v1/auth/sms/send",
+        "/api/v1/auth/email/send",
         json={
-            "phone_number": phone,
+            "email": email,
             "captcha_id": captcha_id,
             "captcha_code": CAPTCHA_CODE,
         },
@@ -58,9 +63,9 @@ def _send_sms(
     if response.status_code == 200:
         set_test_auth_code(
             mysql_probe,
-            kind="sms",
-            subject=phone,
-            code=SMS_CODE,
+            kind="email",
+            subject=normalize_email(email),
+            code=EMAIL_CODE,
         )
     return response
 
@@ -69,16 +74,16 @@ def _register(
     client: httpx.Client,
     mysql_probe: MySqlProbe,
     *,
-    phone: str,
-    sms_code: str = SMS_CODE,
+    email: str,
+    email_code: str = EMAIL_CODE,
     expired_captcha: bool = False,
 ) -> httpx.Response:
     captcha_id = _captcha(client, mysql_probe, expired=expired_captcha)
     return client.post(
         "/api/v1/auth/register",
         json={
-            "phone_number": phone,
-            "sms_code": sms_code,
+            "email": email,
+            "email_code": email_code,
             "password": "Phase4-register-password!",
             "display_name": "Phase 4 Registered User",
             "captcha_id": captcha_id,
@@ -93,14 +98,14 @@ def test_captcha_is_json_and_single_use(
 ) -> None:
     captcha_id = _captcha(http_client, mysql_probe)
     request = {
-        "phone_number": f"138{uuid.uuid4().int % 10**8:08d}",
+        "email": _unique_email(),
         "captcha_id": captcha_id,
         "captcha_code": CAPTCHA_CODE,
     }
 
-    first = http_client.post("/api/v1/auth/sms/send", json=request)
+    first = http_client.post("/api/v1/auth/email/send", json=request)
     json_response(first, 200)
-    replay = http_client.post("/api/v1/auth/sms/send", json=request)
+    replay = http_client.post("/api/v1/auth/email/send", json=request)
     replay_payload = json_response(replay, 400)
     assert isinstance(replay_payload, dict)
     assert "captcha" in str(replay_payload["detail"]).lower()
@@ -112,40 +117,40 @@ def test_captcha_rejects_wrong_and_expired_answers(
 ) -> None:
     wrong_id = _captcha(http_client, mysql_probe)
     wrong = http_client.post(
-        "/api/v1/auth/sms/send",
+        "/api/v1/auth/email/send",
         json={
-            "phone_number": "138" + str(uuid.uuid4().int % 10**8).zfill(8),
+            "email": _unique_email(),
             "captcha_id": wrong_id,
             "captcha_code": "WRONG",
         },
     )
     assert wrong.status_code == 400
 
-    expired = _send_sms(
+    expired = _send_email(
         http_client,
         mysql_probe,
-        "139" + str(uuid.uuid4().int % 10**8).zfill(8),
+        _unique_email(),
         expired_captcha=True,
     )
     assert expired.status_code == 400
 
 
-def test_sms_code_lifecycle_and_registration_provision_resources(
+def test_email_code_lifecycle_and_registration_provision_resources(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
     authenticated_client_for,
     api_http_client_factory,
     developer_user,
 ) -> None:
-    phone = "138" + str(uuid.uuid4().int % 10**8).zfill(8)
-    sent = _send_sms(http_client, mysql_probe, phone)
+    email = _unique_email()
+    sent = _send_email(http_client, mysql_probe, email)
     json_response(sent, 200)
 
-    registered = _register(http_client, mysql_probe, phone=phone)
+    registered = _register(http_client, mysql_probe, email=email)
     payload = json_response(registered, 201)
     assert isinstance(payload, dict)
     user_id = str(payload["user_id"])
-    assert payload["username"] == "".join(ch for ch in phone if ch.isdigit())
+    assert payload["username"].startswith("user")
 
     developer_client = authenticated_client_for(developer_user)
     user = json_response(
@@ -160,11 +165,12 @@ def test_sms_code_lifecycle_and_registration_provision_resources(
         base_url=http_client.base_url,
         timeout=15,
     )
+    # Login accepts the verified email as the identity credential.
     response = registered_login.post(
         "/api/v1/auth/login",
         headers={"Origin": str(http_client.base_url).rstrip("/")},
         json={
-            "username": payload["username"],
+            "username": email,
             "password": "Phase4-register-password!",
         },
     )
@@ -174,82 +180,88 @@ def test_sms_code_lifecycle_and_registration_provision_resources(
     assert login_payload["workspace_ids"]
 
 
-def test_sms_wrong_expired_and_replayed_codes_are_rejected(
+def test_email_wrong_expired_and_replayed_codes_are_rejected(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
 ) -> None:
-    wrong_phone = "138" + str(uuid.uuid4().int % 10**8).zfill(8)
-    assert _send_sms(http_client, mysql_probe, wrong_phone).status_code == 200
-    wrong = _register(http_client, mysql_probe, phone=wrong_phone, sms_code="000000")
+    wrong_email = _unique_email()
+    assert _send_email(http_client, mysql_probe, wrong_email).status_code == 200
+    wrong = _register(http_client, mysql_probe, email=wrong_email, email_code="000000")
     assert wrong.status_code == 400
 
-    expired_phone = "139" + str(uuid.uuid4().int % 10**8).zfill(8)
-    assert _send_sms(http_client, mysql_probe, expired_phone).status_code == 200
+    expired_email = _unique_email()
+    assert _send_email(http_client, mysql_probe, expired_email).status_code == 200
     set_test_auth_code(
         mysql_probe,
-        kind="sms",
-        subject=expired_phone,
-        code=SMS_CODE,
+        kind="email",
+        subject=normalize_email(expired_email),
+        code=EMAIL_CODE,
         expired=True,
     )
-    expired = _register(http_client, mysql_probe, phone=expired_phone)
+    expired = _register(http_client, mysql_probe, email=expired_email)
     assert expired.status_code == 400
 
-    replay_phone = "137" + str(uuid.uuid4().int % 10**8).zfill(8)
-    assert _send_sms(http_client, mysql_probe, replay_phone).status_code == 200
-    first = _register(http_client, mysql_probe, phone=replay_phone)
+    replay_email = _unique_email()
+    assert _send_email(http_client, mysql_probe, replay_email).status_code == 200
+    first = _register(http_client, mysql_probe, email=replay_email)
     assert first.status_code == 201, first.text
-    replay = _register(http_client, mysql_probe, phone=replay_phone)
+    replay = _register(http_client, mysql_probe, email=replay_email)
     assert replay.status_code == 400
 
 
-def test_duplicate_phone_is_rejected_after_fresh_verification(
+def test_duplicate_email_is_rejected_after_fresh_verification(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
 ) -> None:
-    phone = "136" + str(uuid.uuid4().int % 10**8).zfill(8)
-    assert _send_sms(http_client, mysql_probe, phone).status_code == 200
-    first = _register(http_client, mysql_probe, phone=phone)
+    email = _unique_email()
+    assert _send_email(http_client, mysql_probe, email).status_code == 200
+    first = _register(http_client, mysql_probe, email=email)
     assert first.status_code == 201, first.text
 
-    set_test_auth_code(mysql_probe, kind="sms", subject=phone, code=SMS_CODE)
-    duplicate = _register(http_client, mysql_probe, phone=phone)
+    set_test_auth_code(
+        mysql_probe,
+        kind="email",
+        subject=normalize_email(email),
+        code=EMAIL_CODE,
+    )
+    duplicate = _register(http_client, mysql_probe, email=email)
     assert duplicate.status_code == 409
 
 
-def test_sms_resend_rate_limit_is_enforced(
+def test_email_resend_rate_limit_is_enforced(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
 ) -> None:
-    phone = "135" + str(uuid.uuid4().int % 10**8).zfill(8)
-    first = _send_sms(http_client, mysql_probe, phone)
+    email = _unique_email()
+    first = _send_email(http_client, mysql_probe, email)
     assert first.status_code == 200, first.text
-    second = _send_sms(http_client, mysql_probe, phone)
+    second = _send_email(http_client, mysql_probe, email)
     assert second.status_code == 429, second.text
 
 
-def test_sms_provider_failure_has_explicit_gateway_error(
+def test_email_provider_failure_has_explicit_gateway_error(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
 ) -> None:
-    phone = "131" + str(uuid.uuid4().int % 10**8).zfill(8)
+    # The deterministic stub fails delivery for any address with this prefix.
+    email = f"fail{uuid.uuid4().hex[:10]}@example.com"
     captcha_id = _captcha(http_client, mysql_probe)
     response = http_client.post(
-        "/api/v1/auth/sms/send",
+        "/api/v1/auth/email/send",
         json={
-            "phone_number": phone,
+            "email": email,
             "captcha_id": captcha_id,
             "captcha_code": CAPTCHA_CODE,
         },
     )
     payload = json_response(response, 502)
     assert isinstance(payload, dict)
-    assert "SMS gateway failed" in str(payload["detail"])
+    assert "Email gateway failed" in str(payload["detail"])
     assert (
         mysql_probe.scalar(
             "SELECT COUNT(*) FROM nlp_auth_codes "
-            "WHERE kind='sms' AND subject=:subject",
-            subject=phone,
+            "WHERE kind='email' AND subject=:subject",
+            subject=normalize_email(email),
         )
         == 0
     )

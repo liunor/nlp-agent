@@ -62,20 +62,38 @@ cd ..
 uv run python main.py monitor
 ```
 
-Then open `http://127.0.0.1:8766` from the internal network or VPN. The platform includes:
+Then open `http://127.0.0.1:8766` from the internal network or VPN. Monitor
+reuses the control-plane account, password, and account database, but uses an
+independent monitor session and browser cookie so the two apps cannot
+invalidate each other's CSRF token. If there is no valid monitor session, it
+presents its own login page, so you do not need to open the WebUI first. The
+login still requires the `system:runtime:monitor` permission; with the
+built-in roles this means the `developer` account. The monitor login does not
+log out or replace an existing control-plane session.
+
+The platform includes:
 
 - request count, error rate, response-time and TTFT percentiles;
 - input/output/reasoning/cache-hit/cache-miss Token usage;
 - session aggregates and error grouping;
 - complete Trace details with Coordinator/Worker/model/tool spans;
-- raw Trace/Event/Tool JSON for debugging;
+- redacted Trace/Event metadata for debugging (prompts, outputs and credentials are never persisted);
 - live telemetry events over `/ws/observability`;
-- telemetry queue/database health and explicit retention cleanup.
+- telemetry queue/database health and explicit retention cleanup;
+- automatic monthly cleanup of Trace/Span/Event rows older than 30 days;
+- authorization audit records retained for 180 days by default and pruned by
+  the same monthly maintenance task.
 
 The monitor uses the same environment's control-plane MySQL schema and requires
-its own same-origin WebSocket ticket. Cleanup mutations still require CSRF
+its own same-origin WebSocket ticket. Interactive OpenAPI documentation is
+disabled on the monitor surface, and the public readiness probe only exposes
+process status. Cleanup mutations still require CSRF
 protection and the `system:runtime:monitor` permission; no production monitor
-credential or database endpoint is shared with test.
+credential or database endpoint is shared with test. Automatic retention is
+configured under `monitor.retention` in `configs/agent_config.yaml` (or with
+the `NLP_AGENT_MONITOR_RETENTION_*` environment overrides). It only removes
+monitor-owned observability rows; the canonical `nlp_usage_events` billing
+ledger is retained.
 
 ## Frontend development
 

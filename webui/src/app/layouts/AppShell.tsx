@@ -3,7 +3,11 @@ import { Outlet, useLocation } from "react-router-dom";
 
 import { IcpRecordBar } from "@/shared/ui/IcpRecordBar";
 
+import { LoginDialog } from "@/modules/student/components/LoginDialog";
+import { useAuth } from "@/platform/auth/AuthContext";
+
 export function AppShell() {
+  const auth = useAuth();
   const location = useLocation();
 
   return (
@@ -20,6 +24,15 @@ export function AppShell() {
         <Outlet />
       </Suspense>
       {location.pathname === "/" && <IcpRecordBar />}
+
+      <LoginDialog
+        open={auth.isAuthExpired}
+        expired
+        onClose={() => undefined}
+        onAuthenticate={async (username, password) => {
+          await auth.login(username, password);
+        }}
+      />
     </div>
   );
 }

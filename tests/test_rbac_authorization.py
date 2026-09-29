@@ -9,8 +9,10 @@ from core.rbac import required_permission_for_high_risk_tool
 from server.rbac.catalog import (
     ROLE_NAMES,
     permission_id,
+    permission_display,
     permission_row,
     permission_scope,
+    role_display,
     role_id,
     role_permission_rows,
     role_permission_scope_rows,
@@ -33,6 +35,7 @@ def test_guest_can_only_use_public_capabilities() -> None:
     )
     # guest 是"来试用智能体的人"：允许基础会话/对话能力。
     assert authorization.allowed(principal("guest"), Permission.AGENT_TURN_SUBMIT)
+    assert authorization.allowed(principal("guest"), Permission.AGENT_SESSION_READ)
     # 但学习增强能力仍仅限 student 及以上。
     assert not authorization.allowed(
         principal("guest"), Permission.AGENT_CHECKPOINT_RESTORE
@@ -99,6 +102,28 @@ def test_developer_has_system_capabilities_without_implicit_sensitive_data_acces
     assert not authorization.allowed(
         principal("developer"), Permission.SYSTEM_SENSITIVE_DATA_READ
     )
+
+
+def test_reset_capability_is_explicitly_separate_from_monitor_read_access() -> None:
+    authorization = AuthorizationService()
+    monitor_only = AuthenticatedPrincipal(
+        user_id="developer-1",
+        permissions=frozenset({Permission.SYSTEM_RUNTIME_MONITOR.value}),
+    )
+    reset_operator = monitor_only.model_copy(
+        update={
+            "permissions": frozenset(
+                {
+                    Permission.SYSTEM_RUNTIME_MONITOR.value,
+                    Permission.SYSTEM_RUNTIME_RESET.value,
+                }
+            )
+        }
+    )
+
+    assert authorization.allowed(monitor_only, Permission.SYSTEM_RUNTIME_MONITOR)
+    assert not authorization.allowed(monitor_only, Permission.SYSTEM_RUNTIME_RESET)
+    assert authorization.allowed(reset_operator, Permission.SYSTEM_RUNTIME_RESET)
 
 
 def test_require_reports_a_stable_access_denied_error() -> None:
@@ -193,4 +218,23 @@ def test_builtin_catalog_has_stable_ids_and_complete_role_permission_rows() -> N
         Permission.AGENT_TURN_SUBMIT
     )
     assert permission_row(Permission.AGENT_TURN_SUBMIT)["code"] == "agent:turn:submit"
+    assert permission_row(Permission.AGENT_TURN_SUBMIT)["name"] == "提交智能体消息"
+    assert permission_row(Permission.AGENT_TURN_SUBMIT)["description"]
     assert len(role_permission_rows()) == len(role_permission_scope_rows())
+
+
+def test_permission_display_uses_catalog_labels_for_stale_database_values() -> None:
+    assert permission_display(
+        Permission.AGENT_TURN_SUBMIT.value,
+        fallback_name="旧名称",
+        fallback_description="旧说明",
+    ) == ("提交智能体消息", "向可访问的 Agent 会话发送消息并创建一次模型处理任务。")
+    assert permission_display("future:permission", fallback_name="保留名称") == ("保留名称", "")
+
+
+def test_fixed_role_display_explains_capability_boundaries() -> None:
+    name, description = role_display("developer", fallback_description="旧说明")
+    assert name == "开发者"
+    assert "用户" in description
+    assert "固定角色" in description
+    assert role_display("future-role", fallback_name="兼容角色", fallback_description="兼容说明") == ("兼容角色", "兼容说明")

@@ -182,6 +182,25 @@ class ModelRuntimeConfig(FrozenModel):
                             f"fallback {fallback_name!r} lacks {label} capability "
                             f"required by {route.primary!r}"
                         )
+        vision_route = self.model_routes.get("vision-worker")
+        if vision_route is not None:
+            if vision_route.primary != "vision-qwen-plus" or vision_route.fallbacks:
+                raise ValueError(
+                    "model_routes.vision-worker must use only vision-qwen-plus"
+                )
+            vision_preset = self.model_presets[vision_route.primary]
+            vision_model = self.models[vision_preset.model]
+            if vision_model.model_id != "qwen3-vl-plus":
+                raise ValueError(
+                    "vision-qwen-plus must resolve to qwen3-vl-plus"
+                )
+            if (
+                not vision_model.capabilities.vision
+                or not vision_model.capabilities.structured_output
+            ):
+                raise ValueError(
+                    "vision-worker requires vision and structured_output capabilities"
+                )
         for profile_name, profile in self.model_profiles.items():
             if profile.provider not in self.providers:
                 raise ValueError(

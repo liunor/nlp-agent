@@ -80,6 +80,8 @@ def api_full_coverage_gate(
         f"{len(websocket_expected)} covered"
     )
     report_text = f"{summary}\n{websocket_summary}\n"
+    full_probe_missing = set(report.non_exempt_operations) - api_http_environment.full_probe_operations
+    report_text += f"Full runner probes: {len(report.non_exempt_operations) - len(full_probe_missing)} / {len(report.non_exempt_operations)}\n"
     print(report_text, end="")
     report_path = os.environ.get("API_HTTP_COVERAGE_REPORT", "").strip()
     if report_path:
@@ -87,6 +89,10 @@ def api_full_coverage_gate(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(report_text, encoding="utf-8")
     assert not report.failures, "\n".join(report.failures)
+    assert not full_probe_missing, (
+        "Full runner did not probe operations: "
+        + "; ".join(f"{service} {method} {path}" for service, method, path in sorted(full_probe_missing))
+    )
     assert not websocket_missing, f"WebSocket routes without coverage: {sorted(websocket_missing)}"
 
 

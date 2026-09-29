@@ -19,6 +19,7 @@ from core.tool_runtime import (
     ToolRuntime,
     ToolScope,
     ToolSource,
+    _academic_result_urls,
 )
 from server.tools.runtime_tool_node import RuntimeToolNode
 
@@ -26,6 +27,32 @@ from server.tools.runtime_tool_node import RuntimeToolNode
 class AddInput(BaseModel):
     left: int = Field(ge=0)
     right: int = Field(ge=0)
+
+
+def test_academic_result_url_evidence_only_keeps_trusted_https_hosts():
+    payload = json.dumps(
+        {
+            "papers": [
+                {
+                    "landing_url": "https://arxiv.org/abs/1706.03762",
+                    "pdf_url": "https://evil.example/paper.pdf",
+                    "scholar_url": "https://scholar.google.com/scholar?q=transformer",
+                    "source_records": [
+                        {"source_url": "http://arxiv.org/abs/1706.03762"},
+                        {
+                            "source_url": "https://www.semanticscholar.org/paper/id?utm_source=api"
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert _academic_result_urls(payload) == (
+        "https://arxiv.org/abs/1706.03762",
+        "https://scholar.google.com/scholar?q=transformer",
+        "https://www.semanticscholar.org/paper/id?utm_source=api",
+    )
 
 
 async def add(left: int, right: int) -> int:

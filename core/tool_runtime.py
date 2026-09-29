@@ -7,6 +7,7 @@ import json
 import random
 import re
 import time
+from urllib.parse import urlsplit, urlunsplit
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AsyncExitStack
 from enum import Enum
@@ -29,6 +30,60 @@ from core.tool_safety import (
 logger = get_logger("nlp_agent.tool_runtime")
 _TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _TOOL_CATEGORY = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_ACADEMIC_TELEMETRY_HOSTS = frozenset(
+    {
+        "arxiv.org",
+        "doi.org",
+        "aclanthology.org",
+        "www.semanticscholar.org",
+        "scholar.google.com",
+    }
+)
+
+
+def _academic_result_urls(output: Any) -> tuple[str, ...]:
+    """Extract only trusted public citation URLs for integrity evaluation."""
+    if isinstance(output, str):
+        try:
+            payload = json.loads(output)
+        except (TypeError, json.JSONDecodeError):
+            return ()
+    elif isinstance(output, Mapping):
+        payload = output
+    else:
+        return ()
+    papers = payload.get("papers") if isinstance(payload, Mapping) else None
+    if not isinstance(papers, list):
+        return ()
+    urls: set[str] = set()
+    for paper in papers:
+        if not isinstance(paper, Mapping):
+            continue
+        candidates = [
+            paper.get("landing_url"),
+            paper.get("pdf_url"),
+            paper.get("scholar_url"),
+        ]
+        for record in paper.get("source_records") or []:
+            if isinstance(record, Mapping):
+                candidates.append(record.get("source_url"))
+        for candidate in candidates:
+            if not isinstance(candidate, str):
+                continue
+            try:
+                parsed = urlsplit(candidate)
+                if (
+                    parsed.scheme != "https"
+                    or parsed.hostname not in _ACADEMIC_TELEMETRY_HOSTS
+                    or parsed.username is not None
+                    or parsed.password is not None
+                    or parsed.port is not None
+                ):
+                    continue
+            except ValueError:
+                continue
+            urls.add(urlunsplit(parsed))
+    return tuple(sorted(urls))
 
 
 class ToolSource(str, Enum):
@@ -821,6 +876,11 @@ class ToolSet:
                 descriptor, tool, arguments, self.snapshot, config
             )
             span.annotate(attempts=result.attempts, runtime_duration_ms=result.duration_ms)
+            if name == "academic_search" and result.ok:
+                span.annotate(
+                    result_urls=list(_academic_result_urls(result.output)),
+                    billable_charges=0,
+                )
             if not result.ok:
                 kind = result.error.kind if result.error else "tool_error"
                 status = SpanStatus.TIMEOUT if kind == "timeout" else (

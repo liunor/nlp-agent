@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
+import threading
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
+from core.outbound_network import OutboundNetworkPolicy
 from core.tool_config import WebToolsConfig
 from server.tools.web.cache import TTLCache, cache_key
 from server.tools.web.contracts import (
@@ -21,6 +26,7 @@ from server.tools.web.contracts import (
 from server.tools.web.extractors import extract_html, extract_json, extract_text
 from server.tools.web.network_safety import (
     ParsedUrl,
+    check_literal_host,
     resolve_and_check,
     validate_url,
 )
@@ -30,6 +36,8 @@ from utils.logger import get_logger
 logger = get_logger("nlp_agent.tools.web_fetch")
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_SHARED_SERVICE_LOCK = threading.Lock()
+_SHARED_SERVICE: WebFetchService | None = None
 
 
 def _host_digest(host: str) -> str:
@@ -63,8 +71,14 @@ class WebFetchService:
         self.config = config
         self.transport = transport
         self.cache = cache if cache is not None else TTLCache(config.fetch.cache_ttl_s)
+        self._cache_locks: dict[str, asyncio.Lock] = {}
 
-    async def fetch(self, request: WebFetchInput) -> WebFetchResponse:
+    async def fetch(
+        self,
+        request: WebFetchInput,
+        *,
+        before_download: Callable[[], Awaitable[None]] | None = None,
+    ) -> WebFetchResponse:
         entry = validate_url(request.url)
         max_chars = min(request.max_chars, self.config.fetch.max_chars)
         key = cache_key(
@@ -73,29 +87,42 @@ class WebFetchService:
         cached = self.cache.get(key)
         if cached is not None:
             logger.debug("web_fetch cache hit", host_digest=_host_digest(entry.host))
-            return WebFetchResponse.model_validate_json(cached)
-
-        download = await self._download(entry, as_markdown=request.extract_mode == "markdown")
-        truncated, text_body, warnings = self._extract(download, max_chars)
-        result = WebFetchResponse(
-            url=entry.normalized,
-            final_url=download["final_url"],
-            title=download["title"],
-            status_code=download["status_code"],
-            content_type=download["content_type"],
-            extractor=download["extractor"],
-            text=f"{UNTRUSTED_CONTENT_BANNER}\n\n{text_body}",
-            truncated=truncated,
-            untrusted=True,
-            citation=Citation(
+            return WebFetchResponse.model_validate_json(cached).model_copy(
+                update={"cache_hit": True}
+            )
+        lock = self._cache_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = self.cache.get(key)
+            if cached is not None:
+                logger.debug("web_fetch cache hit", host_digest=_host_digest(entry.host))
+                return WebFetchResponse.model_validate_json(cached).model_copy(
+                    update={"cache_hit": True}
+                )
+            if before_download is not None:
+                await before_download()
+            download = await self._download(
+                entry, as_markdown=request.extract_mode == "markdown"
+            )
+            truncated, text_body, warnings = self._extract(download, max_chars)
+            result = WebFetchResponse(
+                url=entry.normalized,
+                final_url=download["final_url"],
                 title=download["title"],
-                url=download["final_url"],
-                retrieved_at=datetime.now(timezone.utc),
-                source_provider="web_fetch",
-            ),
-            warnings=warnings,
-        )
-        self.cache.put(key, result.model_dump_json())
+                status_code=download["status_code"],
+                content_type=download["content_type"],
+                extractor=download["extractor"],
+                text=f"{UNTRUSTED_CONTENT_BANNER}\n\n{text_body}",
+                truncated=truncated,
+                untrusted=True,
+                citation=Citation(
+                    title=download["title"],
+                    url=download["final_url"],
+                    retrieved_at=datetime.now(timezone.utc),
+                    source_provider="web_fetch",
+                ),
+                warnings=warnings,
+            )
+            self.cache.put(key, result.model_dump_json())
         logger.info(
             "web_fetch completed",
             host_digest=_host_digest(entry.host),
@@ -107,7 +134,7 @@ class WebFetchService:
         )
         return result
 
-    def _build_client(self) -> httpx.AsyncClient:
+    def _build_client(self, proxy_url: str | None) -> httpx.AsyncClient:
         network = self.config.network
         timeout = httpx.Timeout(
             connect=network.connect_timeout_s,
@@ -115,23 +142,40 @@ class WebFetchService:
             write=network.connect_timeout_s,
             pool=network.connect_timeout_s,
         )
-        proxy = None if self.transport is not None else (self.config.proxy_url or None)
+        proxy = None if self.transport is not None else proxy_url
         return httpx.AsyncClient(
             transport=self.transport,
             proxy=proxy,
             timeout=timeout,
             headers={"User-Agent": self.config.user_agent},
             follow_redirects=False,
+            trust_env=False,
         )
+
+    def _proxy_url(self) -> str:
+        configured = self.config.proxy_url.strip()
+        if configured:
+            return configured
+        if self.config.proxy_url_env:
+            return os.environ.get(self.config.proxy_url_env, "").strip()
+        return ""
+
+    def _proxy_url_for_host(self, host: str) -> str | None:
+        policy = OutboundNetworkPolicy.from_environment(proxy_url=self._proxy_url())
+        return policy.proxy_for_host(host)
 
     async def _download(self, entry: ParsedUrl, *, as_markdown: bool) -> dict[str, Any]:
         network = self.config.network
         blocked_cidrs = tuple(network.blocked_cidrs)
         current = entry
         redirects = 0
-        async with self._build_client() as client:
-            while True:
+        while True:
+            proxy_url = self._proxy_url_for_host(current.host)
+            if proxy_url:
+                check_literal_host(current, blocked_cidrs=blocked_cidrs)
+            else:
                 await resolve_and_check(current, blocked_cidrs=blocked_cidrs)
+            async with self._build_client(proxy_url) as client:
                 client.cookies.clear()
                 try:
                     response = await client.send(
@@ -241,4 +285,10 @@ def build_fetch_service(
     config = get_web_config()
     if not config.enabled:
         raise WebAccessError("disabled", "web 工具已在配置中禁用")
-    return WebFetchService(config, transport=transport)
+    if transport is not None:
+        return WebFetchService(config, transport=transport)
+    global _SHARED_SERVICE
+    with _SHARED_SERVICE_LOCK:
+        if _SHARED_SERVICE is None or _SHARED_SERVICE.config != config:
+            _SHARED_SERVICE = WebFetchService(config)
+        return _SHARED_SERVICE

@@ -57,6 +57,7 @@ def _evidence_from_trace(trace: dict, detail: dict | None, turn_id: str) -> Turn
                 argument_keys=tuple(attributes.get("argument_keys", [])),
                 duration_ms=int(span.get("duration_ms") or 0),
                 worker_id=span.get("worker_id"),
+                result_urls=tuple(attributes.get("result_urls", [])),
             )
         )
     worker_attempts = [
@@ -103,16 +104,53 @@ def _evidence_from_trace(trace: dict, detail: dict | None, turn_id: str) -> Turn
 class RemoteApiExecutor:
     """Runs cases through the already-running Web Gateway, never a second Gateway."""
 
-    def __init__(self, web_url: str) -> None:
+    def __init__(
+        self,
+        web_url: str,
+        *,
+        username: str | None = None,
+        password: str | None = None,
+    ) -> None:
         self.web_url = web_url.rstrip("/")
+        self.username = (username or "").strip() or None
+        self._password = password or None
         self.client: httpx.AsyncClient | None = None
         self._write_headers: dict[str, str] = {}
 
     async def start(self) -> None:
+        if bool(self.username) != bool(self._password):
+            raise RuntimeError(
+                "both NLP_AGENT_EVALUATION_USERNAME and "
+                "NLP_AGENT_EVALUATION_PASSWORD are required"
+            )
         self.client = httpx.AsyncClient(base_url=self.web_url, timeout=20)
-        response = await self.client.post("/api/v1/auth/session", headers={"Origin": self.web_url})
+        if self.username:
+            try:
+                response = await self.client.post(
+                    "/api/v1/auth/login",
+                    headers={"Origin": self.web_url},
+                    json={"username": self.username, "password": self._password},
+                )
+            finally:
+                # Do not retain the clear-text secret for the duration of a long
+                # evaluation run. The authenticated cookie is sufficient.
+                self._password = None
+        else:
+            response = await self.client.post(
+                "/api/v1/auth/guest", headers={"Origin": self.web_url}
+            )
+            if response.status_code in {401, 403, 404, 405}:
+                # Compatibility with older explicitly injected local adapters.
+                response = await self.client.post(
+                    "/api/v1/auth/session", headers={"Origin": self.web_url}
+                )
         response.raise_for_status()
         self._write_headers = {"Origin": self.web_url, "X-CSRF-Token": response.json()["csrf_token"]}
+
+    def session_cookies(self) -> httpx.Cookies:
+        if self.client is None:
+            raise RuntimeError("executor is not started")
+        return httpx.Cookies(self.client.cookies)
 
     async def run(self, case: EvaluationCase, *, workspace_id: str, timeout_s: float, evaluation_run_id: str, suite_id: str) -> tuple[str, str | None]:
         if self.client is None:
@@ -145,15 +183,36 @@ class RemoteApiExecutor:
 
 
 class MonitorHttpEvidenceReader:
-    def __init__(self, monitor_url: str, *, timeout_s: float = 10) -> None:
+    def __init__(
+        self,
+        monitor_url: str,
+        *,
+        timeout_s: float = 10,
+        session_cookie_provider: Callable[[], httpx.Cookies] | None = None,
+    ) -> None:
         self.monitor_url = monitor_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.session_cookie_provider = session_cookie_provider
         self.client: httpx.AsyncClient | None = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self.client is None:
-            self.client = httpx.AsyncClient(base_url=self.monitor_url, timeout=20)
-            response = await self.client.post("/api/v1/auth/session", headers={"Origin": self.monitor_url})
+            cookies = (
+                self.session_cookie_provider()
+                if self.session_cookie_provider is not None
+                else None
+            )
+            self.client = httpx.AsyncClient(
+                base_url=self.monitor_url, timeout=20, cookies=cookies
+            )
+            if cookies is not None:
+                response = await self.client.get(
+                    "/api/v1/auth/session", headers={"Origin": self.monitor_url}
+                )
+            else:
+                response = await self.client.post(
+                    "/api/v1/auth/session", headers={"Origin": self.monitor_url}
+                )
             response.raise_for_status()
         return self.client
 
@@ -215,5 +274,45 @@ class EvaluationRunner:
             "trace_capture_rate": len(eligible) / len(results) if results else 0.0,
             "macro_tool_f1": sum((2 * result.metrics.get("tool_precision", 0) * result.metrics.get("tool_recall", 0) / (result.metrics.get("tool_precision", 0) + result.metrics.get("tool_recall", 0)) if result.metrics.get("tool_precision", 0) + result.metrics.get("tool_recall", 0) else 0) for result in eligible) / len(eligible) if eligible else 0.0,
         }
+        academic_positive = [
+            result
+            for result in eligible
+            if "academic_search"
+            in next(case.expectation.required_tools for case in cases if case.id == result.case_id)
+        ]
+        academic_negative = [
+            result
+            for result in eligible
+            if next(case.expectation.expected_no_tool for case in cases if case.id == result.case_id)
+        ]
+        if academic_positive or academic_negative:
+            metrics.update(
+                {
+                    "academic_search_recall": (
+                        sum(
+                            any(call.tool_name == "academic_search" for call in result.tool_calls)
+                            for result in academic_positive
+                        )
+                        / len(academic_positive)
+                        if academic_positive
+                        else 1.0
+                    ),
+                    "academic_false_positive_rate": (
+                        sum(
+                            any(call.tool_name == "academic_search" for call in result.tool_calls)
+                            for result in academic_negative
+                        )
+                        / len(academic_negative)
+                        if academic_negative
+                        else 0.0
+                    ),
+                    "citation_integrity_rate": (
+                        sum(result.metrics.get("citation_integrity", 1.0) for result in academic_positive)
+                        / len(academic_positive)
+                        if academic_positive
+                        else 1.0
+                    ),
+                }
+            )
         verdict = "BLOCKED" if not eligible else "PASS" if metrics["critical_pass_rate"] == 1 and metrics["case_pass_rate"] >= .95 and metrics["macro_tool_f1"] >= .90 else "FAIL"
         return EvaluationReport(run_id=run_id, suite_id=suite_id, dataset_sha256=dataset_sha256, started_at=started_at, completed_at=completed_at, results=tuple(results), metrics=metrics, verdict=verdict)

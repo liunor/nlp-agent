@@ -106,12 +106,39 @@ def test_archive_parser_rejects_unsupported_svg_resource():
         )
 
 
-def test_teacher_markdown_rejects_external_reference_resources():
-    with pytest.raises(ValueError, match="外部链接"):
+def test_teacher_markdown_rejects_external_image_reference_resources():
+    with pytest.raises(ValueError, match="外部图片"):
         normalize_teacher_markdown(
             "attention.md",
             "![外部图片][remote]\n\n[remote]: https://example.com/image.png",
         )
+
+
+def test_teacher_markdown_accepts_external_links():
+    normalized = normalize_teacher_markdown(
+        "attention.md",
+        "参考资料：[Hugging Face](https://huggingface.co/docs)\n\n"
+        "[文档]: https://example.com/docs\n\n请继续阅读文档。",
+    )
+
+    assert "https://huggingface.co/docs" in normalized.content_markdown
+    assert "[文档]: https://example.com/docs" in normalized.content_markdown
+
+
+def test_teacher_markdown_allows_safe_autolinks_and_html_examples_in_code():
+    normalized = normalize_teacher_markdown(
+        "attention.md",
+        "参考资料：<https://example.com/docs>\n\n"
+        "行内示例：`<div>酒店很好</div>`\n\n"
+        "```html\n<div>酒店很好</div>\n```",
+    )
+
+    assert "<https://example.com/docs>" in normalized.content_markdown
+
+
+def test_teacher_markdown_still_rejects_raw_html_in_prose():
+    with pytest.raises(ValueError, match="原始 HTML"):
+        normalize_teacher_markdown("attention.md", "<div>不应作为教材标签渲染</div>")
 
 
 def test_teacher_markdown_drops_an_entire_non_pytorch_code_fence():

@@ -10,6 +10,7 @@ vi.mock("@/platform/http/api", () => {
     }
   }
   return {
+    AUTH_EXPIRED_EVENT: "nova:auth-expired",
     ApiError,
     ensureAuth: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
     api: {
@@ -58,8 +59,9 @@ describe("student authentication gate", () => {
     screen.getByRole("button", { name: "发送" }).click();
     await screen.findByRole("heading", { name: "登录 Nova" });
 
-    fireEvent.change(screen.getByLabelText("账号"), { target: { value: "user-1" } });
+    fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "user-1" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "password" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
     screen.getByRole("button", { name: "登录并继续" }).click();
 
     expect(await screen.findByRole("button", { name: "切换主题" })).toBeVisible();

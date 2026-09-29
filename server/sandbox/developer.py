@@ -18,6 +18,29 @@ def capacity_snapshot(states: dict[str, int], *, target: int) -> dict[str, int]:
     return {"ready": ready, "creating": creating, "target": target, "deficit": max(0, target - ready - creating)}
 
 
+def capacity_alerts(
+    *,
+    deficit: int,
+    failed_runtime_count: int,
+    unassigned_count: int,
+) -> list[dict[str, str]]:
+    """Build bounded operator alerts from capacity facts, including waiters."""
+    alerts: list[dict[str, str]] = []
+    if deficit > 0:
+        alerts.append({"code": "pool_deficit", "severity": "warning", "message": "预热池容量低于目标。"})
+    if unassigned_count > 0:
+        alerts.append(
+            {
+                "code": "lease_waiting",
+                "severity": "warning",
+                "message": f"{unassigned_count} 个在线租约正在等待沙箱运行时。",
+            }
+        )
+    if failed_runtime_count > 0:
+        alerts.append({"code": "runtime_failed", "severity": "critical", "message": "存在需要重新协调的沙箱运行时。"})
+    return alerts
+
+
 def percentile(values: list[float], quantile: float) -> float | None:
     if not values:
         return None

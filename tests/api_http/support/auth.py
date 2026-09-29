@@ -97,11 +97,11 @@ def set_test_auth_code(
     code: str,
     expired: bool = False,
 ) -> None:
-    """Make a DB-backed CAPTCHA/SMS code deterministic for a black-box test.
+    """Make a DB-backed CAPTCHA/email code deterministic for a black-box test.
 
     The HTTP route still generates, stores, consumes and deletes the real
     MySQL row.  Only the opaque hash is replaced in the isolated test DB so a
-    test does not need OCR or a real SMS delivery channel.
+    test does not need OCR or a real email delivery channel.
     """
     code_hash = hashlib.sha256(code.strip().casefold().encode("utf-8")).hexdigest()
     expires_expression = (

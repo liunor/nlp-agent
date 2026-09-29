@@ -82,24 +82,24 @@ class PasswordReset(BaseModel):
 class UserCreateWithRole(UserCreate):
     """Schema for admin creating a user with role assignment."""
 
-    role_codes: list[str] = Field(default_factory=list)
+    role_codes: list[str] = Field(default_factory=list, max_length=4)
 
 
 class UserRegister(BaseModel):
-    """Schema for self-service phone registration."""
+    """Schema for self-service email registration."""
 
-    phone_number: str = Field(..., min_length=5, max_length=20, pattern=r"^\+?\d[\d\s-]*$")
-    sms_code: str = Field(..., min_length=4, max_length=8)
+    email: str = Field(..., min_length=5, max_length=254)
+    email_code: str = Field(..., min_length=4, max_length=8)
     password: str = Field(..., min_length=8, max_length=128)
     display_name: Optional[str] = Field(None, min_length=1, max_length=128)
     captcha_id: str = Field(..., min_length=1)
     captcha_code: str = Field(..., min_length=1, max_length=10)
 
 
-class SmsCodeRequest(BaseModel):
-    """Schema for requesting an SMS verification code."""
+class EmailCodeRequest(BaseModel):
+    """Schema for requesting an email verification code."""
 
-    phone_number: str = Field(..., min_length=5, max_length=20, pattern=r"^\+?\d[\d\s-]*$")
+    email: str = Field(..., min_length=5, max_length=254)
     captcha_id: str = Field(..., min_length=1)
     captcha_code: str = Field(..., min_length=1, max_length=10)
 
@@ -107,4 +107,4 @@ class SmsCodeRequest(BaseModel):
 class UserRoleUpdate(BaseModel):
     """Schema for assigning/replacing user roles (admin only)."""
 
-    role_codes: list[str] = Field(..., min_length=1)
+    role_codes: list[str] = Field(default_factory=list, max_length=4)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import re
 from typing import Any
@@ -87,6 +88,39 @@ def operation_matches(operation: Operation, *, method: str, path: str) -> bool:
         cursor = match.end()
     pattern_parts.append(re.escape(operation.path[cursor:]))
     return re.fullmatch("".join(pattern_parts), path) is not None
+
+
+def observed_operation_keys(
+    operations: Iterable[Operation],
+    observed_requests: Iterable[tuple[str, str, str]],
+) -> set[tuple[str, str, str]]:
+    """Assign each observed request to its most specific route template."""
+
+    operation_list = tuple(operations)
+    covered: set[tuple[str, str, str]] = set()
+    for service, method, path in observed_requests:
+        matches = [
+            operation
+            for operation in operation_list
+            if operation.service == service
+            and operation_matches(operation, method=method, path=path)
+        ]
+        if matches:
+            covered.add(max(matches, key=_operation_specificity).key)
+    return covered
+
+
+def _operation_specificity(operation: Operation) -> tuple[int, int, int, int]:
+    placeholders = list(re.finditer(r"\{[^}:]+(?::path)?\}", operation.path))
+    literal_path = re.sub(r"\{[^}:]+(?::path)?\}", "", operation.path)
+    literal_segments = sum(bool(segment) for segment in literal_path.split("/"))
+    has_path_converter = any(converter == "path" for _, converter in operation.path_converters)
+    return (
+        literal_segments,
+        len(literal_path),
+        -len(placeholders),
+        -int(has_path_converter),
+    )
 
 
 def _path_converters(value: Any) -> tuple[tuple[str, str], ...]:

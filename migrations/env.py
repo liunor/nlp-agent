@@ -13,11 +13,14 @@ from dotenv import load_dotenv
 
 from server.infrastructure.mysql.base import Base
 from server.infrastructure.mysql import models  # noqa: F401
+from server.quota import models as quota_models  # noqa: F401
 
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Alembic can run in-process in tests and operational tooling. Do not
+    # disable loggers that the host application already configured.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # ``alembic`` is commonly invoked directly from the project root.  In that
 # mode pydantic-settings is not involved, so load the same local configuration

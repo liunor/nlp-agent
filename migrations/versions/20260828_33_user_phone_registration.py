@@ -7,7 +7,7 @@ columns, so the migration is idempotent: it inspects the live table and only
 adds what is missing.
 """
 
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 
@@ -24,7 +24,7 @@ def _existing_columns() -> set[str]:
 
 
 def upgrade() -> None:
-    columns = _existing_columns()
+    columns = set() if context.is_offline_mode() else _existing_columns()
     if "phone_number" not in columns:
         op.add_column(
             "nlp_users",
@@ -45,7 +45,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    columns = _existing_columns()
+    columns = (
+        {"phone_number", "registration_source"}
+        if context.is_offline_mode()
+        else _existing_columns()
+    )
     if "registration_source" in columns:
         op.drop_column("nlp_users", "registration_source")
     if "phone_number" in columns:

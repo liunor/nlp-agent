@@ -110,6 +110,22 @@ def render_report(report: EvaluationReport, telemetry: dict[str, TraceMetrics], 
     else:
         lines.extend(["", "Observed trace / model metrics: unavailable (no matching records in telemetry database)."])
 
+    if "academic_search_recall" in report.metrics:
+        lines.extend(
+            [
+                "",
+                "Academic search quality",
+                _table(
+                    ["search recall", "false positive rate", "citation integrity"],
+                    [[
+                        _pct(report.metrics.get("academic_search_recall")),
+                        _pct(report.metrics.get("academic_false_positive_rate")),
+                        _pct(report.metrics.get("citation_integrity_rate")),
+                    ]],
+                ),
+            ]
+        )
+
     tools: dict[str, list[tuple[Any, int]]] = defaultdict(list)
     for item in results:
         for call in item.tool_calls:

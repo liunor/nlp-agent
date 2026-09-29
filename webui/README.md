@@ -46,6 +46,22 @@ FastAPI should run at `http://127.0.0.1:8765`; Vite runs at
 For a production-style local run, build first and start FastAPI. The backend
 serves `webui/dist` at `/` according to `configs/agent_config.yaml`.
 
+To review the monitor with synthetic data, run this from the project root
+after the MySQL migrations have been applied:
+
+```powershell
+uv run python scripts/seed_monitor_demo.py --count 96
+```
+
+This creates only disabled demo principals and rows marked
+`monitor-demo-v1`; it does not create code, prompts, or model output. It also
+seeds the sandbox capacity trend when `NLP_AGENT_REDIS_URL` is configured.
+Remove only the demo rows with:
+
+```powershell
+uv run python scripts/seed_monitor_demo.py --clear
+```
+
 ## Verification
 
 ```powershell
