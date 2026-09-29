@@ -35,6 +35,7 @@ from gateway.contracts import (
     ResourceNotFoundError,
     SubmitTurnRequest,
     TurnConflictError,
+    WhiteboardLibraryInUseError,
 )
 from gateway.core import BackendGateway
 from server.infrastructure.mysql.models import ClassroomModel
@@ -61,6 +62,7 @@ from server.session.summary import summary_sweep_loop
 from server.web.contracts import (
     CreateSessionBody,
     CreateWhiteboardLibraryBody,
+    RenameWhiteboardLibraryBody,
     RenameSessionBody,
     LoginBody,
     ReplaceUserRolesBody,
@@ -3104,6 +3106,16 @@ def create_app(
             detail=str(error),
         )
 
+    @app.exception_handler(WhiteboardLibraryInUseError)
+    async def whiteboard_library_in_use_error(request: Request, error: WhiteboardLibraryInUseError):
+        return _problem(
+            request,
+            status_code=status.HTTP_409_CONFLICT,
+            code="whiteboard_library_in_use",
+            title="素材正在被教材使用",
+            detail=f"该素材正在被 {error.reference_count} 个教材页面使用，请先移除教材引用后再删除。",
+        )
+
     @app.get("/api/v1/teacher/goals/{workspace_id}", tags=["teacher"])
     async def get_teacher_goals(workspace_id: str, request: Request, principal: Principal):
         return await teacher_service.goals(principal, request.app.state.gateway, workspace_id)
@@ -3190,6 +3202,30 @@ def create_app(
             elements=body.elements,
         )
         return {"item": item}
+
+    @app.patch("/api/v1/whiteboard/library/{item_id}", tags=["whiteboard"])
+    async def rename_whiteboard_library_item(
+        item_id: str,
+        body: RenameWhiteboardLibraryBody,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        item = await request.app.state.gateway.rename_whiteboard_library_item(
+            principal,
+            item_id,
+            name=body.name,
+        )
+        return {"item": item}
+
+    @app.delete("/api/v1/whiteboard/library/{item_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["whiteboard"])
+    async def delete_whiteboard_library_item(
+        item_id: str,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ) -> None:
+        await request.app.state.gateway.delete_whiteboard_library_item(principal, item_id)
 
     @app.get("/api/v1/teacher/book/{workspace_id}/navigation", tags=["teacher"])
     async def get_teacher_book_navigation(workspace_id: str, request: Request, principal: Principal):

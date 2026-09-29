@@ -23,7 +23,7 @@ const tools: Array<{
   { id: "learning", label: "学习记录", buttonLabel: "打开学习记录工具", icon: BookOpenCheck, description: "查看本次对话的学习目标、概念与进度。" },
   { id: "book", label: "知识教材", buttonLabel: "打开知识教材工具", icon: BookOpenText, description: "阅读教师发布的知识点教材与实操内容。" },
   { id: "sandbox", label: "代码沙箱", buttonLabel: "打开代码沙箱工具", icon: Code2, description: "为当前登录用户准备独立的代码运行环境。" },
-  { id: "whiteboard", label: "白板", buttonLabel: "打开白板工具", icon: Pencil, description: "使用 Excalidraw 绘制结构化草图与图表。" },
+  { id: "whiteboard", label: "白板", buttonLabel: "打开白板工具", icon: Pencil, description: "查看教材关联图画并在白板中继续绘制。" },
 ];
 
 type SandboxEditorTheme = "light" | "dark" | "high-contrast";

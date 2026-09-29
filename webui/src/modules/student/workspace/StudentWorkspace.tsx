@@ -9,7 +9,6 @@ import { LearningContextBar } from "@/modules/student/components/LearningContext
 import { LearningPanel } from "@/modules/student/components/LearningPanel";
 import { KnowledgeBookPanel } from "@/modules/student/components/KnowledgeBookPanel";
 import { readKnowledgeBookUrl } from "@/modules/student/components/knowledgeBook";
-import type { KnowledgeBookContext } from "@/shared/types";
 import { LoginDialog } from "@/modules/student/components/LoginDialog";
 import { MessageList } from "@/modules/student/components/MessageList";
 import { SettingsDialog } from "@/modules/student/components/SettingsDialog";
@@ -19,7 +18,7 @@ import { ToolDock, type SandboxSourceRequest, type ToolDockTabDropPosition, type
 import type { FilesPanelPreviewRequest } from "@/modules/student/components/FilesPanel";
 import { useStudentWorkspace } from "@/modules/student/workspace/public";
 import { useSessionScrollRestoration } from "@/modules/student/workspace/hooks/useSessionScrollRestoration";
-import type { CourseTopic, LearningBookFile, TeacherCatalog } from "@/shared/types";
+import type { CourseTopic, KnowledgeBookContext, LearningBookFile, TeacherCatalog, WhiteboardLibraryItem } from "@/shared/types";
 
 const WhiteboardPanel = lazy(() => import("@/modules/student/components/whiteboard/WhiteboardPanel").then(({ WhiteboardPanel: panel }) => ({ default: panel })));
 
@@ -39,6 +38,7 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   const [filesPreview, setFilesPreview] = useState<FilesPanelPreviewRequest | null>(null);
   const [filesPreviewWorkspaceId, setFilesPreviewWorkspaceId] = useState(workspace.workspaceId);
   const [filesPreviewUserId, setFilesPreviewUserId] = useState<string | null>(workspace.authSession?.user_id ?? null);
+  const [whiteboardPresentRequest, setWhiteboardPresentRequest] = useState<{ requestId: string; assetId: string; elements: unknown[]; name: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
@@ -106,6 +106,10 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
     setOpenTools((current) => current.includes("sandbox") ? current : [...current, "sandbox"]);
     setActiveTool("sandbox");
   }, [onOpenInSandbox]);
+  const openWhiteboardAsset = useCallback((item: WhiteboardLibraryItem) => {
+    setWhiteboardPresentRequest({ requestId: `${item.id}:${Date.now()}`, assetId: item.id, elements: item.elements, name: item.name || "白板图画" });
+    openTool("whiteboard");
+  }, [openTool]);
   const openKnowledgeBookFile = useCallback((file: LearningBookFile) => {
     setFilesPreview({ id: file.id, name: file.display_name, url: file.preview_url, mediaType: file.media_type, bytes: file.size_bytes });
     setFilesPreviewWorkspaceId(workspace.workspaceId);
@@ -213,8 +217,8 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
         void workspace.send("请解释以下 Python 代码：\n\n```python\n" + source + "\n```");
       }}
       learningPanel={<LearningPanel open onClose={() => closeTool("learning")} title={activeTitle} context={workspace.preferences.context} meta={workspace.activeMeta} messages={workspace.messages} catalog={learningCatalog} onPrompt={(content) => { setToolDockOpen(false); setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(content); }} onMeta={(patch) => { if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, patch); }} />}
-      knowledgeBookPanel={<KnowledgeBookPanel workspaceId={workspace.workspaceId} onAskNova={statusOnline && !workspace.isRunning ? (prompt: string, context: KnowledgeBookContext) => { setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(prompt, undefined, context); } : undefined} onOpenInSandbox={openCodeInSandbox} onOpenFilePreview={openKnowledgeBookFile} />}
-      whiteboardPanel={<Suspense fallback={<div className="whiteboard-loading" role="status">正在加载白板…</div>}><WhiteboardPanel userId={workspace.authSession?.user_id ?? null} canManageLibrary={workspace.authSession?.roles?.some((role) => role === "teacher" || role === "developer") ?? false} /></Suspense>}
+      knowledgeBookPanel={<KnowledgeBookPanel workspaceId={workspace.workspaceId} onAskNova={statusOnline && !workspace.isRunning ? (prompt: string, context: KnowledgeBookContext) => { setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(prompt, undefined, context); } : undefined} onOpenInSandbox={openCodeInSandbox} onOpenFilePreview={openKnowledgeBookFile} onViewWhiteboard={openWhiteboardAsset} />}
+      whiteboardPanel={<Suspense fallback={<div className="whiteboard-loading" role="status">正在加载白板…</div>}><WhiteboardPanel userId={workspace.authSession?.user_id ?? null} canManageLibrary={workspace.authSession?.roles?.some((role) => role === "teacher" || role === "developer" || role === "admin") ?? false} presentRequest={whiteboardPresentRequest} /></Suspense>}
       sandboxSource={sandboxSource}
       filesUserId={workspace.authSession?.user_id ?? null}
       filesWorkspaceId={workspace.workspaceId}

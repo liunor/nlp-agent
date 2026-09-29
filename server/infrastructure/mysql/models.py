@@ -433,7 +433,6 @@ class KnowledgeBookAssetModel(TimestampedModel, Base):
     size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
 
-
 class KnowledgeBookFileModel(TimestampedModel, Base):
     """Text/code files embedded in teacher-authored knowledge-book pages."""
 
@@ -484,7 +483,6 @@ class KnowledgeBookFileRefModel(Base):
         DATETIME(fsp=6), nullable=False, server_default=func.utc_timestamp(6)
     )
 
-
 class WhiteboardLibraryItemModel(TimestampedModel, Base):
     """Globally shared Excalidraw library entries created by teaching roles."""
 
@@ -492,6 +490,7 @@ class WhiteboardLibraryItemModel(TimestampedModel, Base):
     __table_args__ = (Index("ix_nlp_whiteboard_library_created", "created_at", "id"),)
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    asset_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     item_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_by: Mapped[str] = mapped_column(UUID, nullable=False)

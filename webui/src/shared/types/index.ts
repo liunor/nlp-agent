@@ -21,6 +21,7 @@ export interface AuthSession {
 
 export interface WhiteboardLibraryItem {
   id: string;
+  asset_code: string;
   status: "published" | "unpublished";
   elements: unknown[];
   created: number;

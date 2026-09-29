@@ -425,7 +425,7 @@ describe("WhiteboardPanel", () => {
     await waitFor(() => expect(screen.getByText("白板素材区初始化失败，已尽力恢复，请刷新白板后重试。")).toBeInTheDocument());
     expect(updateLibrary).toHaveBeenCalledTimes(WHITEBOARD_LIBRARY_ASSETS.length + 1);
     expect(fetchMock).toHaveBeenCalledTimes(WHITEBOARD_LIBRARY_ASSETS.length);
-    expect(updateLibrary.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ merge: false }));
+    expect(updateLibrary.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ merge: false }));
   });
 
   it("retries bundled library loading after a failed attempt", async () => {

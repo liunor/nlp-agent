@@ -1,14 +1,16 @@
 import { ChevronDown, ChevronRight, Menu, PanelLeftClose, PanelRightClose, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 
 import { api } from "@/platform/http/api";
-import type { KnowledgeBookContext, LearningBookFile, LearningBookNavigationItem, LearningBookPage } from "@/shared/types";
+import type { KnowledgeBookContext, LearningBookFile, LearningBookNavigationItem, LearningBookPage, WhiteboardLibraryItem } from "@/shared/types";
+import { normalizeWhiteboardLibraryItem } from "./whiteboard/whiteboardLibraryOverlay";
 
 import { demoLearningBookNavigation, demoLearningBookPages } from "./knowledgeBookDemo";
 import { indexMarkdownHeadings, readKnowledgeBookUrl, replaceKnowledgeBookUrl } from "./knowledgeBook";
 import { KnowledgeBookPromptComposer } from "./KnowledgeBookPromptComposer";
 import { MarkdownContent, type MarkdownCodeActions } from "./MarkdownContent";
+import { parseKnowledgeBookWhiteboardHref, renderKnowledgeBookWhiteboardRefs } from "./whiteboard/knowledgeBookRefs";
 
 interface TopicGroup {
   id: string;
@@ -116,11 +118,12 @@ function keepFocusInDrawer(event: ReactKeyboardEvent<HTMLElement>) {
   }
 }
 
-export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, onOpenFilePreview }: { workspaceId: string; onAskNova?: (prompt: string, context: KnowledgeBookContext) => void; onOpenInSandbox?: (code: string, language: string) => void; onOpenFilePreview?: (file: LearningBookFile) => void }) {
+export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, onOpenFilePreview, onViewWhiteboard }: { workspaceId: string; onAskNova?: (prompt: string, context: KnowledgeBookContext) => void; onOpenInSandbox?: (code: string, language: string) => void; onOpenFilePreview?: (file: LearningBookFile) => void; onViewWhiteboard?: (item: WhiteboardLibraryItem) => void }) {
   const [initialViewState] = useState(() => readBookViewState(workspaceId));
   const [initialDeepLink] = useState(() => readKnowledgeBookUrl(window.location.search));
   const demoMode = initialDeepLink.demo;
   const [navigation, setNavigation] = useState<LearningBookNavigationItem[]>([]);
+  const [whiteboardLibrary, setWhiteboardLibrary] = useState<WhiteboardLibraryItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialDeepLink.pointId ?? initialViewState.selectedId);
   const [page, setPage] = useState<LearningBookPage | null>(null);
   const [loadingNavigation, setLoadingNavigation] = useState(true);
@@ -153,19 +156,22 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
   const headingIndexRef = useRef({ headings: [], headingIds: [], headingIdsByLine: {} } as ReturnType<typeof indexMarkdownHeadings>);
   const onAskNovaRef = useRef(onAskNova);
   const onOpenInSandboxRef = useRef(onOpenInSandbox);
+  const onViewWhiteboardRef = useRef(onViewWhiteboard);
   const topicGroups = useMemo(() => groupNavigation(navigation), [navigation]);
   const orderedNavigation = useMemo(() => orderNavigation(navigation), [navigation]);
   const visiblePage = page?.knowledge_point_id === selectedId && (demoMode || page.workspace_id === workspaceId) ? page : null;
-  const headingIndex = useMemo(() => indexMarkdownHeadings(visiblePage?.content_markdown ?? ""), [visiblePage?.content_markdown]);
+  const visibleMarkdown = useMemo(() => renderKnowledgeBookWhiteboardRefs(visiblePage?.content_markdown ?? ""), [visiblePage?.content_markdown]);
   const bookFileLinks = useMemo(() => Object.fromEntries((visiblePage?.files ?? []).map((file) => [file.token.toLowerCase(), file])), [visiblePage?.files]);
-  const markdownHasTitle = useMemo(() => /^(?: {0,3})#(?!#)[ \t]+.+/m.test(visiblePage?.content_markdown ?? ""), [visiblePage?.content_markdown]);
+  const headingIndex = useMemo(() => indexMarkdownHeadings(visibleMarkdown), [visibleMarkdown]);
+  const markdownHasTitle = useMemo(() => /^(?: {0,3})#(?!#)[ \t]+.+/m.test(visibleMarkdown), [visibleMarkdown]);
   useEffect(() => {
     visiblePageRef.current = visiblePage;
     activeHeadingIdRef.current = activeHeadingId;
     headingIndexRef.current = headingIndex;
     onAskNovaRef.current = onAskNova;
     onOpenInSandboxRef.current = onOpenInSandbox;
-  }, [activeHeadingId, headingIndex, onAskNova, onOpenInSandbox, visiblePage]);
+    onViewWhiteboardRef.current = onViewWhiteboard;
+  }, [activeHeadingId, headingIndex, onAskNova, onOpenInSandbox, onViewWhiteboard, visiblePage]);
   const canAskNova = Boolean(onAskNova);
   const canOpenInSandbox = Boolean(onOpenInSandbox);
   const codeActions = useMemo<MarkdownCodeActions>(() => {
@@ -262,6 +268,23 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
     const timer = window.setTimeout(() => void loadNavigation(), 0);
     return () => window.clearTimeout(timer);
   }, [loadNavigation]);
+
+  useEffect(() => {
+    if (demoMode) return undefined;
+    let current = true;
+    if (typeof api.getWhiteboardLibrary !== "function") return () => { current = false; };
+    void api.getWhiteboardLibrary().then((result) => {
+      if (current) {
+        const items = result.items
+          .map(normalizeWhiteboardLibraryItem)
+          .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published");
+        setWhiteboardLibrary(items);
+      }
+    }).catch(() => {
+      if (current) setWhiteboardLibrary([]);
+    });
+    return () => { current = false; };
+  }, [demoMode]);
 
   useEffect(() => {
     replaceKnowledgeBookUrl({ pointId: selectedId });
@@ -378,6 +401,27 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
   }, [rightOpen]);
 
   const selectedIndex = orderedNavigation.findIndex((item) => item.knowledge_point_id === selectedId);
+  const openWhiteboardReference = async (ref: { asset_id: string; asset_code?: string; name: string }) => {
+    try {
+      const result = await api.getWhiteboardLibrary();
+      const items = result.items
+        .map(normalizeWhiteboardLibraryItem)
+        .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published");
+      setWhiteboardLibrary(items);
+      const item = items.find((candidate) => candidate.id === ref.asset_id || (ref.asset_code && candidate.asset_code === ref.asset_code));
+      if (item) onViewWhiteboardRef.current?.(item);
+    } catch {
+      // Do not re-present a stale textbook reference when the library cannot be revalidated.
+    }
+  };
+  const renderWhiteboardLink = (href: string, label: string): ReactNode => {
+    const ref = parseKnowledgeBookWhiteboardHref(href);
+    if (!ref) return <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true">{label}</span>;
+    const item = whiteboardLibrary.find((candidate) => candidate.id === ref.asset_id || (ref.asset_code && candidate.asset_code === ref.asset_code));
+    const name = item?.name?.trim() || ref.name;
+    if (!item) return <button type="button" disabled className="knowledge-book-whiteboard-anchor unavailable" data-whiteboard-anchor="true" title={`素材不可用：${name}`} aria-label={`${name}（素材不可用）`}>图<span className="sr-only">素材不可用</span></button>;
+    return <button type="button" className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true" title={`查看图画：${name}`} aria-label={`查看图画 ${name}`} onClick={() => void openWhiteboardReference(ref)}><span aria-hidden="true">图</span><span className="sr-only">查看图画{name}</span></button>;
+  };
   const updateSelectionPrompt = () => {
     window.setTimeout(() => {
       if (!onAskNova || !visiblePage) return;
@@ -472,7 +516,7 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
         <div className="knowledge-book-page-scroll" ref={contentRef} onScroll={handlePageScroll}>
           {loadingPage ? <div className="knowledge-book-state"><span className="spin">⟳</span><p>正在打开知识点……</p></div> : visiblePage ? <article ref={articleRef} tabIndex={-1} className="knowledge-book-article" onPointerUp={updateSelectionPrompt} onKeyUp={updateSelectionPrompt}>
             {!markdownHasTitle && <header className="knowledge-book-fallback-title"><h1>{visiblePage.title}</h1></header>}
-            <MarkdownContent headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} codeActions={codeActions} bookFileLinks={bookFileLinks} onPreviewBookFile={onOpenFilePreview}>{visiblePage.content_markdown}</MarkdownContent>
+            <MarkdownContent headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} codeActions={codeActions} bookFileLinks={bookFileLinks} onPreviewBookFile={onOpenFilePreview} whiteboardLink={renderWhiteboardLink}>{visibleMarkdown}</MarkdownContent>
             <footer className="knowledge-book-page-nav">
               <button type="button" disabled={selectedIndex <= 0} onClick={() => selectKnowledgePoint(orderedNavigation[selectedIndex - 1].knowledge_point_id)}>上一节</button>
               <button type="button" disabled={selectedIndex < 0 || selectedIndex >= orderedNavigation.length - 1} onClick={() => selectKnowledgePoint(orderedNavigation[selectedIndex + 1].knowledge_point_id)}>下一节</button>
