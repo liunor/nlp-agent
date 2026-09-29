@@ -20,7 +20,10 @@ from server.rbac.catalog import permission_id, permission_row, role_id
 def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260927_45_merge_storage_heads"]
+    assert scripts.get_heads() == ["20260929_46_transcript_time"]
+    assert scripts.get_revision("20260929_46_transcript_time").down_revision == (
+        "20260927_45_merge_storage_heads"
+    )
     assert scripts.get_revision("20260920_58_knowledge_book_files").down_revision == (
         "20260916_57_rbac_menu_cleanup"
     )
