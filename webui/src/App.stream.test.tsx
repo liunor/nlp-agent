@@ -303,6 +303,29 @@ describe("student stream rendering", () => {
     await waitFor(() => expect(stream.ensureSandboxLease).toHaveBeenCalledTimes(1));
   });
 
+  it("keeps the sandbox execution controls disabled while the main chat is generating", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开代码沙箱工具" }));
+    const runButton = screen.getByRole("button", { name: "运行代码" });
+    expect(runButton).not.toBeDisabled();
+
+    const input = screen.getByRole("textbox", { name: "学习问题" });
+    fireEvent.change(input, { target: { value: "生成一段说明" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getAllByText("生成一段说明").some((node) => node.classList.contains("user-message"))).toBe(true));
+    act(() => {
+      stream.emit(event("command.ack", { accepted: true }));
+      stream.emit(event("chat.started"));
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "主对话生成中" })).toBeDisabled());
+
+    act(() => stream.emit(event("chat.completed", { content: "完成" })));
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行代码" })).not.toBeDisabled());
+  });
+
   it("opens lesson Python code in the real sandbox while retaining the book tab", async () => {
     stream.ensureSandboxLease.mockClear();
     stream.getLearningBookNavigation.mockResolvedValue({

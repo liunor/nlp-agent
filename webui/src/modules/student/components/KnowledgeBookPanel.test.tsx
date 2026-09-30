@@ -150,6 +150,30 @@ describe("KnowledgeBookPanel", () => {
     await waitFor(() => expect(onViewWhiteboard).toHaveBeenCalledWith(item));
   });
 
+  it("keeps the reader position when opening a referenced whiteboard", async () => {
+    const item: WhiteboardLibraryItem = { id: "asset-1", asset_code: "WB-000001", status: "published", created: 1, name: "注意力计算过程", elements: [{ id: "element-1", type: "rectangle" }] };
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '<!-- nova-whiteboard asset="asset-1" name="注意力计算过程" -->\n\n正文' } });
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [item] });
+    const pageScrollTop = 420;
+    let pageScroll: HTMLDivElement | null = null;
+    const onViewWhiteboard = vi.fn(() => {
+      // Opening the dock changes the parent layout. This models the browser
+      // resetting the scroll container during that transition.
+      if (pageScroll) pageScroll.scrollTop = 0;
+    });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onViewWhiteboard={onViewWhiteboard} />);
+
+    const button = await screen.findByRole("button", { name: "查看图画 注意力计算过程" });
+    pageScroll = document.querySelector(".knowledge-book-page-scroll");
+    if (!pageScroll) throw new Error("knowledge-book scroll container was not rendered");
+    Object.defineProperty(pageScroll, "scrollTop", { configurable: true, value: pageScrollTop, writable: true });
+    await userEvent.setup().click(button);
+
+    await waitFor(() => expect(onViewWhiteboard).toHaveBeenCalledWith(item));
+    await waitFor(() => expect(pageScroll?.scrollTop).toBe(pageScrollTop));
+  });
+
   it("renders the published marker format used by the teacher editor as a visible circle", async () => {
     const item: WhiteboardLibraryItem = { id: "193c7240-ee91-4570-981c-a3db65c8deba", asset_code: "WB-193C7240", status: "published", created: 1, name: "transformer", elements: [] };
     vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '代码\n```python\nbreak\n```\n<!-- nova-whiteboard asset="193c7240-ee91-4570-981c-a3db65c8deba" code="WB-193C7240" name="transformer" -->\n\n正文' } });

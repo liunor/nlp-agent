@@ -17,7 +17,7 @@ import { api as httpApi } from "@/platform/http/api";
 import { TextInputDialog } from "@/shared/ui/TextInputDialog";
 import type { WhiteboardLibraryItem } from "@/shared/types";
 import { withoutEmbeddableElements, type StoredWhiteboardScene } from "./storage";
-import { cloneWhiteboardAssetElements, findNearestWhiteboardAssetOrigin, findPresentedWhiteboardAsset, type WhiteboardPresentationElement } from "./whiteboardPresentation";
+import { cloneWhiteboardAssetElements, findNearestWhiteboardAssetOrigin, findPresentedWhiteboardAsset, getPresentableWhiteboardElements, type WhiteboardPresentationElement } from "./whiteboardPresentation";
 import { WhiteboardHelpDialog, WhiteboardHelpMenuItem, WhiteboardHelpTrigger } from "./WhiteboardHelp";
 import { formatWhiteboardDeleteError } from "./whiteboardLibraryMessages";
 import { WHITEBOARD_LIBRARY_ASSETS, whiteboardLibraryUrl } from "./libraryAssets";
@@ -47,6 +47,7 @@ export interface WhiteboardLibraryLoadError {
 }
 
 const UNSUPPORTED_LIBRARY_ELEMENT_TYPES = new Set(["image", "iframe", "embeddable"]);
+const PRESENTATION_FIT_SETTLE_MS = 320;
 
 type LoadedWhiteboardLibrary = {
   asset: typeof WHITEBOARD_LIBRARY_ASSETS[number];
@@ -124,6 +125,7 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
   const [renameMenuHost, setRenameMenuHost] = useState<HTMLElement | null>(null);
   const [selectedLibraryItemId, setSelectedLibraryItemId] = useState<string | null>(null);
   const [libraryItemsVersion, setLibraryItemsVersion] = useState(0);
+  const [apiReady, setApiReady] = useState(false);
   const hoveredLibraryUnit = useRef<HTMLElement | null>(null);
   const publishingLibraryIds = useRef(new Set<string>());
   const sharedLibraryItems = useRef(new Map<string, LibraryItems[number]>());
@@ -348,6 +350,7 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
 
   const handleExcalidrawAPI = useCallback((api: ExcalidrawImperativeAPI) => {
     excalidrawApi.current = api;
+    setApiReady(true);
     if (libraryLoadStarted.current) return;
     libraryLoadStarted.current = true;
 
@@ -507,15 +510,26 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
   useEffect(() => {
     const api = excalidrawApi.current;
     if (!api || !presentRequest?.elements.length) return;
-    const source = withoutEmbeddableElements(presentRequest.elements as ExcalidrawElement[]);
+    const source = getPresentableWhiteboardElements(withoutEmbeddableElements(presentRequest.elements as ExcalidrawElement[]) as unknown as WhiteboardPresentationElement[]) as unknown as ExcalidrawElement[];
     if (!source.length) return;
     const current = api.getSceneElements();
-    const currentPresentation = current as unknown as WhiteboardPresentationElement[];
+    const currentPresentation = getPresentableWhiteboardElements(current as unknown as WhiteboardPresentationElement[]);
     const existing = findPresentedWhiteboardAsset(currentPresentation, presentRequest.assetId);
+    const scheduleFocus = (elements: WhiteboardPresentationElement[]) => {
+      const focus = (animate: boolean) => {
+        if (excalidrawApi.current !== api) return;
+        api.scrollToContent(elements as unknown as ExcalidrawElement[], { fitToContent: true, animate });
+      };
+      const frame = window.requestAnimationFrame(() => focus(true));
+      const settle = window.setTimeout(() => focus(false), PRESENTATION_FIT_SETTLE_MS);
+      return () => {
+        window.cancelAnimationFrame(frame);
+        window.clearTimeout(settle);
+      };
+    };
     if (existing.length > 0) {
       api.updateScene({ appState: { selectedElementIds: Object.fromEntries(existing.map((element) => [element.id, true])) } });
-      api.scrollToContent(existing as unknown as ExcalidrawElement[], { fitToContent: true, animate: true });
-      return;
+      return scheduleFocus(existing);
     }
     const appState = api.getAppState();
     const zoom = Math.max(0.1, appState.zoom.value || 1);
@@ -531,8 +545,8 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
       appState: { selectedElementIds: Object.fromEntries(presented.map((element) => [element.id, true])) },
       captureUpdate: CaptureUpdateAction.IMMEDIATELY,
     });
-    api.scrollToContent(presented as unknown as ExcalidrawElement[], { fitToContent: true, animate: true });
-  }, [presentRequest]);
+    return scheduleFocus(presented);
+  }, [apiReady, presentRequest]);
 
   const handleSceneChange = useCallback((elements: readonly ExcalidrawElement[], appState: AppState, files: BinaryFiles) => {
     const safeElements = elements.filter((element) => element.type !== "embeddable");

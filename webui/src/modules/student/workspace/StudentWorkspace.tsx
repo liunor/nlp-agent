@@ -24,6 +24,7 @@ const WhiteboardPanel = lazy(() => import("@/modules/student/components/whiteboa
 
 export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigateTo?: (path: string) => void; onOpenInSandbox?: (code: string, language: string) => void } = {}) {
   const workspace = useStudentWorkspace();
+  const sendWorkspace = workspace.send;
   const learningContext = workspace.preferences.context;
   const setLearningContext = workspace.setLearningContext;
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -98,18 +99,23 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
     });
   };
   const openCodeInSandbox = useCallback((code: string, language: string) => {
-    if (!/^(?:python|pytorch|py)$/i.test(language)) return;
+    if (!statusOnline || workspace.isRunning || !/^(?:python|pytorch|py)$/i.test(language)) return;
     onOpenInSandbox?.(code, language);
     setSandboxSource((current) => ({ source: code, requestId: (current?.requestId ?? 0) + 1 }));
     setToolDockOpen(true);
     setToolMenuOpen(false);
     setOpenTools((current) => current.includes("sandbox") ? current : [...current, "sandbox"]);
     setActiveTool("sandbox");
-  }, [onOpenInSandbox]);
+  }, [onOpenInSandbox, statusOnline, workspace.isRunning]);
   const openWhiteboardAsset = useCallback((item: WhiteboardLibraryItem) => {
     setWhiteboardPresentRequest({ requestId: `${item.id}:${Date.now()}`, assetId: item.id, elements: item.elements, name: item.name || "白板图画" });
     openTool("whiteboard");
   }, [openTool]);
+  const askNovaFromBook = useCallback((prompt: string, context: KnowledgeBookContext) => {
+    setToolDockExpanded(false);
+    setToolMenuOpen(false);
+    void sendWorkspace(prompt, undefined, context);
+  }, [sendWorkspace]);
   const openKnowledgeBookFile = useCallback((file: LearningBookFile) => {
     setFilesPreview({ id: file.id, name: file.display_name, url: file.preview_url, mediaType: file.media_type, bytes: file.size_bytes });
     setFilesPreviewWorkspaceId(workspace.workspaceId);
@@ -217,9 +223,10 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
         void workspace.send("请解释以下 Python 代码：\n\n```python\n" + source + "\n```");
       }}
       learningPanel={<LearningPanel open onClose={() => closeTool("learning")} title={activeTitle} context={workspace.preferences.context} meta={workspace.activeMeta} messages={workspace.messages} catalog={learningCatalog} onPrompt={(content) => { setToolDockOpen(false); setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(content); }} onMeta={(patch) => { if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, patch); }} />}
-      knowledgeBookPanel={<KnowledgeBookPanel workspaceId={workspace.workspaceId} onAskNova={statusOnline && !workspace.isRunning ? (prompt: string, context: KnowledgeBookContext) => { setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(prompt, undefined, context); } : undefined} onOpenInSandbox={openCodeInSandbox} onOpenFilePreview={openKnowledgeBookFile} onViewWhiteboard={openWhiteboardAsset} />}
+      knowledgeBookPanel={<KnowledgeBookPanel workspaceId={workspace.workspaceId} onAskNova={statusOnline && !workspace.isRunning ? askNovaFromBook : undefined} onOpenInSandbox={statusOnline && !workspace.isRunning ? openCodeInSandbox : undefined} onOpenFilePreview={openKnowledgeBookFile} onViewWhiteboard={openWhiteboardAsset} />}
       whiteboardPanel={<Suspense fallback={<div className="whiteboard-loading" role="status">正在加载白板…</div>}><WhiteboardPanel userId={workspace.authSession?.user_id ?? null} canManageLibrary={workspace.authSession?.roles?.some((role) => role === "teacher" || role === "developer" || role === "admin") ?? false} presentRequest={whiteboardPresentRequest} /></Suspense>}
       sandboxSource={sandboxSource}
+      sandboxExecutionDisabled={workspace.isRunning}
       filesUserId={workspace.authSession?.user_id ?? null}
       filesWorkspaceId={workspace.workspaceId}
       filesPreview={filesPreviewWorkspaceId === workspace.workspaceId && filesPreviewUserId === (workspace.authSession?.user_id ?? null) ? filesPreview : null}
