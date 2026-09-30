@@ -138,7 +138,7 @@ export function WhiteboardLibraryManager({ items, onItemsChange }: {
           >
             <div className="teacher-whiteboard-library-item-info">
               <strong>{item.name || "未命名图画"}</strong>
-              <code title={item.id}>代号：{item.asset_code || item.id}</code>
+              <code>代号：{item.asset_code || item.id}</code>
             </div>
             <div className="teacher-whiteboard-library-item-actions">
               <button type="button" onClick={() => setRenameTarget(item)} disabled={busyId !== null} aria-label={`重命名 ${item.name || "白板图画"}`}>重命名</button>

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 
 import { api } from "@/platform/http/api";
 import { DEFAULT_QUESTION_TYPES, type CourseTopic, type TeacherBookArchiveImportPreview, type TeacherBookAssetInput, type TeacherBookFile, type TeacherBookImportPreview, type TeacherBookNavigationItem, type TeacherBookPage, type TeacherCatalog, type WhiteboardLibraryItem } from "@/shared/types";
-import { normalizeWhiteboardLibraryItem } from "@/modules/student/components/whiteboard/whiteboardLibraryOverlay";
+import { dedupeWhiteboardLibraryItems, normalizeWhiteboardLibraryItem } from "@/modules/student/components/whiteboard/whiteboardLibraryOverlay";
 import { MarkdownContent } from "@/modules/student/components/MarkdownContent";
 import { createUuid } from "@/shared/utils/uuid";
 import { indexMarkdownHeadings } from "@/modules/student/components/knowledgeBook";
@@ -234,9 +234,9 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     setWhiteboardLibraryError("");
     try {
       const result = await api.getWhiteboardLibrary();
-      const items = result.items
+      const items = dedupeWhiteboardLibraryItems(result.items
         .map(normalizeWhiteboardLibraryItem)
-        .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published");
+        .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published"));
       setWhiteboardLibrary(items);
       setSelectedWhiteboardAssetId((current) => items.some((item) => item.id === current) ? current : "");
     } catch (reason) {

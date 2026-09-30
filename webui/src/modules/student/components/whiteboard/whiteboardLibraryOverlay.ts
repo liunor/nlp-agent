@@ -63,6 +63,31 @@ export function getWhiteboardLibraryDisplayName(item: WhiteboardLibraryDisplayIt
   return `未命名图画 · ${code}`;
 }
 
+export function getWhiteboardLibraryElementsFingerprint(elements: readonly unknown[]): string {
+  return JSON.stringify(elements);
+}
+
+/**
+ * Prefer the server-seeded copy of a vendored library item.  Older clients
+ * may have already copied the same item into the shared table with a random
+ * Excalidraw id; those rows have no source_key and would otherwise render as
+ * a second copy of every bundled drawing.
+ */
+export function dedupeWhiteboardLibraryItems<T extends {
+  elements: readonly unknown[];
+  source_key?: unknown;
+}>(items: readonly T[]): T[] {
+  const bundledFingerprints = new Set(
+    items
+      .filter((item) => typeof item.source_key === "string" && item.source_key.trim())
+      .map((item) => getWhiteboardLibraryElementsFingerprint(item.elements)),
+  );
+  return items.filter((item) => {
+    const hasSourceKey = typeof item.source_key === "string" && item.source_key.trim();
+    return Boolean(hasSourceKey) || !bundledFingerprints.has(getWhiteboardLibraryElementsFingerprint(item.elements));
+  });
+}
+
 export function getSingleWhiteboardLibrarySelection<T>(items: readonly T[]): T | null {
   return items.length === 1 ? items[0] : null;
 }
@@ -86,10 +111,11 @@ export function getWhiteboardLibraryItemsRemoved<T extends { id: string }>(
 export function getWhiteboardLibraryItemsToMigrate<T extends {
   elements: readonly unknown[];
   asset_code?: unknown;
-}>(items: readonly T[]): T[] {
+}>(items: readonly T[], skipElementFingerprints: ReadonlySet<string> = new Set()): T[] {
   return items.filter((item) => {
     if (item.elements.length === 0) return false;
-    return !(typeof item.asset_code === "string" && item.asset_code.trim());
+    if (typeof item.asset_code === "string" && item.asset_code.trim()) return false;
+    return !skipElementFingerprints.has(getWhiteboardLibraryElementsFingerprint(item.elements));
   });
 }
 

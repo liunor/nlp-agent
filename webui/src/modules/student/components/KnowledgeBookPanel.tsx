@@ -4,7 +4,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 
 import { api } from "@/platform/http/api";
 import type { KnowledgeBookContext, LearningBookFile, LearningBookNavigationItem, LearningBookPage, WhiteboardLibraryItem } from "@/shared/types";
-import { normalizeWhiteboardLibraryItem } from "./whiteboard/whiteboardLibraryOverlay";
+import { dedupeWhiteboardLibraryItems, normalizeWhiteboardLibraryItem } from "./whiteboard/whiteboardLibraryOverlay";
 
 import { demoLearningBookNavigation, demoLearningBookPages } from "./knowledgeBookDemo";
 import { indexMarkdownHeadings, readKnowledgeBookUrl, replaceKnowledgeBookUrl } from "./knowledgeBook";
@@ -275,9 +275,9 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
     if (typeof api.getWhiteboardLibrary !== "function") return () => { current = false; };
     void api.getWhiteboardLibrary().then((result) => {
       if (current) {
-        const items = result.items
+        const items = dedupeWhiteboardLibraryItems(result.items
           .map(normalizeWhiteboardLibraryItem)
-          .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published");
+          .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published"));
         setWhiteboardLibrary(items);
       }
     }).catch(() => {
@@ -404,9 +404,9 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
   const openWhiteboardReference = async (ref: { asset_id: string; asset_code?: string; name: string }) => {
     try {
       const result = await api.getWhiteboardLibrary();
-      const items = result.items
+      const items = dedupeWhiteboardLibraryItems(result.items
         .map(normalizeWhiteboardLibraryItem)
-        .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published");
+        .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published"));
       setWhiteboardLibrary(items);
       const item = items.find((candidate) => candidate.id === ref.asset_id || (ref.asset_code && candidate.asset_code === ref.asset_code));
       if (item) onViewWhiteboardRef.current?.(item);
