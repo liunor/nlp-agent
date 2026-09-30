@@ -17,7 +17,7 @@ import { api as httpApi } from "@/platform/http/api";
 import { TextInputDialog } from "@/shared/ui/TextInputDialog";
 import type { WhiteboardLibraryItem } from "@/shared/types";
 import { withoutEmbeddableElements, type StoredWhiteboardScene } from "./storage";
-import { cloneWhiteboardAssetElements, findNearestWhiteboardAssetOrigin, findPresentedWhiteboardAsset, getPresentableWhiteboardElements, type WhiteboardPresentationElement } from "./whiteboardPresentation";
+import { cloneWhiteboardAssetElements, findNearestWhiteboardAssetOrigin, findPresentedWhiteboardAsset, getPresentableWhiteboardElements, isPresentedWhiteboardAssetComplete, type WhiteboardPresentationElement } from "./whiteboardPresentation";
 import { WhiteboardHelpDialog, WhiteboardHelpMenuItem, WhiteboardHelpTrigger } from "./WhiteboardHelp";
 import { formatWhiteboardDeleteError } from "./whiteboardLibraryMessages";
 import { WHITEBOARD_LIBRARY_ASSETS, whiteboardLibraryUrl } from "./libraryAssets";
@@ -557,7 +557,7 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
       const current = api.getSceneElements();
       const currentPresentation = getPresentableWhiteboardElements(current as unknown as WhiteboardPresentationElement[]);
       const existing = findPresentedWhiteboardAsset(currentPresentation, presentRequest.assetId);
-      if (existing.length > 0) {
+      if (isPresentedWhiteboardAssetComplete(currentPresentation, presentRequest.assetId, source as unknown as WhiteboardPresentationElement[])) {
         api.updateScene({ appState: { selectedElementIds: Object.fromEntries(existing.map((element) => [element.id, true])) } });
         scheduleFocus(existing);
         return;
@@ -569,10 +569,17 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
         centerX: -appState.scrollX + (viewport?.width ?? 900) / (2 * zoom),
         centerY: -appState.scrollY + (viewport?.height ?? 600) / (2 * zoom),
       };
-      const origin = findNearestWhiteboardAssetOrigin(source as unknown as WhiteboardPresentationElement[], currentPresentation, viewportCenter);
+      const existingIds = new Set(current
+        .filter((element) => (element as unknown as WhiteboardPresentationElement).customData?.whiteboardAssetId === presentRequest.assetId)
+        .map((element) => element.id));
+      const remainingPresentation = currentPresentation.filter((element) => !existingIds.has(element.id));
+      const origin = findNearestWhiteboardAssetOrigin(source as unknown as WhiteboardPresentationElement[], remainingPresentation, viewportCenter);
       const presented = cloneWhiteboardAssetElements(source as unknown as WhiteboardPresentationElement[], origin, presentRequest.assetId, presentRequest.name);
       api.updateScene({
-        elements: [...current, ...presented as unknown as ExcalidrawElement[]],
+        elements: [
+          ...current.filter((element) => !existingIds.has(element.id)),
+          ...presented as unknown as ExcalidrawElement[],
+        ],
         appState: { selectedElementIds: Object.fromEntries(presented.map((element) => [element.id, true])) },
         captureUpdate: CaptureUpdateAction.IMMEDIATELY,
       });

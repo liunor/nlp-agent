@@ -18,12 +18,22 @@ const updateLibrary = vi.fn(async ({ libraryItems, merge = true }: { libraryItem
 });
 let fakeSceneElements: unknown[] = [];
 let resetPresentedSceneAfterFirstWrite = false;
+let restorePartialPresentationAfterFirstWrite = false;
 const updateScene = vi.fn((payload: { elements?: unknown[] }) => {
   if (!payload.elements) return;
   fakeSceneElements = payload.elements;
   if (resetPresentedSceneAfterFirstWrite && payload.elements.some((element) => (element as { customData?: { whiteboardAssetId?: string } }).customData?.whiteboardAssetId)) {
     resetPresentedSceneAfterFirstWrite = false;
     window.setTimeout(() => { fakeSceneElements = []; }, 0);
+  }
+  if (restorePartialPresentationAfterFirstWrite && payload.elements.some((element) => (element as { customData?: { whiteboardAssetId?: string } }).customData?.whiteboardAssetId)) {
+    restorePartialPresentationAfterFirstWrite = false;
+    window.setTimeout(() => {
+      fakeSceneElements = payload.elements?.filter((element) => {
+        const candidate = element as { customData?: { whiteboardAssetId?: string }; type?: string };
+        return candidate.customData?.whiteboardAssetId !== "asset-partial" || candidate.type !== "text";
+      }) ?? [];
+    }, 0);
   }
 });
 const scrollToContent = vi.fn();
@@ -60,6 +70,7 @@ describe("ExcalidrawAdapter shared library loading", () => {
     scrollToContent.mockClear();
     fakeSceneElements = [];
     resetPresentedSceneAfterFirstWrite = false;
+    restorePartialPresentationAfterFirstWrite = false;
   });
 
   it("does not clear the local library before a failed shared-library request", async () => {
@@ -107,6 +118,29 @@ describe("ExcalidrawAdapter shared library loading", () => {
     expect(fakeSceneElements).toEqual(expect.arrayContaining([
       expect.objectContaining({ customData: expect.objectContaining({ whiteboardAssetId: "asset-restore" }) }),
     ]));
+  });
+
+  it("replaces a partially restored presentation before considering it complete", async () => {
+    restorePartialPresentationAfterFirstWrite = true;
+    render(<ExcalidrawAdapter
+      initialScene={null}
+      onChange={vi.fn()}
+      presentRequest={{
+        requestId: "request-partial-restore",
+        assetId: "asset-partial",
+        name: "注意力计算过程",
+        elements: [
+          { id: "element-rectangle", type: "rectangle", x: 0, y: 0, width: 40, height: 20 },
+          { id: "element-text", type: "text", x: 0, y: 0, width: 40, height: 20, text: "Matmul" },
+        ],
+      }}
+    />);
+
+    await waitFor(() => expect(updateScene.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 1000 });
+    await waitFor(() => expect(fakeSceneElements.filter((element) => {
+      const candidate = element as { customData?: { whiteboardAssetId?: string } };
+      return candidate.customData?.whiteboardAssetId === "asset-partial";
+    })).toHaveLength(2));
   });
 
   it("closes the library name tooltip when the material is clicked", async () => {

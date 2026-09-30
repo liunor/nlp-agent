@@ -80,6 +80,25 @@ export function findPresentedWhiteboardAsset(
   return elements.filter((element) => element.isDeleted !== true && element.customData?.whiteboardAssetId === assetId);
 }
 
+/**
+ * A presentation is only ready once every element type from the source
+ * fragment is present. Excalidraw can restore a scene partially during its
+ * initial mount (for example, shapes may arrive before text), so checking for
+ * one matching element is not sufficient to stop the presentation retry.
+ */
+export function isPresentedWhiteboardAssetComplete(
+  elements: readonly WhiteboardPresentationElement[],
+  assetId: string,
+  source: readonly WhiteboardPresentationElement[],
+): boolean {
+  const presented = findPresentedWhiteboardAsset(elements, assetId);
+  const requiredByType = new Map<string, number>();
+  for (const element of source) requiredByType.set(element.type, (requiredByType.get(element.type) ?? 0) + 1);
+  const presentedByType = new Map<string, number>();
+  for (const element of presented) presentedByType.set(element.type, (presentedByType.get(element.type) ?? 0) + 1);
+  return [...requiredByType].every(([type, count]) => (presentedByType.get(type) ?? 0) >= count);
+}
+
 /** Clone a library fragment while keeping bindings and tagging all elements with its source asset. */
 export function cloneWhiteboardAssetElements(
   elements: readonly WhiteboardPresentationElement[],
