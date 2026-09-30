@@ -23,6 +23,8 @@ import { formatWhiteboardDeleteError } from "./whiteboardLibraryMessages";
 import { WHITEBOARD_LIBRARY_ASSETS, whiteboardLibraryUrl } from "./libraryAssets";
 import {
   getWhiteboardLibraryDisplayName,
+  dedupeWhiteboardLibraryItems,
+  getWhiteboardLibraryElementsFingerprint,
   getWhiteboardLibraryItemsRemoved,
   getWhiteboardLibraryItemsToMigrate,
   getSingleWhiteboardLibrarySelection,
@@ -151,7 +153,9 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
       const name = getWhiteboardLibraryDisplayName(item as WhiteboardLibraryItem);
       unit.dataset.whiteboardAssetId = item.id;
       unit.dataset.whiteboardName = name;
-      unit.setAttribute("title", name);
+      // The overlay below is the single source of truth for hover names.
+      // Setting a native title here creates a second browser tooltip on top
+      // of it, especially in Chromium.
       unit.setAttribute("aria-label", `白板素材：${name}`);
     });
     // Excalidraw does not expose a library-item selection callback. If its
@@ -381,11 +385,23 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
       try {
         let sharedLibrary = await httpApi.getWhiteboardLibrary();
 
+        // A previous client could have copied the vendored files into the
+        // shared table before the deterministic catalog migration landed.
+        // Do not migrate those random-id copies again when the server already
+        // has the corresponding source-keyed item.
+        const bundledElementFingerprints = new Set(
+          sharedLibrary.items
+            .map(normalizeWhiteboardLibraryItem)
+            .filter((item): item is WhiteboardLibraryItem => Boolean(item?.source_key))
+            .map((item) => getWhiteboardLibraryElementsFingerprint(item.elements)),
+        );
+        const legacyItemsToMigrate = getWhiteboardLibraryItemsToMigrate(legacyItems, bundledElementFingerprints);
+
         // Excalidraw keeps older user-created entries in its local library.
         // Migrate them only after the first shared read succeeds; otherwise a
         // retry after a network failure would create duplicate server rows.
         if (canManageLibrary && typeof httpApi.createWhiteboardLibraryItem === "function") {
-          for (const item of legacyItems) {
+          for (const item of legacyItemsToMigrate) {
             if (!mounted.current) return;
             try {
               const name = item.name?.trim() || "未命名图画";
@@ -398,13 +414,13 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
             }
           }
           if (failedAssetNames.length > 0) throw new Error("legacy whiteboard migration failed");
-          if (legacyItems.length > 0) sharedLibrary = await httpApi.getWhiteboardLibrary();
+          if (legacyItemsToMigrate.length > 0) sharedLibrary = await httpApi.getWhiteboardLibrary();
         }
 
         const safeSharedItems = sharedLibrary.items
           .map(getSafeSharedLibraryItem)
           .filter((item): item is WhiteboardLibraryItem => item !== null);
-        const libraryItems = safeSharedItems as unknown as LibraryItems;
+        const libraryItems = dedupeWhiteboardLibraryItems(safeSharedItems) as unknown as LibraryItems;
 
         // Only replace the local catalog after the server response is known to
         // be usable. If clearing fails, continue installing the bundled assets
@@ -421,7 +437,19 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
         }
         if (!clearFailed) setLibrarySnapshot([]);
 
-        const { libraries: bundledLibraries, failedAssets } = await loadBundledLibraries();
+        // The shared catalog is populated from the same bundled files during
+        // the server migration.  Loading those files again in the browser
+        // creates a second set of entries with fresh Excalidraw IDs.  Keep
+        // the local files only when the response does not contain a
+        // source-keyed server catalog (older installations may only have
+        // user-created rows until the migration has run).
+        const hasServerBundledCatalog = libraryItems.some((item) => {
+          const sourceKey = (item as unknown as { source_key?: unknown }).source_key;
+          return typeof sourceKey === "string" && Boolean(sourceKey.trim());
+        });
+        const { libraries: bundledLibraries, failedAssets } = hasServerBundledCatalog
+          ? { libraries: [], failedAssets: [] }
+          : await loadBundledLibraries();
         failedAssetNames.push(...failedAssets.map((asset) => asset.name));
 
         sharedLibraryItems.current = new Map(libraryItems.map((item) => [item.id, item]));

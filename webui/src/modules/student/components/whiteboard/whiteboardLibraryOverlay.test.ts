@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getSingleWhiteboardLibrarySelection, getWhiteboardLibraryDisplayName, getWhiteboardLibraryItemsRemoved, getWhiteboardLibraryItemsToMigrate, getWhiteboardLibraryTooltipPosition, normalizeWhiteboardLibraryItem } from "./whiteboardLibraryOverlay";
+import { dedupeWhiteboardLibraryItems, getSingleWhiteboardLibrarySelection, getWhiteboardLibraryDisplayName, getWhiteboardLibraryElementsFingerprint, getWhiteboardLibraryItemsRemoved, getWhiteboardLibraryItemsToMigrate, getWhiteboardLibraryTooltipPosition, normalizeWhiteboardLibraryItem } from "./whiteboardLibraryOverlay";
 
 describe("whiteboard library overlay helpers", () => {
   it("keeps unnamed materials identifiable by their stable code", () => {
@@ -40,5 +40,13 @@ describe("whiteboard library overlay helpers", () => {
     const legacyUnpublished = { id: "legacy-2", status: "unpublished", elements: [{ id: "element-2" }] };
     const shared = { id: "shared-1", asset_code: "WB-SHARED1", status: "published", elements: [{ id: "element-3" }] };
     expect(getWhiteboardLibraryItemsToMigrate([legacyPublished, legacyUnpublished, shared])).toEqual([legacyPublished, legacyUnpublished]);
+  });
+
+  it("keeps the server-seeded copy when an older client already migrated the same drawing", () => {
+    const elements = [{ id: "shape-1", type: "rectangle" }];
+    const bundled = { id: "bundled-1", source_key: "deep-learning:01", elements };
+    const migratedLegacy = { id: "random-1", elements };
+    expect(dedupeWhiteboardLibraryItems([bundled, migratedLegacy])).toEqual([bundled]);
+    expect(getWhiteboardLibraryItemsToMigrate([migratedLegacy], new Set([getWhiteboardLibraryElementsFingerprint(elements)]))).toEqual([]);
   });
 });
