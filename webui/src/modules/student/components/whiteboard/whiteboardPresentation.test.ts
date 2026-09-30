@@ -37,6 +37,14 @@ describe("whiteboard asset presentation", () => {
     expect(cloned[0].customData).toMatchObject({ whiteboardAssetId: "asset-1", whiteboardAssetName: "注意力计算" });
   });
 
+  it("keeps text visible when its original container was removed before presentation", () => {
+    const cloned = cloneWhiteboardAssetElements([
+      { id: "label", type: "text", x: 12, y: 16, width: 64, height: 24, text: "Q", containerId: "deleted-container" },
+    ], { x: 120, y: 30 }, "asset-1", "注意力计算");
+
+    expect(cloned[0]).toMatchObject({ type: "text", text: "Q", containerId: null });
+  });
+
   it("excludes deleted and malformed elements before fitting a presented drawing", () => {
     const elements = getPresentableWhiteboardElements([
       { id: "visible", type: "rectangle", x: 0, y: 0, width: 80, height: 80 },

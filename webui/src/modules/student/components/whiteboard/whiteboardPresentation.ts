@@ -98,6 +98,7 @@ export function cloneWhiteboardAssetElements(
   }
   const remapElementId = (value: string) => elementIds.get(value) ?? value;
   const remapGroupId = (value: string) => groupIds.get(value) ?? value;
+  const remapOptionalElementId = (value: string) => elementIds.get(value) ?? null;
   return elements.map((element) => {
     const next = {
       ...element,
@@ -110,14 +111,26 @@ export function cloneWhiteboardAssetElements(
       customData: { ...(element.customData ?? {}), whiteboardAssetId: assetId, whiteboardAssetName: assetName },
     } as WhiteboardPresentationElement;
     if (Array.isArray(next.groupIds)) next.groupIds = next.groupIds.map((value) => remapGroupId(value));
+    // A library payload can contain a deleted/malformed container without its
+    // text label. Leaving the old id in place makes Excalidraw treat the text
+    // as an orphaned bound element and omit it from the rendered scene.
     for (const bindingKey of ["startBinding", "endBinding"]) {
       const binding = next[bindingKey];
-      if (isRecord(binding) && typeof binding.elementId === "string") next[bindingKey] = { ...binding, elementId: remapElementId(binding.elementId) };
+      if (isRecord(binding) && typeof binding.elementId === "string") {
+        const elementId = remapOptionalElementId(binding.elementId);
+        next[bindingKey] = elementId ? { ...binding, elementId } : null;
+      }
     }
-    if (typeof next.containerId === "string") next.containerId = remapElementId(next.containerId);
-    if (typeof next.frameId === "string") next.frameId = remapElementId(next.frameId);
+    if (typeof next.containerId === "string") next.containerId = remapOptionalElementId(next.containerId);
+    if (typeof next.frameId === "string") next.frameId = remapOptionalElementId(next.frameId);
     if (Array.isArray(next.boundElements)) {
-      next.boundElements = next.boundElements.map((binding) => isRecord(binding) && typeof binding.id === "string" ? { ...binding, id: remapElementId(binding.id) } : binding);
+      next.boundElements = next.boundElements
+        .map((binding) => {
+          if (!isRecord(binding) || typeof binding.id !== "string") return binding;
+          const elementId = remapOptionalElementId(binding.id);
+          return elementId ? { ...binding, id: elementId } : null;
+        })
+        .filter((binding): binding is Record<string, unknown> => binding !== null);
     }
     return next;
   });

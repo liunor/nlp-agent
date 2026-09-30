@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/platform/http/api";
@@ -31,7 +31,7 @@ vi.mock("@excalidraw/excalidraw", () => {
         getAppState: () => ({ zoom: { value: 1 }, scrollX: 0, scrollY: 0 }),
       });
     }, [excalidrawAPI, onLibraryChange]);
-    return <div data-testid="fake-excalidraw">{children}</div>;
+    return <div data-testid="fake-excalidraw"><button type="button" className="library-unit library-unit__active">素材</button>{children}</div>;
   }
   const passthrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
   const defaults = { LoadScene: passthrough, SaveToActiveFile: passthrough, Export: passthrough, SaveAsImage: passthrough, SearchMenu: passthrough, ClearCanvas: passthrough, ToggleTheme: passthrough, ChangeCanvasBackground: passthrough };
@@ -77,5 +77,16 @@ describe("ExcalidrawAdapter shared library loading", () => {
       elements: expect.arrayContaining([expect.objectContaining({ customData: expect.objectContaining({ whiteboardAssetId: "asset-1" }) })]),
     })));
     await waitFor(() => expect(scrollToContent).toHaveBeenCalled());
+  });
+
+  it("closes the library name tooltip when the material is clicked", async () => {
+    render(<ExcalidrawAdapter initialScene={null} onChange={vi.fn()} />);
+
+    const material = await screen.findByRole("button", { name: /白板素材/ });
+    fireEvent.pointerOver(material);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("未命名图画");
+
+    fireEvent.pointerDown(material);
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 });
