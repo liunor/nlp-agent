@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Pencil } from "lucide-react";
 
-import { CaptureUpdateAction, Excalidraw, Footer, loadLibraryFromBlob, MainMenu } from "@excalidraw/excalidraw";
+import { CaptureUpdateAction, Excalidraw, Footer, loadLibraryFromBlob, MainMenu, restoreElements } from "@excalidraw/excalidraw";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import type {
   AppState,
@@ -574,16 +574,20 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
         .map((element) => element.id));
       const remainingPresentation = currentPresentation.filter((element) => !existingIds.has(element.id));
       const origin = findNearestWhiteboardAssetOrigin(source as unknown as WhiteboardPresentationElement[], remainingPresentation, viewportCenter);
-      const presented = cloneWhiteboardAssetElements(source as unknown as WhiteboardPresentationElement[], origin, presentRequest.assetId, presentRequest.name);
+      const cloned = cloneWhiteboardAssetElements(source as unknown as WhiteboardPresentationElement[], origin, presentRequest.assetId, presentRequest.name);
+      const presented = restoreElements(cloned as unknown as ExcalidrawElement[], current, {
+        refreshDimensions: true,
+        repairBindings: true,
+      });
       api.updateScene({
         elements: [
           ...current.filter((element) => !existingIds.has(element.id)),
-          ...presented as unknown as ExcalidrawElement[],
+          ...presented,
         ],
         appState: { selectedElementIds: Object.fromEntries(presented.map((element) => [element.id, true])) },
         captureUpdate: CaptureUpdateAction.IMMEDIATELY,
       });
-      scheduleFocus(presented);
+      scheduleFocus(presented as unknown as WhiteboardPresentationElement[]);
       // Excalidraw can finish restoring initialData after the imperative API is
       // exposed. Verify the scene after the restore window and reapply while
       // that initialization is still replacing presentation updates.

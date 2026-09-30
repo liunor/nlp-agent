@@ -37,6 +37,11 @@ const updateScene = vi.fn((payload: { elements?: unknown[] }) => {
   }
 });
 const scrollToContent = vi.fn();
+const { restoreElements } = vi.hoisted(() => ({
+  restoreElements: vi.fn((elements: Array<Record<string, unknown>>) => elements.map((element) => element.type === "text"
+    ? { ...element, lineHeight: element.lineHeight ?? 1.25, autoResize: element.autoResize ?? true }
+    : element)),
+}));
 
 vi.mock("@excalidraw/excalidraw", () => {
   function FakeExcalidraw({ children, excalidrawAPI, onLibraryChange }: { children?: ReactNode; excalidrawAPI: (value: unknown) => void; onLibraryChange: (items: typeof initialLibrary) => void }) {
@@ -54,7 +59,7 @@ vi.mock("@excalidraw/excalidraw", () => {
   }
   const passthrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
   const defaults = { LoadScene: passthrough, SaveToActiveFile: passthrough, Export: passthrough, SaveAsImage: passthrough, SearchMenu: passthrough, ClearCanvas: passthrough, ToggleTheme: passthrough, ChangeCanvasBackground: passthrough };
-  return { CaptureUpdateAction: { IMMEDIATELY: "immediately", NEVER: "never" }, Excalidraw: FakeExcalidraw, Footer: passthrough, MainMenu: Object.assign(passthrough, { DefaultItems: defaults, Separator: passthrough, Item: passthrough }) };
+  return { CaptureUpdateAction: { IMMEDIATELY: "immediately", NEVER: "never" }, Excalidraw: FakeExcalidraw, Footer: passthrough, MainMenu: Object.assign(passthrough, { DefaultItems: defaults, Separator: passthrough, Item: passthrough }), restoreElements };
 });
 
 vi.mock("@/platform/http/api", () => ({
@@ -68,6 +73,7 @@ describe("ExcalidrawAdapter shared library loading", () => {
     updateLibrary.mockClear();
     updateScene.mockClear();
     scrollToContent.mockClear();
+    restoreElements.mockClear();
     fakeSceneElements = [];
     resetPresentedSceneAfterFirstWrite = false;
     restorePartialPresentationAfterFirstWrite = false;
@@ -141,6 +147,60 @@ describe("ExcalidrawAdapter shared library loading", () => {
       const candidate = element as { customData?: { whiteboardAssetId?: string } };
       return candidate.customData?.whiteboardAssetId === "asset-partial";
     })).toHaveLength(2));
+  });
+
+  it("normalizes legacy library text before presenting it", async () => {
+    render(<ExcalidrawAdapter
+      initialScene={null}
+      onChange={vi.fn()}
+      presentRequest={{
+        requestId: "request-legacy-text",
+        assetId: "asset-legacy-text",
+        name: "旧版注意力图",
+        elements: [{
+          id: "legacy-text",
+          type: "text",
+          x: 0,
+          y: 0,
+          width: 164,
+          height: 35,
+          angle: 0,
+          strokeColor: "#000000",
+          backgroundColor: "transparent",
+          fillStyle: "solid",
+          strokeWidth: 2,
+          strokeStyle: "solid",
+          roughness: 1,
+          opacity: 100,
+          groupIds: [],
+          seed: 1425060668,
+          version: 55,
+          versionNonce: 1755101188,
+          isDeleted: false,
+          boundElements: null,
+          updated: 1649410862098,
+          link: null,
+          text: "Matmul",
+          fontSize: 28,
+          fontFamily: 1,
+          textAlign: "center",
+          verticalAlign: "middle",
+          baseline: 25,
+          containerId: null,
+          originalText: "Matmul",
+        }],
+      }}
+    />);
+
+    await waitFor(() => expect(fakeSceneElements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "text",
+        text: "Matmul",
+        lineHeight: 1.25,
+        autoResize: true,
+        customData: expect.objectContaining({ whiteboardAssetId: "asset-legacy-text" }),
+      }),
+    ])));
   });
 
   it("closes the library name tooltip when the material is clicked", async () => {
