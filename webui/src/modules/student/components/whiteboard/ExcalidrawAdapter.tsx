@@ -213,6 +213,12 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
       hoveredLibraryUnit.current = target;
       updateHoverPosition(target);
     };
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-whiteboard-asset-id]") : null;
+      if (!target || !root.contains(target)) return;
+      hoveredLibraryUnit.current = null;
+      setLibraryHover(null);
+    };
     const handlePointerOut = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-whiteboard-asset-id]") : null;
       const related = event.relatedTarget instanceof Node ? event.relatedTarget : null;
@@ -223,6 +229,7 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
     };
     const handleViewportChange = () => updateHoverPosition(hoveredLibraryUnit.current);
     root.addEventListener("pointerover", handlePointerOver);
+    root.addEventListener("pointerdown", handlePointerDown, true);
     root.addEventListener("pointerout", handlePointerOut);
     root.addEventListener("scroll", handleViewportChange, true);
     window.addEventListener("resize", handleViewportChange);
@@ -230,6 +237,7 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
     return () => {
       observer.disconnect();
       root.removeEventListener("pointerover", handlePointerOver);
+      root.removeEventListener("pointerdown", handlePointerDown, true);
       root.removeEventListener("pointerout", handlePointerOut);
       root.removeEventListener("scroll", handleViewportChange, true);
       window.removeEventListener("resize", handleViewportChange);
