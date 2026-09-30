@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 import { render, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/platform/http/api";
 import { ExcalidrawAdapter } from "./ExcalidrawAdapter";
@@ -16,6 +16,8 @@ const updateLibrary = vi.fn(async ({ libraryItems, merge = true }: { libraryItem
   const next = typeof libraryItems === "function" ? libraryItems(initialLibrary) : libraryItems;
   return (merge ? [...initialLibrary, ...next] : next) as typeof initialLibrary;
 });
+const updateScene = vi.fn();
+const scrollToContent = vi.fn();
 
 vi.mock("@excalidraw/excalidraw", () => {
   function FakeExcalidraw({ children, excalidrawAPI, onLibraryChange }: { children?: ReactNode; excalidrawAPI: (value: unknown) => void; onLibraryChange: (items: typeof initialLibrary) => void }) {
@@ -23,6 +25,8 @@ vi.mock("@excalidraw/excalidraw", () => {
       onLibraryChange(initialLibrary);
       excalidrawAPI({
         updateLibrary,
+        updateScene,
+        scrollToContent,
         getSceneElements: () => [],
         getAppState: () => ({ zoom: { value: 1 }, scrollX: 0, scrollY: 0 }),
       });
@@ -41,6 +45,12 @@ vi.mock("@/platform/http/api", () => ({
 }));
 
 describe("ExcalidrawAdapter shared library loading", () => {
+  beforeEach(() => {
+    updateLibrary.mockClear();
+    updateScene.mockClear();
+    scrollToContent.mockClear();
+  });
+
   it("does not clear the local library before a failed shared-library request", async () => {
     render(<ExcalidrawAdapter initialScene={null} onChange={vi.fn()} canManageLibrary />);
 
@@ -49,5 +59,23 @@ describe("ExcalidrawAdapter shared library loading", () => {
     const clearOrders = updateLibrary.mock.invocationCallOrder.filter((_, index) => updateLibrary.mock.calls[index]?.[0]?.merge === false);
     expect(clearOrders).toHaveLength(1);
     expect(clearOrders[0]).toBeGreaterThan(getOrder);
+  });
+
+  it("presents a pending whiteboard request after the Excalidraw API becomes ready", async () => {
+    render(<ExcalidrawAdapter
+      initialScene={null}
+      onChange={vi.fn()}
+      presentRequest={{
+        requestId: "request-1",
+        assetId: "asset-1",
+        name: "注意力计算过程",
+        elements: [{ id: "element-1", type: "rectangle", x: 0, y: 0, width: 40, height: 20 }],
+      }}
+    />);
+
+    await waitFor(() => expect(updateScene).toHaveBeenCalledWith(expect.objectContaining({
+      elements: expect.arrayContaining([expect.objectContaining({ customData: expect.objectContaining({ whiteboardAssetId: "asset-1" }) })]),
+    })));
+    await waitFor(() => expect(scrollToContent).toHaveBeenCalled());
   });
 });

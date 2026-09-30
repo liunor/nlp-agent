@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Menu, PanelLeftClose, PanelRightClose, RefreshCw, Search, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 
 import { api } from "@/platform/http/api";
@@ -33,6 +33,8 @@ interface SelectionPrompt {
   left: number;
   composerOpen?: boolean;
 }
+
+const KNOWLEDGE_BOOK_DOCK_SETTLE_MS = 320;
 
 function isExcludedSelectionNode(node: Node | null): boolean {
   const element = node instanceof Element ? node : node?.parentElement;
@@ -82,6 +84,16 @@ function orderNavigation(items: LearningBookNavigationItem[]): LearningBookNavig
   return groupNavigation(items).flatMap((group) => group.items);
 }
 
+function whiteboardLibraryDisplayMatches(current: WhiteboardLibraryItem[], next: WhiteboardLibraryItem[]): boolean {
+  return current.length === next.length && current.every((item, index) => {
+    const candidate = next[index];
+    return candidate?.id === item.id
+      && candidate.asset_code === item.asset_code
+      && candidate.name === item.name
+      && candidate.status === item.status;
+  });
+}
+
 function findHeadingAnchor(root: HTMLElement, id: string): HTMLElement | undefined {
   return [...root.querySelectorAll<HTMLElement>("[data-knowledge-book-heading-anchor]")].find((candidate) => candidate.id === id);
 }
@@ -118,7 +130,7 @@ function keepFocusInDrawer(event: ReactKeyboardEvent<HTMLElement>) {
   }
 }
 
-export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, onOpenFilePreview, onViewWhiteboard }: { workspaceId: string; onAskNova?: (prompt: string, context: KnowledgeBookContext) => void; onOpenInSandbox?: (code: string, language: string) => void; onOpenFilePreview?: (file: LearningBookFile) => void; onViewWhiteboard?: (item: WhiteboardLibraryItem) => void }) {
+export const KnowledgeBookPanel = memo(function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, onOpenFilePreview, onViewWhiteboard }: { workspaceId: string; onAskNova?: (prompt: string, context: KnowledgeBookContext) => void; onOpenInSandbox?: (code: string, language: string) => void; onOpenFilePreview?: (file: LearningBookFile) => void; onViewWhiteboard?: (item: WhiteboardLibraryItem) => void }) {
   const [initialViewState] = useState(() => readBookViewState(workspaceId));
   const [initialDeepLink] = useState(() => readKnowledgeBookUrl(window.location.search));
   const demoMode = initialDeepLink.demo;
@@ -402,14 +414,30 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
 
   const selectedIndex = orderedNavigation.findIndex((item) => item.knowledge_point_id === selectedId);
   const openWhiteboardReference = async (ref: { asset_id: string; asset_code?: string; name: string }) => {
+    const readerScrollTop = contentRef.current?.scrollTop ?? 0;
+    const restoreReaderScroll = () => {
+      const root = contentRef.current;
+      if (!root) return;
+      root.scrollTop = readerScrollTop;
+      root.scrollTo?.({ top: readerScrollTop, behavior: "auto" });
+    };
     try {
       const result = await api.getWhiteboardLibrary();
       const items = dedupeWhiteboardLibraryItems(result.items
         .map(normalizeWhiteboardLibraryItem)
         .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published"));
-      setWhiteboardLibrary(items);
+      setWhiteboardLibrary((current) => whiteboardLibraryDisplayMatches(current, items) ? current : items);
       const item = items.find((candidate) => candidate.id === ref.asset_id || (ref.asset_code && candidate.asset_code === ref.asset_code));
-      if (item) onViewWhiteboardRef.current?.(item);
+      if (item) {
+        onViewWhiteboardRef.current?.(item);
+        // Opening the dock can resize/remount the reader's scroll viewport.
+        // Restore after the state update and once more after the browser has
+        // applied the layout transition.
+        restoreReaderScroll();
+        window.requestAnimationFrame(restoreReaderScroll);
+        window.setTimeout(restoreReaderScroll, 0);
+        window.setTimeout(restoreReaderScroll, KNOWLEDGE_BOOK_DOCK_SETTLE_MS);
+      }
     } catch {
       // Do not re-present a stale textbook reference when the library cannot be revalidated.
     }
@@ -533,4 +561,4 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, on
     {selectionPrompt && onAskNova && !selectionPrompt.composerOpen && <button ref={selectionActionRef} type="button" className="knowledge-book-selection-action" style={{ top: `${selectionPrompt.top}px`, left: `${selectionPrompt.left}px` }} onMouseDown={(event) => event.preventDefault()} onClick={openSelectionComposer}>向 Nova 提问</button>}
     {selectionPrompt && onAskNova && selectionPrompt.composerOpen && <KnowledgeBookPromptComposer ref={selectionComposerRef} className="knowledge-book-selection-composer" style={{ top: `${selectionPrompt.top}px`, left: `${selectionPrompt.left}px` }} ariaLabel="向 Nova 提问" placeholder="这是什么意思？" onSubmit={askSelection} />}
   </section>;
-}
+});

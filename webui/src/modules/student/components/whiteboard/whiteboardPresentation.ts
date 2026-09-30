@@ -7,7 +7,22 @@ export interface WhiteboardPresentationElement {
   height: number;
   groupIds?: readonly string[];
   customData?: Record<string, unknown>;
+  isDeleted?: boolean;
   [key: string]: unknown;
+}
+
+/** Keep only drawable elements with finite geometry. Deleted library entries
+ * can retain their old coordinates and would otherwise expand the fit bounds,
+ * making the visible drawing appear cropped or impossibly small. */
+export function getPresentableWhiteboardElements(elements: readonly WhiteboardPresentationElement[]): WhiteboardPresentationElement[] {
+  return elements.filter((element) => element.type !== "embeddable"
+    && element.isDeleted !== true
+    && Number.isFinite(element.x)
+    && Number.isFinite(element.y)
+    && Number.isFinite(element.width)
+    && Number.isFinite(element.height)
+    && element.width >= 0
+    && element.height >= 0);
 }
 
 export interface WhiteboardViewportCenter {
@@ -62,7 +77,7 @@ export function findPresentedWhiteboardAsset(
   elements: readonly WhiteboardPresentationElement[],
   assetId: string,
 ): WhiteboardPresentationElement[] {
-  return elements.filter((element) => element.customData?.whiteboardAssetId === assetId);
+  return elements.filter((element) => element.isDeleted !== true && element.customData?.whiteboardAssetId === assetId);
 }
 
 /** Clone a library fragment while keeping bindings and tagging all elements with its source asset. */

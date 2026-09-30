@@ -4,6 +4,7 @@ import {
   cloneWhiteboardAssetElements,
   findNearestWhiteboardAssetOrigin,
   findPresentedWhiteboardAsset,
+  getPresentableWhiteboardElements,
 } from "./whiteboardPresentation";
 
 const source = [{ id: "source-1", type: "rectangle", x: 0, y: 0, width: 80, height: 80 }];
@@ -34,5 +35,16 @@ describe("whiteboard asset presentation", () => {
     expect(cloned[0].id).not.toBe("source-1");
     expect(cloned[0].x).toBe(120);
     expect(cloned[0].customData).toMatchObject({ whiteboardAssetId: "asset-1", whiteboardAssetName: "注意力计算" });
+  });
+
+  it("excludes deleted and malformed elements before fitting a presented drawing", () => {
+    const elements = getPresentableWhiteboardElements([
+      { id: "visible", type: "rectangle", x: 0, y: 0, width: 80, height: 80 },
+      { id: "deleted", type: "rectangle", x: 900, y: 900, width: 80, height: 80, isDeleted: true },
+      { id: "malformed", type: "rectangle", x: Number.NaN, y: 0, width: 80, height: 80 },
+      { id: "embed", type: "embeddable", x: 0, y: 0, width: 80, height: 80 },
+    ]);
+
+    expect(elements.map((element) => element.id)).toEqual(["visible"]);
   });
 });
