@@ -48,6 +48,8 @@ export interface WhiteboardLibraryLoadError {
 
 const UNSUPPORTED_LIBRARY_ELEMENT_TYPES = new Set(["image", "iframe", "embeddable"]);
 const PRESENTATION_FIT_SETTLE_MS = 320;
+const PRESENTATION_VERIFY_RETRY_MS = 64;
+const PRESENTATION_MAX_VERIFY_RETRIES = 16;
 
 type LoadedWhiteboardLibrary = {
   asset: typeof WHITEBOARD_LIBRARY_ASSETS[number];
@@ -520,40 +522,77 @@ export function ExcalidrawAdapter({ initialScene, onChange, canManageLibrary = f
     if (!api || !presentRequest?.elements.length) return;
     const source = getPresentableWhiteboardElements(withoutEmbeddableElements(presentRequest.elements as ExcalidrawElement[]) as unknown as WhiteboardPresentationElement[]) as unknown as ExcalidrawElement[];
     if (!source.length) return;
-    const current = api.getSceneElements();
-    const currentPresentation = getPresentableWhiteboardElements(current as unknown as WhiteboardPresentationElement[]);
-    const existing = findPresentedWhiteboardAsset(currentPresentation, presentRequest.assetId);
+    let cancelled = false;
+    let verifyRetries = 0;
+    const timers = new Set<number>();
+    const frames = new Set<number>();
     const scheduleFocus = (elements: WhiteboardPresentationElement[]) => {
       const focus = (animate: boolean) => {
-        if (excalidrawApi.current !== api) return;
+        if (cancelled || excalidrawApi.current !== api) return;
         api.scrollToContent(elements as unknown as ExcalidrawElement[], { fitToContent: true, animate });
       };
-      const frame = window.requestAnimationFrame(() => focus(true));
-      const settle = window.setTimeout(() => focus(false), PRESENTATION_FIT_SETTLE_MS);
-      return () => {
-        window.cancelAnimationFrame(frame);
-        window.clearTimeout(settle);
+      const frame = window.requestAnimationFrame(() => {
+        frames.delete(frame);
+        focus(true);
+      });
+      frames.add(frame);
+      const settle = window.setTimeout(() => {
+        timers.delete(settle);
+        focus(false);
+      }, PRESENTATION_FIT_SETTLE_MS);
+      timers.add(settle);
+    };
+
+    const scheduleVerification = () => {
+      if (verifyRetries >= PRESENTATION_MAX_VERIFY_RETRIES) return;
+      verifyRetries += 1;
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        presentAsset();
+      }, PRESENTATION_VERIFY_RETRY_MS);
+      timers.add(timer);
+    };
+    const presentAsset = () => {
+      if (cancelled || excalidrawApi.current !== api) return;
+      const current = api.getSceneElements();
+      const currentPresentation = getPresentableWhiteboardElements(current as unknown as WhiteboardPresentationElement[]);
+      const existing = findPresentedWhiteboardAsset(currentPresentation, presentRequest.assetId);
+      if (existing.length > 0) {
+        api.updateScene({ appState: { selectedElementIds: Object.fromEntries(existing.map((element) => [element.id, true])) } });
+        scheduleFocus(existing);
+        return;
+      }
+      const appState = api.getAppState();
+      const zoom = Math.max(0.1, appState.zoom.value || 1);
+      const viewport = panelRef.current?.getBoundingClientRect();
+      const viewportCenter = {
+        centerX: -appState.scrollX + (viewport?.width ?? 900) / (2 * zoom),
+        centerY: -appState.scrollY + (viewport?.height ?? 600) / (2 * zoom),
       };
+      const origin = findNearestWhiteboardAssetOrigin(source as unknown as WhiteboardPresentationElement[], currentPresentation, viewportCenter);
+      const presented = cloneWhiteboardAssetElements(source as unknown as WhiteboardPresentationElement[], origin, presentRequest.assetId, presentRequest.name);
+      api.updateScene({
+        elements: [...current, ...presented as unknown as ExcalidrawElement[]],
+        appState: { selectedElementIds: Object.fromEntries(presented.map((element) => [element.id, true])) },
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      });
+      scheduleFocus(presented);
+      // Excalidraw can finish restoring initialData after the imperative API is
+      // exposed. Verify the scene after the restore window and reapply while
+      // that initialization is still replacing presentation updates.
+      scheduleVerification();
     };
-    if (existing.length > 0) {
-      api.updateScene({ appState: { selectedElementIds: Object.fromEntries(existing.map((element) => [element.id, true])) } });
-      return scheduleFocus(existing);
-    }
-    const appState = api.getAppState();
-    const zoom = Math.max(0.1, appState.zoom.value || 1);
-    const viewport = panelRef.current?.getBoundingClientRect();
-    const viewportCenter = {
-      centerX: -appState.scrollX + (viewport?.width ?? 900) / (2 * zoom),
-      centerY: -appState.scrollY + (viewport?.height ?? 600) / (2 * zoom),
+
+    const initial = window.setTimeout(() => {
+      timers.delete(initial);
+      presentAsset();
+    }, 0);
+    timers.add(initial);
+    return () => {
+      cancelled = true;
+      for (const timer of timers) window.clearTimeout(timer);
+      for (const frame of frames) window.cancelAnimationFrame(frame);
     };
-    const origin = findNearestWhiteboardAssetOrigin(source as unknown as WhiteboardPresentationElement[], currentPresentation, viewportCenter);
-    const presented = cloneWhiteboardAssetElements(source as unknown as WhiteboardPresentationElement[], origin, presentRequest.assetId, presentRequest.name);
-    api.updateScene({
-      elements: [...current, ...presented as unknown as ExcalidrawElement[]],
-      appState: { selectedElementIds: Object.fromEntries(presented.map((element) => [element.id, true])) },
-      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-    });
-    return scheduleFocus(presented);
   }, [apiReady, presentRequest]);
 
   const handleSceneChange = useCallback((elements: readonly ExcalidrawElement[], appState: AppState, files: BinaryFiles) => {
