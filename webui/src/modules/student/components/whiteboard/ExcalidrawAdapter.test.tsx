@@ -16,7 +16,16 @@ const updateLibrary = vi.fn(async ({ libraryItems, merge = true }: { libraryItem
   const next = typeof libraryItems === "function" ? libraryItems(initialLibrary) : libraryItems;
   return (merge ? [...initialLibrary, ...next] : next) as typeof initialLibrary;
 });
-const updateScene = vi.fn();
+let fakeSceneElements: unknown[] = [];
+let resetPresentedSceneAfterFirstWrite = false;
+const updateScene = vi.fn((payload: { elements?: unknown[] }) => {
+  if (!payload.elements) return;
+  fakeSceneElements = payload.elements;
+  if (resetPresentedSceneAfterFirstWrite && payload.elements.some((element) => (element as { customData?: { whiteboardAssetId?: string } }).customData?.whiteboardAssetId)) {
+    resetPresentedSceneAfterFirstWrite = false;
+    window.setTimeout(() => { fakeSceneElements = []; }, 0);
+  }
+});
 const scrollToContent = vi.fn();
 
 vi.mock("@excalidraw/excalidraw", () => {
@@ -27,7 +36,7 @@ vi.mock("@excalidraw/excalidraw", () => {
         updateLibrary,
         updateScene,
         scrollToContent,
-        getSceneElements: () => [],
+        getSceneElements: () => fakeSceneElements,
         getAppState: () => ({ zoom: { value: 1 }, scrollX: 0, scrollY: 0 }),
       });
     }, [excalidrawAPI, onLibraryChange]);
@@ -49,6 +58,8 @@ describe("ExcalidrawAdapter shared library loading", () => {
     updateLibrary.mockClear();
     updateScene.mockClear();
     scrollToContent.mockClear();
+    fakeSceneElements = [];
+    resetPresentedSceneAfterFirstWrite = false;
   });
 
   it("does not clear the local library before a failed shared-library request", async () => {
@@ -77,6 +88,25 @@ describe("ExcalidrawAdapter shared library loading", () => {
       elements: expect.arrayContaining([expect.objectContaining({ customData: expect.objectContaining({ whiteboardAssetId: "asset-1" }) })]),
     })));
     await waitFor(() => expect(scrollToContent).toHaveBeenCalled());
+  });
+
+  it("retries presentation when initial scene restoration overwrites the first update", async () => {
+    resetPresentedSceneAfterFirstWrite = true;
+    render(<ExcalidrawAdapter
+      initialScene={null}
+      onChange={vi.fn()}
+      presentRequest={{
+        requestId: "request-after-restore",
+        assetId: "asset-restore",
+        name: "注意力计算过程",
+        elements: [{ id: "element-restore", type: "rectangle", x: 0, y: 0, width: 40, height: 20 }],
+      }}
+    />);
+
+    await waitFor(() => expect(updateScene.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 1000 });
+    expect(fakeSceneElements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ customData: expect.objectContaining({ whiteboardAssetId: "asset-restore" }) }),
+    ]));
   });
 
   it("closes the library name tooltip when the material is clicked", async () => {
