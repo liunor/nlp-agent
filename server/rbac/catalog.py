@@ -26,6 +26,7 @@ ROLE_DESCRIPTIONS = {
 PERMISSION_LABELS: dict[Permission, tuple[str, str]] = {
     Permission.IDENTITY_PROFILE_READ_SELF: ("查看个人资料", "查看当前账号自己的昵称、头像和资料信息，不能查看其他用户资料。"),
     Permission.IDENTITY_PROFILE_UPDATE_SELF: ("编辑个人资料", "修改当前账号自己的昵称、头像和资料信息，不会改变账号和角色。"),
+    Permission.IDENTITY_ACCOUNT_DELETE_SELF: ("注销账号", "永久删除当前账号及其全部个人数据，不可恢复。"),
     Permission.LEARNING_CONTENT_READ_PUBLIC: ("查看公开学习内容", "查看平台公开发布的课程、知识点和学习材料，不需要加入工作区。"),
     Permission.LEARNING_CONTENT_READ_WORKSPACE: ("查看工作区学习内容", "查看当前用户所属工作区内已发布的课程和知识内容。"),
     Permission.LEARNING_EXERCISE_SUBMIT: ("提交练习", "提交练习答案并查看本次提交结果，不可修改其他用户的提交记录。"),

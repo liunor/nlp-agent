@@ -16,10 +16,16 @@ export class ApiError extends Error {
 let csrfToken = "";
 let authRequest: Promise<AuthSession> | null = null;
 
+interface RequestOptions {
+  /** 401 表示业务错误（如密码错误）而非会话过期：不广播全局 auth-expired 事件、不清除 CSRF 令牌。 */
+  ignoreAuthExpired?: boolean;
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
   retryCsrf = true,
+  options: RequestOptions = {},
 ): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
@@ -52,7 +58,8 @@ async function request<T>(
   response.status === 401 &&
   csrfToken &&
   path !== "/auth/session" &&
-  path !== "/auth/login"
+  path !== "/auth/login" &&
+  !options.ignoreAuthExpired
 ) {
   csrfToken = "";
   if (typeof window !== "undefined") {
@@ -478,4 +485,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  deleteAccount: (password: string) =>
+    request<void>("/users/me", { method: "DELETE", body: JSON.stringify({ password }) }, true, { ignoreAuthExpired: true }),
+  verifyPassword: (password: string) =>
+    request<void>("/users/me/password/verify", { method: "POST", body: JSON.stringify({ password }) }, true, { ignoreAuthExpired: true }),
 };
