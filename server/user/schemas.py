@@ -79,6 +79,12 @@ class PasswordReset(BaseModel):
     new_password: str = Field(..., min_length=8, max_length=128)
 
 
+class PasswordConfirm(BaseModel):
+    """Schema for self-service account deletion password confirmation."""
+
+    password: str = Field(..., min_length=1, max_length=128)
+
+
 class UserCreateWithRole(UserCreate):
     """Schema for admin creating a user with role assignment."""
 

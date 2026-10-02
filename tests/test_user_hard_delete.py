@@ -235,6 +235,45 @@ async def test_hard_delete_rejects_users_turns_in_another_conversation(session):
 
 
 @pytest.mark.asyncio
+async def test_self_delete_account_removes_own_account(session):
+    """Self-service deletion removes the account and its personal workspace."""
+    service = UserService(session)
+    name = f"selfdel{uuid4().hex[:10]}"
+    owner = await service.create_user(UserCreate(username=name, display_name=name, password="password123"))
+    workspace_id = await session.scalar(select(WorkspaceModel.id).where(WorkspaceModel.slug == f"user-{name}"))
+    await session.flush()
+
+    await service.self_delete_account(owner.id)
+
+    assert await session.get(UserModel, owner.id) is None
+    assert await session.get(WorkspaceModel, workspace_id) is None
+
+
+@pytest.mark.asyncio
+async def test_self_delete_account_rejects_last_developer(session):
+    """Self-service deletion cannot remove the final active developer."""
+    service = UserService(session)
+    from server.rbac.service import rbac_service
+
+    name = f"dev{uuid4().hex[:10]}"
+    developer = await service.create_user(
+        UserCreate(username=name, display_name=name, password="password123")
+    )
+    # Assign the developer role so the last-developer guard is exercised.
+    await rbac_service.replace_user_roles(
+        session, user_id=developer.id, role_codes={"developer"}, assigned_by_user_id=None
+    )
+    await session.flush()
+
+    from server.user.service import LastDeveloperForbiddenError
+
+    with pytest.raises(LastDeveloperForbiddenError):
+        await service.self_delete_account(developer.id)
+
+    assert await session.get(UserModel, developer.id) is not None
+
+
+@pytest.mark.asyncio
 async def test_local_cleanup_runs_after_commit_only(tmp_path, monkeypatch):
     from server.user import local_cleanup
 

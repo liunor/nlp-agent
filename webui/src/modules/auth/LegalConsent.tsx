@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 import type { MouseEvent } from "react";
 import { LEGAL_DOCUMENTS, type LegalDocumentKind } from "./legalDocuments";
 
@@ -60,7 +61,11 @@ export function LegalDocumentModal({ document, onClose }: LegalDocumentModalProp
   if (!document) return null;
   const content = LEGAL_DOCUMENTS[document];
 
-  return (
+  // Render via a portal so the modal escapes any ancestor that establishes a
+  // containing block for fixed-position descendants (e.g. the Radix login
+  // dialog whose ``backdrop-filter`` traps ``position: fixed``). This keeps the
+  // overlay and card anchored to the viewport and its rounded corners intact.
+  return createPortal(
     <div
       className="legal-document-overlay"
       role="presentation"
@@ -102,6 +107,7 @@ export function LegalDocumentModal({ document, onClose }: LegalDocumentModalProp
           <button type="button" className="legal-document-confirm" onClick={onClose}>我已阅读</button>
         </footer>
       </section>
-    </div>
+    </div>,
+    window.document.body,
   );
 }

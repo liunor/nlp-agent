@@ -146,6 +146,36 @@ it("dispatches auth-expired only once when concurrent requests return 401", asyn
   }
 });
 
+  it("does not dispatch auth-expired when ignoreAuthExpired is set (wrong-password 401)", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        user_id: "local",
+        workspace_ids: ["default"],
+        roles: ["student"],
+        csrf_token: "csrf-token",
+        expires_at: 123,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        detail: "密码错误",
+      }), { status: 401, headers: { "Content-Type": "application/json" } }));
+
+    const onAuthExpired = vi.fn();
+    window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+
+    try {
+      await ensureAuth();
+
+      await expect(api.verifyPassword("wrong-password")).rejects.toMatchObject({
+        status: 401,
+      });
+
+      expect(onAuthExpired).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+      fetchMock.mockRestore();
+    }
+  });
+
   it("uploads an attachment using FormData without forcing application/json Content-Type", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
