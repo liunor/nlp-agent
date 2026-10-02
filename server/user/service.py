@@ -15,6 +15,7 @@ from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerificationError, VerifyMismatchError
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from server.infrastructure.mysql.models import (
     RoleModel,
@@ -61,6 +62,10 @@ class SelfDeleteForbiddenError(UserServiceError):
 
 class LastDeveloperForbiddenError(UserServiceError):
     """Raised when an operation would leave no usable developer account."""
+
+
+class HardDeleteBlockedError(UserServiceError):
+    """Raised when protected business data still references the account."""
 
 
 DEFAULT_USER_ROLE = "guest"
@@ -456,6 +461,59 @@ class UserService:
         await self._mark_authorization_changed(user_id, "user_soft_deleted")
         await self.session.flush()
         return user
+
+    async def hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        actor_user_id: str,
+    ) -> None:
+        """Permanently remove an account after explicit administrator confirmation."""
+        if user_id == actor_user_id:
+            raise SelfDeleteForbiddenError("Admin cannot delete their own account")
+
+        user = await self.session.scalar(
+            select(UserModel).where(UserModel.id == user_id).with_for_update()
+        )
+        if user is None:
+            raise UserNotFoundError(f"User {user_id} not found")
+        await self._ensure_not_last_developer(user_id)
+        from .purge import purge_user_data
+
+        try:
+            await purge_user_data(self.session, user)
+            await self.session.flush()
+        except IntegrityError as error:
+            raise HardDeleteBlockedError(
+                "User data cannot be completely deleted because protected records still reference it"
+            ) from error
+
+    async def self_delete_account(self, user_id: str) -> None:
+        """Permanently delete the current user's own account and all their data.
+
+        Unlike :meth:`hard_delete_user` this is a self-service operation: the
+        caller deletes themselves, so the admin self-delete guard does not
+        apply.  The "last active developer" protection still applies so a
+        developer cannot remove the final administrative account and lock the
+        deployment out of its own control plane.  Data removal reuses the same
+        :func:`server.user.purge.purge_user_data` transaction as the admin path,
+        so every MySQL table, monitor record and local file is erased.
+        """
+        user = await self.session.scalar(
+            select(UserModel).where(UserModel.id == user_id).with_for_update()
+        )
+        if user is None:
+            raise UserNotFoundError(f"User {user_id} not found")
+        await self._ensure_not_last_developer(user_id)
+        from .purge import purge_user_data
+
+        try:
+            await purge_user_data(self.session, user)
+            await self.session.flush()
+        except IntegrityError as error:
+            raise HardDeleteBlockedError(
+                "Your account cannot be deleted because protected records still reference it"
+            ) from error
 
     async def revoke_user_sessions(
         self,

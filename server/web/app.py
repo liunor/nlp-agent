@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+from urllib.parse import quote
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from typing import Annotated, Any, Literal
 
 logger = logging.getLogger(__name__)
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security, WebSocket, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, Security, UploadFile, WebSocket, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +35,7 @@ from gateway.contracts import (
     ResourceNotFoundError,
     SubmitTurnRequest,
     TurnConflictError,
+    WhiteboardLibraryInUseError,
 )
 from gateway.core import BackendGateway
 from server.infrastructure.mysql.models import ClassroomModel
@@ -47,6 +49,7 @@ from server.web.auth import (
 from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 from server.rbac.catalog import permission_display, role_display
 from server.agent.session_service import DatabaseSessionService, local_session_service
+from server.storage.quota import StorageQuotaExceeded
 from server.quota.errors import QuotaDomainError, QuotaRejectedError
 from server.quota.management import QuotaManagementService
 from server.quota.notifications import (
@@ -59,6 +62,7 @@ from server.session.summary import summary_sweep_loop
 from server.web.contracts import (
     CreateSessionBody,
     CreateWhiteboardLibraryBody,
+    RenameWhiteboardLibraryBody,
     RenameSessionBody,
     LoginBody,
     ReplaceUserRolesBody,
@@ -131,10 +135,12 @@ from server.teacher.models import (
     TeacherAIAnalysisRequest,
     UpdateTeacherAnalysisAnnotations,
     UpdateTeacherBookPage,
+    UpdateTeacherBookFile,
     UpdateTeacherCatalog,
     UpdateTeachingGoals,
 )
 from server.teacher.service import teacher_service
+from server.teacher.files import MAX_KNOWLEDGE_BOOK_FILE_BYTES
 from server.rbac.service import (
     ClassroomNotFoundError,
     LastDeveloperForbiddenError,
@@ -3090,6 +3096,26 @@ def create_app(
             model_factory=model_factory,
         )
 
+    @app.exception_handler(StorageQuotaExceeded)
+    async def storage_quota_error(request: Request, error: StorageQuotaExceeded):
+        return _problem(
+            request,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            code="storage_quota_exceeded",
+            title="Account storage quota exceeded",
+            detail=str(error),
+        )
+
+    @app.exception_handler(WhiteboardLibraryInUseError)
+    async def whiteboard_library_in_use_error(request: Request, error: WhiteboardLibraryInUseError):
+        return _problem(
+            request,
+            status_code=status.HTTP_409_CONFLICT,
+            code="whiteboard_library_in_use",
+            title="素材正在被教材使用",
+            detail=f"该素材正在被 {error.reference_count} 个教材页面使用，请先移除教材引用后再删除。",
+        )
+
     @app.get("/api/v1/teacher/goals/{workspace_id}", tags=["teacher"])
     async def get_teacher_goals(workspace_id: str, request: Request, principal: Principal):
         return await teacher_service.goals(principal, request.app.state.gateway, workspace_id)
@@ -3177,6 +3203,30 @@ def create_app(
         )
         return {"item": item}
 
+    @app.patch("/api/v1/whiteboard/library/{item_id}", tags=["whiteboard"])
+    async def rename_whiteboard_library_item(
+        item_id: str,
+        body: RenameWhiteboardLibraryBody,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        item = await request.app.state.gateway.rename_whiteboard_library_item(
+            principal,
+            item_id,
+            name=body.name,
+        )
+        return {"item": item}
+
+    @app.delete("/api/v1/whiteboard/library/{item_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["whiteboard"])
+    async def delete_whiteboard_library_item(
+        item_id: str,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ) -> None:
+        await request.app.state.gateway.delete_whiteboard_library_item(principal, item_id)
+
     @app.get("/api/v1/teacher/book/{workspace_id}/navigation", tags=["teacher"])
     async def get_teacher_book_navigation(workspace_id: str, request: Request, principal: Principal):
         return await teacher_service.teacher_book_navigation(
@@ -3195,10 +3245,187 @@ def create_app(
             principal, request.app.state.gateway, workspace_id, knowledge_point_id
         )
 
+    @app.get("/api/v1/teacher/book/{workspace_id}/pages/{knowledge_point_id}/files", tags=["teacher"])
+    async def get_teacher_book_files(
+        workspace_id: str,
+        knowledge_point_id: str,
+        request: Request,
+        principal: Principal,
+    ):
+        try:
+            return await teacher_service.teacher_book_files(
+                principal, request.app.state.gateway, workspace_id, knowledge_point_id
+            )
+        except FileNotFoundError:
+            return _problem(request, status_code=404, code="book_page_not_found", title="教材知识点不存在")
+
+    @app.post(
+        "/api/v1/teacher/book/{workspace_id}/pages/{knowledge_point_id}/files",
+        status_code=status.HTTP_201_CREATED,
+        tags=["teacher"],
+    )
+    async def post_teacher_book_file(
+        workspace_id: str,
+        knowledge_point_id: str,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+        file: UploadFile = File(...),
+        display_name: str | None = Form(default=None, max_length=255),
+    ):
+        content = await file.read(MAX_KNOWLEDGE_BOOK_FILE_BYTES + 1)
+        try:
+            return await teacher_service.create_teacher_book_file(
+                principal,
+                request.app.state.gateway,
+                workspace_id,
+                knowledge_point_id,
+                original_name=file.filename or "",
+                display_name=display_name,
+                media_type=file.content_type or "application/octet-stream",
+                content=content,
+            )
+        except FileNotFoundError:
+            return _problem(request, status_code=404, code="book_page_not_found", title="教材知识点不存在")
+        except ValueError as error:
+            return _problem(request, status_code=422, code="invalid_book_file", title="教材文件无效", detail=str(error))
+
+    @app.patch(
+        "/api/v1/teacher/book/{workspace_id}/pages/{knowledge_point_id}/files/{file_id}",
+        tags=["teacher"],
+    )
+    async def patch_teacher_book_file(
+        workspace_id: str,
+        knowledge_point_id: str,
+        file_id: str,
+        body: UpdateTeacherBookFile,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        try:
+            return await teacher_service.update_teacher_book_file(
+                principal,
+                request.app.state.gateway,
+                workspace_id,
+                knowledge_point_id,
+                file_id,
+                body,
+            )
+        except FileNotFoundError:
+            return _problem(request, status_code=404, code="book_file_not_found", title="教材文件不存在")
+        except ValueError as error:
+            return _problem(request, status_code=422, code="invalid_book_file", title="教材文件无效", detail=str(error))
+
+    @app.put(
+        "/api/v1/teacher/book/{workspace_id}/pages/{knowledge_point_id}/files/{file_id}/content",
+        tags=["teacher"],
+    )
+    async def put_teacher_book_file_content(
+        workspace_id: str,
+        knowledge_point_id: str,
+        file_id: str,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+        file: UploadFile = File(...),
+    ):
+        content = await file.read(MAX_KNOWLEDGE_BOOK_FILE_BYTES + 1)
+        try:
+            return await teacher_service.replace_teacher_book_file_content(
+                principal,
+                request.app.state.gateway,
+                workspace_id,
+                knowledge_point_id,
+                file_id,
+                original_name=file.filename or "",
+                media_type=file.content_type or "application/octet-stream",
+                content=content,
+            )
+        except FileNotFoundError:
+            return _problem(request, status_code=404, code="book_file_not_found", title="教材文件不存在")
+        except ValueError as error:
+            return _problem(request, status_code=422, code="invalid_book_file", title="教材文件无效", detail=str(error))
+
+    @app.delete(
+        "/api/v1/teacher/book/{workspace_id}/pages/{knowledge_point_id}/files/{file_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        tags=["teacher"],
+    )
+    async def delete_teacher_book_file(
+        workspace_id: str,
+        knowledge_point_id: str,
+        file_id: str,
+        request: Request,
+        principal: Principal,
+        _claims: WriteClaims,
+    ):
+        try:
+            await teacher_service.delete_teacher_book_file(
+                principal,
+                request.app.state.gateway,
+                workspace_id,
+                knowledge_point_id,
+                file_id,
+            )
+        except FileNotFoundError:
+            return _problem(request, status_code=404, code="book_file_not_found", title="教材文件不存在")
+        except ValueError as error:
+            return _problem(request, status_code=422, code="invalid_book_file", title="教材文件无法删除", detail=str(error))
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @app.get("/api/v1/learning/book/{workspace_id}/pages/{knowledge_point_id}", tags=["learning"])
     async def get_learning_book_page(workspace_id: str, knowledge_point_id: str, request: Request, principal: Principal):
         return await teacher_service.learning_book_page(
             principal, request.app.state.gateway, workspace_id, knowledge_point_id
+        )
+
+    async def _learning_book_file_response(
+        workspace_id: str,
+        file_id: str,
+        request: Request,
+        principal: Principal,
+        *,
+        download: bool,
+    ) -> Response:
+        try:
+            file = await teacher_service.learning_book_file(
+                principal, request.app.state.gateway, workspace_id, file_id
+            )
+        except FileNotFoundError:
+            return _problem(request, status_code=404, code="book_file_not_found", title="教材文件不存在")
+        disposition = "attachment" if download else "inline"
+        filename = quote(str(file["display_name"] or file["original_name"]), safe="")
+        media_type = str(file["media_type"])
+        if not download and media_type.lower() in {"text/html", "application/xhtml+xml"}:
+            # A teacher may upload HTML as source material, but a new tab must
+            # never execute it as same-origin markup.
+            media_type = "text/plain"
+        return Response(
+            content=bytes(file["content"]),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"{disposition}; filename*=UTF-8''{filename}",
+                "X-Content-Type-Options": "nosniff",
+                "ETag": f'"{file["sha256"]}"',
+                "Cache-Control": "private, max-age=300",
+            },
+        )
+
+    @app.get("/api/v1/learning/book/{workspace_id}/files/{file_id}/download", tags=["learning"])
+    async def download_learning_book_file(
+        workspace_id: str, file_id: str, request: Request, principal: Principal
+    ) -> Response:
+        return await _learning_book_file_response(
+            workspace_id, file_id, request, principal, download=True
+        )
+
+    @app.get("/api/v1/learning/book/{workspace_id}/files/{file_id}", tags=["learning"])
+    async def preview_learning_book_file(
+        workspace_id: str, file_id: str, request: Request, principal: Principal
+    ) -> Response:
+        return await _learning_book_file_response(
+            workspace_id, file_id, request, principal, download=False
         )
 
     @app.put("/api/v1/teacher/book/{workspace_id}/pages/{knowledge_point_id}", tags=["teacher"])
@@ -3216,6 +3443,8 @@ def create_app(
             )
         except KnowledgeBookRevisionConflictError as error:
             return _problem(request, status_code=409, code="book_page_conflict", title="教材页面版本冲突", detail=str(error))
+        except FileNotFoundError as error:
+            return _problem(request, status_code=422, code="book_file_not_found", title="教材引用的文件不存在", detail=str(error))
         except ValueError as error:
             return _problem(request, status_code=422, code="invalid_book_page", title="教材页面无效", detail=str(error))
 
@@ -3234,6 +3463,8 @@ def create_app(
             )
         except KnowledgeBookRevisionConflictError as error:
             return _problem(request, status_code=409, code="book_page_conflict", title="教材页面版本冲突", detail=str(error))
+        except FileNotFoundError as error:
+            return _problem(request, status_code=422, code="book_file_not_found", title="教材引用的文件不存在", detail=str(error))
         except ValueError as error:
             return _problem(request, status_code=422, code="invalid_book_page", title="教材页面无法发布", detail=str(error))
 
@@ -3581,6 +3812,8 @@ def create_app(
     # Image upload endpoints (registered before the SPA mount so /api routes win).
     from server.uploads import router as uploads_router
     app.include_router(uploads_router)
+    from server.storage import router as storage_router
+    app.include_router(storage_router)
 
     if static_dir is not None and static_dir.is_dir():
         app.mount("/", SpaStaticFiles(directory=static_dir, html=True), name="webui")

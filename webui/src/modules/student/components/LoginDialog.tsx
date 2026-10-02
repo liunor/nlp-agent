@@ -2,6 +2,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { LockKeyhole, RefreshCw, X } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/platform/http/api";
+import { ConsentNotice, LegalDocumentModal } from "@/modules/auth/LegalConsent";
+import type { LegalDocumentKind } from "@/modules/auth/legalDocuments";
 
 type Tab = "login" | "register";
 
@@ -79,10 +81,16 @@ function LoginForm({
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [hasAgreed, setHasAgreed] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!username.trim() || !password || submitting) return;
+    if (!hasAgreed) {
+      setError("请先阅读并同意用户协议和隐私政策");
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
@@ -127,11 +135,19 @@ function LoginForm({
       <button
         className="login-dialog-submit"
         type="submit"
-        disabled={submitting || !username.trim() || !password}
+        disabled={submitting || !username.trim() || !password || !hasAgreed}
       >
         <LockKeyhole size={16} />
         {submitting ? "正在验证" : "登录并继续"}
       </button>
+      <ConsentNotice
+        id="dialog-login-consent"
+        checked={hasAgreed}
+        disabled={submitting}
+        onChange={(checked) => { setHasAgreed(checked); setError(""); }}
+        onOpen={setLegalDocument}
+      />
+      <LegalDocumentModal document={legalDocument} onClose={() => setLegalDocument(null)} />
       <div style={{ marginTop: 12, textAlign: "center", fontSize: 13, color: "var(--text-secondary, #6b7280)" }}>
         <span>还没有账号？</span>{" "}
         <button
@@ -173,6 +189,8 @@ function RegisterForm({
   const [regCaptchaImage, setRegCaptchaImage] = useState("");
   const [regCaptchaCode, setRegCaptchaCode] = useState("");
   const [emailSent, setEmailSent] = useState(false);
+  const [hasAgreed, setHasAgreed] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
   const captchaRequestVersion = useRef({ email: 0, reg: 0 });
 
   const loadCaptcha = useCallback(async (target: "email" | "reg") => {
@@ -252,6 +270,10 @@ function RegisterForm({
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!email.trim() || !emailCode || !password || !regCaptchaCode.trim() || submitting) return;
+    if (!hasAgreed) {
+      setError("请先阅读并同意用户协议和隐私政策");
+      return;
+    }
     if (password !== confirmPassword) {
       setError("两次输入的密码不一致");
       return;
@@ -442,11 +464,19 @@ function RegisterForm({
       <button
         className="login-dialog-submit"
         type="submit"
-        disabled={submitting || !email.trim() || !emailCode || !password || !regCaptchaCode.trim()}
+        disabled={submitting || !email.trim() || !emailCode || !password || !regCaptchaCode.trim() || !hasAgreed}
       >
         <LockKeyhole size={16} />
         {submitting ? "注册中..." : "注册"}
       </button>
+      <ConsentNotice
+        id="dialog-register-consent"
+        checked={hasAgreed}
+        disabled={submitting}
+        onChange={(checked) => { setHasAgreed(checked); setError(""); }}
+        onOpen={setLegalDocument}
+      />
+      <LegalDocumentModal document={legalDocument} onClose={() => setLegalDocument(null)} />
       <div style={{ marginTop: 12, textAlign: "center", fontSize: 13, color: "var(--text-secondary, #6b7280)" }}>
         <span>已有账号？</span>{" "}
         <button

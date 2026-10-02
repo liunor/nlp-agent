@@ -1,9 +1,10 @@
 import { Activity, AlertTriangle, Bot, Clock3, Database, Gauge, HardDrive, Layers3, MoreHorizontal, Radio, RefreshCw, Search, Server, ShieldCheck, TerminalSquare, Timer, Trash2, X, Zap } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
-import { authenticate, monitorApi, type MonitorSession, type Overview, type SystemUsageDimension, type SystemUsageSnapshot, type TelemetryEvent, type Trace, type TraceDetail, type UsageRow } from "./api";
+import { authenticate, monitorApi, type MonitorSession, type Overview, type StorageSpace, type SystemUsageDimension, type SystemUsageSnapshot, type TelemetryEvent, type Trace, type TraceDetail, type UsageRow } from "./api";
 import { controlPlaneUrl, monitorPageFromLocation, monitorPathForPage, resetMonitorData, safeEventContext, telemetryFrame, type MonitorPage, type TraceChain } from "./monitor-helpers";
-import { mergeSandboxCapacitySamples, mergeSandboxLogs, SANDBOX_REFRESH_INTERVAL_MS, SandboxMonitorPage, type SandboxExecution, type SandboxLogEntry, type SandboxOverview, type SandboxRuntime } from "./SandboxMonitorPage";
+import { mergeSandboxCapacitySamples, mergeSandboxLogs, SANDBOX_REFRESH_INTERVAL_MS, SandboxMonitorPage, type SandboxExecution, type SandboxExecutionEvent, type SandboxLogEntry, type SandboxOverview, type SandboxPreloadCompatibility, type SandboxRuntime } from "./SandboxMonitorPage";
+import { formatStorageBytes, storagePercent, storageStateClass } from "./storage-helpers";
 import { AuthorizationAuditPage } from "./AuthorizationAuditPage";
 import { MonitorLoginPage } from "./MonitorLoginPage";
 import { MonitorComponentsPage, MonitorErrorsPage, MonitorOverviewPage, MonitorStoragePage, MonitorUsagePage } from "./MonitorDashboardPages";
@@ -49,6 +50,13 @@ function authMessage(reason: unknown): string {
   if (status === 401) return "登录监控平台后才能查看运行数据。";
   if (status === 403) return "当前账号没有监控权限，请联系管理员授权。";
   return reason instanceof Error ? reason.message : "监控平台认证失败，请稍后重试。";
+}
+
+function StorageSpacePanel({ space }: { space: StorageSpace | null }) {
+  if (!space) return null;
+  const pool = space.account_pool;
+  const disk = space.disk;
+  return <section className="mon-panel mon-space-panel"><header><div><h2>当前空间</h2><p>只统计当前{space.environment.label}环境（{space.database.name}），不合并测试与生产数据</p></div><span className="mon-scope-tag">{space.environment.label}环境</span></header><div className="mon-space-grid"><article className={`mon-space-card ${storageStateClass(pool.state)}`}><div className="mon-space-heading"><span>账户数据池</span><strong>{formatStorageBytes(pool.total_bytes)} / {formatStorageBytes(pool.limit_bytes)}</strong></div><div className="mon-space-track"><i style={{ width: `${storagePercent(pool.ratio)}%` }} /></div><small>已用 {formatStorageBytes(pool.used_bytes)} · 预留 {formatStorageBytes(pool.reserved_bytes)} · 可用 {formatStorageBytes(pool.available_bytes)} · {pool.account_count} 个账户</small></article><article className={`mon-space-card ${storageStateClass(disk.state)}`}><div className="mon-space-heading"><span>所在磁盘</span><strong>{formatStorageBytes(disk.free_bytes)} 可用</strong></div><div className="mon-space-track"><i style={{ width: `${storagePercent(disk.ratio)}%` }} /></div><small>已用 {formatStorageBytes(disk.used_bytes)} / {formatStorageBytes(disk.total_bytes)} · 物理磁盘与另一环境共享，不与账户池相加</small></article></div></section>;
 }
 
 const TOKEN_LABELS: Record<string, string> = {
@@ -154,12 +162,20 @@ export function MonitorApp() {
   const [eventsError, setEventsError] = useState("");
   const liveEventIds = useRef(new Set<string>());
   const [storage, setStorage] = useState<Record<string, unknown>>({});
+  const [space, setSpace] = useState<StorageSpace | null>(null);
   const [sandboxOverview, setSandboxOverview] = useState<SandboxOverview | null>(null);
+  const [sandboxHistoryMinutes, setSandboxHistoryMinutes] = useState(30);
   const [sandboxRuntimes, setSandboxRuntimes] = useState<SandboxRuntime[]>([]);
   const [sandboxExecutions, setSandboxExecutions] = useState<SandboxExecution[]>([]);
   const [sandboxRuntimePage, setSandboxRuntimePage] = useState({ total: 0, has_more: false });
   const [sandboxExecutionPage, setSandboxExecutionPage] = useState({ total: 0, has_more: false });
   const [sandboxLogs, setSandboxLogs] = useState<SandboxLogEntry[]>([]);
+  const [sandboxRuntimeDetail, setSandboxRuntimeDetail] = useState<SandboxRuntime | null>(null);
+  const [sandboxSelectedExecution, setSandboxSelectedExecution] = useState<SandboxExecution | null>(null);
+  const [sandboxExecutionEvents, setSandboxExecutionEvents] = useState<SandboxExecutionEvent[]>([]);
+  const [sandboxPreloadMatrix, setSandboxPreloadMatrix] = useState<SandboxPreloadCompatibility | null>(null);
+  const [sandboxPrewarmLoading, setSandboxPrewarmLoading] = useState(false);
+  const [sandboxPrewarmResult, setSandboxPrewarmResult] = useState<{ target?: number; ttl_seconds?: number; command_id?: string } | null>(null);
   const [sandboxLoading, setSandboxLoading] = useState(false);
   const [sandboxLogLoading, setSandboxLogLoading] = useState(false);
   const [sandboxListLoading, setSandboxListLoading] = useState(false);
@@ -173,23 +189,27 @@ export function MonitorApp() {
   const [resetOpen, setResetOpen] = useState(false);
   const [dangerOpen, setDangerOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const load = useCallback(async () => { setLoading(true); setError(""); try { const session = await authenticate(); setMonitorSession(session); setAuthState("authenticated"); const [overviewResult, usageResult, storageResult] = await Promise.all([monitorApi.overview(days), monitorApi.usage(days), monitorApi.storage()]); const systemUsageResult = await monitorApi.systemUsage(days, false).catch((reason) => { if (authStatus(reason) === 401 || authStatus(reason) === 403) throw reason; return null; }); setOverview(overviewResult); setSystemUsage(systemUsageResult); setUsage(usageResult.items); setStorage(storageResult); } catch (reason) { if (authStatus(reason) === 401 || authStatus(reason) === 403) { setMonitorSession(null); setAuthState("login"); setAuthMessageText(authMessage(reason)); } else { setAuthState("authenticated"); setError(reason instanceof Error ? reason.message : String(reason)); } } finally { setLoading(false); } }, [days]);
+  const load = useCallback(async () => { setLoading(true); setError(""); try { const session = await authenticate(); setMonitorSession(session); setAuthState("authenticated"); const [overviewResult, usageResult, storageResult, spaceResult] = await Promise.all([monitorApi.overview(days), monitorApi.usage(days), monitorApi.storage(), monitorApi.space().catch(() => null)]); const systemUsageResult = await monitorApi.systemUsage(days, false).catch((reason) => { if (authStatus(reason) === 401 || authStatus(reason) === 403) throw reason; return null; }); setOverview(overviewResult); setSystemUsage(systemUsageResult); setUsage(usageResult.items); setStorage(storageResult); setSpace(spaceResult); } catch (reason) { if (authStatus(reason) === 401 || authStatus(reason) === 403) { setMonitorSession(null); setAuthState("login"); setAuthMessageText(authMessage(reason)); } else { setAuthState("authenticated"); setError(reason instanceof Error ? reason.message : String(reason)); } } finally { setLoading(false); } }, [days]);
   const loadEvents = useCallback(async () => { setEventsLoading(true); setEventsError(""); try { const result = await monitorApi.events(100); setEvents((current) => { const merged = new Map(result.items.map((item) => [item.event_id, item])); for (const item of current) if (liveEventIds.current.has(item.event_id)) merged.set(item.event_id, item); return [...merged.values()].sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)).slice(0, 100); }); } catch (reason) { if (authStatus(reason) === 401 || authStatus(reason) === 403) { setAuthState("login"); setAuthMessageText(authMessage(reason)); } else { setEventsError(reason instanceof Error ? reason.message : String(reason)); } } finally { setEventsLoading(false); } }, []);
   const login = useCallback(async (username: string, password: string) => { setAuthMessageText(""); try { await monitorApi.login(username, password); setAuthState("checking"); await load(); } catch (reason) { setAuthState("login"); setAuthMessageText(authMessage(reason)); throw reason; } }, [load]);
   const handleAuthFailure = useCallback((reason: unknown) => { setAuthState("login"); setAuthMessageText(authMessage(reason)); }, []);
-  const loadSandbox = useCallback(async (initial = false) => {
+  const loadSandbox = useCallback(async (initial = false, historyMinutes = sandboxHistoryMinutes) => {
     if (sandboxRefreshInFlight.current) return;
     sandboxRefreshInFlight.current = true;
     if (initial) setSandboxLoading(true);
     else setSandboxLogLoading(true);
     setSandboxError("");
     try {
-      const [nextOverview, nextRuntimes, nextExecutions, nextLogs] = await Promise.all([
-        monitorApi.sandboxOverview(), monitorApi.sandboxRuntimes(), monitorApi.sandboxExecutions(), monitorApi.sandboxLogs(),
+      const [nextOverview, nextRuntimes, nextExecutions, nextLogs, preloadMatrix] = await Promise.all([
+        monitorApi.sandboxOverview(historyMinutes), monitorApi.sandboxRuntimes(), monitorApi.sandboxExecutions(), monitorApi.sandboxLogs(),
+        initial ? monitorApi.sandboxPreloadCompatibility() : Promise.resolve(null),
       ]);
+      if (preloadMatrix) setSandboxPreloadMatrix(preloadMatrix);
       setSandboxOverview((current) => ({
         ...nextOverview,
-        capacity_history: mergeSandboxCapacitySamples(current?.capacity_history ?? [], nextOverview.capacity_history),
+        capacity_history: initial
+          ? nextOverview.capacity_history
+          : mergeSandboxCapacitySamples(current?.capacity_history ?? [], nextOverview.capacity_history),
       }));
       setSandboxRuntimes((current) => initial
         ? nextRuntimes.items
@@ -209,7 +229,7 @@ export function MonitorApp() {
       if (initial) setSandboxLoading(false);
       else setSandboxLogLoading(false);
     }
-  }, []);
+  }, [sandboxHistoryMinutes]);
   const loadSandboxMore = useCallback(async (kind: "runtimes" | "executions") => {
     if (sandboxRefreshInFlight.current) return;
     const isRuntimes = kind === "runtimes";
@@ -243,6 +263,35 @@ export function MonitorApp() {
       setSandboxListLoading(false);
     }
   }, [sandboxExecutionPage.has_more, sandboxExecutions.length, sandboxRuntimePage.has_more, sandboxRuntimes.length]);
+  const openSandboxRuntime = useCallback(async (runtimeId: string) => {
+    try {
+      setSandboxRuntimeDetail(await monitorApi.sandboxRuntime(runtimeId));
+    } catch (reason) {
+      setSandboxError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+  const openSandboxExecution = useCallback(async (executionId: string) => {
+    try {
+      const execution = sandboxExecutions.find((item) => item.id === executionId) ?? null;
+      setSandboxSelectedExecution(execution);
+      const result = await monitorApi.sandboxExecutionEvents(executionId);
+      setSandboxExecutionEvents(result.events);
+    } catch (reason) {
+      setSandboxError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [sandboxExecutions]);
+  const prewarmSandbox = useCallback(async (body: { expected_sessions: number; sessions_per_runtime: number; ttl_seconds: number }) => {
+    setSandboxPrewarmLoading(true);
+    setSandboxError("");
+    try {
+      setSandboxPrewarmResult(await monitorApi.prewarmSandbox(body));
+      await loadSandbox(false);
+    } catch (reason) {
+      setSandboxError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSandboxPrewarmLoading(false);
+    }
+  }, [loadSandbox]);
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => { const onPopState = () => setPage(monitorPageFromLocation()); addEventListener("popstate", onPopState); return () => removeEventListener("popstate", onPopState); }, []);
   const hasOverview = overview !== null;
@@ -291,7 +340,7 @@ export function MonitorApp() {
   const traceFocus = traceSearch.get("focus") === "errors" || traceSearch.get("focus") === "slow" ? traceSearch.get("focus") as "errors" | "slow" : "all";
   const traceQuery = traceSearch.get("query") ?? "";
   const pageContent = useMemo(() => {
-    if (page === "sandbox") return <SandboxMonitorPage overview={sandboxOverview} logs={sandboxLogs} runtimes={sandboxRuntimes} executions={sandboxExecutions} runtimeTotal={sandboxRuntimePage.total} executionTotal={sandboxExecutionPage.total} runtimeHasMore={sandboxRuntimePage.has_more} executionHasMore={sandboxExecutionPage.has_more} listLoading={sandboxListLoading} live={sandboxLive} loading={sandboxLoading} logLoading={sandboxLogLoading} error={sandboxError} onRefresh={() => void loadSandbox(false)} onLoadMoreRuntimes={() => void loadSandboxMore("runtimes")} onLoadMoreExecutions={() => void loadSandboxMore("executions")} onDrain={(runtimeId) => void drainSandbox(runtimeId)} />;
+    if (page === "sandbox") return <SandboxMonitorPage overview={sandboxOverview} logs={sandboxLogs} runtimes={sandboxRuntimes} executions={sandboxExecutions} runtimeTotal={sandboxRuntimePage.total} executionTotal={sandboxExecutionPage.total} runtimeHasMore={sandboxRuntimePage.has_more} executionHasMore={sandboxExecutionPage.has_more} historyMinutes={sandboxHistoryMinutes} onHistoryMinutesChange={setSandboxHistoryMinutes} listLoading={sandboxListLoading} live={sandboxLive} loading={sandboxLoading} logLoading={sandboxLogLoading} error={sandboxError} onRefresh={() => void loadSandbox(false)} onLoadMoreRuntimes={() => void loadSandboxMore("runtimes")} onLoadMoreExecutions={() => void loadSandboxMore("executions")} onDrain={(runtimeId) => void drainSandbox(runtimeId)} onOpenRuntime={(runtimeId) => void openSandboxRuntime(runtimeId)} runtimeDetail={sandboxRuntimeDetail} onCloseRuntimeDetail={() => setSandboxRuntimeDetail(null)} onOpenExecution={(executionId) => void openSandboxExecution(executionId)} selectedExecution={sandboxSelectedExecution} executionEvents={sandboxExecutionEvents} onCloseExecutionEvents={() => { setSandboxSelectedExecution(null); setSandboxExecutionEvents([]); }} preloadMatrix={sandboxPreloadMatrix} onPrewarm={(body) => void prewarmSandbox(body)} prewarmLoading={sandboxPrewarmLoading} prewarmResult={sandboxPrewarmResult} />;
     if (page === "audit") return <AuthorizationAuditPage onAuthFailure={handleAuthFailure} />;
     if (!overview) return null;
     if (page === "traces") return <TraceExplorerPage days={days} initialFocus={traceFocus} initialQuery={traceQuery} />;
@@ -300,8 +349,8 @@ export function MonitorApp() {
     if (page === "components") return <MonitorComponentsPage data={overview} systemUsage={systemUsage} onOpenTrace={navigateToTraceFilter} />;
     if (page === "errors") return <MonitorErrorsPage days={days} onOpenProblem={navigateToTraceFilter} />;
     if (page === "storage") return <MonitorStoragePage storage={storage} retentionDays={storageRetentionDays(storage)} onPrune={async () => { setStorage(await monitorApi.prune()); }} />;
-    return <MonitorOverviewPage data={overview} usage={usage} systemUsage={systemUsage} />;
-  }, [days, drainSandbox, events, eventsError, eventsLoading, handleAuthFailure, live, loadEvents, loadSandbox, loadSandboxMore, navigateToTraceFilter, openTraceById, overview, page, sandboxError, sandboxExecutionPage, sandboxExecutions, sandboxListLoading, sandboxLive, sandboxLoading, sandboxLogLoading, sandboxLogs, sandboxOverview, sandboxRuntimePage, sandboxRuntimes, storage, systemUsage, traceFocus, traceQuery, usage]);
+    return <><StorageSpacePanel space={space} /><MonitorOverviewPage data={overview} usage={usage} systemUsage={systemUsage} /></>;
+  }, [days, drainSandbox, events, eventsError, eventsLoading, handleAuthFailure, live, loadEvents, loadSandbox, loadSandboxMore, navigateToTraceFilter, openSandboxExecution, openSandboxRuntime, openTraceById, overview, page, prewarmSandbox, sandboxError, sandboxExecutionPage, sandboxExecutions, sandboxHistoryMinutes, sandboxListLoading, sandboxLive, sandboxLoading, sandboxLogLoading, sandboxLogs, sandboxOverview, sandboxPreloadMatrix, sandboxPrewarmLoading, sandboxPrewarmResult, sandboxRuntimeDetail, sandboxRuntimePage, sandboxRuntimes, sandboxSelectedExecution, sandboxExecutionEvents, space, storage, systemUsage, traceFocus, traceQuery, usage]);
   if (authState === "checking") return <main className="monitor-auth-shell"><div className="monitor-auth-loading"><RefreshCw className="spin" /><span>正在验证监控权限…</span></div></main>;
   if (authState === "login") return <MonitorLoginPage message={authMessageText} onLogin={login} />;
   const canReset = monitorSession?.permissions?.includes("system:runtime:reset") ?? false;

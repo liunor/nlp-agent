@@ -3,6 +3,8 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { useAuth } from "@/platform/auth/AuthContext";
 import { api } from "@/platform/http/api";
+import { ConsentNotice, LegalDocumentModal } from "./LegalConsent";
+import type { LegalDocumentKind } from "./legalDocuments";
 
 type Tab = "login" | "register";
 
@@ -65,9 +67,16 @@ function LoginForm({ returnPath }: { returnPath: string }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [hasAgreed, setHasAgreed] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
+  const [consentError, setConsentError] = useState("");
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!hasAgreed) {
+      setConsentError("请先阅读并同意用户协议和隐私政策");
+      return;
+    }
     setSubmitting(true);
     try {
       await login(username, password);
@@ -82,10 +91,16 @@ function LoginForm({ returnPath }: { returnPath: string }) {
   const inputCls = "mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50";
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <>
+      <form onSubmit={handleSubmit} className="space-y-4">
       {error && (
         <div className="rounded bg-red-50 p-3 text-sm text-red-700">
           {error}
+        </div>
+      )}
+      {consentError && (
+        <div className="rounded bg-red-50 p-3 text-sm text-red-700" role="alert">
+          {consentError}
         </div>
       )}
 
@@ -103,11 +118,20 @@ function LoginForm({ returnPath }: { returnPath: string }) {
           disabled={submitting} className={inputCls} />
       </div>
 
-      <button type="submit" disabled={submitting || isLoading}
+      <button type="submit" disabled={submitting || isLoading || !hasAgreed}
         className="w-full rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {submitting ? "登录中..." : "登录"}
       </button>
-    </form>
+      <ConsentNotice
+        id="login-consent"
+        checked={hasAgreed}
+        disabled={submitting}
+        onChange={(checked) => { setHasAgreed(checked); setConsentError(""); }}
+        onOpen={setLegalDocument}
+      />
+      </form>
+      <LegalDocumentModal document={legalDocument} onClose={() => setLegalDocument(null)} />
+    </>
   );
 }
 
@@ -126,6 +150,9 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
   const [emailSending, setEmailSending] = useState(false);
   const [emailCooldown, setEmailCooldown] = useState(0);
   const [emailSent, setEmailSent] = useState(false);
+  const [hasAgreed, setHasAgreed] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
+  const [consentError, setConsentError] = useState("");
 
   const [emailCaptchaId, setEmailCaptchaId] = useState("");
   const [emailCaptchaImage, setEmailCaptchaImage] = useState("");
@@ -210,6 +237,10 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !emailCode || !password || !regCaptchaCode.trim() || submitting) return;
+    if (!hasAgreed) {
+      setConsentError("请先阅读并同意用户协议和隐私政策");
+      return;
+    }
     if (password !== confirmPassword) { setError("两次输入的密码不一致"); return; }
     if (password.length < 8) { setError("密码至少8位"); return; }
     setSubmitting(true);
@@ -237,8 +268,10 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
   const captchaImgCls = "h-16 w-40 shrink-0 rounded border border-gray-300 object-cover cursor-pointer";
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <>
+      <form onSubmit={handleSubmit} className="space-y-4">
       {error && <div className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {consentError && <div className="rounded bg-red-50 p-3 text-sm text-red-700" role="alert">{consentError}</div>}
 
       <div>
         <label htmlFor="reg-email" className="block text-sm font-medium text-gray-700">邮箱</label>
@@ -321,10 +354,19 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
         </div>
       )}
 
-      <button type="submit" disabled={submitting || !email.trim() || !emailCode || !password || !regCaptchaCode.trim()}
+      <button type="submit" disabled={submitting || !email.trim() || !emailCode || !password || !regCaptchaCode.trim() || !hasAgreed}
         className="w-full rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {submitting ? "注册中..." : "注册"}
       </button>
-    </form>
+      <ConsentNotice
+        id="register-consent"
+        checked={hasAgreed}
+        disabled={submitting}
+        onChange={(checked) => { setHasAgreed(checked); setConsentError(""); }}
+        onOpen={setLegalDocument}
+      />
+      </form>
+      <LegalDocumentModal document={legalDocument} onClose={() => setLegalDocument(null)} />
+    </>
   );
 }

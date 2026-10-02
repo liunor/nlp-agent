@@ -172,6 +172,13 @@ class ResourceNotFoundError(LookupError):
     pass
 
 
+class WhiteboardLibraryInUseError(RuntimeError):
+    def __init__(self, item_id: str, reference_count: int) -> None:
+        self.item_id = item_id
+        self.reference_count = reference_count
+        super().__init__(f"whiteboard library item is used by {reference_count} knowledge-book pages")
+
+
 class TeachingConfigurationError(ValueError):
     """Teacher catalogue cannot safely serve the learner's current selection."""
 

@@ -379,11 +379,13 @@ describe("WhiteboardPanel", () => {
       status: "published" as const,
       created: 456,
       name: "全局流程",
+      source_key: "deep-learning:01",
       elements: [{ id: "shape-1", type: "rectangle" }],
     };
     whiteboardApi.getWhiteboardLibrary.mockResolvedValue({ items: [sharedItem] });
     const blob = new Blob([JSON.stringify({ type: "excalidrawlib", version: 2, libraryItems: [] })], { type: "application/json" });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(blob) }));
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(blob) });
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<WhiteboardPanel userId="student-1" />);
     const props = excalidraw.render.mock.calls.at(-1)?.[0] as { excalidrawAPI?: (api: { updateLibrary: typeof updateLibrary }) => void };
@@ -394,6 +396,7 @@ describe("WhiteboardPanel", () => {
       merge: true,
       defaultStatus: "published",
     })));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("keeps library installation active under StrictMode effect replay", async () => {
@@ -425,7 +428,7 @@ describe("WhiteboardPanel", () => {
     await waitFor(() => expect(screen.getByText("白板素材区初始化失败，已尽力恢复，请刷新白板后重试。")).toBeInTheDocument());
     expect(updateLibrary).toHaveBeenCalledTimes(WHITEBOARD_LIBRARY_ASSETS.length + 1);
     expect(fetchMock).toHaveBeenCalledTimes(WHITEBOARD_LIBRARY_ASSETS.length);
-    expect(updateLibrary.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ merge: false }));
+    expect(updateLibrary.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ merge: false }));
   });
 
   it("retries bundled library loading after a failed attempt", async () => {

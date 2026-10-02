@@ -19,7 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.mysql import BIGINT, DATETIME, MEDIUMTEXT
+from sqlalchemy.dialects.mysql import BIGINT, DATETIME, LONGBLOB, MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampedModel
@@ -433,6 +433,55 @@ class KnowledgeBookAssetModel(TimestampedModel, Base):
     size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
 
+class KnowledgeBookFileModel(TimestampedModel, Base):
+    """Text/code files embedded in teacher-authored knowledge-book pages."""
+
+    __tablename__ = "nlp_knowledge_book_files"
+    __table_args__ = (
+        Index(
+            "ix_nlp_knowledge_book_files_point",
+            "workspace_id",
+            "knowledge_point_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_course_catalogs.workspace_id", ondelete="CASCADE"), nullable=False
+    )
+    knowledge_point_id: Mapped[str] = mapped_column(UUID, nullable=False)
+    original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[bytes] = mapped_column(LONGBLOB, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128, collation="ascii_bin"), nullable=False)
+
+
+class KnowledgeBookFileRefModel(Base):
+    """Ordered draft/published references from a page to its embedded files."""
+
+    __tablename__ = "nlp_knowledge_book_file_refs"
+    __table_args__ = (
+        CheckConstraint("state IN ('draft', 'published')", name="ck_nlp_book_file_refs_state"),
+        ForeignKeyConstraint(
+            ["file_id"], ["nlp_knowledge_book_files.id"],
+            ondelete="CASCADE", name="fk_nlp_book_file_refs_file",
+        ),
+        Index("ix_nlp_knowledge_book_file_refs_file", "workspace_id", "file_id", "state"),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    knowledge_point_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), primary_key=True)
+    file_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), nullable=False, server_default=func.utc_timestamp(6)
+    )
 
 class WhiteboardLibraryItemModel(TimestampedModel, Base):
     """Globally shared Excalidraw library entries created by teaching roles."""
@@ -441,6 +490,7 @@ class WhiteboardLibraryItemModel(TimestampedModel, Base):
     __table_args__ = (Index("ix_nlp_whiteboard_library_created", "created_at", "id"),)
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    asset_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     item_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_by: Mapped[str] = mapped_column(UUID, nullable=False)
@@ -795,6 +845,11 @@ class LangGraphCheckpointWriteModel(Base):
 class ConversationTranscriptModel(Base):
     __tablename__ = "nlp_conversation_transcripts"
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+    )
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     message_uuid: Mapped[str] = mapped_column(String(128), nullable=False)
     parent_uuid: Mapped[str | None] = mapped_column(String(128))
@@ -803,7 +858,98 @@ class ConversationTranscriptModel(Base):
     content_json: Mapped[dict | list | str] = mapped_column(JSON, nullable=False)
     tool_json: Mapped[dict | None] = mapped_column(JSON)
     usage_json: Mapped[dict | None] = mapped_column(JSON)
+
+
+class StorageAccountModel(TimestampedModel, Base):
+    """One logical quota ledger per account, shared by every workspace."""
+
+    __tablename__ = "nlp_storage_accounts"
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    core_used_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_used_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    core_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    core_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    files_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    max_file_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    max_items_override: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+
+
+class StorageReservationModel(Base):
+    """An auditable reservation that prevents concurrent quota oversubscription."""
+
+    __tablename__ = "nlp_storage_reservations"
+    __table_args__ = (
+        Index("ix_nlp_storage_reservations_owner_status", "owner_user_id", "status"),
+        Index("ix_nlp_storage_reservations_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
+    )
+    bucket: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_key: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="reserved")
+    reserved_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
+class StorageQuotaAuditModel(Base):
+    """Immutable audit record for administrator quota changes."""
+
+    __tablename__ = "nlp_storage_quota_audits"
+    __table_args__ = (
+        Index("ix_nlp_storage_quota_audits_target_created", "target_user_id", "created_at"),
+        Index("ix_nlp_storage_quota_audits_actor_created", "actor_user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    actor_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False
+    )
+    target_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False
+    )
+    previous_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    new_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False, server_default="")
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
+class UserFileModel(TimestampedModel, Base):
+    """User-owned files and folders stored outside the conversation transcript."""
+
+    __tablename__ = "nlp_user_files"
+    __table_args__ = (
+        Index("ix_nlp_user_files_owner_workspace_parent", "owner_user_id", "workspace_id", "parent_id"),
+        Index("ix_nlp_user_files_owner_workspace_status", "owner_user_id", "workspace_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_id: Mapped[str | None] = mapped_column(UUID, nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True, unique=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True, index=True)
 
 
 class MemoryDocumentModel(TimestampedModel, Base):

@@ -4,11 +4,13 @@ import { UserManagementPage } from "./UserManagementPage";
 
 const {
   createUserMock,
+  hardDeleteUserMock,
   getUserRolesMock,
   listRolesMock,
   listUsersMock,
 } = vi.hoisted(() => ({
   createUserMock: vi.fn(),
+  hardDeleteUserMock: vi.fn(),
   getUserRolesMock: vi.fn(),
   listRolesMock: vi.fn(),
   listUsersMock: vi.fn(),
@@ -17,6 +19,7 @@ const {
 vi.mock("@/platform/http/api", () => ({
   api: {
     createUser: createUserMock,
+    hardDeleteUser: hardDeleteUserMock,
     getUserRoles: getUserRolesMock,
     listRoles: listRolesMock,
     listUsers: listUsersMock,
@@ -57,6 +60,7 @@ describe("UserManagementPage", () => {
     vi.useRealTimers();
     vi.stubGlobal("confirm", vi.fn(() => true));
     createUserMock.mockReset();
+    hardDeleteUserMock.mockReset();
     getUserRolesMock.mockReset().mockResolvedValue({ user_id: alice.id, role_codes: ["student"] });
     listRolesMock.mockReset().mockResolvedValue({ items: [
       { code: "student", name: "学生", description: "学习者", status: "active", is_builtin: true },
@@ -86,6 +90,7 @@ describe("UserManagementPage", () => {
 
     expect(screen.getByRole("menu", { name: "alice 操作菜单" })).toBeVisible();
     expect(screen.getByRole("menuitem", { name: "编辑显示名" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "硬删除" })).toBeVisible();
     expect(screen.getByRole("button", { name: "alice 角色" })).toBeVisible();
   });
 

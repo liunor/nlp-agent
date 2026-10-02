@@ -84,7 +84,13 @@ async def process_manager_command(
     except (KeyError, ValueError):
         return await acknowledge()
     try:
-        await manager.request_target(target)
+        target_ttl_seconds = float(command.get("target_ttl_seconds", settings.NLP_AGENT_SANDBOX_PREWARM_TARGET_TTL_S))
+    except (TypeError, ValueError):
+        return await acknowledge()
+    if target_ttl_seconds <= 0:
+        return await acknowledge()
+    try:
+        await manager.request_target(target, ttl_seconds=target_ttl_seconds)
     except ValueError:
         # Invalid operator input cannot become valid on a retry; acknowledge
         # it after refusing the side effect so it cannot poison the queue.
@@ -130,12 +136,14 @@ async def run_forever() -> None:
         kernel_image=settings.NLP_AGENT_SANDBOX_FIRECRACKER_KERNEL_IMAGE.strip() or None,
         rootfs_image=settings.NLP_AGENT_SANDBOX_FIRECRACKER_ROOTFS_IMAGE.strip() or None,
         client=kubernetes_client,
+        namespace=settings.NLP_AGENT_SANDBOX_NAMESPACE.strip(),
     )
     manager = WarmPoolManager(
         session_factory=create_session_factory(engine),
         docker=runtime,
         resource_profile_id="python-base",
         ready_target=target,
+        require_host_lock=backend in {"runsc", "gvisor", "docker"},
         adaptive_policy=(
             AdaptivePoolPolicy(
                 ready_min=settings.NLP_AGENT_SANDBOX_WARM_POOL_READY_MIN,

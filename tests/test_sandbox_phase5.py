@@ -8,13 +8,14 @@ import pytest
 def test_kata_adapter_preserves_hardened_runtime_contract() -> None:
     from server.sandbox.runtime_adapters import KataRuntimeAdapter, KataRuntimeConfig
 
-    adapter = KataRuntimeAdapter(KataRuntimeConfig(image="nova@sha256:" + "a" * 64))
+    adapter = KataRuntimeAdapter(KataRuntimeConfig(image="nova@sha256:" + "a" * 64, namespace="test"))
     command = adapter.create_command(name="runtime-1", claim_nonce="secret")
 
     assert command[0:4] == ("docker", "run", "--detach", "--name")
     assert ("--runtime", "kata-qemu") == command[command.index("--runtime") : command.index("--runtime") + 2]
     assert "--network" in command and command[command.index("--network") + 1] == "none"
     assert "--cap-drop" in command and command[command.index("--cap-drop") + 1] == "ALL"
+    assert "nova.sandbox.namespace=test" in command
     assert "secret" not in command
 
 

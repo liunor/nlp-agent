@@ -51,11 +51,28 @@ describe("LoginPage", () => {
 
     fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "new-user" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "password" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "登录" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "登录" }));
 
     await waitFor(() => expect(screen.getByText("用户管理页")).toBeVisible());
     expect(api.login).toHaveBeenCalledWith("new-user", "password");
+  });
+
+  it("opens legal documents in an in-page modal before login", async () => {
+    render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <AuthProvider><LoginPage /></AuthProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "《用户协议》" }));
+    expect(screen.getByRole("dialog", { name: "用户协议" })).toBeVisible();
+    expect(screen.getByText(/账号与安全/)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "NLP 学习平台" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "我已阅读" }));
+    expect(screen.queryByRole("dialog", { name: "用户协议" })).not.toBeInTheDocument();
   });
 
   it("does not show a second login form when the session is already valid", async () => {

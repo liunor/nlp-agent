@@ -61,6 +61,7 @@ describe("student authentication gate", () => {
 
     fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "user-1" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "password" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
     screen.getByRole("button", { name: "登录并继续" }).click();
 
     expect(await screen.findByRole("button", { name: "切换主题" })).toBeVisible();

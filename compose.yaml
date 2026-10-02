@@ -13,7 +13,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "${NOVA_WEB_HOST_PORT:-${NOVA_NGINX_HTTP_PORT:-80}}:80"
+      - "${NOVA_WEB_HOST_PORT:?Set NOVA_WEB_HOST_PORT}:80"
     restart: unless-stopped
     depends_on:
       nova-web:
@@ -162,12 +162,16 @@ services:
       NLP_AGENT_REDIS_URL: redis://redis:6379/0
       NLP_AGENT_GATEWAY_TRANSPORT: redis
       NLP_AGENT_SANDBOX_RUNTIME_MODE: docker
+      NLP_AGENT_SANDBOX_NAMESPACE: "${NLP_AGENT_SANDBOX_NAMESPACE:?Set NLP_AGENT_SANDBOX_NAMESPACE}"
+      NLP_AGENT_SANDBOX_HOST_LOCK_FILE: /run/nova-sandbox-lock/host.lock
+      NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX: "${NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX:-4}"
       NLP_AGENT_LOG_DIR: /app/logs
       NLP_AGENT_LOG_SERVICE: nova-sandbox-manager
       NLP_AGENT_LOG_STDOUT: "${NLP_AGENT_LOG_STDOUT:-true}"
       NLP_AGENT_LOG_RETENTION_DAYS: "${NLP_AGENT_LOG_RETENTION_DAYS:-14}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - "${NOVA_SANDBOX_HOST_LOCK_DIR:-/var/lock/nova-sandbox}:/run/nova-sandbox-lock:rw"
       - nova-logs:/app/logs
     restart: unless-stopped
     depends_on:
@@ -186,6 +190,7 @@ services:
     environment:
       NLP_AGENT_MONITOR_HOST: 0.0.0.0
       NLP_AGENT_MONITOR_PORT: 8766
+      NLP_AGENT_REDIS_URL: redis://redis:6379/0
       NLP_AGENT_LOG_DIR: /app/logs
       NLP_AGENT_LOG_SERVICE: nova-monitor
       NLP_AGENT_LOG_STDOUT: "${NLP_AGENT_LOG_STDOUT:-true}"
@@ -193,7 +198,7 @@ services:
     ports:
       # Bind to loopback by default.  Set NOVA_MONITOR_BIND_ADDRESS explicitly
       # when an internal reverse proxy/VPN should expose the monitor.
-      - "${NOVA_MONITOR_BIND_ADDRESS:-127.0.0.1}:${NOVA_MONITOR_HOST_PORT:-8766}:8766"
+      - "${NOVA_MONITOR_BIND_ADDRESS:-127.0.0.1}:${NOVA_MONITOR_HOST_PORT:?Set NOVA_MONITOR_HOST_PORT}:8766"
     volumes:
       - nova-logs:/app/logs
     restart: unless-stopped
@@ -201,6 +206,8 @@ services:
     depends_on:
       nova-migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
 volumes:
   mysql-data:

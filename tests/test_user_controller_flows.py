@@ -13,7 +13,7 @@ from core.identity import AccessDeniedError, AuthenticatedPrincipal
 from core.rbac import Permission
 from server.rbac.service import rbac_service
 from server.user import controller
-from server.user.schemas import PasswordReset, UserAdminUpdate, UserCreateWithRole
+from server.user.schemas import PasswordReset, UserAdminUpdate, UserCreateWithRole, UserResponse
 from server.auth.dependencies import get_current_principal, get_db_session, get_write_access
 
 
@@ -54,6 +54,7 @@ class _FakeService:
         self.user = _user()
         self.create_user = AsyncMock(return_value=self.user)
         self.change_password = AsyncMock()
+        self.hard_delete_user = AsyncMock()
 
     async def get_user(self, _user_id):
         return self.user
@@ -229,3 +230,58 @@ async def test_management_http_endpoints_cover_create_edit_and_password_reset(mo
     service.change_password.assert_awaited_once_with(
         service.user.id, "ChangedPw0rd2"
     )
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_endpoint_deletes_active_user_directly(monkeypatch):
+    service = _FakeService(None)
+    monkeypatch.setattr(controller, "UserService", lambda session: service)
+    audit = AsyncMock()
+    monkeypatch.setattr(rbac_service, "audit", audit)
+
+    result = await controller.permanently_delete_user(
+        service.user.id,
+        db=object(),
+        _write=object(),
+        principal=_principal(),
+    )
+
+    assert result is None
+    service.hard_delete_user.assert_awaited_once_with(
+        service.user.id, actor_user_id="admin-user"
+    )
+    assert audit.await_args.kwargs["reason_code"] == "user_account_hard_deleted"
+    assert audit.await_args.kwargs["target_user_id"] is None
+    assert audit.await_args.kwargs["resource_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_restore_user_response_includes_real_roles(monkeypatch):
+    """Regression guard: the restore endpoint must return the user's real roles.
+
+    Building the response with a bare ``UserResponse.model_validate(user)``
+    leaves ``roles`` at its default empty list, so API clients would misread the
+    restored user as a guest.  The handler must go through
+    ``_user_response_with_roles`` instead.
+    """
+    service = _FakeService(None)
+    service.restore_user = AsyncMock(return_value=service.user)
+    monkeypatch.setattr(controller, "UserService", lambda session: service)
+    audit = AsyncMock()
+    monkeypatch.setattr(rbac_service, "audit", audit)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_test_app()), base_url="http://testserver"
+    ) as client:
+        restored = await client.post(f"/api/v1/users/{service.user.id}/restore")
+
+    assert restored.status_code == 200
+    assert restored.json()["roles"] == ["student"]
+    service.restore_user.assert_awaited_once_with(
+        service.user.id, actor_user_id="admin-user"
+    )
+    assert audit.await_args.kwargs["reason_code"] == "user_account_restored"
+
+    # Counter-example proving this guard is meaningful: the bare model_validate
+    # path (the reviewed defect) does yield roles=[] for the same user object.
+    assert UserResponse.model_validate(service.user).roles == []

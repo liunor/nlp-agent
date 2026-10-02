@@ -36,6 +36,7 @@ from gateway.contracts import (
     TurnConflictError,
     TurnRecord,
     TurnStatus,
+    WhiteboardLibraryInUseError,
 )
 from gateway.dispatch import (
     ExecutionAuthorizationContext,
@@ -54,6 +55,11 @@ from gateway.redis_transport import TurnTaskCodec
 from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.storage.service import (
+    purge_expired_guest_data,
+    purge_expired_storage_trash,
+    reconcile_all_storage_accounts,
+)
 from server.quota.contracts import AdmitTurn, QuotaProblem
 from server.quota.errors import QuotaErrorCode, QuotaRejectedError
 from server.quota.operations import QuotaOperationsService
@@ -269,6 +275,7 @@ class BackendGateway:
         )
         self._maintenance_stop = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
+        self._storage_reconciled = False
         self._quota_reaper: QuotaReservationReaper | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
@@ -327,11 +334,21 @@ class BackendGateway:
                 await self.prune_events()
 
     async def prune_events(self) -> dict[str, int]:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self.repository.prune_events,
             retention_days=self.event_retention_days,
             max_events_per_session=self.max_events_per_session,
         )
+        factory = self.authorization_session_factory
+        if factory is not None:
+            async with factory() as session:
+                async with session.begin():
+                    if not self._storage_reconciled:
+                        result["storage_accounts_reconciled"] = await reconcile_all_storage_accounts(session)
+                        self._storage_reconciled = True
+                    result["storage_trash_removed"] = await purge_expired_storage_trash(session)
+                    result["guest_data_accounts_removed"] = await purge_expired_guest_data(session)
+        return result
 
     async def begin_shutdown(self) -> None:
         """Enter draining state before network channels are stopped."""
@@ -839,27 +856,6 @@ class BackendGateway:
             changes,
         )
 
-    async def list_whiteboard_library(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
-        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
-        return await asyncio.to_thread(self.repository.list_whiteboard_library)
-
-    async def create_whiteboard_library_item(
-        self,
-        principal: AuthenticatedPrincipal,
-        *,
-        name: str,
-        elements: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
-            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
-        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
-        return await asyncio.to_thread(
-            self.repository.create_whiteboard_library_item,
-            name=name,
-            elements=elements,
-            created_by=principal.user_id,
-        )
-
     async def get_teaching_catalog(self, principal: AuthenticatedPrincipal, workspace_id: str) -> dict[str, Any]:
         authorization_service.require(
             principal,
@@ -949,17 +945,21 @@ class BackendGateway:
         knowledge_point_id: str,
         *,
         expected_revision: int,
+        published_file_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         authorization_service.require(
             principal,
             Permission.LEARNING_CONTENT_MANAGE,
             workspace_id=workspace_id,
         )
+        kwargs: dict[str, Any] = {"expected_revision": expected_revision}
+        if published_file_ids is not None:
+            kwargs["published_file_ids"] = published_file_ids
         return await asyncio.to_thread(
             self.repository.publish_knowledge_page,
             workspace_id,
             knowledge_point_id,
-            expected_revision=expected_revision,
+            **kwargs,
         )
 
     async def apply_knowledge_book_import(
@@ -968,17 +968,19 @@ class BackendGateway:
         workspace_id: str,
         pages: list[dict[str, Any]],
         assets: list[dict[str, Any]],
+        file_refs: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         authorization_service.require(
             principal,
             Permission.LEARNING_CONTENT_MANAGE,
             workspace_id=workspace_id,
         )
+        args: tuple[Any, ...] = (workspace_id, pages, assets)
+        if file_refs is not None:
+            args += (file_refs,)
         return await asyncio.to_thread(
             self.repository.apply_knowledge_book_import,
-            workspace_id,
-            pages,
-            assets,
+            *args,
         )
 
     async def get_knowledge_book_asset(
@@ -996,6 +998,236 @@ class BackendGateway:
             self.repository.get_knowledge_book_asset,
             workspace_id,
             asset_path,
+        )
+
+    async def list_whiteboard_library(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
+        return await asyncio.to_thread(self.repository.list_whiteboard_library)
+
+    async def create_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        name: str,
+        elements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        return await asyncio.to_thread(
+            self.repository.create_whiteboard_library_item,
+            name=name,
+            elements=elements,
+            created_by=principal.user_id,
+        )
+
+    async def rename_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        item_id: str,
+        *,
+        name: str,
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        item = await asyncio.to_thread(
+            self.repository.rename_whiteboard_library_item,
+            item_id,
+            name=name,
+        )
+        if item is None:
+            raise ResourceNotFoundError("whiteboard library item not found")
+        return item
+
+    async def delete_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        item_id: str,
+    ) -> None:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        deleted, reference_count = await asyncio.to_thread(
+            self.repository.delete_whiteboard_library_item_if_unreferenced,
+            item_id,
+        )
+        if reference_count > 0:
+            raise WhiteboardLibraryInUseError(item_id, reference_count)
+        if not deleted:
+            raise ResourceNotFoundError("whiteboard library item not found")
+    async def create_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        *,
+        original_name: str,
+        display_name: str,
+        media_type: str,
+        content: bytes,
+        created_by: str,
+        file_id: str | None = None,
+    ) -> dict[str, Any]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.create_knowledge_book_file,
+            workspace_id=workspace_id,
+            knowledge_point_id=knowledge_point_id,
+            original_name=original_name,
+            display_name=display_name,
+            media_type=media_type,
+            content=content,
+            created_by=created_by,
+            file_id=file_id,
+        )
+
+    async def get_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+    ) -> dict[str, Any] | None:
+        authorization_service.require(
+            principal, Permission.LEARNING_PROGRESS_READ_CLASSROOM, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.get_knowledge_book_file, workspace_id, file_id
+        )
+
+    async def list_knowledge_book_files(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[dict[str, Any]]:
+        authorization_service.require(
+            principal, Permission.LEARNING_PROGRESS_READ_CLASSROOM, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.list_knowledge_book_files,
+            workspace_id,
+            knowledge_point_id,
+        )
+
+    async def list_published_knowledge_book_files(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[dict[str, Any]]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.list_published_knowledge_book_files,
+            workspace_id,
+            knowledge_point_id,
+        )
+
+    async def update_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+        *,
+        original_name: str | None = None,
+        display_name: str | None = None,
+        media_type: str | None = None,
+        content: bytes | None = None,
+    ) -> dict[str, Any]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.update_knowledge_book_file,
+            workspace_id,
+            file_id,
+            original_name=original_name,
+            display_name=display_name,
+            media_type=media_type,
+            content=content,
+        )
+
+    async def delete_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+    ) -> bool:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.delete_knowledge_book_file, workspace_id, file_id
+        )
+
+    async def set_knowledge_book_file_refs(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        state: str,
+        file_ids: list[str],
+    ) -> None:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        await asyncio.to_thread(
+            self.repository.set_knowledge_book_file_refs,
+            workspace_id,
+            knowledge_point_id,
+            state,
+            file_ids,
+        )
+
+    async def list_knowledge_book_file_refs(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+        state: str,
+    ) -> list[str]:
+        authorization_service.require(
+            principal, Permission.LEARNING_PROGRESS_READ_CLASSROOM, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.list_knowledge_book_file_refs,
+            workspace_id,
+            knowledge_point_id,
+            state,
+        )
+
+    async def publish_knowledge_book_file_refs(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        knowledge_point_id: str,
+    ) -> list[str]:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_MANAGE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.publish_knowledge_book_file_refs,
+            workspace_id,
+            knowledge_point_id,
+        )
+
+    async def get_published_knowledge_book_file(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+        file_id: str,
+    ) -> dict[str, Any] | None:
+        authorization_service.require(
+            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
+        )
+        return await asyncio.to_thread(
+            self.repository.get_published_knowledge_book_file,
+            workspace_id,
+            file_id,
         )
 
     async def stream_events(

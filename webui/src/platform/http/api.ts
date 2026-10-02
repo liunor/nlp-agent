@@ -1,5 +1,4 @@
-import type { AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperRuntimeHealth, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, WhiteboardLibraryItem } from "@/shared/types";
-import type { FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList } from "@/shared/types";
+import type { AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperRuntimeHealth, DeveloperSnapshot, FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookFile, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, WhiteboardLibraryItem } from "@/shared/types";
 
 const API_ROOT = "/api/v1";
 export const AUTH_EXPIRED_EVENT = "nova:auth-expired";
@@ -17,10 +16,16 @@ export class ApiError extends Error {
 let csrfToken = "";
 let authRequest: Promise<AuthSession> | null = null;
 
+interface RequestOptions {
+  /** 401 表示业务错误（如密码错误）而非会话过期：不广播全局 auth-expired 事件、不清除 CSRF 令牌。 */
+  ignoreAuthExpired?: boolean;
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
   retryCsrf = true,
+  options: RequestOptions = {},
 ): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
@@ -53,7 +58,8 @@ async function request<T>(
   response.status === 401 &&
   csrfToken &&
   path !== "/auth/session" &&
-  path !== "/auth/login"
+  path !== "/auth/login" &&
+  !options.ignoreAuthExpired
 ) {
   csrfToken = "";
   if (typeof window !== "undefined") {
@@ -90,6 +96,37 @@ export interface UploadResponse {
   sha256: string;
 }
 
+export type StorageUsageState = "normal" | "warning" | "critical" | "full";
+
+export interface StorageUsageBucket {
+  used_bytes: number;
+  committed_used_bytes?: number;
+  reserved_bytes?: number;
+  quota_bytes: number;
+  used_ratio: number;
+  state: StorageUsageState;
+}
+
+export interface StorageUsage {
+  role: string;
+  core: StorageUsageBucket;
+  files: StorageUsageBucket;
+  files_count: number;
+  max_file_bytes: number;
+  max_items: number;
+}
+
+export interface StorageFile {
+  id: string;
+  kind: "file" | "folder";
+  name: string;
+  mime_type: string | null;
+  size_bytes: number;
+  created_at: string | null;
+  updated_at: string | null;
+  deleted_at?: string | null;
+}
+
 export interface SandboxRuntimeProfile {
   id: string;
   runtime: string;
@@ -119,6 +156,17 @@ export async function uploadAttachment(
   });
 }
 
+function storageQuery(workspaceId?: string, parentId?: string) {
+  const query = new URLSearchParams();
+  if (workspaceId) query.set("workspace_id", workspaceId);
+  if (parentId) query.set("parent_id", parentId);
+  return query.size ? `?${query.toString()}` : "";
+}
+
+export function storageFileDownloadUrl(fileId: string, workspaceId?: string) {
+  return `${API_ROOT}/storage/files/${encodeURIComponent(fileId)}/download${storageQuery(workspaceId)}`;
+}
+
 export const api = {
   login: async (username: string, password: string) => {
     const session = await request<AuthSession>("/auth/login", {
@@ -133,6 +181,27 @@ export const api = {
     csrfToken = "";
   },
   getAuthSession: ensureAuth,
+  getStorageUsage: (workspaceId?: string) => request<StorageUsage>(`/storage/usage${storageQuery(workspaceId)}`),
+  listStorageFiles: (workspaceId?: string, parentId?: string) => request<{ items: StorageFile[] }>(`/storage/files${storageQuery(workspaceId, parentId)}`),
+  listStorageTrash: (workspaceId?: string) => request<{ items: StorageFile[] }>(`/storage/trash${storageQuery(workspaceId)}`),
+  createStorageFolder: (name: string, workspaceId?: string, parentId?: string) => request<StorageFile>(`/storage/folders${storageQuery(workspaceId, parentId)}`, {
+    method: "POST",
+    body: JSON.stringify({ name, parent_id: parentId ?? null }),
+  }),
+  uploadStorageFile: (file: File, workspaceId?: string, parentId?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (parentId) form.append("parent_id", parentId);
+    if (workspaceId) form.append("workspace_id", workspaceId);
+    return request<StorageFile>("/storage/files", { method: "POST", body: form });
+  },
+  renameStorageFile: (fileId: string, name: string, workspaceId?: string) => request<StorageFile>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  }),
+  deleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
+  restoreStorageFile: (fileId: string, workspaceId?: string) => request<StorageFile>(`/storage/trash/${encodeURIComponent(fileId)}/restore${storageQuery(workspaceId)}`, { method: "POST" }),
+  permanentlyDeleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/trash/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
   ensureSandboxLease: () => request<{
     phase: number;
       runtime_available: boolean;
@@ -314,8 +383,24 @@ export const api = {
   getLearningCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/learning/catalog/${encodeURIComponent(workspaceId)}`),
   getWhiteboardLibrary: () => request<{ items: WhiteboardLibraryItem[] }>("/whiteboard/library"),
   createWhiteboardLibraryItem: (name: string, elements: unknown[]) => request<{ item: WhiteboardLibraryItem }>("/whiteboard/library", { method: "POST", body: JSON.stringify({ name, elements }) }),
+  renameWhiteboardLibraryItem: (itemId: string, name: string) => request<{ item: WhiteboardLibraryItem }>(`/whiteboard/library/${encodeURIComponent(itemId)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteWhiteboardLibraryItem: (itemId: string) => request<void>(`/whiteboard/library/${encodeURIComponent(itemId)}`, { method: "DELETE" }),
   getTeacherBookNavigation: (workspaceId = "default") => request<{ workspace_id: string; items: TeacherBookNavigationItem[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/navigation`),
   getTeacherBookPage: (workspaceId: string, knowledgePointId: string) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`),
+  getTeacherBookFiles: (workspaceId: string, knowledgePointId: string) => request<{ items: TeacherBookFile[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/files`),
+  uploadTeacherBookFile: (workspaceId: string, knowledgePointId: string, file: File, displayName?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (displayName) form.append("display_name", displayName);
+    return request<{ file: TeacherBookFile }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/files`, { method: "POST", body: form });
+  },
+  updateTeacherBookFile: (workspaceId: string, knowledgePointId: string, fileId: string, displayName: string) => request<{ file: TeacherBookFile }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/files/${encodeURIComponent(fileId)}`, { method: "PATCH", body: JSON.stringify({ display_name: displayName }) }),
+  replaceTeacherBookFileContent: (workspaceId: string, knowledgePointId: string, fileId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<{ file: TeacherBookFile }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/files/${encodeURIComponent(fileId)}/content`, { method: "PUT", body: form });
+  },
+  deleteTeacherBookFile: (workspaceId: string, knowledgePointId: string, fileId: string) => request<void>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
   updateTeacherBookPage: (workspaceId: string, knowledgePointId: string, content_markdown: string, expected_revision: number, assets: TeacherBookAssetInput[] = []) => request<{ page: TeacherBookPage; warnings: string[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`, { method: "PUT", body: JSON.stringify({ content_markdown, expected_revision, assets }) }),
   publishTeacherBookPage: (workspaceId: string, knowledgePointId: string, expected_revision: number) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/publish`, { method: "POST", body: JSON.stringify({ expected_revision }) }),
   previewTeacherBookImport: (workspaceId: string, file_name: string, content_markdown: string) => request<TeacherBookImportPreview>(`/teacher/book/${encodeURIComponent(workspaceId)}/imports/preview`, { method: "POST", body: JSON.stringify({ file_name, content_markdown }) }),
@@ -344,6 +429,8 @@ export const api = {
     request<UserListResponse["users"][number]>(`/users/${encodeURIComponent(userId)}/restore`, { method: "POST", body: "{}" }),
   deleteUser: (userId: string) =>
     request<void>(`/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  hardDeleteUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/permanent`, { method: "DELETE" }),
   revokeUserSessions: (userId: string) =>
     request<void>(`/users/${encodeURIComponent(userId)}/sessions/revoke`, { method: "POST", body: "{}" }),
   resetUserPassword: (userId: string, new_password: string) =>
@@ -398,4 +485,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  deleteAccount: (password: string) =>
+    request<void>("/users/me", { method: "DELETE", body: JSON.stringify({ password }) }, true, { ignoreAuthExpired: true }),
+  verifyPassword: (password: string) =>
+    request<void>("/users/me/password/verify", { method: "POST", body: JSON.stringify({ password }) }, true, { ignoreAuthExpired: true }),
 };

@@ -101,6 +101,22 @@ vi.mock("@/platform/http/api", () => ({
     executeSandbox: stream.executeSandbox,
     getLearningBookNavigation: stream.getLearningBookNavigation,
     getLearningBookPage: stream.getLearningBookPage,
+    getStorageUsage: vi.fn().mockResolvedValue({
+      role: "student",
+      core: { used_bytes: 0, quota_bytes: 128 * 1024 * 1024, used_ratio: 0, state: "normal" },
+      files: { used_bytes: 0, quota_bytes: 128 * 1024 * 1024, used_ratio: 0, state: "normal" },
+      files_count: 0,
+      max_file_bytes: 10 * 1024 * 1024,
+      max_items: 500,
+    }),
+    listStorageFiles: vi.fn().mockResolvedValue({ items: [] }),
+    listStorageTrash: vi.fn().mockResolvedValue({ items: [] }),
+    createStorageFolder: vi.fn(),
+    uploadStorageFile: vi.fn(),
+    renameStorageFile: vi.fn(),
+    deleteStorageFile: vi.fn(),
+    restoreStorageFile: vi.fn(),
+    permanentlyDeleteStorageFile: vi.fn(),
   },
 }));
 
@@ -285,6 +301,29 @@ describe("student stream rendering", () => {
     expect(screen.getByText("Code Runner")).toBeVisible();
     expect(screen.getByText(/当前会话使用隔离运行环境/)).toBeVisible();
     await waitFor(() => expect(stream.ensureSandboxLease).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps the sandbox execution controls disabled while the main chat is generating", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开工具侧栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开代码沙箱工具" }));
+    const runButton = screen.getByRole("button", { name: "运行代码" });
+    expect(runButton).not.toBeDisabled();
+
+    const input = screen.getByRole("textbox", { name: "学习问题" });
+    fireEvent.change(input, { target: { value: "生成一段说明" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getAllByText("生成一段说明").some((node) => node.classList.contains("user-message"))).toBe(true));
+    act(() => {
+      stream.emit(event("command.ack", { accepted: true }));
+      stream.emit(event("chat.started"));
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "主对话生成中" })).toBeDisabled());
+
+    act(() => stream.emit(event("chat.completed", { content: "完成" })));
+    await waitFor(() => expect(screen.getByRole("button", { name: "运行代码" })).not.toBeDisabled());
   });
 
   it("opens lesson Python code in the real sandbox while retaining the book tab", async () => {

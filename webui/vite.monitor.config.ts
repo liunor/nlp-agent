@@ -2,11 +2,14 @@ import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const target = env.NLP_MONITOR_URL ?? "http://127.0.0.1:8766";
   return {
     root: path.resolve(__dirname, "monitor-app"),
+    // The production edge mounts the monitor under /monitor/.  Keep Vite's
+    // dev server at / while emitting asset URLs that survive that prefix.
+    base: command === "build" ? "/monitor/" : "/",
     publicDir: false,
     plugins: [react()],
     resolve: { alias: { "@": path.resolve(__dirname, "src") } },

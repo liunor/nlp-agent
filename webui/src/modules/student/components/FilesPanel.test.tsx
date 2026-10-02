@@ -1,8 +1,25 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { api } from "@/platform/http/api";
 
 import { FilesPanel } from "./FilesPanel";
+
+vi.mock("@/platform/http/api", () => ({
+  api: {
+    getStorageUsage: vi.fn(),
+    listStorageFiles: vi.fn(),
+    createStorageFolder: vi.fn(),
+    uploadStorageFile: vi.fn(),
+    renameStorageFile: vi.fn(),
+    deleteStorageFile: vi.fn(),
+    listStorageTrash: vi.fn(),
+    restoreStorageFile: vi.fn(),
+    permanentlyDeleteStorageFile: vi.fn(),
+  },
+  storageFileDownloadUrl: (fileId: string) => `/api/v1/storage/files/${fileId}/download`,
+}));
 
 vi.mock("./DocumentCodeView", () => ({
   DocumentCodeView: ({ code, language }: { code: string; language: string }) => <pre data-testid="code-preview" data-language={language}>{code}</pre>,
@@ -10,6 +27,55 @@ vi.mock("./DocumentCodeView", () => ({
 vi.mock("./MarkdownContent", () => ({
   MarkdownContent: ({ children }: { children: string }) => <div data-testid="markdown-preview">{children}</div>,
 }));
+
+const usage = {
+  role: "student",
+  core: { used_bytes: 90, quota_bytes: 100, used_ratio: 0.9, state: "critical" as const },
+  files: { used_bytes: 95, quota_bytes: 100, used_ratio: 0.95, state: "critical" as const },
+  files_count: 1,
+  max_file_bytes: 10,
+  max_items: 500,
+};
+
+describe("FilesPanel", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.mocked(api.getStorageUsage).mockResolvedValue(usage);
+    vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [] });
+    vi.mocked(api.listStorageTrash).mockResolvedValue({ items: [] });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows independent Windows-like meters for core and personal file space", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    expect(await screen.findByRole("progressbar", { name: "通用空间" })).toHaveAttribute("aria-valuenow", "90");
+    expect(screen.getByRole("progressbar", { name: "个人文件" })).toHaveAttribute("aria-valuenow", "95");
+    expect(screen.getByRole("progressbar", { name: "通用空间" }).parentElement).toHaveClass("critical");
+    expect(api.getStorageUsage).toHaveBeenCalledWith("workspace-1");
+  });
+
+  it("keeps the learning-document importer behind a separate tab", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    expect(screen.getByText("导入学习文档")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
+    await waitFor(() => expect(screen.getByText("此文件夹为空")).toBeInTheDocument());
+  });
+
+  it("exposes a recoverable recycle-bin view in the file manager", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "回收站" }));
+    await waitFor(() => expect(api.listStorageTrash).toHaveBeenCalledWith("workspace-1"));
+    expect(screen.getByText("回收站为空")).toBeInTheDocument();
+  });
 
 function markdownFile(name = "notes.md", content = "# 学习笔记") {
   return new File([content], name, { type: "text/markdown" });
@@ -20,14 +86,10 @@ function pythonFile() {
 }
 
 function upload(files: File[]) {
+  fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
   fireEvent.change(screen.getByLabelText("选择本地文件"), { target: { files } });
 }
 
-afterEach(() => {
-  localStorage.clear();
-});
-
-describe("FilesPanel", () => {
   it("imports markdown and code files, previews them, and persists under a scoped key", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
@@ -46,8 +108,34 @@ describe("FilesPanel", () => {
 
     unmount();
     render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
     expect(screen.getByRole("button", { name: "预览 notes.md" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "预览 demo.py" })).toBeInTheDocument();
+  });
+
+  it("previews a published textbook file inside the file tool", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "# 教材内容" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<FilesPanel
+      userId="alice"
+      workspaceId="workspace-1"
+      previewRequest={{
+        id: "book-file-1",
+        name: "教材.md",
+        url: "/api/v1/learning/book/workspace-1/files/book-file-1",
+        mediaType: "text/markdown",
+        bytes: 20,
+      }}
+    />);
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+
+    expect(await screen.findByText("来自知识教材")).toBeInTheDocument();
+    expect(await screen.findByTestId("markdown-preview")).toHaveTextContent("# 教材内容");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/learning/book/workspace-1/files/book-file-1",
+      expect.objectContaining({ credentials: "include" }),
+    );
   });
 
   it("keeps only plain-text previews for text files", async () => {
@@ -66,12 +154,12 @@ describe("FilesPanel", () => {
     first.unmount();
 
     const bob = render(<FilesPanel userId="bob" workspaceId="workspace-1" />);
-    expect(screen.getByText("导入学习文档")).toBeInTheDocument();
+    expect(await screen.findByText("此文件夹为空")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "预览 alice-ws1.md" })).not.toBeInTheDocument();
     bob.unmount();
 
     const otherWorkspace = render(<FilesPanel userId="alice" workspaceId="workspace-2" />);
-    expect(screen.getByText("导入学习文档")).toBeInTheDocument();
+    expect(await screen.findByText("此文件夹为空")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "预览 alice-ws1.md" })).not.toBeInTheDocument();
     otherWorkspace.unmount();
   });
@@ -116,7 +204,9 @@ describe("FilesPanel", () => {
 
   it("loads a supported file through the actual drop event", async () => {
     render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
-    const panel = screen.getByLabelText("文件工具");
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    const panels = screen.getAllByLabelText("文件工具");
+    const panel = panels[panels.length - 1];
     const dropped = new File(["# 拖入文件"], "dropped.md", { type: "text/markdown" });
     fireEvent.drop(panel, { dataTransfer: { files: [dropped] } });
 
@@ -126,7 +216,9 @@ describe("FilesPanel", () => {
 
   it("tracks nested drag-enter/leave events instead of flickering while crossing child elements", () => {
     render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
-    const panel = screen.getByLabelText("文件工具");
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    const panels = screen.getAllByLabelText("文件工具");
+    const panel = panels[panels.length - 1];
 
     fireEvent.dragEnter(panel);
     fireEvent.dragEnter(panel);

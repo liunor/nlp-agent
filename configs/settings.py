@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     NLP_AGENT_REDIS_URL: str = ""
     NLP_AGENT_STATE_FACTORY: str = ""
     NLP_AGENT_DATABASE_URL: str = ""
+    # Test and production use separate databases. Monitor labels the selected
+    # process explicitly and never combines sibling environments.
+    NLP_AGENT_DEPLOYMENT_ENV: str = "unknown"
     NLP_AGENT_QUOTA_ENFORCEMENT: bool = False
     NLP_AGENT_QUOTA_ENFORCEMENT_PERCENT: int | None = None
     NLP_AGENT_QUOTA_ENFORCEMENT_USERS: str = ""
@@ -74,13 +77,20 @@ class Settings(BaseSettings):
     NLP_AGENT_SANDBOX_RUNTIME_MODE: str = "disabled"
     NLP_AGENT_SANDBOX_RUNTIME_BACKEND: str = "runsc"
     NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST: str = ""
+    NLP_AGENT_SANDBOX_NAMESPACE: str = "local"
+    NLP_AGENT_SANDBOX_HOST_LOCK_FILE: str = ""
     NLP_AGENT_SANDBOX_KUBERNETES_CLIENT_FACTORY: str = ""
     NLP_AGENT_SANDBOX_FIRECRACKER_KERNEL_IMAGE: str = ""
     NLP_AGENT_SANDBOX_FIRECRACKER_ROOTFS_IMAGE: str = ""
     NLP_AGENT_SANDBOX_WARM_POOL_READY_TARGET: int = 0
     NLP_AGENT_SANDBOX_ADAPTIVE_POOL_ENABLED: bool = False
     NLP_AGENT_SANDBOX_WARM_POOL_READY_MIN: int = 1
-    NLP_AGENT_SANDBOX_WARM_POOL_READY_MAX: int = 5
+    NLP_AGENT_SANDBOX_WARM_POOL_READY_MAX: int = 3
+    NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX: int = 4
+    NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX: int = 4
+    NLP_AGENT_SANDBOX_EXECUTION_CONCURRENCY_MAX: int = 2
+    NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB: int = 3072
+    NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB: int = 15
     NLP_AGENT_SANDBOX_BURST_BUFFER: int = 1
     NLP_AGENT_SANDBOX_ARRIVAL_RATE_PER_MIN: float = 0.0
     NLP_AGENT_SANDBOX_REFILL_P95_S: float = 4.0
@@ -90,10 +100,12 @@ class Settings(BaseSettings):
     NLP_AGENT_SANDBOX_EVENT_RETENTION_S: int = 86_400
     NLP_AGENT_SANDBOX_EVENT_MAXLEN: int = 10_000
     NLP_AGENT_SANDBOX_COMMAND_RETENTION_S: int = 86_400
+    NLP_AGENT_SANDBOX_PREWARM_TARGET_TTL_S: int = 900
     # Scratch permits up to 60 seconds; keep RPC response budget above that
     # limit so a valid long-running execution cannot outlive its Web request.
     NLP_AGENT_SANDBOX_MANAGER_RPC_TIMEOUT_S: float = 75.0
     NLP_AGENT_SANDBOX_METRICS_RETENTION_S: int = 7 * 24 * 3600
+    NLP_AGENT_SANDBOX_METRICS_SAMPLE_INTERVAL_S: int = 30
     NLP_AGENT_SANDBOX_ARTIFACT_ORIGIN: str = ""
     # Public Nova origin allowed to embed artifact documents.  It is kept
     # separate from the artifact host so the delivery service can emit a
@@ -104,6 +116,12 @@ class Settings(BaseSettings):
     NLP_AGENT_SANDBOX_PROJECT_STORAGE_ENABLED: bool = False
     NLP_AGENT_SANDBOX_PROJECT_STORAGE_ROOT: str = ""
     NLP_AGENT_SANDBOX_SNAPSHOTS_ENABLED: bool = False
+    NLP_AGENT_USER_FILES_ROOT: str = ""
+    NLP_AGENT_USER_FILES_GLOBAL_LIMIT_BYTES: int = 30 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES: int = 30 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_MIN_FREE_BYTES: int = 15 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_TRASH_RETENTION_DAYS: int = 7
+    NLP_AGENT_GUEST_STORAGE_RETENTION_DAYS: int = 30
 
     _config: dict = {}
 

@@ -208,3 +208,45 @@ def test_compose_persists_and_exposes_structured_service_logs():
         assert environment["NLP_AGENT_LOG_STDOUT"] == "${NLP_AGENT_LOG_STDOUT:-true}"
 
     assert "nova-logs" in compose["volumes"]
+
+
+def test_compose_requires_deployment_ports_and_scopes_manager_runtime_namespace():
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "compose.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "NOVA_WEB_HOST_PORT:?" in compose["services"]["nginx"]["ports"][0]
+    assert "NOVA_MONITOR_HOST_PORT:?" in compose["services"]["nova-monitor"]["ports"][0]
+    manager = compose["services"]["nova-sandbox-manager"]
+    assert manager["environment"]["NLP_AGENT_SANDBOX_NAMESPACE"].startswith(
+        "${NLP_AGENT_SANDBOX_NAMESPACE:?"
+    )
+    assert any("/run/nova-sandbox-lock" in volume for volume in manager["volumes"])
+    monitor = compose["services"]["nova-monitor"]
+    assert monitor["environment"]["NLP_AGENT_REDIS_URL"] == "redis://redis:6379/0"
+    assert monitor["depends_on"]["redis"]["condition"] == "service_healthy"
+
+
+def test_environment_templates_declare_distinct_sandbox_namespaces():
+    root = Path(__file__).resolve().parents[1]
+    test_env = (root / "deploy" / "env" / "test.env.example").read_text(encoding="utf-8")
+    prod_env = (root / "deploy" / "env" / "production.env.example").read_text(encoding="utf-8")
+    assert 'NLP_AGENT_SANDBOX_NAMESPACE="test"' in test_env
+    assert 'NLP_AGENT_SANDBOX_NAMESPACE="prod"' in prod_env
+    assert 'NOVA_SANDBOX_HOST_LOCK_DIR="/var/lock/nova-sandbox"' in test_env
+    assert 'NOVA_SANDBOX_HOST_LOCK_DIR="/var/lock/nova-sandbox"' in prod_env
+
+
+def test_builtin_nginx_routes_monitor_spa_api_and_websocket_to_monitor_service():
+    root = Path(__file__).resolve().parents[1]
+    nginx = (root / "nginx" / "nginx.conf").read_text(encoding="utf-8")
+
+    assert "upstream nova_monitor" in nginx
+    assert "location /monitor-api/" in nginx
+    assert "proxy_pass http://nova_monitor/api/;" in nginx
+    assert "location /monitor/" in nginx
+    assert "proxy_pass http://nova_monitor/;" in nginx
+    assert "location = /ws/observability" in nginx
+    assert "proxy_pass http://nova_monitor;" in nginx

@@ -47,6 +47,27 @@ def test_monitor_root_without_trailing_slash_serves_the_spa_shell(tmp_path, monk
     assert response.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=()"
 
 
+def test_monitor_lifespan_exposes_the_injected_sandbox_manager(tmp_path):
+    class Manager:
+        async def capacity_snapshot(self):
+            return {"adaptive_target": 2, "host_total": 1, "host_total_max": 4}
+
+    manager = Manager()
+    app = create_monitor_app(
+        runtime=TelemetryRuntime(tmp_path / "telemetry.sqlite3"),
+        auth=SameOriginSessionAuth(
+            secret="monitor-manager-test-secret",
+            cookie_name="monitor_manager_test",
+            allowed_origins=["http://testserver"],
+        ),
+        allowed_hosts=["testserver"],
+        sandbox_manager=manager,
+    )
+
+    with TestClient(app):
+        assert app.state.sandbox_manager is manager
+
+
 def test_reset_cleanup_keeps_active_checkpoint_database_and_removes_orphans(tmp_path):
     checkpoint = tmp_path / "coordinator_memory.sqlite3"
     checkpoint.write_text("active", encoding="utf-8")

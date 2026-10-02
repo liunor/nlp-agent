@@ -28,6 +28,12 @@ class PrewarmBody(BaseModel):
     sessions_per_runtime: int = Field(default=1, ge=1, le=100)
     profile_id: str = Field(default="python-base", min_length=1, max_length=64)
     execute_at: datetime | None = None
+    ttl_seconds: int = Field(default=900, ge=60, le=86_400)
+
+
+def require_runtime_mutation(identity: AuthenticatedPrincipal) -> None:
+    """Require the explicit reset capability for state-changing operations."""
+    authorization_service.require(identity, Permission.SYSTEM_RUNTIME_RESET)
 
 
 def create_sandbox_monitor_router(
@@ -48,9 +54,14 @@ def create_sandbox_monitor_router(
         request: Request,
         db: AsyncSession = Depends(db_session_dependency),
         identity: AuthenticatedPrincipal = Depends(principal_dependency),
+        history_window_minutes: int = Query(default=30, ge=10, le=24 * 60),
     ):
         require_monitor(identity)
-        return await sandbox_overview(db, request)
+        return await sandbox_overview(
+            db,
+            request,
+            history_window_minutes=history_window_minutes,
+        )
 
     @router.get("/logs")
     async def logs(
@@ -94,6 +105,7 @@ def create_sandbox_monitor_router(
         _write: Any = Depends(write_access_dependency),
     ):
         require_monitor(identity)
+        require_runtime_mutation(identity)
         try:
             return await drain_runtime(db, runtime_id, identity)
         except LookupError as error:
@@ -139,6 +151,7 @@ def create_sandbox_monitor_router(
         _write: Any = Depends(write_access_dependency),
     ):
         require_monitor(identity)
+        require_runtime_mutation(identity)
         try:
             return await request_capacity_prewarm(body, identity)
         except ValueError as error:

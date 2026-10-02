@@ -1,14 +1,17 @@
 import { Suspense } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
+
+import { IcpRecordBar } from "@/shared/ui/IcpRecordBar";
 
 import { LoginDialog } from "@/modules/student/components/LoginDialog";
 import { useAuth } from "@/platform/auth/AuthContext";
 
 export function AppShell() {
   const auth = useAuth();
+  const location = useLocation();
 
   return (
-    <>
+    <div className="app-shell-root">
       <Suspense
         fallback={
           <div className="boot-screen" role="status">
@@ -20,6 +23,7 @@ export function AppShell() {
       >
         <Outlet />
       </Suspense>
+      {location.pathname === "/" && <IcpRecordBar />}
 
       <LoginDialog
         open={auth.isAuthExpired}
@@ -29,6 +33,6 @@ export function AppShell() {
           await auth.login(username, password);
         }}
       />
-    </>
+    </div>
   );
 }

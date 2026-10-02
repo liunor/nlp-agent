@@ -2,7 +2,7 @@ import { BookOpenCheck, BookOpenText, Code2, Contrast, Copy, Cpu, Download, File
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { api, type SandboxRuntimeProfile, type SandboxRuntimeUsage } from "@/platform/http/api";
-import { FilesPanel } from "./FilesPanel";
+import { FilesPanel, type FilesPanelPreviewRequest } from "./FilesPanel";
 import { SandboxArtifactFrame } from "./SandboxArtifactFrame";
 
 export type ToolDockTool = "files" | "learning" | "book" | "sandbox" | "whiteboard";
@@ -23,7 +23,7 @@ const tools: Array<{
   { id: "learning", label: "学习记录", buttonLabel: "打开学习记录工具", icon: BookOpenCheck, description: "查看本次对话的学习目标、概念与进度。" },
   { id: "book", label: "知识教材", buttonLabel: "打开知识教材工具", icon: BookOpenText, description: "阅读教师发布的知识点教材与实操内容。" },
   { id: "sandbox", label: "代码沙箱", buttonLabel: "打开代码沙箱工具", icon: Code2, description: "为当前登录用户准备独立的代码运行环境。" },
-  { id: "whiteboard", label: "白板", buttonLabel: "打开白板工具", icon: Pencil, description: "使用 Excalidraw 绘制结构化草图与图表。" },
+  { id: "whiteboard", label: "白板", buttonLabel: "打开白板工具", icon: Pencil, description: "查看教材关联图画并在白板中继续绘制。" },
 ];
 
 type SandboxEditorTheme = "light" | "dark" | "high-contrast";
@@ -83,7 +83,7 @@ function PythonSyntax({ source }: { source: string }) {
   return <>{fragments}</>;
 }
 
-function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest }: { onExplainCode: (source: string) => void; sourceRequest?: SandboxSourceRequest | null }) {
+function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled = false }: { onExplainCode: (source: string) => void; sourceRequest?: SandboxSourceRequest | null; executionDisabled?: boolean }) {
   // Keep the local in-memory preview immediately usable; a Docker response
   // without its mandatory ticket replaces this optimistic display with
   // “warming” before any privileged execution is attempted.
@@ -228,6 +228,10 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest }: { onExplainCode
   };
   const editorLines = source.split("\n");
   const runCode = () => {
+        if (executionDisabled) {
+          setResult("主对话生成期间暂不能运行沙箱。");
+          return;
+        }
         if ((!runtimeTicket && !runtimeAllowsNullTicket) || leaseStatus !== "ready") {
           setResult("运行环境仍在准备中，请稍候。");
           return;
@@ -377,8 +381,8 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest }: { onExplainCode
       <header>
         <div><Terminal size={15} /><strong>输出</strong><span>{running ? "运行中" : result ? "最近一次运行" : "等待运行"}</span></div>
         <div className="sandbox-phase-zero-actions">
-          <button type="button" disabled={running || leaseStatus !== "ready"} onClick={runCode}><Play size={14} />{running ? "运行中…" : "运行代码"}</button>
-          <button type="button" className="secondary" disabled={running} onClick={() => {
+          <button type="button" disabled={executionDisabled || running || leaseStatus !== "ready"} onClick={runCode}><Play size={14} />{executionDisabled ? "主对话生成中" : running ? "运行中…" : "运行代码"}</button>
+          <button type="button" className="secondary" disabled={executionDisabled || running} onClick={() => {
             void api.restartSandbox(runtimeTicket).then(() => { setRuntimeTicket(null); setResult("运行环境已重置，请重新打开沙箱。"); setTimeline((current) => [...current, { id: Date.now(), label: "运行环境已重置", detail: "Kernel 内存状态已清空。" }]); }).catch(() => setResult("当前运行环境不可用。"));
           }}><RotateCcw size={14} />重置</button>
         </div>
@@ -453,7 +457,7 @@ function ToolPicker({ onOpenTool }: { onOpenTool: (tool: ToolDockTool) => void }
   </nav>;
 }
 
-export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, onToolMenuOpenChange, onOpenTool, onReorderTools, onCloseTool, onActiveToolChange, onExplainCode, learningPanel, knowledgeBookPanel, whiteboardPanel, sandboxSource, filesUserId, filesWorkspaceId }: {
+export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, onToolMenuOpenChange, onOpenTool, onReorderTools, onCloseTool, onActiveToolChange, onExplainCode, sandboxExecutionDisabled = false, learningPanel, knowledgeBookPanel, whiteboardPanel, sandboxSource, filesUserId, filesWorkspaceId, filesPreview }: {
   open: boolean;
   expanded: boolean;
   openTools: ToolDockTool[];
@@ -465,12 +469,14 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
   onCloseTool: (tool: ToolDockTool) => void;
   onActiveToolChange: (tool: ToolDockTool | null) => void;
   onExplainCode: (source: string) => void;
+  sandboxExecutionDisabled?: boolean;
   learningPanel: ReactNode;
   knowledgeBookPanel: ReactNode;
   whiteboardPanel: ReactNode;
   sandboxSource?: SandboxSourceRequest | null;
   filesUserId: string | null;
   filesWorkspaceId: string;
+  filesPreview?: FilesPanelPreviewRequest | null;
 }) {
   const [width, setWidth] = useState(() =>
   Math.min(DEFAULT_DOCK_WIDTH, getMaxDockWidth()),
@@ -657,7 +663,7 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
           const panelShare = currentPanelWidths[index] ?? 0;
           return <Fragment key={tool}>
             <div className="tool-dock-panel" data-active={tool === activeTool ? "true" : "false"}>
-              {tool === "files" ? <FilesPanel key={filesUserId + ":" + filesWorkspaceId} userId={filesUserId} workspaceId={filesWorkspaceId} /> : tool === "learning" ? learningPanel : tool === "book" ? knowledgeBookPanel : tool === "whiteboard" ? whiteboardPanel : <SandboxPhaseZeroPanel onExplainCode={onExplainCode} sourceRequest={sandboxSource} />}
+              {tool === "files" ? <FilesPanel key={filesUserId + ":" + filesWorkspaceId} userId={filesUserId} workspaceId={filesWorkspaceId} previewRequest={filesPreview} /> : tool === "learning" ? learningPanel : tool === "book" ? knowledgeBookPanel : tool === "whiteboard" ? whiteboardPanel : <SandboxPhaseZeroPanel onExplainCode={onExplainCode} sourceRequest={sandboxSource} executionDisabled={sandboxExecutionDisabled} />}
             </div>
             {index < openTools.length - 1 && <div className="tool-dock-panel-resizer" role="separator" aria-label={`调整${item.label}与${tools.find((candidate) => candidate.id === openTools[index + 1])?.label ?? "下个页面"}面板宽度`} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(panelShare)} tabIndex={0} onPointerDown={(event) => beginPanelResize(index, event)} onKeyDown={(event) => resizePanelWithKeyboard(index, event)}><i /></div>}
           </Fragment>;

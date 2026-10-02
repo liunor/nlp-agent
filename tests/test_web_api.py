@@ -420,8 +420,15 @@ def test_learning_release_notes_route_requests_only_published(web_app, monkeypat
             )]
 
     class FakeSession:
+        class _EmptyScalarResult:
+            def all(self):
+                return []
+
         def add(self, obj):
             return None
+
+        async def scalars(self, _statement):
+            return self._EmptyScalarResult()
 
         @asynccontextmanager
         async def begin(self):
@@ -823,6 +830,190 @@ def test_teacher_book_page_is_draft_first_and_student_reads_only_published_conte
             headers=write_headers(csrf),
         )
         assert stale_update.status_code == 409
+
+
+def test_teacher_book_files_have_crud_and_page_publish_refs(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        headers = write_headers(csrf)
+        catalog = {
+            "topics": [{
+                "id": "basic", "name": "基础", "description": "", "status": "enabled",
+                "knowledge_points": [{"id": "attention", "name": "注意力", "status": "enabled", "sort_order": 0}],
+            }],
+            "exercise_blueprints": [], "review_blueprints": [], "guided_blueprints": [],
+        }
+        assert client.put("/api/v1/teacher/catalog/default", json=catalog, headers=headers).status_code == 200
+
+        uploaded = client.post(
+            "/api/v1/teacher/book/default/pages/attention/files",
+            files={"file": ("demo.py", b"print(1)\n", "text/x-python")},
+            data={"display_name": "演示.py"},
+            headers=headers,
+        )
+        assert uploaded.status_code == 201
+        file = uploaded.json()["file"]
+        assert file["token"] == f"book-file:{file['id']}"
+
+        listed = client.get("/api/v1/teacher/book/default/pages/attention/files")
+        assert listed.status_code == 200
+        assert listed.json()["items"][0]["id"] == file["id"]
+
+        renamed = client.patch(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            json={"display_name": "演示新名字.py"},
+            headers=headers,
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["file"]["display_name"] == "演示新名字.py"
+
+        replaced = client.put(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}/content",
+            files={"file": ("replacement.py", b"print(2)\n", "text/x-python")},
+            headers=headers,
+        )
+        assert replaced.status_code == 200
+        assert replaced.json()["file"]["size_bytes"] == len(b"print(2)\n")
+        assert replaced.json()["file"]["original_name"] == "replacement.py"
+
+        saved = client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={
+                "content_markdown": f"# 注意力\n\n[{file['display_name']}]({file['token']})",
+                "expected_revision": 0,
+            },
+            headers=headers,
+        )
+        assert saved.status_code == 200
+        published = client.post(
+            "/api/v1/teacher/book/default/pages/attention/publish",
+            json={"expected_revision": 1},
+            headers=headers,
+        )
+        assert published.status_code == 200
+
+        blocked_delete = client.delete(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            headers=headers,
+        )
+        assert blocked_delete.status_code == 422
+
+        cleared = client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={"content_markdown": "# 注意力", "expected_revision": 1},
+            headers=headers,
+        )
+        assert cleared.status_code == 200
+        assert client.post(
+            "/api/v1/teacher/book/default/pages/attention/publish",
+            json={"expected_revision": 2},
+            headers=headers,
+        ).status_code == 200
+        assert client.get(f"/api/v1/learning/book/default/files/{file['id']}").status_code == 404
+        assert client.delete(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            headers=headers,
+        ).status_code == 204
+
+
+def test_teacher_book_page_rejects_deleted_unsaved_file_reference(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        headers = write_headers(csrf)
+        catalog = {
+            "topics": [{
+                "id": "basic", "name": "基础", "description": "", "status": "enabled",
+                "knowledge_points": [{"id": "attention", "name": "注意力", "status": "enabled", "sort_order": 0}],
+            }],
+            "exercise_blueprints": [], "review_blueprints": [], "guided_blueprints": [],
+        }
+        assert client.put("/api/v1/teacher/catalog/default", json=catalog, headers=headers).status_code == 200
+        uploaded = client.post(
+            "/api/v1/teacher/book/default/pages/attention/files",
+            files={"file": ("demo.py", b"print(1)\n", "text/x-python")},
+            headers=headers,
+        )
+        assert uploaded.status_code == 201
+        file = uploaded.json()["file"]
+        assert client.delete(
+            f"/api/v1/teacher/book/default/pages/attention/files/{file['id']}",
+            headers=headers,
+        ).status_code == 204
+
+        rejected = client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={
+                "content_markdown": f"# 注意力\n\n[已删除文件]({file['token']})",
+                "expected_revision": 0,
+            },
+            headers=headers,
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "book_file_not_found"
+
+
+def test_learning_book_exposes_published_file_preview_and_download(web_app):
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        headers = write_headers(csrf)
+        catalog = {
+            "topics": [{
+                "id": "basic", "name": "基础", "description": "", "status": "enabled",
+                "knowledge_points": [{"id": "attention", "name": "注意力", "status": "enabled", "sort_order": 0}],
+            }],
+            "exercise_blueprints": [], "review_blueprints": [], "guided_blueprints": [],
+        }
+        assert client.put("/api/v1/teacher/catalog/default", json=catalog, headers=headers).status_code == 200
+        uploaded = client.post(
+            "/api/v1/teacher/book/default/pages/attention/files",
+            files={"file": ("demo.py", b"print(1)\n", "text/x-python")},
+            data={"display_name": "演示.py"},
+            headers=headers,
+        )
+        assert uploaded.status_code == 201
+        file = uploaded.json()["file"]
+        assert client.put(
+            "/api/v1/teacher/book/default/pages/attention",
+            json={
+                "content_markdown": f"# 注意力\n\n[演示]({file['token']})",
+                "expected_revision": 0,
+            },
+            headers=headers,
+        ).status_code == 200
+        assert client.post(
+            "/api/v1/teacher/book/default/pages/attention/publish",
+            json={"expected_revision": 1},
+            headers=headers,
+        ).status_code == 200
+
+        page = client.get("/api/v1/learning/book/default/pages/attention")
+        assert page.status_code == 200
+        assert page.json()["page"]["files"] == [{
+            "id": file["id"],
+            "token": file["token"],
+            "original_name": "demo.py",
+            "display_name": "演示.py",
+            "media_type": "text/x-python",
+            "size_bytes": len(b"print(1)\n"),
+            "sha256": file["sha256"],
+            "preview_url": f"/api/v1/learning/book/default/files/{file['id']}",
+            "download_url": f"/api/v1/learning/book/default/files/{file['id']}/download",
+        }]
+
+        preview = client.get(f"/api/v1/learning/book/default/files/{file['id']}")
+        assert preview.status_code == 200
+        assert preview.content == b"print(1)\n"
+        assert preview.headers["content-type"].startswith("text/x-python")
+        assert "inline" in preview.headers["content-disposition"]
+        assert preview.headers["etag"] == f'"{file["sha256"]}"'
+
+        download = client.get(f"/api/v1/learning/book/default/files/{file['id']}/download")
+        assert download.status_code == 200
+        assert download.content == b"print(1)\n"
+        assert "attachment" in download.headers["content-disposition"]
 
 
 def test_teacher_book_import_preview_keeps_only_pytorch_code_segments(web_app):

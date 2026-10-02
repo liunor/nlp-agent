@@ -30,6 +30,7 @@ describe("LoginDialog", () => {
 
     fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "nova" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "test-password" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
     fireEvent.click(screen.getByRole("button", { name: "登录并继续" }));
 
     await waitFor(() => expect(authenticate).toHaveBeenCalledWith("nova", "test-password"));
@@ -43,10 +44,22 @@ describe("LoginDialog", () => {
 
     fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "nova" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "wrong" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
     fireEvent.click(screen.getByRole("button", { name: "登录并继续" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("账号或密码错误");
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it("opens legal documents without leaving the login dialog", () => {
+    render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "《隐私政策》" }));
+    expect(screen.getByRole("dialog", { name: "隐私政策" })).toBeVisible();
+    expect(screen.getByText(/处理目的/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "我已阅读" }));
+    expect(screen.queryByRole("dialog", { name: "隐私政策" })).not.toBeInTheDocument();
   });
 
   it("renders the registration captcha at a readable fixed size", async () => {
@@ -137,6 +150,8 @@ it("keeps the expired dialog open when re-login credentials are wrong", async ()
   fireEvent.change(screen.getByLabelText("密码"), {
     target: { value: "wrong-password" },
   });
+
+  fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
 
   fireEvent.click(
     screen.getByRole("button", { name: "登录并继续" }),

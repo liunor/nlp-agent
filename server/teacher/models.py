@@ -248,6 +248,18 @@ class LearningBookNavigationItem(StrictTeacherModel):
     revision: int = Field(ge=0)
 
 
+class LearningBookFile(StrictTeacherModel):
+    id: str
+    token: str
+    original_name: str
+    display_name: str
+    media_type: str
+    size_bytes: int = Field(ge=1)
+    sha256: str
+    preview_url: str
+    download_url: str
+
+
 class TeacherBookPage(StrictTeacherModel):
     workspace_id: str
     topic_id: str
@@ -269,12 +281,32 @@ class LearningBookPage(StrictTeacherModel):
     title: str
     content_markdown: str
     revision: int = Field(ge=0)
+    files: list[LearningBookFile] = Field(default_factory=list)
 
 
 class TeacherBookAssetInput(StrictTeacherModel):
     asset_path: str = Field(min_length=1, max_length=256)
     media_type: str = Field(min_length=1, max_length=64)
     content_base64: str = Field(min_length=1, max_length=7_000_000)
+
+
+class TeacherBookFile(StrictTeacherModel):
+    id: str
+    workspace_id: str
+    knowledge_point_id: str
+    token: str
+    original_name: str
+    display_name: str
+    media_type: str
+    size_bytes: int = Field(ge=1)
+    sha256: str
+    created_by: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class UpdateTeacherBookFile(StrictTeacherModel):
+    display_name: str = Field(min_length=1, max_length=255)
 
 
 class UpdateTeacherBookPage(StrictTeacherModel):

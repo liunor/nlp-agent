@@ -1,14 +1,16 @@
 import { ChevronDown, ChevronRight, Menu, PanelLeftClose, PanelRightClose, RefreshCw, Search, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 
 import { api } from "@/platform/http/api";
-import type { KnowledgeBookContext, LearningBookNavigationItem, LearningBookPage } from "@/shared/types";
+import type { KnowledgeBookContext, LearningBookFile, LearningBookNavigationItem, LearningBookPage, WhiteboardLibraryItem } from "@/shared/types";
+import { dedupeWhiteboardLibraryItems, normalizeWhiteboardLibraryItem } from "./whiteboard/whiteboardLibraryOverlay";
 
 import { demoLearningBookNavigation, demoLearningBookPages } from "./knowledgeBookDemo";
 import { indexMarkdownHeadings, readKnowledgeBookUrl, replaceKnowledgeBookUrl } from "./knowledgeBook";
 import { KnowledgeBookPromptComposer } from "./KnowledgeBookPromptComposer";
 import { MarkdownContent, type MarkdownCodeActions } from "./MarkdownContent";
+import { parseKnowledgeBookWhiteboardHref, renderKnowledgeBookWhiteboardRefs } from "./whiteboard/knowledgeBookRefs";
 
 interface TopicGroup {
   id: string;
@@ -32,9 +34,11 @@ interface SelectionPrompt {
   composerOpen?: boolean;
 }
 
+const KNOWLEDGE_BOOK_DOCK_SETTLE_MS = 320;
+
 function isExcludedSelectionNode(node: Node | null): boolean {
   const element = node instanceof Element ? node : node?.parentElement;
-  return !!element?.closest("code,button,input,textarea,select,.knowledge-book-page-nav,.knowledge-book-toc");
+  return !!element?.closest("code,button,input,textarea,select,.knowledge-book-page-nav,.markdown-book-file-card,.knowledge-book-toc");
 }
 
 function headingBeforeSelection(article: HTMLElement, range: Range): string | undefined {
@@ -80,6 +84,16 @@ function orderNavigation(items: LearningBookNavigationItem[]): LearningBookNavig
   return groupNavigation(items).flatMap((group) => group.items);
 }
 
+function whiteboardLibraryDisplayMatches(current: WhiteboardLibraryItem[], next: WhiteboardLibraryItem[]): boolean {
+  return current.length === next.length && current.every((item, index) => {
+    const candidate = next[index];
+    return candidate?.id === item.id
+      && candidate.asset_code === item.asset_code
+      && candidate.name === item.name
+      && candidate.status === item.status;
+  });
+}
+
 function findHeadingAnchor(root: HTMLElement, id: string): HTMLElement | undefined {
   return [...root.querySelectorAll<HTMLElement>("[data-knowledge-book-heading-anchor]")].find((candidate) => candidate.id === id);
 }
@@ -116,11 +130,12 @@ function keepFocusInDrawer(event: ReactKeyboardEvent<HTMLElement>) {
   }
 }
 
-export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: { workspaceId: string; onAskNova?: (prompt: string, context: KnowledgeBookContext) => void; onOpenInSandbox?: (code: string, language: string) => void }) {
+export const KnowledgeBookPanel = memo(function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox, onOpenFilePreview, onViewWhiteboard }: { workspaceId: string; onAskNova?: (prompt: string, context: KnowledgeBookContext) => void; onOpenInSandbox?: (code: string, language: string) => void; onOpenFilePreview?: (file: LearningBookFile) => void; onViewWhiteboard?: (item: WhiteboardLibraryItem) => void }) {
   const [initialViewState] = useState(() => readBookViewState(workspaceId));
   const [initialDeepLink] = useState(() => readKnowledgeBookUrl(window.location.search));
   const demoMode = initialDeepLink.demo;
   const [navigation, setNavigation] = useState<LearningBookNavigationItem[]>([]);
+  const [whiteboardLibrary, setWhiteboardLibrary] = useState<WhiteboardLibraryItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialDeepLink.pointId ?? initialViewState.selectedId);
   const [page, setPage] = useState<LearningBookPage | null>(null);
   const [loadingNavigation, setLoadingNavigation] = useState(true);
@@ -153,18 +168,22 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
   const headingIndexRef = useRef({ headings: [], headingIds: [], headingIdsByLine: {} } as ReturnType<typeof indexMarkdownHeadings>);
   const onAskNovaRef = useRef(onAskNova);
   const onOpenInSandboxRef = useRef(onOpenInSandbox);
+  const onViewWhiteboardRef = useRef(onViewWhiteboard);
   const topicGroups = useMemo(() => groupNavigation(navigation), [navigation]);
   const orderedNavigation = useMemo(() => orderNavigation(navigation), [navigation]);
-  const visiblePage = page?.knowledge_point_id === selectedId ? page : null;
-  const headingIndex = useMemo(() => indexMarkdownHeadings(visiblePage?.content_markdown ?? ""), [visiblePage?.content_markdown]);
-  const markdownHasTitle = useMemo(() => /^(?: {0,3})#(?!#)[ \t]+.+/m.test(visiblePage?.content_markdown ?? ""), [visiblePage?.content_markdown]);
+  const visiblePage = page?.knowledge_point_id === selectedId && (demoMode || page.workspace_id === workspaceId) ? page : null;
+  const visibleMarkdown = useMemo(() => renderKnowledgeBookWhiteboardRefs(visiblePage?.content_markdown ?? ""), [visiblePage?.content_markdown]);
+  const bookFileLinks = useMemo(() => Object.fromEntries((visiblePage?.files ?? []).map((file) => [file.token.toLowerCase(), file])), [visiblePage?.files]);
+  const headingIndex = useMemo(() => indexMarkdownHeadings(visibleMarkdown), [visibleMarkdown]);
+  const markdownHasTitle = useMemo(() => /^(?: {0,3})#(?!#)[ \t]+.+/m.test(visibleMarkdown), [visibleMarkdown]);
   useEffect(() => {
     visiblePageRef.current = visiblePage;
     activeHeadingIdRef.current = activeHeadingId;
     headingIndexRef.current = headingIndex;
     onAskNovaRef.current = onAskNova;
     onOpenInSandboxRef.current = onOpenInSandbox;
-  }, [activeHeadingId, headingIndex, onAskNova, onOpenInSandbox, visiblePage]);
+    onViewWhiteboardRef.current = onViewWhiteboard;
+  }, [activeHeadingId, headingIndex, onAskNova, onOpenInSandbox, onViewWhiteboard, visiblePage]);
   const canAskNova = Boolean(onAskNova);
   const canOpenInSandbox = Boolean(onOpenInSandbox);
   const codeActions = useMemo<MarkdownCodeActions>(() => {
@@ -263,13 +282,31 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
   }, [loadNavigation]);
 
   useEffect(() => {
+    if (demoMode) return undefined;
+    let current = true;
+    if (typeof api.getWhiteboardLibrary !== "function") return () => { current = false; };
+    void api.getWhiteboardLibrary().then((result) => {
+      if (current) {
+        const items = dedupeWhiteboardLibraryItems(result.items
+          .map(normalizeWhiteboardLibraryItem)
+          .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published"));
+        setWhiteboardLibrary(items);
+      }
+    }).catch(() => {
+      if (current) setWhiteboardLibrary([]);
+    });
+    return () => { current = false; };
+  }, [demoMode]);
+
+  useEffect(() => {
     replaceKnowledgeBookUrl({ pointId: selectedId });
   }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) return undefined;
     let current = true;
-    const cachedPage = pageCacheRef.current.get(selectedId);
+    const pageCacheKey = `${workspaceId}:${selectedId}`;
+    const cachedPage = pageCacheRef.current.get(pageCacheKey);
     if (cachedPage) {
       setPage(cachedPage);
       setActiveHeadingId(null);
@@ -285,7 +322,7 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
       void request.then((response) => {
         if (!current) return;
         setPage(response.page);
-        if (response.page) pageCacheRef.current.set(selectedId, response.page);
+        if (response.page) pageCacheRef.current.set(pageCacheKey, response.page);
         setActiveHeadingId(null);
       }).catch((cause: unknown) => {
         if (current) setError(cause instanceof Error ? cause.message : "知识点内容加载失败");
@@ -376,6 +413,43 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
   }, [rightOpen]);
 
   const selectedIndex = orderedNavigation.findIndex((item) => item.knowledge_point_id === selectedId);
+  const openWhiteboardReference = async (ref: { asset_id: string; asset_code?: string; name: string }) => {
+    const readerScrollTop = contentRef.current?.scrollTop ?? 0;
+    const restoreReaderScroll = () => {
+      const root = contentRef.current;
+      if (!root) return;
+      root.scrollTop = readerScrollTop;
+      root.scrollTo?.({ top: readerScrollTop, behavior: "auto" });
+    };
+    try {
+      const result = await api.getWhiteboardLibrary();
+      const items = dedupeWhiteboardLibraryItems(result.items
+        .map(normalizeWhiteboardLibraryItem)
+        .filter((item): item is WhiteboardLibraryItem => item !== null && item.status === "published"));
+      setWhiteboardLibrary((current) => whiteboardLibraryDisplayMatches(current, items) ? current : items);
+      const item = items.find((candidate) => candidate.id === ref.asset_id || (ref.asset_code && candidate.asset_code === ref.asset_code));
+      if (item) {
+        onViewWhiteboardRef.current?.(item);
+        // Opening the dock can resize/remount the reader's scroll viewport.
+        // Restore after the state update and once more after the browser has
+        // applied the layout transition.
+        restoreReaderScroll();
+        window.requestAnimationFrame(restoreReaderScroll);
+        window.setTimeout(restoreReaderScroll, 0);
+        window.setTimeout(restoreReaderScroll, KNOWLEDGE_BOOK_DOCK_SETTLE_MS);
+      }
+    } catch {
+      // Do not re-present a stale textbook reference when the library cannot be revalidated.
+    }
+  };
+  const renderWhiteboardLink = (href: string, label: string): ReactNode => {
+    const ref = parseKnowledgeBookWhiteboardHref(href);
+    if (!ref) return <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true">{label}</span>;
+    const item = whiteboardLibrary.find((candidate) => candidate.id === ref.asset_id || (ref.asset_code && candidate.asset_code === ref.asset_code));
+    const name = item?.name?.trim() || ref.name;
+    if (!item) return <button type="button" disabled className="knowledge-book-whiteboard-anchor unavailable" data-whiteboard-anchor="true" title={`素材不可用：${name}`} aria-label={`${name}（素材不可用）`}>图<span className="sr-only">素材不可用</span></button>;
+    return <button type="button" className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true" title={`查看图画：${name}`} aria-label={`查看图画 ${name}`} onClick={() => void openWhiteboardReference(ref)}><span aria-hidden="true">图</span><span className="sr-only">查看图画{name}</span></button>;
+  };
   const updateSelectionPrompt = () => {
     window.setTimeout(() => {
       if (!onAskNova || !visiblePage) return;
@@ -470,7 +544,7 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
         <div className="knowledge-book-page-scroll" ref={contentRef} onScroll={handlePageScroll}>
           {loadingPage ? <div className="knowledge-book-state"><span className="spin">⟳</span><p>正在打开知识点……</p></div> : visiblePage ? <article ref={articleRef} tabIndex={-1} className="knowledge-book-article" onPointerUp={updateSelectionPrompt} onKeyUp={updateSelectionPrompt}>
             {!markdownHasTitle && <header className="knowledge-book-fallback-title"><h1>{visiblePage.title}</h1></header>}
-            <MarkdownContent headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} codeActions={codeActions}>{visiblePage.content_markdown}</MarkdownContent>
+            <MarkdownContent headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} codeActions={codeActions} bookFileLinks={bookFileLinks} onPreviewBookFile={onOpenFilePreview} whiteboardLink={renderWhiteboardLink}>{visibleMarkdown}</MarkdownContent>
             <footer className="knowledge-book-page-nav">
               <button type="button" disabled={selectedIndex <= 0} onClick={() => selectKnowledgePoint(orderedNavigation[selectedIndex - 1].knowledge_point_id)}>上一节</button>
               <button type="button" disabled={selectedIndex < 0 || selectedIndex >= orderedNavigation.length - 1} onClick={() => selectKnowledgePoint(orderedNavigation[selectedIndex + 1].knowledge_point_id)}>下一节</button>
@@ -487,4 +561,4 @@ export function KnowledgeBookPanel({ workspaceId, onAskNova, onOpenInSandbox }: 
     {selectionPrompt && onAskNova && !selectionPrompt.composerOpen && <button ref={selectionActionRef} type="button" className="knowledge-book-selection-action" style={{ top: `${selectionPrompt.top}px`, left: `${selectionPrompt.left}px` }} onMouseDown={(event) => event.preventDefault()} onClick={openSelectionComposer}>向 Nova 提问</button>}
     {selectionPrompt && onAskNova && selectionPrompt.composerOpen && <KnowledgeBookPromptComposer ref={selectionComposerRef} className="knowledge-book-selection-composer" style={{ top: `${selectionPrompt.top}px`, left: `${selectionPrompt.left}px` }} ariaLabel="向 Nova 提问" placeholder="这是什么意思？" onSubmit={askSelection} />}
   </section>;
-}
+});

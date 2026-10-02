@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gateway.analytics_time import localize_turn_time, utc_offset_for
+from gateway.analytics_time import analytics_today, localize_turn_time, utc_offset_for
 
 
 def test_utc_offset_accepts_names_and_literals():
@@ -38,3 +38,9 @@ def test_localize_turn_time_non_datetime_falls_back_to_string_slice():
     assert day == "2026-08-10"
     assert hour is None
     assert weekday is None
+
+
+def test_analytics_today_uses_display_timezone_calendar_date():
+    now = datetime(2026, 9, 25, 23, 30, tzinfo=timezone.utc)
+
+    assert analytics_today("Asia/Shanghai", now=now).isoformat() == "2026-09-26"

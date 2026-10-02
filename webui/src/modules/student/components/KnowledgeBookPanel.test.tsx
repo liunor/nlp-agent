@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LearningBookNavigationItem, LearningBookPage } from "@/shared/types";
+import type { LearningBookNavigationItem, LearningBookPage, WhiteboardLibraryItem } from "@/shared/types";
 
 import { api } from "@/platform/http/api";
 
@@ -12,6 +12,7 @@ vi.mock("@/platform/http/api", () => ({
   api: {
     getLearningBookNavigation: vi.fn(),
     getLearningBookPage: vi.fn(),
+    getWhiteboardLibrary: vi.fn(),
   },
 }));
 
@@ -36,6 +37,7 @@ describe("KnowledgeBookPanel", () => {
     window.history.replaceState({}, "", "/");
     vi.mocked(api.getLearningBookNavigation).mockResolvedValue({ workspace_id: "workspace-1", items: navigation });
     vi.mocked(api.getLearningBookPage).mockImplementation((_workspaceId, knowledgePointId) => Promise.resolve({ page: { ...page, knowledge_point_id: knowledgePointId, title: knowledgePointId === "point-2" ? "句法分析" : page.title } }));
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
@@ -50,6 +52,67 @@ describe("KnowledgeBookPanel", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: "核心概念" }).length).toBeGreaterThan(0));
     expect(api.getLearningBookNavigation).toHaveBeenCalledWith("workspace-1");
     expect(api.getLearningBookPage).toHaveBeenCalledWith("workspace-1", "point-1");
+  });
+
+  it("renders published教材 files as standalone cards with preview and download actions", async () => {
+    const openFilePreview = vi.fn();
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({
+      page: {
+        ...page,
+        content_markdown: "## 核心概念\n\n[演示.py](book-file:file-1)",
+        files: [{
+          id: "file-1",
+          token: "book-file:file-1",
+          original_name: "demo.py",
+          display_name: "演示.py",
+          media_type: "text/x-python",
+          size_bytes: 9,
+          sha256: "sha-demo",
+          preview_url: "/api/v1/learning/book/workspace-1/files/file-1",
+          download_url: "/api/v1/learning/book/workspace-1/files/file-1/download",
+        }],
+      },
+    });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onOpenFilePreview={openFilePreview} />);
+
+    expect(screen.queryByText("教材附件")).not.toBeInTheDocument();
+    expect(await screen.findByText("演示.py")).toBeInTheDocument();
+    const previewButton = await screen.findByRole("button", { name: "预览教材文件：演示.py" });
+    await userEvent.setup().click(previewButton);
+    expect(openFilePreview).toHaveBeenCalledWith(expect.objectContaining({ id: "file-1", display_name: "演示.py" }));
+    const downloadLink = screen.getByRole("link", { name: "下载教材附件：演示.py" });
+    expect(downloadLink).toHaveAttribute("href", "/api/v1/learning/book/workspace-1/files/file-1/download");
+    expect(downloadLink).toHaveAttribute("download");
+  });
+
+  it("turns a teacher-inserted book-file reference into an inline file card", async () => {
+    const fileToken = "book-file:550e8400-e29b-41d4-a716-446655440000";
+    const openFilePreview = vi.fn();
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({
+      page: {
+        ...page,
+        content_markdown: "请先阅读：[演示.py](book-file:550E8400-E29B-41D4-A716-446655440000)",
+        files: [{
+          id: "file-1",
+          token: fileToken,
+          original_name: "demo.py",
+          display_name: "演示.py",
+          media_type: "text/x-python",
+          size_bytes: 9,
+          sha256: "sha-demo",
+          preview_url: "/api/v1/learning/book/workspace-1/files/file-1",
+          download_url: "/api/v1/learning/book/workspace-1/files/file-1/download",
+        }],
+      },
+    });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onOpenFilePreview={openFilePreview} />);
+
+    const inlineCard = await screen.findByRole("button", { name: "预览教材文件：演示.py" });
+    expect(screen.queryByRole("link", { name: "演示.py" })).not.toBeInTheDocument();
+    await userEvent.setup().click(inlineCard);
+    expect(openFilePreview).toHaveBeenCalledWith(expect.objectContaining({ id: "file-1", display_name: "演示.py" }));
   });
 
   it("lets Markdown own the article title without showing teacher-only metadata", async () => {
@@ -72,6 +135,67 @@ describe("KnowledgeBookPanel", () => {
     expect(screen.getByText("从左侧目录选择一个知识点开始阅读。")).toBeInTheDocument();
   });
 
+  it("shows an inline whiteboard anchor at the referenced lesson line and opens the selected material", async () => {
+    const item: WhiteboardLibraryItem = { id: "asset-1", asset_code: "WB-000001", status: "published", created: 1, name: "注意力计算过程", elements: [{ id: "element-1", type: "rectangle" }] };
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '# 注意力\n\n<!-- nova-whiteboard asset="asset-1" name="%E6%B3%A8%E6%84%8F%E5%8A%9B%E8%AE%A1%E7%AE%97%E8%BF%87%E7%A8%8B" -->\n\n正文' } });
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [item] });
+    const onViewWhiteboard = vi.fn();
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onViewWhiteboard={onViewWhiteboard} />);
+
+    const button = await screen.findByRole("button", { name: "查看图画 注意力计算过程" });
+    expect(button).toHaveAttribute("title", "查看图画：注意力计算过程");
+    expect(button.closest("p")).not.toBeNull();
+    await userEvent.setup().click(button);
+    await waitFor(() => expect(onViewWhiteboard).toHaveBeenCalledWith(item));
+  });
+
+  it("keeps the reader position when opening a referenced whiteboard", async () => {
+    const item: WhiteboardLibraryItem = { id: "asset-1", asset_code: "WB-000001", status: "published", created: 1, name: "注意力计算过程", elements: [{ id: "element-1", type: "rectangle" }] };
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '<!-- nova-whiteboard asset="asset-1" name="注意力计算过程" -->\n\n正文' } });
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [item] });
+    const pageScrollTop = 420;
+    let pageScroll: HTMLDivElement | null = null;
+    const onViewWhiteboard = vi.fn(() => {
+      // Opening the dock changes the parent layout. This models the browser
+      // resetting the scroll container during that transition.
+      if (pageScroll) pageScroll.scrollTop = 0;
+    });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onViewWhiteboard={onViewWhiteboard} />);
+
+    const button = await screen.findByRole("button", { name: "查看图画 注意力计算过程" });
+    pageScroll = document.querySelector(".knowledge-book-page-scroll");
+    if (!pageScroll) throw new Error("knowledge-book scroll container was not rendered");
+    Object.defineProperty(pageScroll, "scrollTop", { configurable: true, value: pageScrollTop, writable: true });
+    await userEvent.setup().click(button);
+
+    await waitFor(() => expect(onViewWhiteboard).toHaveBeenCalledWith(item));
+    await waitFor(() => expect(pageScroll?.scrollTop).toBe(pageScrollTop));
+  });
+
+  it("renders the published marker format used by the teacher editor as a visible circle", async () => {
+    const item: WhiteboardLibraryItem = { id: "193c7240-ee91-4570-981c-a3db65c8deba", asset_code: "WB-193C7240", status: "published", created: 1, name: "transformer", elements: [] };
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '代码\n```python\nbreak\n```\n<!-- nova-whiteboard asset="193c7240-ee91-4570-981c-a3db65c8deba" code="WB-193C7240" name="transformer" -->\n\n正文' } });
+    vi.mocked(api.getWhiteboardLibrary).mockResolvedValue({ items: [item] });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onViewWhiteboard={vi.fn()} />);
+
+    const button = await screen.findByRole("button", { name: "查看图画 transformer" });
+    expect(button).toHaveClass("knowledge-book-whiteboard-anchor");
+    expect(button.closest("p")).toHaveClass("knowledge-book-whiteboard-paragraph");
+  });
+
+  it("explains when a textbook whiteboard reference no longer exists", async () => {
+    vi.mocked(api.getLearningBookPage).mockResolvedValue({ page: { ...page, content_markdown: '<!-- nova-whiteboard asset="missing-asset" name="旧图画" -->\n\n正文' } });
+
+    render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+
+    const button = await screen.findByRole("button", { name: /旧图画/ });
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent("素材不可用");
+  });
+
   it("restores the last knowledge point when the reader is reopened", async () => {
     window.sessionStorage.setItem("nova:knowledge-book:workspace-1", JSON.stringify({ selectedId: "point-2", expandedTopics: ["topic-1"], scrollPositions: { "point-2": 120 }, leftCollapsed: true, rightCollapsed: false }));
 
@@ -79,6 +203,26 @@ describe("KnowledgeBookPanel", () => {
 
     expect(await screen.findByRole("heading", { name: "句法分析" })).toBeInTheDocument();
     expect(api.getLearningBookPage).toHaveBeenCalledWith("workspace-1", "point-2");
+  });
+
+  it("does not reuse a cached page when the workspace changes", async () => {
+    vi.mocked(api.getLearningBookNavigation).mockImplementation((workspaceId) => {
+      const currentWorkspaceId = workspaceId ?? "workspace-1";
+      return Promise.resolve({ workspace_id: currentWorkspaceId, items: navigation });
+    });
+    vi.mocked(api.getLearningBookPage).mockImplementation((workspaceId, knowledgePointId) => {
+      const currentWorkspaceId = workspaceId ?? "workspace-1";
+      return Promise.resolve({
+        page: { ...page, workspace_id: currentWorkspaceId, knowledge_point_id: knowledgePointId, content_markdown: `当前工作区：${currentWorkspaceId}` },
+      });
+    });
+    const view = render(<KnowledgeBookPanel workspaceId="workspace-1" />);
+
+    expect(await screen.findByText("当前工作区：workspace-1")).toBeInTheDocument();
+    view.rerender(<KnowledgeBookPanel workspaceId="workspace-2" />);
+
+    expect(await screen.findByText("当前工作区：workspace-2")).toBeInTheDocument();
+    expect(api.getLearningBookPage).toHaveBeenCalledWith("workspace-2", "point-1");
   });
 
   it("offers an explicit Nova action for selected article text", async () => {

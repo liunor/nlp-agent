@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Any, Annotated
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response, Security, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
@@ -52,6 +52,7 @@ def create_monitor_app(
     resetter: LocalRuntimeResetter | None = None,
     usage_reader: UsageReadService | None = None,
     allowed_hosts: list[str] | None = None,
+    sandbox_manager: Any | None = None,
 ) -> FastAPI:
     # An explicitly injected auth adapter is a self-contained/test deployment
     # seam. Production construction uses the configured adapter and resolves
@@ -98,6 +99,23 @@ def create_monitor_app(
         app.state.rbac_runtime = rbac_runtime
         app.state.quota_usage_reader = usage_reader
         app.state.monitor_retention = retention
+        manager_client = sandbox_manager
+        manager_client_owned = False
+        if manager_client is None:
+            # The monitor has no Docker access.  It uses the same signed Redis
+            # RPC boundary as the Web plane to read the Manager's authoritative
+            # adaptive target and host-budget counters.
+            try:
+                from server.sandbox.manager_rpc import create_sandbox_manager_rpc_client
+
+                manager_client = create_sandbox_manager_rpc_client()
+                manager_client_owned = manager_client is not None
+            except (ImportError, ValueError):
+                # Keep local/test monitor instances usable when Redis support is
+                # intentionally omitted; sandbox_overview will use its DB
+                # sample fallback in that case.
+                manager_client = None
+        app.state.sandbox_manager = manager_client
         monitor_redis = None
         set_auth_redis_client = getattr(database_auth, "set_redis_client", None)
         redis_url = settings.NLP_AGENT_REDIS_URL.strip()
@@ -144,6 +162,15 @@ def create_monitor_app(
                 usage_reader.close()
             if pending_audit_tasks:
                 await asyncio.gather(*pending_audit_tasks, return_exceptions=True)
+            if manager_client_owned and manager_client is not None:
+                close_manager = getattr(manager_client, "close", None)
+                if callable(close_manager):
+                    try:
+                        await close_manager()
+                    except Exception:
+                        logging.getLogger(__name__).warning(
+                            "sandbox Manager RPC client close failed", exc_info=True
+                        )
             if monitor_redis is not None:
                 await monitor_redis.aclose()
             await rbac_runtime.close()
@@ -726,6 +753,13 @@ def create_monitor_app(
     @app.get("/api/v1/observability/storage", tags=["observability"])
     async def storage(identity: Principal):
         return {**(await service.health(identity)), "retention": app.state.monitor_retention}
+
+    @app.get("/api/v1/observability/space", tags=["observability"])
+    async def space(
+        identity: Principal,
+        db: Annotated[AsyncSession, Depends(monitor_db_session)],
+    ):
+        return await service.space(identity, db)
 
     @app.post("/api/v1/observability/storage/prune", tags=["observability"])
     async def prune(
