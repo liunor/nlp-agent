@@ -73,6 +73,7 @@ from server.web.contracts import (
     SubmitChatBody,
     ToolApprovalBody,
     UpdateCustomToolsBody,
+    UpdateModelPresetsBody,
     UpdateToolPoliciesBody,
     UpdateSettingsBody,
     FeedbackBody,
@@ -113,6 +114,7 @@ from server.web.developer_runtime import (
     read_skill,
     test_mcp_server,
     update_custom_tools,
+    update_model_presets,
     update_tool_policies,
     upsert_mcp_server,
     upsert_model_preset,
@@ -2930,6 +2932,11 @@ def create_app(
     async def put_custom_tools(body: UpdateCustomToolsBody, principal: Principal, _claims: WriteClaims):
         authorization_service.require(principal, Permission.SYSTEM_TOOL_CONFIG_MANAGE)
         return await update_custom_tools(body.custom)
+
+    @app.put("/api/v1/developer/models/presets", tags=["developer"])
+    async def put_model_presets(body: UpdateModelPresetsBody, principal: Principal, _claims: WriteClaims):
+        authorization_service.require(principal, Permission.SYSTEM_MODEL_PROFILE_MANAGE)
+        return await update_model_presets(body.presets)
 
     @app.put("/api/v1/developer/mcp/{name}", tags=["developer"])
     async def put_mcp_server(name: str, body: McpServerBody, principal: Principal, _claims: WriteClaims):

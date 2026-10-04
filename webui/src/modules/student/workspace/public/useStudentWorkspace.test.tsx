@@ -290,7 +290,7 @@ describe("useStudentWorkspace settings", () => {
     await act(async () => { await result.current.renameSessionTitle("session-new", "新标题"); });
 
     expect(renameSessionMock).toHaveBeenCalledWith("session-new", "新标题");
-    expect(result.current.requestError).toContain("重命名失败");
+    expect(result.current.requestError?.message).toContain("重命名失败");
     expect(result.current.sessions[0].title).toBe("原标题");
   });
 
@@ -546,6 +546,20 @@ describe("useStudentWorkspace settings", () => {
     expect(createSessionMock).toHaveBeenCalledWith("research");
     expect(result.current.activeSessionId).toBe("session-research");
     expect(result.current.messages.some((message) => message.role === "user")).toBe(true);
+  });
+
+  it("sends the reasoning preference with each new chat turn", async () => {
+    getSettingsMock.mockResolvedValue({
+      preferences: { settings: { show_reasoning: false } },
+      runtime,
+    });
+    createSessionMock.mockResolvedValue({ session_id: "session-thinking", user_id: "user", workspace_id: "default", channel: "web" });
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+
+    await act(async () => { await result.current.send("解释 Transformer"); });
+
+    expect(sendChatMock.mock.calls[0][6]).toBe(false);
   });
 
   it("starts a fresh backend session after a new chat while a previous creation is in flight", async () => {
@@ -827,7 +841,7 @@ socketEventHandlerRef.current?.({
 });
 });
 
-  expect(result.current.requestError).toBe("Authentication required");
+  expect(result.current.requestError).toEqual({ code: "request_failed", message: "Authentication required" });
 
   act(() => {
     window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
@@ -841,7 +855,7 @@ socketEventHandlerRef.current?.({
     expect(result.current.bootStatus).toBe("ready");
   });
 
-  expect(result.current.requestError).toBe("");
+  expect(result.current.requestError).toBeNull();
 });
 it("uses the global auth session and logout boundary when mounted in the application", async () => {
     ensureAuthMock.mockResolvedValue({

@@ -137,6 +137,7 @@ class InProcessTurnExecutor:
         self._accepts_teaching_materials = parameter_count >= 7
         self._accepts_model_profile = "model_profile" in parameters
         self._accepts_knowledge_book_context = "knowledge_book_context" in parameters
+        self._accepts_thinking_enabled = "thinking_enabled" in parameters
 
     def mark_activity(
         self,
@@ -160,7 +161,6 @@ class InProcessTurnExecutor:
         event = self._activity_events.get(turn_id)
         if event is not None:
             event.set()
-
     async def run(self, task: TurnTask, execution_context: Any | None = None) -> None:
         fence = self._fence(execution_context)
         await asyncio.to_thread(
@@ -508,6 +508,8 @@ class InProcessTurnExecutor:
             kwargs["model_profile"] = task.model_profile
         if self._accepts_knowledge_book_context:
             kwargs["knowledge_book_context"] = task.knowledge_book_context
+        if self._accepts_thinking_enabled:
+            kwargs["thinking_enabled"] = task.thinking_enabled
         return await self._engine.run_turn(
             task.context, task.turn_id, task.content, **kwargs
         )

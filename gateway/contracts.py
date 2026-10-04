@@ -75,6 +75,7 @@ class SubmitTurnRequest(BaseModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+    thinking_enabled: bool = True
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "SubmitTurnRequest":
