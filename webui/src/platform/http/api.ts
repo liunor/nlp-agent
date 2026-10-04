@@ -335,6 +335,7 @@ export const api = {
   updateToolPolicies: (policies: Record<string, unknown>) =>
     request<Record<string, unknown>>("/developer/tools/policies", { method: "PUT", body: JSON.stringify({ policies }) }),
   updateCustomTools: (custom: Record<string, unknown>) => request<{ restart_required: boolean; reason: string }>("/developer/tools/custom", { method: "PUT", body: JSON.stringify({ custom }) }),
+  updateModelPresets: (presets: Record<string, unknown>) => request<Record<string, unknown>>("/developer/models/presets", { method: "PUT", body: JSON.stringify({ presets }) }),
   saveMcp: (name: string, config: Record<string, unknown>) =>
     request<Record<string, unknown>>(`/developer/mcp/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ config }) }),
   testMcp: (name: string, config: Record<string, unknown>) =>

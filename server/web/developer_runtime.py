@@ -78,17 +78,19 @@ async def reload_runtime(*, reload_mcp: bool = False, reload_skills: bool = Fals
     from server.agent.node.coordinator import invalidate_coordinator_caches
     from server.tools.academic.service import close_academic_search_service
 
-    settings._config = __import__("core.runtime_config", fromlist=["load_runtime_config"]).load_runtime_config()
+    settings._config = load_runtime_config()
     # ModelFactory caches provider clients and typed runtime config. Rebuild it
     # after any developer override so the next turn observes the new route.
     model_factory._global_model_factory = None
     await close_academic_search_service()
+    from core.model_runtime.factory import get_global_model_factory
     physical_tool_manager.refresh_config()
     if reload_skills:
         skill_loader.profiles = physical_tool_manager.config.worker_profiles
         skill_loader.reload()
     if reload_mcp:
         await physical_tool_manager.runtime.start_mcp(physical_tool_manager.config.tools.mcp_servers)
+    get_global_model_factory().reload_from_settings()
     invalidate_coordinator_caches()
     return {
         "catalog_revision": physical_tool_manager.catalog_revision,
@@ -179,6 +181,32 @@ async def update_custom_tools(custom: dict[str, Any]) -> dict[str, Any]:
         _section(overrides, "tools")["custom"] = validated.model_dump(mode="json")
     await reload_runtime()
     return {"restart_required": True, "reason": "custom Python tool modules reload on next runtime start"}
+
+
+async def update_model_presets(presets: dict[str, Any]) -> dict[str, Any]:
+    """Validate and hot-apply model thinking/generation presets for new turns."""
+    raw = load_runtime_config()
+    candidate = {
+        "providers": raw.get("providers", {}),
+        "models": raw.get("models", {}),
+        "model_presets": presets,
+        "model_routes": raw.get("model_routes", {}),
+        "model_profiles": raw.get("model_profiles", {}),
+        "default_model_profile": raw.get("defaults", {}).get("model_profile"),
+    }
+    try:
+        validated = ModelRuntimeConfig.model_validate(candidate)
+    except (TypeError, ValueError) as error:
+        raise DeveloperConfigurationError(f"模型预设无效：{error}") from error
+
+    normalized = {
+        name: value.model_dump(mode="json")
+        for name, value in validated.model_presets.items()
+    }
+    with runtime_overrides_transaction() as overrides:
+        overrides["model_presets"] = normalized
+    result = await reload_runtime()
+    return {**result, "presets": normalized}
 
 
 async def upsert_mcp_server(name: str, config: dict[str, Any]) -> dict[str, Any]:
