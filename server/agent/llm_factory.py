@@ -2,7 +2,7 @@
 
 from core.model_runtime.factory import get_global_model_factory
 from core.model_runtime.runtime import ResilientChatModel
-from core.model_runtime.selection import current_model_profile
+from core.model_runtime.selection import current_model_profile, current_thinking_enabled
 from configs.settings import settings
 
 
@@ -10,11 +10,16 @@ def _selected_profile(requested: str | None = None) -> str | None:
     return requested or current_model_profile()
 
 
+def _thinking_kwargs() -> dict[str, bool]:
+    enabled = current_thinking_enabled()
+    return {"thinking_enabled": enabled} if enabled is not None else {}
+
+
 def get_planner_llm(model_profile: str | None = None) -> ResilientChatModel:
     factory = get_global_model_factory()
     if selected := _selected_profile(model_profile):
-        return factory.build_profile_role(selected, "coordinator")
-    return factory.build_route("coordinator")
+        return factory.build_profile_role(selected, "coordinator", **_thinking_kwargs())
+    return factory.build_route("coordinator", **_thinking_kwargs())
 
 
 def resolve_worker_model_name(
@@ -47,8 +52,8 @@ def get_utility_llm(model_profile: str | None = None) -> ResilientChatModel:
     """Return the selected profile's utility model for compression and curation."""
     factory = get_global_model_factory()
     if selected := _selected_profile(model_profile):
-        return factory.build_profile_role(selected, "utility")
-    return factory.build_route("utility")
+        return factory.build_profile_role(selected, "utility", **_thinking_kwargs())
+    return factory.build_route("utility", **_thinking_kwargs())
 
 
 def get_worker_llm(
@@ -62,11 +67,11 @@ def get_worker_llm(
         tool_specified_model not in (None, "", "inherit")
     )
     if selected and not has_explicit_override:
-        return factory.build_profile_role(selected, "worker")
+        return factory.build_profile_role(selected, "worker", **_thinking_kwargs())
     requested = resolve_worker_model_name(
         agent_name, tool_specified_model, model_profile
     )
     default = settings._config.get("model_routes", {}).get("worker", {}).get("primary")
     if requested == default:
-        return factory.build_route("worker")
-    return factory.build_override(requested, base_route="worker")
+        return factory.build_route("worker", **_thinking_kwargs())
+    return factory.build_override(requested, base_route="worker", **_thinking_kwargs())

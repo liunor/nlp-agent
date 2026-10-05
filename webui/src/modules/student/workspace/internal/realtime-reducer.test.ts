@@ -160,4 +160,34 @@ describe("realtime acknowledgement reconciliation", () => {
     expect(messages[0].content).toBe("答案前半段及完整结论");
     expect(messages[0].status).toBe("completed");
   });
+
+  it("preserves command error codes so the UI does not mislabel turn conflicts as teaching configuration errors", () => {
+    const setRequestError = vi.fn();
+    const handler = createRealtimeEventHandler({
+      socketRef: { current: null },
+      activeSessionRef: { current: "session-1" },
+      pendingRequests: { current: new Map([["request-1", "request-1:user"]]) },
+      inFlightTurnIds: { current: new Set(["request-1"]) },
+      setMessages: vi.fn(),
+      setActiveSessionId: vi.fn(),
+      setRequestError,
+      persistPreferences: vi.fn(),
+      updateSessionMeta: vi.fn(),
+      loadSessions: vi.fn(async () => []),
+      loadTurns: vi.fn(async () => undefined),
+    });
+
+    handler({
+      v: "1",
+      type: "command.error",
+      request_id: "request-1",
+      timestamp: new Date().toISOString(),
+      payload: { code: "turn_conflict", message: "3cee3f82-03fd-4c58-b523-370d21c175c4" },
+    });
+
+    expect(setRequestError).toHaveBeenCalledWith({
+      code: "turn_conflict",
+      message: "3cee3f82-03fd-4c58-b523-370d21c175c4",
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import { Maximize2, Minimize2, Moon, PanelRightClose, PanelRightOpen, Sun, Wifi, WifiOff, X } from "lucide-react";
+import { Maximize2, Minimize2, Moon, PanelRightClose, PanelRightOpen, Sun, Wifi, WifiOff } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/platform/http/api";
 
@@ -16,6 +16,8 @@ import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { Sidebar, SidebarToggle } from "@/modules/student/components/Sidebar";
 import { ToolDock, type SandboxSourceRequest, type ToolDockTabDropPosition, type ToolDockTool } from "@/modules/student/components/ToolDock";
 import type { FilesPanelPreviewRequest } from "@/modules/student/components/FilesPanel";
+import { LearningConfigNotice } from "@/modules/student/workspace/LearningConfigNotice";
+import { getUnavailableLearningModes } from "@/modules/student/workspace/learning-config";
 import { useStudentWorkspace } from "@/modules/student/workspace/public";
 import { useSessionScrollRestoration } from "@/modules/student/workspace/hooks/useSessionScrollRestoration";
 import type { CourseTopic, KnowledgeBookContext, LearningBookFile, TeacherCatalog, WhiteboardLibraryItem } from "@/shared/types";
@@ -169,22 +171,27 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
     />  </div>;
 
   const updateContext = (context: typeof workspace.preferences.context) => {
-    if ((context.mode === "practice" || context.mode === "review") && context.topic_id) {
-      const blueprints = context.mode === "practice" ? learningCatalog?.exercise_blueprints : learningCatalog?.review_blueprints;
-      if (!blueprints?.some((blueprint) => blueprint.topic_id === context.topic_id)) {
+    if (learningCatalog && (context.mode === "practice" || context.mode === "review") && getUnavailableLearningModes(learningCatalog, context).includes(context.mode)) {
         setModeNotice(context.mode);
         return;
-      }
     }
     workspace.setLearningContext(context);
     if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, { topic: context.topic_name });
   };
-  const unavailableModes = (["practice", "review"] as const).filter((mode) => !!learningContext.topic_id && !(mode === "practice" ? learningCatalog?.exercise_blueprints : learningCatalog?.review_blueprints)?.some((blueprint) => blueprint.topic_id === learningContext.topic_id));
+  const unavailableModes = getUnavailableLearningModes(learningCatalog, learningContext);
+  const roles = workspace.authSession?.roles ?? [];
+  const canManageTeaching = ["teacher", "developer", "admin"].some((role) => roles.includes(role));
   const composer = (centered = false) => <Composer key={workspace.composerRevision} sessionId={workspace.activeSessionId} centered={centered} disabled={!statusOnline} running={workspace.isRunning} cancelling={workspace.isCancelling} onSend={(text, attachments) => void workspace.send(text, attachments)} onCancel={workspace.cancel} onEnsureSession={workspace.ensureSession} contextControl={<LearningContextBar value={learningContext} onChange={updateContext} topics={courseTopics} unavailableModes={unavailableModes} onUnavailableMode={setModeNotice} modelProfiles={workspace.modelProfiles} modelProfile={workspace.settings.model_profile} onModelProfileChange={(modelProfile) => void workspace.patchSettings({ model_profile: modelProfile })} modelSelectionDisabled={!statusOnline || workspace.isRunning} />} />;
 
   return <div className={["app-shell", "student-app-shell", sidebarCollapsed ? "sidebar-is-collapsed" : "sidebar-is-expanded", toolDockOpen && toolDockExpanded && "tool-dock-expanded"].filter(Boolean).join(" ")}>
     {workspace.settingsError && <div className="error-card settings-save-error" role="alert">{workspace.settingsError}</div>}
-    {(modeNotice || workspace.requestError) && <section className="learning-config-notice" role="alert"><div><strong>{modeNotice ? `${modeNotice === "practice" ? "练习" : "复习"}模式尚未配置蓝图` : "学习配置不可用"}</strong><p>{modeNotice ? `请先在教师空间创建、启用并保存该主题的${modeNotice === "practice" ? "出题" : "复习"}蓝图。` : workspace.requestError}</p></div><div><button type="button" className="teacher-primary-button" onClick={() => { const path = modeNotice === "review" ? "/teacher/reviews" : "/teacher/exercises"; if (onNavigateTo) onNavigateTo(path); else location.href = path; }}>去配置</button><button type="button" className="learning-notice-close" aria-label="关闭提示" onClick={() => { setModeNotice(null); workspace.clearRequestError(); }}><X size={16} /></button></div></section>}
+    <LearningConfigNotice
+      requestError={workspace.requestError}
+      modeNotice={modeNotice}
+      canManageTeaching={canManageTeaching}
+      onNavigate={(path) => { if (onNavigateTo) onNavigateTo(path); else location.href = path; }}
+      onClose={() => { setModeNotice(null); workspace.clearRequestError(); }}
+    />
     <Sidebar sessions={workspace.sessions} preferences={workspace.preferences} activeId={workspace.activeSessionId} open={sidebarOpen} collapsed={sidebarCollapsed} connected={statusOnline} onClose={() => setSidebarOpen(false)} onCollapse={() => setCollapsed(true)} onExpand={() => setCollapsed(false)} onSelect={workspace.selectSession} onCreate={() => void workspace.startNewChat()} onRename={workspace.renameSessionTitle} onMeta={workspace.updateSessionMeta} onAddCategory={workspace.addCategory} onRenameCategory={workspace.renameCategory} onDeleteCategory={(id, name) => setDeleteTarget({ kind: "category", id, label: name })} onDelete={(id, title, onDeleted) =>
   setDeleteTarget({
     kind: "session",

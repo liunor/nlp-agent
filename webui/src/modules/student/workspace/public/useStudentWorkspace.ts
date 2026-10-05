@@ -4,7 +4,7 @@ import { api } from "@/platform/http/api";
 import { useOptionalAuth } from "@/platform/auth/AuthContext";
 import { StudentSocket } from "@/platform/realtime/client";
 import { clearImportedFiles } from "../../components/importedFiles";
-import type { AuthSession, ChatMessage, RuntimeModelProfile } from "@/shared/types";
+import type { AuthSession, ChatMessage, RealtimeRequestError, RuntimeModelProfile } from "@/shared/types";
 
 import { useWorkspaceBootstrap } from "../internal/bootstrap";
 import { usePreferencesController } from "../internal/preferences-controller";
@@ -33,7 +33,10 @@ export function useStudentWorkspace() {
     setMessages([]);
     setLoadingMessages(Boolean(sessionId));
   }, []);
-  const [requestError, setRequestError] = useState("");
+  const [requestError, setRequestError] = useState<RealtimeRequestError | null>(null);
+  const handleRequestError = useCallback((message: string) => {
+    setRequestError({ code: "session_error", message });
+  }, []);
   const {
     sessions,
     setSessions,
@@ -55,7 +58,7 @@ export function useStudentWorkspace() {
     preferences,
     persistPreferences,
     updateSessionMeta,
-    onRequestError: setRequestError,
+    onRequestError: handleRequestError,
     onActiveSessionChange: handleActiveSessionChange,
   });
   const [modelProfiles, setModelProfiles] = useState<Record<string, RuntimeModelProfile>>({});
@@ -98,12 +101,12 @@ export function useStudentWorkspace() {
       startNewChat();
       setSessions([]);
       setAuthSession(null);
-      setRequestError("");
+      setRequestError(null);
       setError("");
       setBootStatus("loading");
     }
     previousAuthenticatedUserIdRef.current = authenticatedUserId;
-  }, [authenticatedUserId, cancelledTurnIds, freshSessionIdsRef, inFlightTurnIds, invalidateSessionLoads, pendingRequests, setSessions, startNewChat]);
+  }, [authenticatedUserId, cancelledTurnIds, freshSessionIdsRef, handleRequestError, inFlightTurnIds, invalidateSessionLoads, pendingRequests, setSessions, startNewChat]);
   const handleEvent = useMemo(
     // The factory stores refs for the socket callback; it does not read them during render.
     // eslint-disable-next-line react-hooks/refs
@@ -192,12 +195,12 @@ const authenticate = useCallback(async (username: string, password: string) => {
     : await api.login(username, password);
 
   setError("");
-  setRequestError("");
+  setRequestError(null);
   return result;
 }, [globalAuth]);
   const retryAuthentication = useCallback(() => {
     setError("");
-    setRequestError("");
+    setRequestError(null);
     setBootStatus("loading");
     setAuthRevision((current) => current + 1);
   }, []);
@@ -238,7 +241,7 @@ const authenticate = useCallback(async (username: string, password: string) => {
     bootStatus,
     error,
     requestError,
-    clearRequestError: () => setRequestError(""),
+    clearRequestError: () => setRequestError(null),
     socketStatus,
     loadingMessages,
     isRunning,

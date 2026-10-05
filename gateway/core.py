@@ -582,6 +582,7 @@ class BackendGateway:
             guided_session_id=guided_session.get("id"),
             exercise_session_id=(teaching_session.get("id") if teaching_session is not None else None),
             model_profile=request.model_profile,
+            thinking_enabled=request.thinking_enabled,
             authorization=ExecutionAuthorizationContext(
                 submitter_user_id=principal.user_id,
                 workspace_id=context.workspace_id,
@@ -646,7 +647,8 @@ class BackendGateway:
             learning_progress=task.learning_progress,
             exercise_state=task.exercise_state, teaching_materials=task.teaching_materials,
             guided_session_id=task.guided_session_id, exercise_session_id=task.exercise_session_id,
-            model_profile=task.model_profile, authorization=task.authorization,
+            model_profile=task.model_profile, thinking_enabled=task.thinking_enabled,
+            authorization=task.authorization,
             reservation_id=(
                 self.quota_service.reservation_id_for_turn(turn.turn_id)
                 if self.quota_service is not None
