@@ -176,6 +176,7 @@ class SubmitChatBody(StrictModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+    thinking_enabled: bool = True
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "SubmitChatBody":
@@ -215,6 +216,10 @@ class UpdateToolPoliciesBody(StrictModel):
 
 class UpdateCustomToolsBody(StrictModel):
     custom: dict[str, Any]
+
+
+class UpdateModelPresetsBody(StrictModel):
+    presets: dict[str, Any]
 
 
 class McpServerBody(StrictModel):
@@ -405,6 +410,7 @@ class ChatSendPayload(StrictModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+    thinking_enabled: bool = True
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "ChatSendPayload":

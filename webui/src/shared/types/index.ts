@@ -487,6 +487,11 @@ export interface ServerEvent {
   payload: Record<string, unknown>;
 }
 
+export interface RealtimeRequestError {
+  code: string;
+  message: string;
+}
+
 export interface LearningContext {
   topic_id: string | null;
   topic_name: string;

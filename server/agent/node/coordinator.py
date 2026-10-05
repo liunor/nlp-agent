@@ -23,6 +23,7 @@ from core.observability.runtime import global_telemetry
 from core.prompt_runtime import global_prompt_runtime
 from core.skill_loader import skill_loader
 from core.tool_registry import physical_tool_manager
+from core.model_runtime.selection import current_thinking_enabled
 from server.agent.llm_factory import get_planner_llm
 from server.agent.state import AgentState
 from server.memory import global_memory_runtime
@@ -119,7 +120,7 @@ def _get_llm_with_tools(config: RunnableConfig):
     global _CACHED_LLM_WITH_TOOLS, _CACHED_SNIP_TOOL, _CACHED_TOOLSET_KEY
     toolset = get_coordinator_toolset(config)
     model_profile = config.get("configurable", {}).get("model_profile")
-    cache_key = (physical_tool_manager.catalog_revision, toolset.names, model_profile)
+    cache_key = (physical_tool_manager.catalog_revision, toolset.names, model_profile, current_thinking_enabled())
     if _CACHED_LLM_WITH_TOOLS is not None and _CACHED_TOOLSET_KEY == cache_key:
         return _CACHED_LLM_WITH_TOOLS
     _CACHED_LLM_WITH_TOOLS = get_planner_llm(model_profile).bind_tools(toolset.tools)

@@ -13,7 +13,7 @@ from core.model_runtime.adapters.glm import GLMAdapter
 from core.model_runtime.adapters.kimi import KimiAdapter
 from core.model_runtime.adapters.openai_compatible import OpenAICompatibleAdapter
 from core.model_runtime.adapters.qwen import QwenAdapter
-from core.model_runtime.contracts import ModelPresetConfig, ModelRuntimeConfig
+from core.model_runtime.contracts import ModelPresetConfig, ModelRuntimeConfig, ReasoningEffort
 from core.model_runtime.registry import ProviderRegistry, global_provider_registry
 from core.model_runtime.runtime import ModelCandidate, ResilientChatModel
 
@@ -52,20 +52,40 @@ class ModelFactory:
 
     @classmethod
     def from_settings(cls) -> "ModelFactory":
-        raw = settings._config
-        return cls(ModelRuntimeConfig.model_validate({
+        return cls(cls.config_from_raw(settings._config))
+
+    @staticmethod
+    def config_from_raw(raw: dict[str, Any]) -> ModelRuntimeConfig:
+        return ModelRuntimeConfig.model_validate({
             "providers": raw.get("providers", {}),
             "models": raw.get("models", {}),
             "model_presets": raw.get("model_presets", {}),
             "model_routes": raw.get("model_routes", {}),
             "model_profiles": raw.get("model_profiles", {}),
             "default_model_profile": raw.get("defaults", {}).get("model_profile"),
-        }))
+        })
+
+    def reload_from_settings(self) -> None:
+        """Apply the latest runtime config and discard models built from old presets."""
+        self.config = self.config_from_raw(settings._config)
+        self._cache.clear()
 
     def _api_key(self, env_name: str) -> str:
         return str(os.environ.get(env_name) or getattr(settings, env_name, "") or self._dotenv.get(env_name) or "")
 
-    def _candidate(self, preset_name: str, preset: ModelPresetConfig) -> ModelCandidate:
+    def _candidate(
+        self,
+        preset_name: str,
+        preset: ModelPresetConfig,
+        thinking_enabled: bool | None = None,
+    ) -> ModelCandidate:
+        if thinking_enabled is False and preset.thinking.enabled:
+            preset = preset.model_copy(update={
+                "thinking": preset.thinking.model_copy(update={
+                    "enabled": False,
+                    "effort": ReasoningEffort.NONE,
+                }),
+            })
         definition = self.config.models[preset.model]
         if preset.thinking.enabled and not definition.capabilities.thinking:
             raise ValueError(f"Model {preset.model!r} does not support thinking")
@@ -101,12 +121,13 @@ class ModelFactory:
         route_name: str,
         *,
         model_profile: str | None = None,
+        thinking_enabled: bool | None = None,
     ) -> ResilientChatModel:
         entries = self.config.route_presets(route_name)
-        key = ("route", route_name, str(model_profile), *(name for name, _ in entries))
+        key = ("route", route_name, str(model_profile), str(thinking_enabled), *(name for name, _ in entries))
         if key not in self._cache:
             self._cache[key] = ResilientChatModel(
-                [self._candidate(name, preset) for name, preset in entries],
+                [self._candidate(name, preset, thinking_enabled) for name, preset in entries],
                 model_profile=model_profile,
                 route=route_name,
                 reporter_slot=self.reporter_slot,
@@ -118,12 +139,13 @@ class ModelFactory:
         preset_name: str,
         *,
         model_profile: str | None = None,
+        thinking_enabled: bool | None = None,
     ) -> ResilientChatModel:
-        key = ("preset", preset_name, str(model_profile))
+        key = ("preset", preset_name, str(model_profile), str(thinking_enabled))
         if key not in self._cache:
             preset = self.config.preset(preset_name)
             self._cache[key] = ResilientChatModel(
-                [self._candidate(preset_name, preset)],
+                [self._candidate(preset_name, preset, thinking_enabled)],
                 model_profile=model_profile,
                 route=None,
                 reporter_slot=self.reporter_slot,
@@ -134,9 +156,15 @@ class ModelFactory:
         self,
         profile_name: str,
         role: str,
+        *,
+        thinking_enabled: bool | None = None,
     ) -> ResilientChatModel:
         preset_name = self.profile_preset(profile_name, role)
-        return self.build_preset(preset_name, model_profile=profile_name)
+        return self.build_preset(
+            preset_name,
+            model_profile=profile_name,
+            thinking_enabled=thinking_enabled,
+        )
 
     def build_override(
         self,
@@ -144,19 +172,24 @@ class ModelFactory:
         *,
         base_route: str = "worker",
         model_profile: str | None = None,
+        thinking_enabled: bool | None = None,
     ) -> ResilientChatModel:
         if requested in self.config.model_presets:
-            return self.build_preset(requested, model_profile=model_profile)
+            return self.build_preset(
+                requested,
+                model_profile=model_profile,
+                thinking_enabled=thinking_enabled,
+            )
         if requested not in self.config.models:
             raise KeyError(
                 f"Unknown model preset/model {requested!r}; presets={sorted(self.config.model_presets)}"
             )
         base_name, base = self.config.route_presets(base_route)[0]
         override = base.model_copy(update={"model": requested})
-        key = ("override", base_name, requested, str(model_profile))
+        key = ("override", base_name, requested, str(model_profile), str(thinking_enabled))
         if key not in self._cache:
             self._cache[key] = ResilientChatModel(
-                [self._candidate(f"{base_name}@{requested}", override)],
+                [self._candidate(f"{base_name}@{requested}", override, thinking_enabled)],
                 model_profile=model_profile,
                 route=base_route,
                 reporter_slot=self.reporter_slot,

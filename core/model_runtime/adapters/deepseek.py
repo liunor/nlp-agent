@@ -106,9 +106,15 @@ class DeepSeekAdapter:
     def _effort(preset: ModelPresetConfig) -> str | None:
         if not preset.thinking.enabled:
             return None
-        if preset.thinking.effort is ReasoningEffort.MAX:
-            return "max"
-        return "high"
+        # DeepSeek V4 exposes low/high/max.  The shared medium level is
+        # intentionally promoted to high because that is the provider's
+        # documented compatibility mapping.
+        return {
+            ReasoningEffort.LOW: "low",
+            ReasoningEffort.MEDIUM: "high",
+            ReasoningEffort.HIGH: "high",
+            ReasoningEffort.MAX: "max",
+        }[preset.thinking.effort]
 
     def build(
         self,

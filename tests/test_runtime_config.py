@@ -1,3 +1,4 @@
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -170,3 +171,40 @@ async def _connected() -> dict[str, object]:
 
 async def _reloaded() -> dict[str, object]:
     return {"restart_required": False}
+
+
+@pytest.mark.asyncio
+async def test_developer_ui_persists_validated_model_presets_and_reloads_runtime(monkeypatch):
+    from server.web import developer_runtime
+
+    raw = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "configs" / "agent_config.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    presets = deepcopy(raw["model_presets"])
+    presets["coordinator-fast"]["thinking"] = {"enabled": True, "effort": "low"}
+    persisted: dict[str, object] = {}
+    reload_calls: list[dict[str, bool]] = []
+
+    monkeypatch.setattr(developer_runtime, "load_runtime_overrides", lambda: {})
+
+    @contextmanager
+    def transaction():
+        value: dict[str, object] = {}
+        yield value
+        persisted.update(deepcopy(value))
+
+    monkeypatch.setattr(developer_runtime, "runtime_overrides_transaction", transaction)
+
+    async def fake_reload_runtime(**kwargs):
+        reload_calls.append(kwargs)
+        return {"restart_required": False}
+
+    monkeypatch.setattr(developer_runtime, "reload_runtime", fake_reload_runtime)
+    result = await developer_runtime.update_model_presets(presets)
+
+    assert persisted["model_presets"]["coordinator-fast"]["thinking"]["effort"] == "low"
+    assert persisted["model_presets"]["coordinator-fast"]["thinking"]["enabled"] is True
+    assert reload_calls == [{}]
+    assert result["presets"]["coordinator-fast"]["thinking"]["effort"] == "low"
