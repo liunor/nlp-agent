@@ -23,7 +23,7 @@ def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() ->
     assert scripts.get_heads() == ["20261009_47_transfer_notify_seq"]
     assert scripts.get_revision("20261009_47_transfer_notify_seq").down_revision == "20261009_46_file_transfers"
     assert scripts.get_revision("20261009_46_file_transfers").down_revision == "20261009_46_storage_repair"
-    assert scripts.get_revision("20261009_46_storage_repair").down_revision == "20260929_45_wb_catalog"
+    assert scripts.get_revision("20261009_46_storage_repair").down_revision == "20261001_48_account_delete_self"
     assert scripts.get_revision("20260929_45_wb_catalog").down_revision == (
         "20260927_42_wb_asset_codes",
         "20260927_45_merge_storage_heads",
