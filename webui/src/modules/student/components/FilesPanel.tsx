@@ -399,10 +399,16 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
     setPreviewFileId(item.id);
     setPreviewLoading(true);
     try {
-      const content = await api.readStorageFile(item.id, workspaceId);
+      const filePreview = await api.readStorageFile(item.id, workspaceId);
       if (previewRequestRef.current !== requestId) return;
       const metadata = describeFileName(item.name);
-      setPreview({ name: item.name, ...metadata, content: content.slice(0, MAX_PREVIEW_CHARS), bytes: item.size_bytes, truncated: content.length > MAX_PREVIEW_CHARS });
+      setPreview({
+        name: item.name,
+        ...metadata,
+        content: filePreview.content,
+        bytes: item.size_bytes,
+        truncated: filePreview.truncated,
+      });
     } catch (reason: unknown) {
       if (previewRequestRef.current !== requestId) return;
       setPreviewFileId(null);

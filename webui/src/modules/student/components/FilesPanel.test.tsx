@@ -51,7 +51,7 @@ describe("FilesPanel", () => {
     vi.mocked(api.getStorageUsage).mockResolvedValue(usage);
     vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [] });
     vi.mocked(api.listStorageTrash).mockResolvedValue({ items: [] });
-    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 0 });
+    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 0, notification_version: 0 });
     vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [] });
   });
 
@@ -85,6 +85,25 @@ describe("FilesPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "回收站" }));
     await waitFor(() => expect(api.listStorageTrash).toHaveBeenCalledWith("workspace-1"));
     expect(screen.getByText("回收站为空")).toBeInTheDocument();
+  });
+
+  it("opens a server file in the same document preview used by learning imports", async () => {
+    vi.mocked(api.listStorageFiles).mockResolvedValue({
+      items: [{ id: "file-1", kind: "file", name: "lesson.md", mime_type: "text/markdown", size_bytes: 18, created_at: null, updated_at: null }],
+    });
+    vi.mocked(api.readStorageFile).mockResolvedValue({
+      content: "# 来自我的文件\n\n这是服务器文件内容。",
+      truncated: false,
+      mime_type: "text/markdown",
+      bytes_read: 18,
+    });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+    fireEvent.click(await screen.findByText("lesson.md"));
+
+    await waitFor(() => expect(api.readStorageFile).toHaveBeenCalledWith("file-1", "workspace-1"));
+    expect(await screen.findByText("来自我的文件")).toBeInTheDocument();
+    expect(screen.getByText("这是服务器文件内容。")).toBeInTheDocument();
   });
 
 function markdownFile(name = "notes.md", content = "# 学习笔记") {
@@ -272,7 +291,7 @@ function upload(files: File[]) {
   });
 
   it("lists multiple incoming requests together and lets the recipient accept one", async () => {
-    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 2 });
+    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 2, notification_version: 2 });
     vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [
       { id: "transfer-1", status: "pending", file_name: "a.md", size_bytes: 12, sender: { identity_id: "NV2AAAAAAAAAAAAA", display_name: "甲" } },
       { id: "transfer-2", status: "pending", file_name: "b.txt", size_bytes: 20, sender: { identity_id: "NV3BBBBBBBBBBBBB", display_name: "乙" } },

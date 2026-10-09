@@ -8,7 +8,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.identity import AuthenticatedPrincipal
 from server.infrastructure.mysql.models import (
@@ -176,8 +177,22 @@ class FileTransferService:
                 expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=TRANSFER_TTL_DAYS),
                 idempotency_key=key,
             )
-            self.db.add(transfer)
-            await self.db.flush()
+            try:
+                async with self.db.begin_nested():
+                    self.db.add(transfer)
+                    await self.db.flush()
+            except IntegrityError as error:
+                await quota.release(reservation)
+                staging_path.unlink(missing_ok=True)
+                existing = await self.db.scalar(
+                    select(FileTransferModel).where(
+                        FileTransferModel.sender_user_id == self.principal.user_id,
+                        FileTransferModel.idempotency_key == key,
+                    ).with_for_update()
+                )
+                if existing is None:
+                    raise error
+                return await self.serialize(existing)
             await self.db.refresh(transfer)
             return await self.serialize(transfer)
         except Exception:
@@ -201,8 +216,7 @@ class FileTransferService:
         if transfer.status == "accepted":
             return await self.serialize(transfer)
         if transfer.expires_at <= datetime.now(timezone.utc).replace(tzinfo=None):
-            await self._resolve_without_copy(transfer, "expire", "system")
-            raise TransferConflict("文件发送请求已过期")
+            return await self._resolve_without_copy(transfer, "expire", "system")
         try:
             next_status = transition_transfer(transfer.status, "accept", actor="recipient")
         except InvalidTransferTransition as error:
@@ -275,8 +289,6 @@ class FileTransferService:
         return await self._resolve_without_copy(transfer, "cancel", "sender")
 
     async def list(self, box: str) -> list[dict]:
-        await self._cleanup_resolved_staging()
-        await self._expire_pending()
         if box not in {"incoming", "outgoing"}:
             raise StorageValidationError("消息箱类型不正确")
         field = FileTransferModel.recipient_user_id if box == "incoming" else FileTransferModel.sender_user_id
@@ -284,19 +296,40 @@ class FileTransferService:
         return [await self.serialize(row) for row in rows]
 
     async def summary(self) -> dict:
-        await self._cleanup_resolved_staging()
-        await self._expire_pending()
         count = int(await self.db.scalar(select(func.count()).select_from(FileTransferModel).where(FileTransferModel.recipient_user_id == self.principal.user_id, FileTransferModel.status == "pending", FileTransferModel.expires_at > func.utc_timestamp(6))) or 0)
-        return {"pending_count": count}
+        notification_version = int(
+            await self.db.scalar(
+                select(func.count())
+                .select_from(FileTransferModel)
+                .where(FileTransferModel.recipient_user_id == self.principal.user_id)
+            )
+            or 0
+        )
+        return {"pending_count": count, "notification_version": notification_version}
 
-    async def _expire_pending(self) -> None:
-        expired_ids = list((await self.db.scalars(select(FileTransferModel.id).where(FileTransferModel.status == "pending", FileTransferModel.expires_at <= func.utc_timestamp(6)).limit(200))).all())
-        for transfer_id in expired_ids:
-            transfer = await self._locked(str(transfer_id))
+    async def _expire_pending(self, *, batch_size: int = 200) -> int:
+        transfers = list(
+            (
+                await self.db.scalars(
+                    select(FileTransferModel)
+                    .where(
+                        FileTransferModel.status == "pending",
+                        FileTransferModel.expires_at <= func.utc_timestamp(6),
+                    )
+                    .order_by(FileTransferModel.expires_at, FileTransferModel.id)
+                    .limit(max(1, int(batch_size)))
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+        )
+        expired = 0
+        for transfer in transfers:
             if transfer.status == "pending" and transfer.expires_at <= datetime.now(timezone.utc).replace(tzinfo=None):
                 await self._resolve_without_copy(transfer, "expire", "system")
+                expired += 1
+        return expired
 
-    async def _cleanup_resolved_staging(self) -> None:
+    async def _cleanup_resolved_staging(self, *, batch_size: int = 200) -> int:
         """Delete snapshots only after their resolved database state is observable."""
         transfers = list(
             (
@@ -307,7 +340,8 @@ class FileTransferService:
                         FileTransferModel.staging_deleted_at.is_(None),
                     )
                     .order_by(FileTransferModel.responded_at)
-                    .limit(200)
+                    .limit(max(1, int(batch_size)))
+                    .with_for_update(skip_locked=True)
                 )
             ).all()
         )
@@ -316,6 +350,7 @@ class FileTransferService:
             transfer.staging_deleted_at = func.utc_timestamp(6)
         if transfers:
             await self.db.flush()
+        return len(transfers)
 
     async def serialize(self, transfer: FileTransferModel) -> dict:
         sender = await self.db.scalar(select(UserModel).where(UserModel.id == transfer.sender_user_id))
@@ -331,3 +366,24 @@ class FileTransferService:
             "created_at": transfer.created_at.isoformat() if transfer.created_at else None,
             "expires_at": transfer.expires_at.isoformat(),
         }
+
+
+async def maintain_file_transfers(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    batch_size: int = 200,
+) -> dict[str, int]:
+    """Expire requests and clean snapshots outside user GET transactions."""
+
+    principal = AuthenticatedPrincipal(
+        user_id="file-transfer-maintenance",
+        workspace_ids=frozenset({"*"}),
+        roles=frozenset({"admin"}),
+    )
+    async with session_factory() as db:
+        async with db.begin():
+            expired = await FileTransferService(db, principal)._expire_pending(batch_size=batch_size)
+    async with session_factory() as db:
+        async with db.begin():
+            cleaned = await FileTransferService(db, principal)._cleanup_resolved_staging(batch_size=batch_size)
+    return {"expired": expired, "cleaned": cleaned}

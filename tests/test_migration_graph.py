@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import sqlalchemy as sa
 from alembic import command
+import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -15,7 +16,6 @@ from alembic.script import ScriptDirectory
 from core.rbac import Permission
 from server.infrastructure.mysql.models import AuthCodeModel
 from server.rbac.catalog import permission_id, permission_row, role_id
-
 
 def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
@@ -112,6 +112,17 @@ def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() ->
     assert scripts.get_revision("20260831_39_summary_backoff").down_revision == "20260830_38_session_title_manual"
     assert scripts.get_revision("20260830_38_session_title_manual").down_revision == "20260829_37_session_summary"
     assert scripts.get_revision("20260829_37_session_summary").down_revision == "20260829_36_usage_indexes"
+def test_migration_graph_has_one_deployable_head_after_file_transfers_are_added() -> None:
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+
+    assert scripts.get_heads() == ["20261009_46_file_transfers"]
+    assert scripts.get_revision("20261009_46_file_transfers").down_revision == "20260929_45_wb_catalog"
+    assert scripts.get_revision("20260929_45_wb_catalog").down_revision == "20260927_45_merge_storage_heads"
+    assert scripts.get_revision("20260927_45_merge_storage_heads").down_revision == (
+        "20260927_42_whiteboard_asset_codes",
+        "20260927_44_storage_pool_lock",
+    )
+    assert scripts.get_revision("20260927_42_whiteboard_asset_codes").down_revision == "20260927_41_whiteboard_library"
     assert scripts.get_revision("20260829_36_usage_indexes").down_revision == "20260829_35_user_mgmt_menus"
     assert scripts.get_revision("20260829_35_user_mgmt_menus").down_revision == "20260828_34_auth_codes"
     assert scripts.get_revision("20260828_34_auth_codes").down_revision == "20260828_33_user_phone"
@@ -122,10 +133,35 @@ def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() ->
     )
 
 
-def test_migration_revision_ids_fit_alembic_version_column() -> None:
+def test_migration_revision_ids_fit_the_expanded_alembic_version_column() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert all(len(revision.revision) <= 32 for revision in scripts.walk_revisions())
+    assert all(len(revision.revision) <= 64 for revision in scripts.walk_revisions())
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "migrations.versions.20260927_41_whiteboard_library",
+        "migrations.versions.20260927_42_storage_quota",
+    ],
+)
+def test_each_post_user_files_branch_expands_the_alembic_version_column(module_name: str) -> None:
+    migration = importlib.import_module(module_name)
+    alterations: list[tuple[str, str, int | None]] = []
+
+    def capture_alter(table: str, column: str, **kwargs: object) -> None:
+        type_ = kwargs.get("type_")
+        alterations.append((table, column, getattr(type_, "length", None)))
+
+    original_op = migration.op
+    migration.op = SimpleNamespace(alter_column=capture_alter)
+    try:
+        migration._expand_alembic_version_column()
+    finally:
+        migration.op = original_op
+
+    assert alterations == [("alembic_version", "version_num", 64)]
 
 
 def test_complete_offline_migration_chain_compiles() -> None:

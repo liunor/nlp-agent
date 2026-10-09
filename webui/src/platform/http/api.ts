@@ -183,15 +183,15 @@ export function storageFileDownloadUrl(fileId: string, workspaceId?: string) {
   return `${API_ROOT}/storage/files/${encodeURIComponent(fileId)}/download${storageQuery(workspaceId)}`;
 }
 
-export async function readStorageFile(fileId: string, workspaceId?: string): Promise<string> {
-  const response = await fetch(storageFileDownloadUrl(fileId, workspaceId), {
-    credentials: "include",
-  });
-  if (!response.ok) {
-    const problem = await response.json().catch(() => ({})) as { detail?: string; title?: string; code?: string };
-    throw new ApiError(problem.detail ?? problem.title ?? `HTTP ${response.status}`, response.status, problem.code);
-  }
-  return response.text();
+export interface StorageFilePreview {
+  content: string;
+  truncated: boolean;
+  mime_type: string | null;
+  bytes_read: number;
+}
+
+export function readStorageFile(fileId: string, workspaceId?: string): Promise<StorageFilePreview> {
+  return request<StorageFilePreview>(`/storage/files/${encodeURIComponent(fileId)}/preview${storageQuery(workspaceId)}`);
 }
 
 export const api = {
@@ -234,7 +234,7 @@ export const api = {
   preflightFileTransfer: (input: { source_file_id: string; recipient_identity_id: string; workspace_id?: string }) => request<{ can_receive: boolean; reason: string | null }>("/storage/transfers/preflight", { method: "POST", body: JSON.stringify(input) }),
   createFileTransfer: (input: { source_file_id: string; recipient_identity_id: string; workspace_id?: string; idempotency_key: string }) => request<FileTransfer>("/storage/transfers", { method: "POST", body: JSON.stringify(input) }),
   listFileTransfers: (box: "incoming" | "outgoing") => request<{ items: FileTransfer[] }>(`/storage/transfers?box=${box}`),
-  getFileTransferSummary: () => request<{ pending_count: number }>("/storage/transfers/summary"),
+  getFileTransferSummary: () => request<{ pending_count: number; notification_version: number }>("/storage/transfers/summary"),
   acceptFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/accept`, { method: "POST", body: "{}" }),
   rejectFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/reject`, { method: "POST", body: "{}" }),
   cancelFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/cancel`, { method: "POST", body: "{}" }),

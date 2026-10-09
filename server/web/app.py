@@ -59,6 +59,7 @@ from server.quota.notifications import (
 from server.quota.operations import QuotaOperationsService
 from server.quota.service import QuotaService
 from server.session.summary import summary_sweep_loop
+from server.storage.transfer_service import maintain_file_transfers
 from server.web.contracts import (
     CreateSessionBody,
     CreateWhiteboardLibraryBody,
@@ -608,7 +609,6 @@ def create_app(
             asyncio.create_task(reconcile_sandbox_leases(), name="sandbox-lease-reconciler")
             if gateway.authorization_session_factory is not None else None
         )
-
         async def run_summary_sweep() -> None:
             # Durable backfill for titles lost to a restart; the lease claim in
             # ``generate_and_store_summary`` deduplicates it against the Worker.
@@ -618,12 +618,36 @@ def create_app(
             asyncio.create_task(run_summary_sweep(), name="session-summary-sweep")
             if gateway.authorization_session_factory is not None else None
         )
+        file_transfer_reconcile_interval_s = max(
+            10, int(web_config.get("file_transfer_reconcile_interval_s", 60))
+        )
+
+        async def reconcile_file_transfers() -> None:
+            factory = gateway.authorization_session_factory
+            if factory is None:
+                return
+            while True:
+                try:
+                    await maintain_file_transfers(factory)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("file transfer reconciliation pass failed")
+                await asyncio.sleep(file_transfer_reconcile_interval_s)
+
+        file_transfer_reconciler = (
+            asyncio.create_task(reconcile_file_transfers(), name="file-transfer-reconciler")
+            if gateway.authorization_session_factory is not None else None
+        )
         try:
             yield
         finally:
             if summary_sweeper is not None:
                 summary_sweeper.cancel()
                 await asyncio.gather(summary_sweeper, return_exceptions=True)
+            if file_transfer_reconciler is not None:
+                file_transfer_reconciler.cancel()
+                await asyncio.gather(file_transfer_reconciler, return_exceptions=True)
             if sandbox_reconciler is not None:
                 sandbox_reconciler.cancel()
                 await asyncio.gather(sandbox_reconciler, return_exceptions=True)

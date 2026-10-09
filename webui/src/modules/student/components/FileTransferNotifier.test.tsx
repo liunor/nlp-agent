@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 
 it("shows one aggregated login reminder for simultaneous transfer requests", async () => {
-  vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 4 });
+  vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 4, notification_version: 4 });
   const openMessages = vi.fn();
 
   render(<FileTransferNotifier userId="user-1" onOpenMessages={openMessages} />);
@@ -26,9 +26,9 @@ it("shows one aggregated login reminder for simultaneous transfer requests", asy
 
 it("reminds again when new requests arrive after the inbox was cleared", async () => {
   vi.mocked(api.getFileTransferSummary)
-    .mockResolvedValueOnce({ pending_count: 2 })
-    .mockResolvedValueOnce({ pending_count: 0 })
-    .mockResolvedValueOnce({ pending_count: 1 });
+    .mockResolvedValueOnce({ pending_count: 2, notification_version: 2 })
+    .mockResolvedValueOnce({ pending_count: 0, notification_version: 2 })
+    .mockResolvedValueOnce({ pending_count: 1, notification_version: 3 });
 
   render(<FileTransferNotifier userId="user-1" onOpenMessages={vi.fn()} />);
 
@@ -38,6 +38,20 @@ it("reminds again when new requests arrive after the inbox was cleared", async (
   fireEvent(window, new Event("file-transfers:changed"));
   await waitFor(() => expect(api.getFileTransferSummary).toHaveBeenCalledTimes(2));
   await act(async () => Promise.resolve());
+  fireEvent(window, new Event("file-transfers:changed"));
+
+  expect(await screen.findByText("收到 1 个文件请求")).toBeVisible();
+});
+
+it("reminds when a new request replaces a handled request without changing the count", async () => {
+  vi.mocked(api.getFileTransferSummary)
+    .mockResolvedValueOnce({ pending_count: 1, notification_version: 10 })
+    .mockResolvedValueOnce({ pending_count: 1, notification_version: 11 });
+
+  render(<FileTransferNotifier userId="user-1" onOpenMessages={vi.fn()} />);
+
+  expect(await screen.findByText("收到 1 个文件请求")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "关闭文件请求提醒" }));
   fireEvent(window, new Event("file-transfers:changed"));
 
   expect(await screen.findByText("收到 1 个文件请求")).toBeVisible();

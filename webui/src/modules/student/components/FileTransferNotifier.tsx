@@ -8,25 +8,23 @@ const POLL_INTERVAL_MS = 15_000;
 export function FileTransferNotifier({ userId, onOpenMessages }: { userId: string; onOpenMessages: () => void }) {
   const [pendingCount, setPendingCount] = useState(0);
   const [open, setOpen] = useState(false);
-  const remindedCount = useRef(0);
+  const remindedVersion = useRef<number | null>(null);
 
   useEffect(() => {
     let active = true;
     const refresh = () => {
       if (typeof api.getFileTransferSummary !== "function") return;
-      void api.getFileTransferSummary().then(({ pending_count }) => {
+      void api.getFileTransferSummary().then(({ pending_count, notification_version }) => {
         if (!active) return;
         setPendingCount(pending_count);
-        if (pending_count < remindedCount.current) {
-          remindedCount.current = pending_count;
-        }
-        if (pending_count > 0 && pending_count > remindedCount.current) {
-          remindedCount.current = pending_count;
+        const hasNewRequest = remindedVersion.current === null || notification_version > remindedVersion.current;
+        remindedVersion.current = notification_version;
+        if (pending_count > 0 && hasNewRequest) {
           setOpen(true);
         }
       }).catch(() => undefined);
     };
-    remindedCount.current = 0;
+    remindedVersion.current = null;
     refresh();
     const interval = window.setInterval(refresh, POLL_INTERVAL_MS);
     const onChanged = () => refresh();
