@@ -876,6 +876,9 @@ class StorageAccountModel(TimestampedModel, Base):
     core_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
     files_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
     files_reserved_items: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    file_transfer_notification_version: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, server_default="0"
+    )
     core_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
     files_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
     max_file_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))

@@ -194,6 +194,7 @@ class FileTransferService:
                     raise error
                 return await self.serialize(existing)
             await self.db.refresh(transfer)
+            await self._bump_notification_version(recipient.id)
             return await self.serialize(transfer)
         except Exception:
             await quota.release(reservation)
@@ -297,15 +298,24 @@ class FileTransferService:
 
     async def summary(self) -> dict:
         count = int(await self.db.scalar(select(func.count()).select_from(FileTransferModel).where(FileTransferModel.recipient_user_id == self.principal.user_id, FileTransferModel.status == "pending", FileTransferModel.expires_at > func.utc_timestamp(6))) or 0)
-        notification_version = int(
-            await self.db.scalar(
-                select(func.count())
-                .select_from(FileTransferModel)
-                .where(FileTransferModel.recipient_user_id == self.principal.user_id)
-            )
-            or 0
+        account = await self.db.scalar(
+            select(StorageAccountModel).where(StorageAccountModel.owner_user_id == self.principal.user_id)
         )
+        notification_version = int(getattr(account, "file_transfer_notification_version", 0) or 0)
         return {"pending_count": count, "notification_version": notification_version}
+
+    async def _bump_notification_version(self, recipient_user_id: str) -> None:
+        account = await self.db.scalar(
+            select(StorageAccountModel)
+            .where(StorageAccountModel.owner_user_id == recipient_user_id)
+            .with_for_update()
+        )
+        if account is None:
+            raise StorageError("无法更新接收方通知状态")
+        account.file_transfer_notification_version = int(
+            account.file_transfer_notification_version or 0
+        ) + 1
+        await self.db.flush()
 
     async def _expire_pending(self, *, batch_size: int = 200) -> int:
         transfers = list(

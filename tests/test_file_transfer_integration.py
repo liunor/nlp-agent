@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,12 +31,26 @@ from server.storage.quota import AsyncStorageQuota
 from server.storage.transfer_service import FileTransferService
 
 
-@pytest.fixture
-async def mysql_session_factory():
+@pytest.fixture(scope="module")
+def migrated_mysql_database() -> str:
     database_url = os.getenv("NLP_AGENT_DATABASE_URL")
     if not database_url:
         pytest.skip("MySQL integration database is not configured")
-    engine = create_engine(DatabaseConfig(database_url))
+    repo_root = Path(__file__).resolve().parents[1]
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=repo_root,
+        env=os.environ.copy(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return database_url
+
+
+@pytest.fixture
+async def mysql_session_factory(migrated_mysql_database):
+    engine = create_engine(DatabaseConfig(migrated_mysql_database))
     try:
         yield create_session_factory(engine)
     finally:
@@ -62,12 +78,15 @@ class TransferFixture:
 async def transfer_fixture(mysql_session_factory) -> TransferFixture:
     async with mysql_session_factory() as session:
         async with session.begin():
-            workspace_id = await session.scalar(select(WorkspaceModel.id).limit(1))
-            if workspace_id is None:
-                pytest.skip("migrated database has no workspace fixture")
+            workspace_id = str(uuid4())
             sender_id = str(uuid4())
             recipient_id = str(uuid4())
             source_file_id = str(uuid4())
+            workspace = WorkspaceModel(
+                id=workspace_id,
+                slug=f"transfer-{uuid4().hex[:16]}",
+                name="File transfer integration workspace",
+            )
             sender = UserModel(
                 id=sender_id,
                 username=f"transfer-sender-{uuid4().hex[:10]}",
@@ -80,7 +99,7 @@ async def transfer_fixture(mysql_session_factory) -> TransferFixture:
                 password_hash="test",
                 display_name="Transfer Recipient",
             )
-            session.add_all([sender, recipient])
+            session.add_all([workspace, sender, recipient])
             await session.flush()
             session.add_all([
                 WorkspaceMemberModel(workspace_id=workspace_id, user_id=sender_id, member_type="owner"),
@@ -127,6 +146,7 @@ async def transfer_fixture(mysql_session_factory) -> TransferFixture:
                 await session.execute(delete(UserFileModel).where(UserFileModel.owner_user_id.in_([fixture.sender_id, fixture.recipient_id])))
                 await session.execute(delete(WorkspaceMemberModel).where(WorkspaceMemberModel.user_id.in_([fixture.sender_id, fixture.recipient_id])))
                 await session.execute(delete(UserModel).where(UserModel.id.in_([fixture.sender_id, fixture.recipient_id])))
+                await session.execute(delete(WorkspaceModel).where(WorkspaceModel.id == fixture.workspace_id))
         for staging_key in staging_keys:
             (storage_root() / staging_key).unlink(missing_ok=True)
         for user_id in (fixture.sender_id, fixture.recipient_id):
@@ -156,6 +176,7 @@ async def test_concurrent_duplicate_send_reserves_capacity_once(mysql_session_fa
         assert account is not None
         assert account.files_reserved_bytes == transfer_fixture.source_path.stat().st_size
         assert account.files_reserved_items == 1
+        assert account.file_transfer_notification_version == 1
 
 
 @pytest.mark.asyncio

@@ -45,7 +45,11 @@ async def test_accepting_an_expired_request_returns_the_committed_expired_state(
 
 @pytest.mark.asyncio
 async def test_transfer_summary_is_read_only_and_includes_a_monotonic_notification_version() -> None:
-    db = SimpleNamespace(scalar=AsyncMock(side_effect=[2, 7]))
+    db = SimpleNamespace(
+        scalar=AsyncMock(
+            side_effect=[2, SimpleNamespace(file_transfer_notification_version=7)]
+        )
+    )
     service = _service(db)
     service._expire_pending = AsyncMock(side_effect=AssertionError("GET summary must not expire transfers"))  # type: ignore[method-assign]
     service._cleanup_resolved_staging = AsyncMock(side_effect=AssertionError("GET summary must not delete files"))  # type: ignore[method-assign]

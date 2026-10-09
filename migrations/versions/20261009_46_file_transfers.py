@@ -6,7 +6,7 @@ from sqlalchemy.dialects.mysql import BIGINT, DATETIME
 
 
 revision = "20261009_46_file_transfers"
-down_revision = "20260929_45_wb_catalog"
+down_revision = "20261009_46_storage_repair"
 branch_labels = None
 depends_on = None
 
