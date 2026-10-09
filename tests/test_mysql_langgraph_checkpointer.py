@@ -68,11 +68,12 @@ async def test_mysql_checkpoint_round_trip_and_idempotent_writes():
             await connection.execute(
                 text(
                     "INSERT INTO nlp_users "
-                    "(id, username, password_hash, display_name, status) "
-                    "VALUES (:id, :username, :password_hash, :display_name, 'active')"
+                    "(id, identity_id, username, password_hash, display_name, status) "
+                    "VALUES (:id, :identity_id, :username, :password_hash, :display_name, 'active')"
                 ),
                 {
                     "id": current_user_id,
+                    "identity_id": f"NV2{uuid4().hex[:13].upper()}",
                     "username": current_user_id,
                     "password_hash": "test-only-not-a-login-hash",
                     "display_name": "Checkpoint test user",

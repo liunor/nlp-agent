@@ -78,6 +78,7 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_storage_accounts": "按账户聚合的通用/个人文件用量、预留量与管理员配额覆盖。",
     "nlp_storage_reservations": "写入前的存储容量预留及提交/释放审计记录。",
     "nlp_storage_quota_audits": "管理员调整账户存储配额的不可变审计记录。",
+    "nlp_file_transfers": "账户间离线文件发送请求、接收确认与暂存快照索引。",
     "nlp_memory_documents": "用户工作区的长期记忆文档。",
     "nlp_release_notes": "面向开发者和学生的版本发布说明。",
     "nlp_memory_archives": "记忆归档事件及其来源游标。",

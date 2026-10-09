@@ -1,8 +1,8 @@
-import { ArrowLeft, BookMarked, Download, FileCode2, FileText, FileUp, FolderOpen, FolderPlus, Pencil, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, BookMarked, Download, FileCode2, FileText, FileUp, FolderOpen, FolderPlus, Mail, Pencil, RefreshCw, RotateCcw, Send, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ChangeEvent } from "react";
 
-import { api, storageFileDownloadUrl, type StorageFile, type StorageUsage, type StorageUsageBucket } from "@/platform/http/api";
+import { api, storageFileDownloadUrl, type FileTransfer, type FileTransferRecipient, type StorageFile, type StorageUsage, type StorageUsageBucket } from "@/platform/http/api";
 import { createUuid } from "@/shared/utils/uuid";
 import { DocumentCodeView } from "./DocumentCodeView";
 import { MarkdownContent } from "./MarkdownContent";
@@ -12,6 +12,8 @@ import { importedFilesStorageKey, loadImportedFiles, type ImportedFile } from ".
 // so a CJK-only 800k-character document does not get cut short accidentally.
 const MAX_PREVIEW_CHARS = 800_000;
 const MAX_PREVIEW_BYTES = 4 * 1024 * 1024;
+
+type PreviewDocument = Pick<ImportedFile, "name" | "content" | "language" | "codeLanguage" | "bytes" | "truncated">;
 
 const CODE_EXTENSIONS: Record<string, string> = {
   js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx", ts: "typescript", tsx: "tsx",
@@ -87,6 +89,14 @@ function describeFile(file: File): ImportedFile {
   };
 }
 
+function describeFileName(name: string): Pick<PreviewDocument, "language" | "codeLanguage"> {
+  const extension = extensionOf(name);
+  const baseName = baseNameOf(name);
+  const isMarkdown = MARKDOWN_EXTENSIONS.has(extension) || /readme(?:\.[\w-]+)?$/i.test(name);
+  const codeLanguage = CODE_EXTENSIONS[extension] ?? CODE_FILENAMES[baseName] ?? "";
+  return { language: isMarkdown ? "markdown" : codeLanguage ? "code" : "text", codeLanguage };
+}
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
@@ -100,6 +110,18 @@ function previewFile(file: File, text: string): ImportedFile {
     content: text.slice(0, MAX_PREVIEW_CHARS),
     truncated: file.size > MAX_PREVIEW_BYTES || text.length > MAX_PREVIEW_CHARS,
   };
+}
+
+function DocumentPreview({ document }: { document: PreviewDocument }) {
+  const selectedLanguage = document.language === "code" ? document.codeLanguage : document.language;
+  return <div className="files-panel-preview">
+    <div className="files-panel-preview-header"><span>{document.language === "markdown" ? <BookMarked size={15} /> : document.language === "code" ? <FileCode2 size={15} /> : <FileText size={15} />}</span><strong>{document.name}</strong><small>{document.language === "code" && document.codeLanguage ? document.codeLanguage : document.language}{document.truncated ? " · 仅预览前段" : ""}</small></div>
+    <div className="files-panel-preview-body">
+      {document.language === "markdown" ? <MarkdownContent>{document.content}</MarkdownContent>
+        : document.language === "code" ? <DocumentCodeView language={selectedLanguage} code={document.content} />
+          : <pre className="files-panel-plain">{document.content}</pre>}
+    </div>
+  </div>;
 }
 
 function LearningImportPanel({ userId, workspaceId, previewRequest }: {
@@ -302,7 +324,22 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [trashMode, setTrashMode] = useState(false);
+  const [preview, setPreview] = useState<PreviewDocument | null>(null);
+  const [previewFileId, setPreviewFileId] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [sendFile, setSendFile] = useState<StorageFile | null>(null);
+  const [recipientIdentityId, setRecipientIdentityId] = useState("");
+  const [recipient, setRecipient] = useState<FileTransferRecipient | null>(null);
+  const [sendBusy, setSendBusy] = useState(false);
+  const [sendMessage, setSendMessage] = useState("");
+  const [sendIdempotencyKey, setSendIdempotencyKey] = useState("");
+  const [messagesOpen, setMessagesOpen] = useState(false);
+  const [messageBox, setMessageBox] = useState<"incoming" | "outgoing">("incoming");
+  const [transfers, setTransfers] = useState<FileTransfer[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [pendingTransfers, setPendingTransfers] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const previewRequestRef = useRef(0);
   const currentFolder = folderPath[folderPath.length - 1] ?? null;
 
   const refresh = useCallback(() => {
@@ -319,6 +356,61 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
     const handle = window.setTimeout(refresh, 0);
     return () => window.clearTimeout(handle);
   }, [refresh]);
+
+  useEffect(() => { if (sendFile) setSendIdempotencyKey(createUuid()); }, [sendFile]);
+
+  const refreshTransferSummary = useCallback(() => {
+    void api.getFileTransferSummary().then((value) => setPendingTransfers(value.pending_count)).catch(() => undefined);
+  }, []);
+  useEffect(() => { refreshTransferSummary(); }, [refreshTransferSummary]);
+
+  const refreshTransfers = useCallback((box: "incoming" | "outgoing" = messageBox) => {
+    setMessagesLoading(true);
+    void api.listFileTransfers(box)
+      .then((value) => setTransfers(value.items))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取文件消息"))
+      .finally(() => setMessagesLoading(false));
+  }, [messageBox]);
+
+  const openMessages = useCallback(() => {
+    setMessagesOpen(true);
+    setMessageBox("incoming");
+    refreshTransfers("incoming");
+  }, [refreshTransfers]);
+
+  useEffect(() => {
+    const listener = () => openMessages();
+    window.addEventListener("file-transfers:open", listener);
+    return () => window.removeEventListener("file-transfers:open", listener);
+  }, [openMessages]);
+
+  const clearPreview = () => {
+    previewRequestRef.current += 1;
+    setPreview(null);
+    setPreviewFileId(null);
+    setPreviewLoading(false);
+  };
+
+  const previewFile = async (item: StorageFile) => {
+    const requestId = previewRequestRef.current + 1;
+    previewRequestRef.current = requestId;
+    setError("");
+    setPreview(null);
+    setPreviewFileId(item.id);
+    setPreviewLoading(true);
+    try {
+      const content = await api.readStorageFile(item.id, workspaceId);
+      if (previewRequestRef.current !== requestId) return;
+      const metadata = describeFileName(item.name);
+      setPreview({ name: item.name, ...metadata, content: content.slice(0, MAX_PREVIEW_CHARS), bytes: item.size_bytes, truncated: content.length > MAX_PREVIEW_CHARS });
+    } catch (reason: unknown) {
+      if (previewRequestRef.current !== requestId) return;
+      setPreviewFileId(null);
+      setError(reason instanceof Error ? reason.message : "无法读取文件内容");
+    } finally {
+      if (previewRequestRef.current === requestId) setPreviewLoading(false);
+    }
+  };
 
   const createFolder = () => {
     const name = newFolderName.trim();
@@ -372,15 +464,73 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法重命名项目"));
   };
 
-  return <div className="storage-manager">
+  const closeSend = () => {
+    setSendFile(null);
+    setRecipientIdentityId("");
+    setRecipient(null);
+    setSendMessage("");
+    setSendIdempotencyKey("");
+    setSendBusy(false);
+  };
+
+  const lookupRecipient = async () => {
+    const identityId = recipientIdentityId.trim();
+    if (!identityId || sendBusy || !sendFile) return;
+    setSendBusy(true);
+    setRecipient(null);
+    setSendMessage("");
+    try {
+      const found = await api.lookupTransferRecipient(identityId);
+      const preflight = await api.preflightFileTransfer({ source_file_id: sendFile.id, recipient_identity_id: found.identity_id, workspace_id: workspaceId });
+      if (!preflight.can_receive) {
+        setSendMessage(preflight.reason || "对方当前无法接收此文件");
+        return;
+      }
+      setRecipient(found);
+    } catch (reason: unknown) {
+      setSendMessage(reason instanceof Error ? reason.message : "未找到该身份 ID 对应的用户");
+    } finally {
+      setSendBusy(false);
+    }
+  };
+
+  const sendToRecipient = async () => {
+    if (!sendFile || !recipient || sendBusy) return;
+    setSendBusy(true);
+    try {
+      await api.createFileTransfer({ source_file_id: sendFile.id, recipient_identity_id: recipient.identity_id, workspace_id: workspaceId, idempotency_key: sendIdempotencyKey || createUuid() });
+      closeSend();
+    } catch (reason: unknown) {
+      setSendMessage(reason instanceof Error ? reason.message : "文件发送失败");
+      setSendBusy(false);
+    }
+  };
+
+  const actOnTransfer = async (transfer: FileTransfer, action: "accept" | "reject" | "cancel") => {
+    setMessagesLoading(true);
+    try {
+      if (action === "accept") await api.acceptFileTransfer(transfer.id);
+      else if (action === "reject") await api.rejectFileTransfer(transfer.id);
+      else await api.cancelFileTransfer(transfer.id);
+      refreshTransfers(messageBox);
+      refreshTransferSummary();
+      onRefreshUsage();
+      window.dispatchEvent(new Event("file-transfers:changed"));
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "无法处理文件请求");
+      setMessagesLoading(false);
+    }
+  };
+
+  return <div className={["storage-manager", preview && "has-preview"].filter(Boolean).join(" ")}>
     <header className="storage-manager-toolbar">
       <div className="storage-breadcrumb" aria-label="当前文件夹路径">
-        {trashMode ? <strong><Trash2 size={14} />回收站</strong> : <><button type="button" disabled={!folderPath.length} onClick={() => setFolderPath([])}><FolderOpen size={14} />我的文件</button>{folderPath.map((folder, index) => <span key={folder.id}><span>/</span><button type="button" onClick={() => setFolderPath(folderPath.slice(0, index + 1))}>{folder.name}</button></span>)}</>}
+        {trashMode ? <strong><Trash2 size={14} />回收站</strong> : <><button type="button" disabled={!folderPath.length} onClick={() => { clearPreview(); setFolderPath([]); }}><FolderOpen size={14} />我的文件</button>{folderPath.map((folder, index) => <span key={folder.id}><span>/</span><button type="button" onClick={() => { clearPreview(); setFolderPath(folderPath.slice(0, index + 1)); }}>{folder.name}</button></span>)}</>}
       </div>
       <div className="files-panel-actions">
-        {!trashMode && folderPath.length > 0 && <button type="button" onClick={() => setFolderPath(folderPath.slice(0, -1))}><ArrowLeft size={14} />返回</button>}
-        {!trashMode && <><button type="button" onClick={() => setNewFolderName((value) => value ? "" : "新建文件夹")}><FolderPlus size={14} />新建文件夹</button><button type="button" onClick={() => inputRef.current?.click()}><FileUp size={14} />上传</button></>}
-        <button type="button" onClick={() => { setTrashMode((value) => !value); setFolderPath([]); setNewFolderName(""); }}><Trash2 size={14} />{trashMode ? "我的文件" : "回收站"}</button>
+        {!trashMode && folderPath.length > 0 && <button type="button" onClick={() => { clearPreview(); setFolderPath(folderPath.slice(0, -1)); }}><ArrowLeft size={14} />返回</button>}
+        {!trashMode && <><button type="button" onClick={openMessages}><Mail size={14} />消息{pendingTransfers > 0 ? ` (${pendingTransfers})` : ""}</button><button type="button" onClick={() => setNewFolderName((value) => value ? "" : "新建文件夹")}><FolderPlus size={14} />新建文件夹</button><button type="button" onClick={() => inputRef.current?.click()}><FileUp size={14} />上传</button></>}
+        <button type="button" onClick={() => { clearPreview(); setTrashMode((value) => !value); setFolderPath([]); setNewFolderName(""); }}><Trash2 size={14} />{trashMode ? "我的文件" : "回收站"}</button>
         <button type="button" aria-label="刷新文件列表" onClick={() => { refresh(); onRefreshUsage(); }}><RefreshCw size={14} /></button>
       </div>
       <input ref={inputRef} type="file" multiple onChange={uploadFiles} />
@@ -389,12 +539,24 @@ function StorageManager({ workspaceId, onRefreshUsage }: { workspaceId?: string;
     {error && <div className="files-panel-error" role="alert">{error}<button type="button" aria-label="关闭提示" onClick={() => setError("")}><X size={14} /></button></div>}
     {loading ? <div className="storage-empty">正在读取文件列表…</div> : items.length === 0 ? <div className="storage-empty"><FolderOpen size={24} /><strong>{trashMode ? "回收站为空" : "此文件夹为空"}</strong><span>{trashMode ? "删除的文件会在保留期后自动清理。" : "上传文件或新建文件夹，个人资料会和学习文档导入区分开。"}</span></div> : <div className="storage-list" role="list" aria-label={trashMode ? "回收站列表" : "个人文件列表"}>
       {items.map((item) => <div className="storage-row" key={item.id} role="listitem">
-        <button type="button" className="storage-row-main" onClick={() => !trashMode && item.kind === "folder" && setFolderPath([...folderPath, item])}>
+        <button type="button" className="storage-row-main" title={item.kind === "file" ? `查看 ${item.name}` : `打开 ${item.name}`} onClick={() => {
+          if (trashMode) return;
+          if (item.kind === "folder") {
+            clearPreview();
+            setFolderPath([...folderPath, item]);
+            return;
+          }
+          void previewFile(item);
+        }}>
           {item.kind === "folder" ? <FolderOpen size={17} /> : <FileText size={17} />}<span><strong>{item.name}</strong><small>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)}</small></span>
         </button>
-        {trashMode ? <div className="storage-row-actions"><button type="button" aria-label={`恢复 ${item.name}`} onClick={() => restore(item)}><RotateCcw size={14} /></button><button type="button" className="danger" aria-label={`彻底删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div> : renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
+        {trashMode ? <div className="storage-row-actions"><button type="button" aria-label={`恢复 ${item.name}`} onClick={() => restore(item)}><RotateCcw size={14} /></button><button type="button" className="danger" aria-label={`彻底删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div> : renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <><a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a><button type="button" aria-label={`发送 ${item.name}`} onClick={() => { setSendFile(item); setSendMessage(""); }}><Send size={14} /></button></>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
       </div>)}
     </div>}
+    {previewLoading && <div className="storage-preview-loading" role="status">正在读取文件内容…</div>}
+    {!previewLoading && preview && previewFileId && <DocumentPreview document={preview} />}
+    {messagesOpen && <section className="file-transfer-messages" aria-label="文件消息"><header><div><Mail size={17} /><strong>消息</strong></div><button type="button" aria-label="关闭消息" onClick={() => setMessagesOpen(false)}><X size={15} /></button></header><nav aria-label="消息分类"><button type="button" className={messageBox === "incoming" ? "active" : ""} onClick={() => { setMessageBox("incoming"); refreshTransfers("incoming"); }}>收到的</button><button type="button" className={messageBox === "outgoing" ? "active" : ""} onClick={() => { setMessageBox("outgoing"); refreshTransfers("outgoing"); }}>已发送</button></nav>{messagesLoading && transfers.length === 0 ? <div className="storage-empty">正在读取消息…</div> : transfers.length === 0 ? <div className="storage-empty"><Mail size={24} /><strong>暂无文件消息</strong></div> : <div className="file-transfer-list">{transfers.map((transfer) => { const peer = messageBox === "incoming" ? transfer.sender : transfer.recipient; return <article key={transfer.id}><div><strong>{transfer.file_name}</strong><span>{peer?.display_name ?? "未知用户"}</span><small>{formatBytes(transfer.size_bytes ?? 0)} · {peer?.identity_id}</small></div><span className={`transfer-status ${transfer.status}`}>{({ pending: "待处理", accepted: "已接收", rejected: "已拒绝", cancelled: "已撤回", expired: "已过期", failed: "失败" } as const)[transfer.status]}</span>{transfer.status === "pending" && (messageBox === "incoming" ? <footer><button type="button" aria-label={`拒绝 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "reject")}>拒绝</button><button type="button" className="primary" aria-label={`同意 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "accept")}>同意</button></footer> : <footer><button type="button" aria-label={`撤回 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "cancel")}>撤回</button></footer>)}</article>; })}</div>}</section>}
+    {sendFile && <div className="file-transfer-overlay" role="presentation"><section className="file-transfer-dialog" role="dialog" aria-modal="true" aria-labelledby="file-transfer-title"><button type="button" className="file-transfer-close" aria-label="关闭发送窗口" onClick={closeSend}><X size={16} /></button><h3 id="file-transfer-title">发送文件</h3><p>发送 <strong>{sendFile.name}</strong></p><label htmlFor="file-transfer-recipient-id">接收人身份 ID</label><div className="file-transfer-search"><input id="file-transfer-recipient-id" autoFocus value={recipientIdentityId} onChange={(event) => { setRecipientIdentityId(event.target.value); setRecipient(null); setSendMessage(""); }} onKeyDown={(event) => { if (event.key === "Enter") void lookupRecipient(); }} /><button type="button" onClick={() => void lookupRecipient()} disabled={sendBusy || !recipientIdentityId.trim()}>查询接收人</button></div>{recipient && <div className="file-transfer-recipient"><span>接收人</span><strong>{recipient.display_name}</strong><small>{recipient.identity_id}</small></div>}{sendMessage && <div className="files-panel-error" role="alert">{sendMessage}</div>}<footer><button type="button" onClick={closeSend}>取消</button><button type="button" className="primary" disabled={!recipient || sendBusy} onClick={() => void sendToRecipient()}>确认发送</button></footer></section></div>}
   </div>;
 }
 

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import Principal, WriteClaims, get_db_session
 
-from .schemas import StorageFolderRequest, StorageQuotaUpdateRequest, StorageRenameRequest
+from .schemas import FileTransferRequest, StorageFolderRequest, StorageQuotaUpdateRequest, StorageRenameRequest
 from .service import (
     StorageError,
     StorageNameConflict,
@@ -19,6 +19,7 @@ from .service import (
     StorageService,
     StorageValidationError,
 )
+from .transfer_service import FileTransferService, TransferConflict, TransferNotFound
 
 router = APIRouter(prefix="/api/v1/storage", tags=["storage"])
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
@@ -43,7 +44,18 @@ def _write_error(error: StorageError) -> HTTPException:
         return HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(error))
     if isinstance(error, StorageNameConflict):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if isinstance(error, TransferConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
+    if isinstance(error, TransferNotFound):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error))
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+
+
+def _transfer_service(db: AsyncSession, principal, workspace_id: str | None = None) -> FileTransferService:
+    try:
+        return FileTransferService(db, principal, workspace_id)
+    except StorageValidationError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
 
 
 def _admin_service(db: AsyncSession, principal) -> StorageAdminService:
@@ -122,6 +134,67 @@ async def list_storage_trash(
     service = _service(db, principal, workspace_id)
     try:
         return {"items": await service.list_trash()}
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.get("/transfer-recipients/{identity_id}")
+async def lookup_transfer_recipient(identity_id: str, db: DbSession, principal: Principal) -> dict:
+    try:
+        return await _transfer_service(db, principal).lookup_recipient(identity_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/transfers/preflight")
+async def preflight_file_transfer(body: FileTransferRequest, db: DbSession, principal: Principal, _write: WriteClaims) -> dict:
+    try:
+        return await _transfer_service(db, principal, body.workspace_id).preflight(body.source_file_id, body.recipient_identity_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/transfers", status_code=status.HTTP_201_CREATED)
+async def create_file_transfer(body: FileTransferRequest, db: DbSession, principal: Principal, _write: WriteClaims) -> dict:
+    try:
+        return await _transfer_service(db, principal, body.workspace_id).create(body.source_file_id, body.recipient_identity_id, body.idempotency_key)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.get("/transfers/summary")
+async def get_file_transfer_summary(db: DbSession, principal: Principal) -> dict:
+    return await _transfer_service(db, principal).summary()
+
+
+@router.get("/transfers")
+async def list_file_transfers(db: DbSession, principal: Principal, box: str = Query(default="incoming")) -> dict:
+    try:
+        return {"items": await _transfer_service(db, principal).list(box)}
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/transfers/{transfer_id}/accept")
+async def accept_file_transfer(transfer_id: str, db: DbSession, principal: Principal, _write: WriteClaims) -> dict:
+    try:
+        return await _transfer_service(db, principal).accept(transfer_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/transfers/{transfer_id}/reject")
+async def reject_file_transfer(transfer_id: str, db: DbSession, principal: Principal, _write: WriteClaims) -> dict:
+    try:
+        return await _transfer_service(db, principal).reject(transfer_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/transfers/{transfer_id}/cancel")
+async def cancel_file_transfer(transfer_id: str, db: DbSession, principal: Principal, _write: WriteClaims) -> dict:
+    try:
+        return await _transfer_service(db, principal).cancel(transfer_id)
     except StorageError as error:
         raise _write_error(error) from error
 

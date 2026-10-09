@@ -17,6 +17,14 @@ vi.mock("@/platform/http/api", () => ({
     listStorageTrash: vi.fn(),
     restoreStorageFile: vi.fn(),
     permanentlyDeleteStorageFile: vi.fn(),
+    lookupTransferRecipient: vi.fn(),
+    preflightFileTransfer: vi.fn(),
+    createFileTransfer: vi.fn(),
+    listFileTransfers: vi.fn(),
+    getFileTransferSummary: vi.fn(),
+    acceptFileTransfer: vi.fn(),
+    rejectFileTransfer: vi.fn(),
+    cancelFileTransfer: vi.fn(),
   },
   storageFileDownloadUrl: (fileId: string) => `/api/v1/storage/files/${fileId}/download`,
 }));
@@ -43,6 +51,8 @@ describe("FilesPanel", () => {
     vi.mocked(api.getStorageUsage).mockResolvedValue(usage);
     vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [] });
     vi.mocked(api.listStorageTrash).mockResolvedValue({ items: [] });
+    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 0 });
+    vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
@@ -237,5 +247,44 @@ function upload(files: File[]) {
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
     expect(within(list).getByRole("button", { name: "预览 notes.md" })).toBeInTheDocument();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("finds a recipient only after an exact identity ID lookup and sends the selected file", async () => {
+    vi.mocked(api.listStorageFiles).mockResolvedValue({
+      items: [{ id: "file-1", kind: "file", name: "lesson.md", mime_type: "text/markdown", size_bytes: 18, created_at: null, updated_at: null }],
+    });
+    vi.mocked(api.lookupTransferRecipient).mockResolvedValue({ identity_id: "NV7ABC234DEF567", display_name: "小明" });
+    vi.mocked(api.preflightFileTransfer).mockResolvedValue({ can_receive: true, reason: null });
+    vi.mocked(api.createFileTransfer).mockResolvedValue({ id: "transfer-1", status: "pending" });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "发送 lesson.md" }));
+    expect(screen.queryByText("小明")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("接收人身份 ID"), { target: { value: "nv7abc234def567" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询接收人" }));
+
+    await waitFor(() => expect(api.lookupTransferRecipient).toHaveBeenCalledWith("nv7abc234def567"));
+    expect(await screen.findByText("小明")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "确认发送" }));
+
+    await waitFor(() => expect(api.createFileTransfer).toHaveBeenCalledWith(expect.objectContaining({ source_file_id: "file-1", recipient_identity_id: "NV7ABC234DEF567", workspace_id: "workspace-1", idempotency_key: expect.any(String) })));
+  });
+
+  it("lists multiple incoming requests together and lets the recipient accept one", async () => {
+    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 2 });
+    vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [
+      { id: "transfer-1", status: "pending", file_name: "a.md", size_bytes: 12, sender: { identity_id: "NV2AAAAAAAAAAAAA", display_name: "甲" } },
+      { id: "transfer-2", status: "pending", file_name: "b.txt", size_bytes: 20, sender: { identity_id: "NV3BBBBBBBBBBBBB", display_name: "乙" } },
+    ] });
+    vi.mocked(api.acceptFileTransfer).mockResolvedValue({ id: "transfer-1", status: "accepted" });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /消息/ }));
+
+    expect(await screen.findByText("甲")).toBeVisible();
+    expect(screen.getByText("乙")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "同意 a.md" }));
+    await waitFor(() => expect(api.acceptFileTransfer).toHaveBeenCalledWith("transfer-1"));
   });
 });

@@ -582,6 +582,7 @@ class StorageService:
             len(data),
             resource_type="personal_file",
             resource_key=item_id,
+            amount_items=1,
         )
         storage_key = str(Path(self.scope.workspace_id) / self.scope.owner_user_id / item_id)
         target = _safe_file_path(self.scope, storage_key)
