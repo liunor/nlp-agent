@@ -167,6 +167,17 @@ export function storageFileDownloadUrl(fileId: string, workspaceId?: string) {
   return `${API_ROOT}/storage/files/${encodeURIComponent(fileId)}/download${storageQuery(workspaceId)}`;
 }
 
+export async function readStorageFile(fileId: string, workspaceId?: string): Promise<string> {
+  const response = await fetch(storageFileDownloadUrl(fileId, workspaceId), {
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({})) as { detail?: string; title?: string; code?: string };
+    throw new ApiError(problem.detail ?? problem.title ?? `HTTP ${response.status}`, response.status, problem.code);
+  }
+  return response.text();
+}
+
 export const api = {
   login: async (username: string, password: string) => {
     const session = await request<AuthSession>("/auth/login", {
@@ -184,6 +195,7 @@ export const api = {
   getStorageUsage: (workspaceId?: string) => request<StorageUsage>(`/storage/usage${storageQuery(workspaceId)}`),
   listStorageFiles: (workspaceId?: string, parentId?: string) => request<{ items: StorageFile[] }>(`/storage/files${storageQuery(workspaceId, parentId)}`),
   listStorageTrash: (workspaceId?: string) => request<{ items: StorageFile[] }>(`/storage/trash${storageQuery(workspaceId)}`),
+  readStorageFile,
   createStorageFolder: (name: string, workspaceId?: string, parentId?: string) => request<StorageFile>(`/storage/folders${storageQuery(workspaceId, parentId)}`, {
     method: "POST",
     body: JSON.stringify({ name, parent_id: parentId ?? null }),
