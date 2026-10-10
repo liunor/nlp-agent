@@ -12,6 +12,7 @@ import { readKnowledgeBookUrl } from "@/modules/student/components/knowledgeBook
 import { LoginDialog } from "@/modules/student/components/LoginDialog";
 import { MessageList } from "@/modules/student/components/MessageList";
 import { SettingsDialog } from "@/modules/student/components/SettingsDialog";
+import { FileTransferNotifier } from "@/modules/student/components/FileTransferNotifier";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { Sidebar, SidebarToggle } from "@/modules/student/components/Sidebar";
 import { ToolDock, type SandboxSourceRequest, type ToolDockTabDropPosition, type ToolDockTool } from "@/modules/student/components/ToolDock";
@@ -239,6 +240,7 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
       filesPreview={filesPreviewWorkspaceId === workspace.workspaceId && filesPreviewUserId === (workspace.authSession?.user_id ?? null) ? filesPreview : null}
     />
     <div className="student-school-logo"><SchoolLogo /></div>
+    {workspace.authSession?.user_id && <FileTransferNotifier userId={workspace.authSession.user_id} onOpenMessages={() => { openTool("files"); window.setTimeout(() => window.dispatchEvent(new Event("file-transfers:open")), 0); }} />}
     <SettingsDialog open={settingsOpen} settings={workspace.settings} learningContext={workspace.preferences.context} roles={workspace.authSession?.roles} permissions={workspace.authSession?.permissions} userId={workspace.authSession?.user_id} workspaceIds={workspace.authSession?.workspace_ids} onClose={() => setSettingsOpen(false)} onChange={(patch) => void workspace.patchSettings(patch)} onReset={workspace.resetSettings} onLearningContextChange={workspace.setLearningContext} onOpenDeveloper={() => { if (onNavigateTo) onNavigateTo("/developer"); else location.href = "/developer"; }} onOpenTeacher={() => { if (onNavigateTo) onNavigateTo("/teacher"); else location.href = "/teacher"; }} />
     <AccountDialog open={accountOpen} session={workspace.authSession} onClose={() => setAccountOpen(false)} onLogout={async () => { await workspace.logout(); setFilesPreview(null); setFilesPreviewUserId(null); setFilesPreviewWorkspaceId(""); setAccountOpen(false); }} />
     <ConfirmDialog

@@ -20,3 +20,10 @@ class StorageQuotaUpdateRequest(BaseModel):
     max_file_bytes: int | None = Field(default=None, ge=0)
     max_items: int | None = Field(default=None, ge=0)
     reason: str = Field(default="", max_length=500)
+
+
+class FileTransferRequest(BaseModel):
+    source_file_id: str = Field(..., min_length=1, max_length=36)
+    recipient_identity_id: str = Field(..., min_length=3, max_length=32)
+    workspace_id: str | None = Field(default=None, max_length=36)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=64)

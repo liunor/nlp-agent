@@ -204,4 +204,19 @@ it("dispatches auth-expired only once when concurrent requests return 401", asyn
     expect(new Headers(init?.headers).get("Content-Type")).toBeNull();
     fetchMock.mockRestore();
   });
+
+  it("reads a bounded stored-file preview through the authenticated preview endpoint", async () => {
+    const preview = { content: "# lesson", truncated: false, mime_type: "text/markdown", bytes_read: 8 };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(preview), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    await expect(api.readStorageFile("file/1", "workspace-1")).resolves.toEqual(preview);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/storage/files/file%2F1/preview?workspace_id=workspace-1",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    fetchMock.mockRestore();
+  });
 });

@@ -51,6 +51,68 @@ class StorageValidationError(StorageError):
     """Raised for invalid file/folder names or ownership references."""
 
 
+class StoragePreviewUnsupported(StorageValidationError):
+    """Raised when a stored file cannot be safely rendered as text."""
+
+
+MAX_STORAGE_PREVIEW_BYTES = 800_000
+_TEXT_PREVIEW_MIME_TYPES = {
+    "application/javascript",
+    "application/json",
+    "application/sql",
+    "application/toml",
+    "application/xml",
+    "application/x-httpd-php",
+    "application/x-sh",
+    "application/x-yaml",
+}
+_TEXT_PREVIEW_EXTENSIONS = {
+    "bash", "c", "cc", "cjs", "cpp", "cs", "css", "csv", "dockerfile", "env", "go", "h", "hpp",
+    "htm", "html", "ini", "java", "js", "json", "jsx", "kt", "log", "makefile", "markdown",
+    "md", "mdown", "mkd", "mjs", "php", "py", "rb", "readme", "rs", "scss", "sh", "sql", "svelte",
+    "swift", "toml", "ts", "tsx", "txt", "vue", "xml", "yaml", "yml", "zsh",
+}
+
+
+def build_text_preview(
+    path: Path,
+    *,
+    display_name: str,
+    mime_type: str | None,
+    max_bytes: int = MAX_STORAGE_PREVIEW_BYTES,
+) -> dict:
+    """Read a bounded UTF-8 prefix for formats the document viewer supports."""
+
+    extension = Path(display_name).suffix.lower().lstrip(".") or Path(display_name).name.lower()
+    normalized_mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    supported = (
+        normalized_mime.startswith("text/")
+        or normalized_mime in _TEXT_PREVIEW_MIME_TYPES
+        or extension in _TEXT_PREVIEW_EXTENSIONS
+    )
+    if not supported:
+        raise StoragePreviewUnsupported("该文件格式暂不支持在线预览，请下载到本地查看")
+    limit = max(1, int(max_bytes))
+    with path.open("rb") as stream:
+        payload = stream.read(limit + 1)
+    prefix = payload[:limit]
+    if b"\x00" in prefix:
+        raise StoragePreviewUnsupported("该文件格式暂不支持在线预览，请下载到本地查看")
+    try:
+        content = prefix.decode("utf-8")
+    except UnicodeDecodeError as error:
+        if len(payload) > limit and error.start >= max(0, len(prefix) - 3):
+            content = prefix[:error.start].decode("utf-8")
+        else:
+            raise StoragePreviewUnsupported("该文件编码暂不支持在线预览，请下载到本地查看") from error
+    return {
+        "content": content,
+        "truncated": len(payload) > limit,
+        "mime_type": mime_type,
+        "bytes_read": len(prefix),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class StorageScope:
     owner_user_id: str
@@ -582,6 +644,7 @@ class StorageService:
             len(data),
             resource_type="personal_file",
             resource_key=item_id,
+            amount_items=1,
         )
         storage_key = str(Path(self.scope.workspace_id) / self.scope.owner_user_id / item_id)
         target = _safe_file_path(self.scope, storage_key)
@@ -743,6 +806,14 @@ class StorageService:
         if not path.is_file():
             raise StorageValidationError("文件内容不存在")
         return item, path
+
+    async def preview(self, file_id: str) -> dict:
+        item, path = await self.download_path(file_id)
+        return build_text_preview(
+            path,
+            display_name=item.display_name,
+            mime_type=item.mime_type,
+        )
 
 
 class StorageAdminService:

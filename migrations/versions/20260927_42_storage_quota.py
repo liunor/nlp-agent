@@ -13,7 +13,18 @@ branch_labels = None
 depends_on = None
 
 
+def _expand_alembic_version_column() -> None:
+    op.alter_column(
+        "alembic_version",
+        "version_num",
+        existing_type=sa.String(32),
+        type_=sa.String(64),
+        existing_nullable=False,
+    )
+
+
 def upgrade() -> None:
+    _expand_alembic_version_column()
     uuid_type = sa.String(36, collation="ascii_bin")
     op.create_table(
         "nlp_storage_accounts",

@@ -10,6 +10,7 @@ export type ChatMessageStatus = TurnStatus | "cancelling";
 
 export interface AuthSession {
   user_id: string;
+  identity_id?: string;
   username?: string;
   display_name?: string;
   workspace_ids: string[];
@@ -596,6 +597,7 @@ export type UserStatus = "active" | "disabled" | "locked";
 
 export interface UserProfile {
   id: string;
+  identity_id: string;
   username: string;
   display_name: string;
   status: UserStatus;

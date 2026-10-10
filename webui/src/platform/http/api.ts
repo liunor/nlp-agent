@@ -127,6 +127,22 @@ export interface StorageFile {
   deleted_at?: string | null;
 }
 
+export interface FileTransferRecipient {
+  identity_id: string;
+  display_name: string;
+}
+
+export interface FileTransfer {
+  id: string;
+  status: "pending" | "accepted" | "rejected" | "cancelled" | "expired" | "failed";
+  file_name?: string;
+  size_bytes?: number;
+  sender?: FileTransferRecipient;
+  recipient?: FileTransferRecipient;
+  created_at?: string;
+  expires_at?: string;
+}
+
 export interface SandboxRuntimeProfile {
   id: string;
   runtime: string;
@@ -167,6 +183,17 @@ export function storageFileDownloadUrl(fileId: string, workspaceId?: string) {
   return `${API_ROOT}/storage/files/${encodeURIComponent(fileId)}/download${storageQuery(workspaceId)}`;
 }
 
+export interface StorageFilePreview {
+  content: string;
+  truncated: boolean;
+  mime_type: string | null;
+  bytes_read: number;
+}
+
+export function readStorageFile(fileId: string, workspaceId?: string): Promise<StorageFilePreview> {
+  return request<StorageFilePreview>(`/storage/files/${encodeURIComponent(fileId)}/preview${storageQuery(workspaceId)}`);
+}
+
 export const api = {
   login: async (username: string, password: string) => {
     const session = await request<AuthSession>("/auth/login", {
@@ -184,6 +211,7 @@ export const api = {
   getStorageUsage: (workspaceId?: string) => request<StorageUsage>(`/storage/usage${storageQuery(workspaceId)}`),
   listStorageFiles: (workspaceId?: string, parentId?: string) => request<{ items: StorageFile[] }>(`/storage/files${storageQuery(workspaceId, parentId)}`),
   listStorageTrash: (workspaceId?: string) => request<{ items: StorageFile[] }>(`/storage/trash${storageQuery(workspaceId)}`),
+  readStorageFile,
   createStorageFolder: (name: string, workspaceId?: string, parentId?: string) => request<StorageFile>(`/storage/folders${storageQuery(workspaceId, parentId)}`, {
     method: "POST",
     body: JSON.stringify({ name, parent_id: parentId ?? null }),
@@ -202,6 +230,14 @@ export const api = {
   deleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
   restoreStorageFile: (fileId: string, workspaceId?: string) => request<StorageFile>(`/storage/trash/${encodeURIComponent(fileId)}/restore${storageQuery(workspaceId)}`, { method: "POST" }),
   permanentlyDeleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/trash/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
+  lookupTransferRecipient: (identityId: string) => request<FileTransferRecipient>(`/storage/transfer-recipients/${encodeURIComponent(identityId.trim())}`),
+  preflightFileTransfer: (input: { source_file_id: string; recipient_identity_id: string; workspace_id?: string }) => request<{ can_receive: boolean; reason: string | null }>("/storage/transfers/preflight", { method: "POST", body: JSON.stringify(input) }),
+  createFileTransfer: (input: { source_file_id: string; recipient_identity_id: string; workspace_id?: string; idempotency_key: string }) => request<FileTransfer>("/storage/transfers", { method: "POST", body: JSON.stringify(input) }),
+  listFileTransfers: (box: "incoming" | "outgoing") => request<{ items: FileTransfer[] }>(`/storage/transfers?box=${box}`),
+  getFileTransferSummary: () => request<{ pending_count: number; notification_version: number }>("/storage/transfers/summary"),
+  acceptFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/accept`, { method: "POST", body: "{}" }),
+  rejectFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/reject`, { method: "POST", body: "{}" }),
+  cancelFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/cancel`, { method: "POST", body: "{}" }),
   ensureSandboxLease: () => request<{
     phase: number;
       runtime_available: boolean;

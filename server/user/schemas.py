@@ -47,6 +47,7 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    identity_id: str
     username: str
     display_name: str
     status: str

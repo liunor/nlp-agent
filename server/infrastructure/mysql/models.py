@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampedModel
 from .table_comments import TABLE_COMMENTS
+from core.public_identity import generate_public_identity_id
 
 # Quota tables share the same Alembic metadata.  Importing them here keeps
 # metadata-based tooling (including foundation checks) aware of every active
@@ -45,6 +46,7 @@ class UserModel(TimestampedModel, Base):
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    identity_id: Mapped[str] = mapped_column(String(16, collation="ascii_bin"), unique=True, nullable=False, index=True, default=generate_public_identity_id)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     # 大小写归一化的持久化副本，由数据库自动计算（GENERATED ALWAYS AS (LOWER(username)) STORED）
     username_lower: Mapped[str] = mapped_column(
@@ -873,6 +875,10 @@ class StorageAccountModel(TimestampedModel, Base):
     files_used_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
     core_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
     files_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_reserved_items: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    file_transfer_notification_version: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, server_default="0"
+    )
     core_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
     files_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
     max_file_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
@@ -895,6 +901,7 @@ class StorageReservationModel(Base):
     )
     bucket: Mapped[str] = mapped_column(String(16), nullable=False)
     amount_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    amount_items: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
     resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_key: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="reserved")
@@ -950,6 +957,38 @@ class UserFileModel(TimestampedModel, Base):
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True, index=True)
+
+
+class FileTransferModel(TimestampedModel, Base):
+    """Durable consent request backed by an immutable staged file snapshot."""
+
+    __tablename__ = "nlp_file_transfers"
+    __table_args__ = (
+        Index("ix_nlp_file_transfers_recipient_status_created", "recipient_user_id", "status", "created_at"),
+        Index("ix_nlp_file_transfers_sender_status_created", "sender_user_id", "status", "created_at"),
+        Index("ix_nlp_file_transfers_status_expires", "status", "expires_at"),
+        UniqueConstraint("sender_user_id", "idempotency_key", name="uq_nlp_file_transfers_sender_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    sender_user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False)
+    recipient_user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False)
+    source_workspace_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False)
+    recipient_workspace_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False)
+    source_file_id: Mapped[str | None] = mapped_column(UUID, ForeignKey("nlp_user_files.id", ondelete="SET NULL"))
+    original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    staging_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    quota_reservation_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_storage_reservations.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    recipient_seen_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    responded_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    staging_deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    accepted_file_id: Mapped[str | None] = mapped_column(UUID, ForeignKey("nlp_user_files.id", ondelete="SET NULL"))
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class MemoryDocumentModel(TimestampedModel, Base):

@@ -40,7 +40,7 @@ from server.infrastructure.mysql.models import (
 )
 from server.tools.vision.input_resolver import DEFAULT_UPLOADS_ROOT
 
-from .policy import StorageBucket, StoragePolicy, fits_quota, policy_for_roles, policy_with_overrides
+from .policy import StorageBucket, StoragePolicy, fits_item_quota, fits_quota, policy_for_roles, policy_with_overrides
 
 
 class StorageError(Exception):
@@ -87,6 +87,7 @@ class QuotaReservation:
     bucket: StorageBucket
     amount_bytes: int
     resource_type: str
+    amount_items: int = 0
 
 
 def _bytes_expr(column):
@@ -242,9 +243,11 @@ class AsyncStorageQuota:
         *,
         resource_type: str,
         resource_key: str | None = None,
+        amount_items: int = 0,
     ) -> QuotaReservation | None:
         amount = max(0, int(amount_bytes))
-        if amount == 0:
+        items = max(0, int(amount_items))
+        if amount == 0 and items == 0:
             return None
         await self._resolve_policy()
         await self._lock_global_pool()
@@ -253,6 +256,24 @@ class AsyncStorageQuota:
             raise StorageQuotaExceeded(
                 f"file size exceeds the configured per-file limit: {amount} > {self.policy.max_file_bytes} bytes"
             )
+        if bucket is StorageBucket.FILES and items:
+            active_items = int(
+                await self.db.scalar(
+                    select(func.count()).select_from(UserFileModel).where(
+                        UserFileModel.owner_user_id == self.owner_user_id,
+                        UserFileModel.kind == "file",
+                        UserFileModel.status == "active",
+                    )
+                )
+                or 0
+            )
+            if not fits_item_quota(
+                active_items=active_items,
+                reserved_items=int(account.files_reserved_items),
+                incoming_items=items,
+                max_items=self.policy.max_items,
+            ):
+                raise StorageQuotaExceeded("文件数量已达到配额")
         used, reserved = self._used_and_reserved(account, bucket)
         if not fits_quota(used, reserved, amount, self.policy.quota_for(bucket)):
             raise StorageQuotaExceeded(
@@ -281,6 +302,7 @@ class AsyncStorageQuota:
             bucket=bucket,
             amount_bytes=amount,
             resource_type=resource_type,
+            amount_items=items,
         )
         self.db.add(
             StorageReservationModel(
@@ -288,6 +310,7 @@ class AsyncStorageQuota:
                 owner_user_id=self.owner_user_id,
                 bucket=bucket.value,
                 amount_bytes=amount,
+                amount_items=items,
                 resource_type=resource_type,
                 resource_key=resource_key,
                 status="reserved",
@@ -297,6 +320,7 @@ class AsyncStorageQuota:
             account.core_reserved_bytes += amount
         else:
             account.files_reserved_bytes += amount
+            account.files_reserved_items += items
         await self.db.flush()
         return reservation
 
@@ -362,6 +386,7 @@ class AsyncStorageQuota:
             account.core_reserved_bytes = max(0, int(account.core_reserved_bytes) - int(row.amount_bytes))
         else:
             account.files_reserved_bytes = max(0, int(account.files_reserved_bytes) - int(row.amount_bytes))
+            account.files_reserved_items = max(0, int(account.files_reserved_items) - int(row.amount_items))
         row.status = "committed"
         row.finalized_at = func.utc_timestamp(6)
         await self.db.flush()
@@ -388,6 +413,7 @@ class AsyncStorageQuota:
             account.core_reserved_bytes = max(0, int(account.core_reserved_bytes) - int(row.amount_bytes))
         else:
             account.files_reserved_bytes = max(0, int(account.files_reserved_bytes) - int(row.amount_bytes))
+            account.files_reserved_items = max(0, int(account.files_reserved_items) - int(row.amount_items))
         row.status = "released"
         row.finalized_at = func.utc_timestamp(6)
         await self.db.flush()

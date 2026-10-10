@@ -87,6 +87,12 @@ def fits_quota(used_bytes: int, reserved_bytes: int, incoming_bytes: int, quota_
     return max(0, int(used_bytes)) + max(0, int(reserved_bytes)) + max(0, int(incoming_bytes)) <= max(0, int(quota_bytes))
 
 
+def fits_item_quota(*, active_items: int, reserved_items: int, incoming_items: int, max_items: int) -> bool:
+    """Return whether committed and in-flight files fit the account item cap."""
+
+    return max(0, int(active_items)) + max(0, int(reserved_items)) + max(0, int(incoming_items)) <= max(0, int(max_items))
+
+
 def policy_with_overrides(policy: StoragePolicy, overrides: dict[str, int | None]) -> StoragePolicy:
     """Apply administrator limits without changing role defaults."""
 

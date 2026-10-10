@@ -1,4 +1,4 @@
-from server.storage.policy import ROLE_POLICIES, StorageBucket, fits_quota, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
+from server.storage.policy import ROLE_POLICIES, StorageBucket, fits_item_quota, fits_quota, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
 from server.storage.quota import StorageQuotaExceeded, validate_final_usage
 from pathlib import Path
 
@@ -55,6 +55,11 @@ def test_reservation_counts_committed_and_in_flight_bytes() -> None:
     assert fits_quota(70, 20, 10, 100)
     assert not fits_quota(70, 20, 11, 100)
     assert fits_quota(0, 0, 0, 0)
+
+
+def test_item_quota_includes_concurrent_reserved_slots() -> None:
+    assert fits_item_quota(active_items=8, reserved_items=1, incoming_items=1, max_items=10)
+    assert not fits_item_quota(active_items=8, reserved_items=2, incoming_items=1, max_items=10)
 
 
 def test_admin_overrides_replace_role_defaults_without_role_multiplication() -> None:

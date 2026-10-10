@@ -294,6 +294,7 @@ def test_telemetry_overview_surfaces_all_users_and_operational_dimensions():
             {"timestamp": now, "level": "info", "name": "agent.completed"},
         ],
         days=30,
+        now=datetime.fromisoformat(now),
     )
 
     assert overview["active_users"] == 2

@@ -38,6 +38,7 @@ def _user(*, user_id: str = "target-user", display_name: str = "Target"):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     return SimpleNamespace(
         id=user_id,
+        identity_id="NV2TARGETUSER001",
         username=f"user{user_id.replace('-', '')[:8]}",
         display_name=display_name,
         status="active",

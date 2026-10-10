@@ -27,6 +27,7 @@ from server.infrastructure.mysql.models import (
     OutboxMessageModel,
 )
 from server.auth import code_store
+from .identity import generate_public_identity_id
 
 from .schemas import UserCreate, UserRegister, UserUpdate
 from .email import normalize_email
@@ -130,6 +131,7 @@ class UserService:
         # Create user
         user = UserModel(
             id=str(uuid.uuid4()),
+            identity_id=generate_public_identity_id(),
             username=data.username,
             password_hash=password_hash,
             display_name=data.display_name,
