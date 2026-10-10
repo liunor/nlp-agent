@@ -20,23 +20,23 @@ export function AccountDialog({
   const username = session?.username || session?.display_name || session?.user_id || "Nova 学习者";
   const displayName = session?.display_name || session?.username || "Nova 学习者";
   const roles = session?.roles?.join("、") || "student";
-  const [identityId, setIdentityId] = useState(session?.identity_id ?? "");
+  const [fetchedIdentity, setFetchedIdentity] = useState<{ userId: string; identityId: string } | null>(null);
+  const fetchedIdentityId = fetchedIdentity && fetchedIdentity.userId === session?.user_id ? fetchedIdentity.identityId : "";
+  const identityId = session?.identity_id ?? fetchedIdentityId;
   const [copied, setCopied] = useState(false);
   // Profile settings open as an in-platform overlay instead of navigating to a
   // separate page, so the user never leaves the current workspace.
   const [profileOpen, setProfileOpen] = useState(false);
   useEffect(() => {
     if (!open) return;
-    if (session?.identity_id) {
-      setIdentityId(session.identity_id);
-      return;
-    }
+    const userId = session?.user_id;
+    if (session?.identity_id || !userId) return;
     let active = true;
     void api.getCurrentUser().then((profile) => {
-      if (active) setIdentityId(profile.identity_id);
+      if (active) setFetchedIdentity({ userId, identityId: profile.identity_id });
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [open, session?.identity_id]);
+  }, [open, session?.identity_id, session?.user_id]);
 
   const copyIdentityId = async () => {
     if (!identityId) return;

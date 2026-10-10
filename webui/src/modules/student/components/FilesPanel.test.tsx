@@ -13,6 +13,7 @@ vi.mock("@/platform/http/api", () => ({
     createStorageFolder: vi.fn(),
     uploadStorageFile: vi.fn(),
     renameStorageFile: vi.fn(),
+    readStorageFile: vi.fn(),
     deleteStorageFile: vi.fn(),
     listStorageTrash: vi.fn(),
     restoreStorageFile: vi.fn(),
@@ -99,11 +100,13 @@ describe("FilesPanel", () => {
     });
 
     render(<FilesPanel workspaceId="workspace-1" />);
-    fireEvent.click(await screen.findByText("lesson.md"));
+    const fileButton = await screen.findByRole("button", { name: "查看 lesson.md" });
+    fireEvent.click(fileButton);
 
     await waitFor(() => expect(api.readStorageFile).toHaveBeenCalledWith("file-1", "workspace-1"));
-    expect(await screen.findByText("来自我的文件")).toBeInTheDocument();
-    expect(screen.getByText("这是服务器文件内容。")).toBeInTheDocument();
+    const preview = await screen.findByTestId("markdown-preview");
+    expect(preview).toHaveTextContent("来自我的文件");
+    expect(preview).toHaveTextContent("这是服务器文件内容。");
   });
 
 function markdownFile(name = "notes.md", content = "# 学习笔记") {

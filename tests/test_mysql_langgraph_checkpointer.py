@@ -73,7 +73,7 @@ async def test_mysql_checkpoint_round_trip_and_idempotent_writes():
                 ),
                 {
                     "id": current_user_id,
-                    "identity_id": f"NV2{uuid4().hex[:13].upper()}",
+                    "identity_id": f"NV2{uuid.uuid4().hex[:13].upper()}",
                     "username": current_user_id,
                     "password_hash": "test-only-not-a-login-hash",
                     "display_name": "Checkpoint test user",
