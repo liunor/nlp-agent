@@ -1665,7 +1665,7 @@ button { color: inherit; }
 .storage-row-main { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 8px; padding: 5px 2px; border: 0; background: transparent; color: var(--accent); text-align: left; cursor: pointer; }
 .storage-row-main > span { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .storage-row-main strong { overflow: hidden; color: var(--fg); font-size: 12px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
-.storage-row-main small { color: var(--muted); font-size: 10px; }
+.storage-row-main small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .storage-row-actions { display: flex; flex: 0 0 auto; gap: 3px; }
 .storage-row-actions .danger:hover { color: var(--danger); }
 .file-transfer-overlay { position: fixed; z-index: 110; inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(20 29 45 / 30%); backdrop-filter: blur(8px); }.file-transfer-dialog { position: relative; display: grid; width: min(92vw, 430px); gap: 16px; padding: 24px; border: 1px solid var(--border); border-radius: 18px; background: var(--bg); box-shadow: 0 24px 70px rgb(20 29 45 / 24%); }.file-transfer-dialog h3,.file-transfer-dialog p { margin: 0; }.file-transfer-dialog p { color: var(--muted); font-size: 13px; }.file-transfer-close { position: absolute; top: 12px; right: 12px; display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }.file-transfer-dialog label { font-size: 12px; font-weight: 650; }.file-transfer-search { display: flex; gap: 7px; }.file-transfer-dialog input { min-width: 0; flex: 1; height: 38px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--fg); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: uppercase; }.file-transfer-dialog button { min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--fg); cursor: pointer; }.file-transfer-dialog button:disabled { cursor: not-allowed; opacity: .5; }.file-transfer-dialog button.primary { border-color: var(--accent); background: var(--accent); color: white; }.file-transfer-recipient { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; padding: 12px; border-radius: 10px; background: var(--accent-soft); }.file-transfer-recipient span { grid-row: 1 / 3; align-self: center; color: var(--muted); font-size: 11px; }.file-transfer-recipient strong { font-size: 13px; }.file-transfer-recipient small { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }.file-transfer-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }
@@ -1703,6 +1703,38 @@ button { color: inherit; }
 }
 .document-code-view { overflow: auto; }
 .document-code-view pre { margin: 0 !important; }
+
+/* The transfer inbox is a page-like layer inside the file tool, matching the
+   rounded cards and quiet metadata used by the main student workspace. */
+.file-transfer-messages { inset: 0; border: 1px solid var(--border); border-radius: 14px; background: var(--soft-bg); box-shadow: 0 18px 46px rgb(20 29 45 / 12%); }
+.file-transfer-messages > header { min-height: 58px; padding: 0 16px; background: var(--bg); }
+.file-transfer-messages > header > div { gap: 10px; }
+.file-transfer-messages > header > div > div { display: grid; gap: 2px; }
+.file-transfer-messages > header strong { color: var(--fg); font-size: 14px; }
+.file-transfer-messages > header small { color: var(--muted); font-size: 10px; }
+.file-transfer-heading-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.file-transfer-retention { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent-soft) 35%, var(--bg)); color: var(--muted); font-size: 10px; }
+.file-transfer-messages nav { gap: 6px; padding: 10px 14px; background: var(--bg); }
+.file-transfer-messages nav button { display: inline-flex; align-items: center; gap: 6px; min-height: 31px; padding: 0 11px; border: 1px solid transparent; border-radius: 9px; font-size: 11px; }
+.file-transfer-messages nav button.active { border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); background: var(--accent-soft); font-weight: 650; }
+.file-transfer-messages nav button em { display: inline-grid; min-width: 17px; height: 17px; place-items: center; padding: 0 4px; border-radius: 999px; background: var(--accent); color: white; font-size: 9px; font-style: normal; }
+.file-transfer-list { display: grid; gap: 8px; padding: 10px; }
+.file-transfer-list article { gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); box-shadow: 0 2px 8px rgb(20 29 45 / 4%); }
+.file-transfer-item-main { display: flex !important; align-items: flex-start; gap: 9px; }
+.file-transfer-file-icon { display: grid; width: 30px; height: 30px; flex: 0 0 30px; place-items: center; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.file-transfer-item-main > div { display: grid; min-width: 0; gap: 3px; }
+.file-transfer-item-main span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
+.file-transfer-list article small { line-height: 1.45; }
+.file-transfer-list footer { padding-top: 2px; }
+.file-transfer-list footer button { min-height: 30px; border-radius: 8px; font-size: 11px; }
+.file-transfer-messages .storage-empty { min-height: 180px; }
+
+@media (max-width: 520px) {
+  .storage-row-main small { max-width: 180px; }
+  .file-transfer-messages > header { padding-inline: 12px; }
+  .file-transfer-retention { padding-inline: 12px; }
+  .file-transfer-list { padding: 8px; }
+}
 
 .tool-dock-decoration {
   display: inline-flex;

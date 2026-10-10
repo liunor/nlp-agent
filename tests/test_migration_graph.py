@@ -20,7 +20,7 @@ from server.rbac.catalog import permission_id, permission_row, role_id
 def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20261009_47_transfer_notify_seq"]
+    assert scripts.get_heads() == ["20261010_48_transfer_cleanup_index"]
     assert scripts.get_revision("20261009_47_transfer_notify_seq").down_revision == "20261009_46_file_transfers"
     assert scripts.get_revision("20261009_46_file_transfers").down_revision == "20261009_46_storage_repair"
     assert scripts.get_revision("20261009_46_storage_repair").down_revision == "20261001_48_account_delete_self"
@@ -48,10 +48,10 @@ def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() ->
 def test_historical_upgrade_entry_points_resolve_to_the_current_head(revision: str) -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    path = list(scripts.iterate_revisions("20261009_47_transfer_notify_seq", revision))
+    path = list(scripts.iterate_revisions("20261010_48_transfer_cleanup_index", revision))
 
     assert path
-    assert path[0].revision == "20261009_47_transfer_notify_seq"
+    assert path[0].revision == "20261010_48_transfer_cleanup_index"
 
 
 def test_migration_revision_ids_fit_the_expanded_alembic_version_column() -> None:

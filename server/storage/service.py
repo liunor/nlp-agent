@@ -55,6 +55,17 @@ class StoragePreviewUnsupported(StorageValidationError):
     """Raised when a stored file cannot be safely rendered as text."""
 
 
+def utc_isoformat(value: datetime | None) -> str | None:
+    """Serialize MySQL UTC ``DATETIME`` values with an explicit timezone."""
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
 MAX_STORAGE_PREVIEW_BYTES = 800_000
 _TEXT_PREVIEW_MIME_TYPES = {
     "application/javascript",
@@ -560,8 +571,8 @@ class StorageService:
             "name": item.display_name,
             "mime_type": item.mime_type,
             "size_bytes": int(item.size_bytes or 0),
-            "created_at": item.created_at.isoformat() if item.created_at else None,
-            "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+            "created_at": utc_isoformat(item.created_at),
+            "updated_at": utc_isoformat(item.updated_at),
         }
 
     async def list_files(self, parent_id: str | None = None) -> list[dict]:
@@ -733,7 +744,7 @@ class StorageService:
         ).all()
         return [
             self.serialize(item)
-            | {"deleted_at": item.deleted_at.isoformat() if item.deleted_at else None}
+            | {"deleted_at": utc_isoformat(item.deleted_at)}
             for item in items
         ]
 

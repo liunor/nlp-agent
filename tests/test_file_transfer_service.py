@@ -12,6 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects import mysql
 
 from core.identity import AuthenticatedPrincipal
+from server.infrastructure.mysql.models import FileTransferModel
+from server.storage.service import StorageService
 from server.storage.transfer_service import FileTransferService
 from server.storage.policy import StoragePolicy
 from server.storage.quota import QuotaReservation
@@ -73,6 +75,60 @@ async def test_transfer_list_is_read_only() -> None:
     assert result == [{"id": "transfer-1", "status": "pending"}]
 
 
+def test_storage_serializer_marks_database_timestamps_as_utc() -> None:
+    timestamp = datetime(2026, 10, 10, 6, 15, 0)
+    item = SimpleNamespace(
+        id="file-1",
+        kind="file",
+        display_name="lesson.md",
+        mime_type="text/markdown",
+        size_bytes=18,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+
+    result = StorageService.serialize(item)
+
+    assert result["created_at"] == "2026-10-10T06:15:00Z"
+    assert result["updated_at"] == "2026-10-10T06:15:00Z"
+
+
+def test_file_transfer_model_has_a_cleanup_ordering_index() -> None:
+    index = next(
+        index for index in FileTransferModel.__table__.indexes
+        if index.name == "ix_nlp_file_transfers_cleanup_status_created"
+    )
+
+    assert tuple(column.name for column in index.columns) == ("status", "created_at", "id")
+
+
+@pytest.mark.asyncio
+async def test_transfer_serializer_marks_database_timestamps_as_utc() -> None:
+    timestamp = datetime(2026, 10, 10, 6, 15, 0)
+    db = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[
+            SimpleNamespace(identity_id="NV2SENDER", display_name="发送方"),
+            SimpleNamespace(identity_id="NV2RECIPIENT", display_name="接收方"),
+        ])
+    )
+    transfer = SimpleNamespace(
+        id="transfer-1",
+        status="pending",
+        original_name="lesson.md",
+        size_bytes=18,
+        sender_user_id="sender-1",
+        recipient_user_id="recipient-1",
+        accepted_file_id=None,
+        created_at=timestamp,
+        expires_at=timestamp,
+    )
+
+    result = await _service(db).serialize(transfer)
+
+    assert result["created_at"] == "2026-10-10T06:15:00Z"
+    assert result["expires_at"] == "2026-10-10T06:15:00Z"
+
+
 @pytest.mark.asyncio
 async def test_expiry_maintenance_claims_a_bounded_batch_with_skip_locked() -> None:
     transfer = SimpleNamespace(
@@ -91,6 +147,35 @@ async def test_expiry_maintenance_claims_a_bounded_batch_with_skip_locked() -> N
     assert "LIMIT" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
     assert expired == 1
+
+
+@pytest.mark.asyncio
+async def test_message_cleanup_deletes_only_old_terminal_requests_and_their_reservation() -> None:
+    transfer = SimpleNamespace(
+        id="transfer-old",
+        quota_reservation_id="reservation-old",
+    )
+    db = SimpleNamespace(
+        scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [transfer])),
+        scalar=AsyncMock(return_value=SimpleNamespace(id="reservation-old")),
+        delete=AsyncMock(),
+        flush=AsyncMock(),
+    )
+    service = _service(db)
+
+    removed = await service._cleanup_expired_messages(batch_size=25)
+
+    statement = db.scalars.await_args.args[0]
+    sql = str(statement.compile(dialect=mysql.dialect())).upper()
+    assert "CREATED_AT" in sql
+    assert "STAGING_DELETED_AT IS NOT NULL" in sql
+    assert "LIMIT" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert removed == 1
+    assert db.delete.await_count == 2
+    assert db.delete.await_args_list[0].args[0] is transfer
+    assert db.delete.await_args_list[1].args[0].id == "reservation-old"
+    assert db.flush.await_count == 2
 
 
 @pytest.mark.asyncio
