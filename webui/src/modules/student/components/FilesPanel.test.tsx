@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/platform/http/api";
 
-import { FilesPanel } from "./FilesPanel";
+import { FilesPanel, parseUtcTimestamp } from "./FilesPanel";
 
 vi.mock("@/platform/http/api", () => ({
   api: {
@@ -115,6 +115,10 @@ describe("FilesPanel", () => {
     expect(screen.queryByTestId("markdown-preview")).not.toBeInTheDocument();
   });
 
+  it("treats legacy storage timestamps without an offset as UTC", () => {
+    expect(parseUtcTimestamp("2026-10-10T06:15:00").toISOString()).toBe("2026-10-10T06:15:00.000Z");
+  });
+
 function markdownFile(name = "notes.md", content = "# 学习笔记") {
   return new File([content], name, { type: "text/markdown" });
 }
@@ -174,6 +178,44 @@ function upload(files: File[]) {
       "/api/v1/learning/book/workspace-1/files/book-file-1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+
+  it("switches from a stored-file preview to a newer textbook preview request", async () => {
+    vi.mocked(api.listStorageFiles).mockResolvedValue({
+      items: [{ id: "file-1", kind: "file", name: "我的文件.md", mime_type: "text/markdown", size_bytes: 12, created_at: null, updated_at: null }],
+    });
+    vi.mocked(api.readStorageFile).mockResolvedValue({
+      content: "# 我的文件预览",
+      truncated: false,
+      mime_type: "text/markdown",
+      bytes_read: 12,
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "# 新教材预览" });
+    vi.stubGlobal("fetch", fetchMock);
+    const firstRequest = {
+      id: "book-file-1",
+      name: "旧教材.md",
+      url: "/api/v1/learning/book/workspace-1/files/book-file-1",
+      mediaType: "text/markdown",
+      bytes: 12,
+    };
+    const secondRequest = {
+      id: "book-file-2",
+      name: "新教材.md",
+      url: "/api/v1/learning/book/workspace-1/files/book-file-2",
+      mediaType: "text/markdown",
+      bytes: 12,
+    };
+
+    const view = render(<FilesPanel workspaceId="workspace-1" previewRequest={firstRequest} />);
+    fireEvent.click(await screen.findByRole("button", { name: "查看 我的文件.md" }));
+    expect(await screen.findByText("# 我的文件预览")).toBeInTheDocument();
+
+    view.rerender(<FilesPanel workspaceId="workspace-1" previewRequest={secondRequest} />);
+
+    expect(await screen.findByText("# 新教材预览")).toBeInTheDocument();
+    expect(screen.queryByText("# 我的文件预览")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(secondRequest.url, expect.objectContaining({ credentials: "include" }));
   });
 
   it("keeps only plain-text previews for text files", async () => {

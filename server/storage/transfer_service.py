@@ -26,7 +26,7 @@ from server.user.identity import normalize_public_identity_id
 
 from .policy import StorageBucket, fits_item_quota, fits_quota
 from .quota import AsyncStorageQuota, QuotaReservation, StorageQuotaExceeded
-from .service import StorageError, StorageScope, StorageValidationError, storage_path_for, storage_root
+from .service import StorageError, StorageScope, StorageValidationError, storage_path_for, storage_root, utc_isoformat
 from .transfer_domain import InvalidTransferTransition, next_available_file_name, transition_transfer
 
 
@@ -374,9 +374,8 @@ class FileTransferService:
         """Delete terminal request records after the seven-day message window.
 
         Accepted files are independent ``UserFileModel`` rows, so deleting the
-        request does not delete the received file. Reservations are removed
-        first because the transfer table deliberately protects them with a
-        RESTRICT foreign key.
+        request does not delete the received file. Transfer rows are flushed
+        before their reservations because the foreign key is RESTRICT.
         """
         cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(0, int(retention_days)))
         transfers = list(
@@ -394,16 +393,21 @@ class FileTransferService:
                 )
             ).all()
         )
+        reservations = []
         for transfer in transfers:
             reservation = await self.db.scalar(
                 select(StorageReservationModel)
                 .where(StorageReservationModel.id == transfer.quota_reservation_id)
                 .with_for_update()
             )
-            if reservation is not None:
-                await self.db.delete(reservation)
             await self.db.delete(transfer)
+            if reservation is not None:
+                reservations.append(reservation)
         if transfers:
+            await self.db.flush()
+        for reservation in reservations:
+            await self.db.delete(reservation)
+        if reservations:
             await self.db.flush()
         return len(transfers)
 
@@ -418,8 +422,8 @@ class FileTransferService:
             "sender": {"identity_id": sender.identity_id, "display_name": sender.display_name} if sender else None,
             "recipient": {"identity_id": recipient.identity_id, "display_name": recipient.display_name} if recipient else None,
             "accepted_file_id": transfer.accepted_file_id,
-            "created_at": transfer.created_at.isoformat() if transfer.created_at else None,
-            "expires_at": transfer.expires_at.isoformat(),
+            "created_at": utc_isoformat(transfer.created_at),
+            "expires_at": utc_isoformat(transfer.expires_at),
         }
 
 

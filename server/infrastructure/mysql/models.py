@@ -966,6 +966,7 @@ class FileTransferModel(TimestampedModel, Base):
     __table_args__ = (
         Index("ix_nlp_file_transfers_recipient_status_created", "recipient_user_id", "status", "created_at"),
         Index("ix_nlp_file_transfers_sender_status_created", "sender_user_id", "status", "created_at"),
+        Index("ix_nlp_file_transfers_cleanup_status_created", "status", "created_at", "id"),
         Index("ix_nlp_file_transfers_status_expires", "status", "expires_at"),
         UniqueConstraint("sender_user_id", "idempotency_key", name="uq_nlp_file_transfers_sender_idempotency"),
     )

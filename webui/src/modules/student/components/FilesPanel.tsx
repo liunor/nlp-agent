@@ -302,9 +302,15 @@ function StorageMeter({ label, bucket }: { label: string; bucket: StorageUsageBu
   </div>;
 }
 
+export function parseUtcTimestamp(value: string) {
+  const normalized = value.trim();
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  return new Date(hasTimezone ? normalized : `${normalized}Z`);
+}
+
 function formatModifiedAt(value: string | null | undefined) {
   if (!value) return "修改日期未知";
-  const date = new Date(value);
+  const date = parseUtcTimestamp(value);
   if (Number.isNaN(date.getTime())) return "修改日期未知";
   return new Intl.DateTimeFormat("zh-CN", {
     year: "numeric",
@@ -548,6 +554,7 @@ export function FilesPanel({ userId, workspaceId, previewRequest }: {
 } = {}) {
   const [tab, setTab] = useState<"manager" | "import">("manager");
   const [storagePreviewRequest, setStoragePreviewRequest] = useState<FilesPanelPreviewRequest | null>(null);
+  const previousPreviewRequestRef = useRef(previewRequest);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [usageError, setUsageError] = useState("");
 
@@ -558,6 +565,11 @@ export function FilesPanel({ userId, workspaceId, previewRequest }: {
   }, [workspaceId]);
 
   useEffect(() => { refreshUsage(); }, [refreshUsage]);
+
+  useEffect(() => {
+    if (previousPreviewRequestRef.current !== previewRequest) setStoragePreviewRequest(null);
+    previousPreviewRequestRef.current = previewRequest;
+  }, [previewRequest]);
 
   const openStorageDocument = useCallback((item: StorageFile) => {
     setStoragePreviewRequest({

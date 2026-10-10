@@ -28,7 +28,7 @@ from server.infrastructure.mysql.models import (
 )
 from server.storage.service import storage_root
 from server.storage.quota import AsyncStorageQuota
-from server.storage.transfer_service import FileTransferService
+from server.storage.transfer_service import FileTransferService, maintain_file_transfers
 
 
 @pytest.fixture(scope="module")
@@ -248,6 +248,51 @@ async def test_concurrent_accept_creates_one_received_file(mysql_session_factory
             UserFileModel.owner_user_id == transfer_fixture.recipient_id,
             UserFileModel.status == "active",
         )) == 1
+
+
+@pytest.mark.asyncio
+async def test_message_cleanup_releases_reservations_without_deleting_received_file(mysql_session_factory, transfer_fixture: TransferFixture) -> None:
+    async def create(key: str) -> str:
+        async with mysql_session_factory() as session:
+            async with session.begin():
+                service = FileTransferService(session, transfer_fixture.principal(transfer_fixture.sender_id), transfer_fixture.workspace_id)
+                return (await service.create(transfer_fixture.source_file_id, transfer_fixture.recipient_identity_id, key))["id"]
+
+    accepted_id = await create("retention-accepted-key")
+    async with mysql_session_factory() as session:
+        async with session.begin():
+            accepted = await FileTransferService(session, transfer_fixture.principal(transfer_fixture.recipient_id), transfer_fixture.workspace_id).accept(accepted_id)
+            accepted_file_id = accepted["accepted_file_id"]
+
+    rejected_id = await create("retention-rejected-key")
+    async with mysql_session_factory() as session:
+        async with session.begin():
+            await FileTransferService(session, transfer_fixture.principal(transfer_fixture.recipient_id), transfer_fixture.workspace_id).reject(rejected_id)
+
+    async with mysql_session_factory() as session:
+        incoming = await FileTransferService(session, transfer_fixture.principal(transfer_fixture.recipient_id), transfer_fixture.workspace_id).list("incoming")
+        outgoing = await FileTransferService(session, transfer_fixture.principal(transfer_fixture.sender_id), transfer_fixture.workspace_id).list("outgoing")
+        assert {item["id"] for item in incoming} == {accepted_id, rejected_id}
+        assert {item["id"] for item in outgoing} == {accepted_id, rejected_id}
+    async with mysql_session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                update(FileTransferModel)
+                .where(FileTransferModel.id.in_([accepted_id, rejected_id]))
+                .values(created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=8))
+            )
+
+    result = await maintain_file_transfers(mysql_session_factory, batch_size=200)
+    assert result["messages_deleted"] == 2
+
+    async with mysql_session_factory() as session:
+        assert await session.scalar(select(FileTransferModel.id).where(FileTransferModel.id.in_([accepted_id, rejected_id]))) is None
+        assert await session.scalar(select(StorageReservationModel.id).where(StorageReservationModel.owner_user_id == transfer_fixture.recipient_id)) is None
+        received = await session.scalar(select(UserFileModel).where(UserFileModel.id == accepted_file_id))
+        assert received is not None
+        assert (storage_root() / received.storage_key).is_file()
+        assert await FileTransferService(session, transfer_fixture.principal(transfer_fixture.recipient_id), transfer_fixture.workspace_id).list("incoming") == []
+        assert await FileTransferService(session, transfer_fixture.principal(transfer_fixture.sender_id), transfer_fixture.workspace_id).list("outgoing") == []
 
 
 @pytest.mark.asyncio
