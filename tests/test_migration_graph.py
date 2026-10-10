@@ -20,7 +20,7 @@ from server.rbac.catalog import permission_id, permission_row, role_id
 def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20261010_48_transfer_cleanup_index"]
+    assert scripts.get_heads() == ["20261010_48_cleanup_index"]
     assert scripts.get_revision("20261009_47_transfer_notify_seq").down_revision == "20261009_46_file_transfers"
     assert scripts.get_revision("20261009_46_file_transfers").down_revision == "20261009_46_storage_repair"
     assert scripts.get_revision("20261009_46_storage_repair").down_revision == "20261001_48_account_delete_self"
@@ -37,6 +37,13 @@ def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() ->
     assert scripts.get_revision("20260920_58_knowledge_book_files") is not None
 
 
+def test_current_head_revision_fits_legacy_alembic_version_column() -> None:
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+
+    assert len(scripts.get_heads()) == 1
+    assert len(scripts.get_heads()[0]) <= 32
+
+
 @pytest.mark.parametrize(
     "revision",
     [
@@ -48,10 +55,10 @@ def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() ->
 def test_historical_upgrade_entry_points_resolve_to_the_current_head(revision: str) -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    path = list(scripts.iterate_revisions("20261010_48_transfer_cleanup_index", revision))
+    path = list(scripts.iterate_revisions("20261010_48_cleanup_index", revision))
 
     assert path
-    assert path[0].revision == "20261010_48_transfer_cleanup_index"
+    assert path[0].revision == "20261010_48_cleanup_index"
 
 
 def test_migration_revision_ids_fit_the_expanded_alembic_version_column() -> None:
@@ -109,6 +116,40 @@ def test_complete_offline_migration_chain_compiles() -> None:
         assert sum(permission_code in statement for statement in permission_inserts) == 1
     menu_inserts = re.findall(r"INSERT INTO nlp_menus \([^;]+?;", sql, flags=re.DOTALL)
     assert sum("/developer/quotas" in statement for statement in menu_inserts) == 1
+
+
+def test_transfer_cleanup_index_migration_is_safe_to_retry_after_partial_ddl() -> None:
+    migration = importlib.import_module(
+        "migrations.versions.20261010_48_transfer_cleanup_index"
+    )
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    sa.Table(
+        "nlp_file_transfers",
+        metadata,
+        sa.Column("id", sa.String(), primary_key=True),
+        sa.Column("status", sa.String()),
+        sa.Column("created_at", sa.DateTime()),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "CREATE INDEX ix_nlp_file_transfers_cleanup_status_created "
+                "ON nlp_file_transfers (status, created_at, id)"
+            )
+        )
+        migration_context = MigrationContext.configure(connection)
+        migration.op = Operations(migration_context)
+        migration.context = SimpleNamespace(is_offline_mode=lambda: False)
+
+        migration.upgrade()
+
+        assert {
+            index["name"]
+            for index in sa.inspect(connection).get_indexes("nlp_file_transfers")
+        } == {"ix_nlp_file_transfers_cleanup_status_created"}
 
 
 def test_obsolete_rbac_menu_cleanup_removes_only_retired_entries() -> None:
