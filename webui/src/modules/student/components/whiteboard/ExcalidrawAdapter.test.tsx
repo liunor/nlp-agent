@@ -204,6 +204,9 @@ describe("ExcalidrawAdapter shared library loading", () => {
   });
 
   it("closes the library name tooltip when the material is clicked", async () => {
+    vi.mocked(api.getWhiteboardLibrary).mockImplementationOnce(
+      () => new Promise<Awaited<ReturnType<typeof api.getWhiteboardLibrary>>>(() => {}),
+    );
     render(<ExcalidrawAdapter initialScene={null} onChange={vi.fn()} />);
 
     const material = await screen.findByRole("button", { name: /白板素材/ });
