@@ -31,7 +31,9 @@ from .transfer_domain import InvalidTransferTransition, next_available_file_name
 
 
 TRANSFER_TTL_DAYS = 7
+TRANSFER_MESSAGE_RETENTION_DAYS = 7
 MAX_PENDING_FROM_ONE_SENDER = 50
+TERMINAL_TRANSFER_STATUSES = ("accepted", "rejected", "cancelled", "expired", "failed")
 
 
 class TransferNotFound(StorageError):
@@ -293,7 +295,8 @@ class FileTransferService:
         if box not in {"incoming", "outgoing"}:
             raise StorageValidationError("消息箱类型不正确")
         field = FileTransferModel.recipient_user_id if box == "incoming" else FileTransferModel.sender_user_id
-        rows = list((await self.db.scalars(select(FileTransferModel).where(field == self.principal.user_id).order_by(FileTransferModel.created_at.desc()).limit(200))).all())
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=TRANSFER_MESSAGE_RETENTION_DAYS)
+        rows = list((await self.db.scalars(select(FileTransferModel).where(field == self.principal.user_id, FileTransferModel.created_at >= cutoff).order_by(FileTransferModel.created_at.desc()).limit(200))).all())
         return [await self.serialize(row) for row in rows]
 
     async def summary(self) -> dict:
@@ -362,6 +365,48 @@ class FileTransferService:
             await self.db.flush()
         return len(transfers)
 
+    async def _cleanup_expired_messages(
+        self,
+        *,
+        batch_size: int = 200,
+        retention_days: int = TRANSFER_MESSAGE_RETENTION_DAYS,
+    ) -> int:
+        """Delete terminal request records after the seven-day message window.
+
+        Accepted files are independent ``UserFileModel`` rows, so deleting the
+        request does not delete the received file. Reservations are removed
+        first because the transfer table deliberately protects them with a
+        RESTRICT foreign key.
+        """
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(0, int(retention_days)))
+        transfers = list(
+            (
+                await self.db.scalars(
+                    select(FileTransferModel)
+                    .where(
+                        FileTransferModel.status.in_(TERMINAL_TRANSFER_STATUSES),
+                        FileTransferModel.created_at < cutoff,
+                        FileTransferModel.staging_deleted_at.is_not(None),
+                    )
+                    .order_by(FileTransferModel.created_at, FileTransferModel.id)
+                    .limit(max(1, int(batch_size)))
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+        )
+        for transfer in transfers:
+            reservation = await self.db.scalar(
+                select(StorageReservationModel)
+                .where(StorageReservationModel.id == transfer.quota_reservation_id)
+                .with_for_update()
+            )
+            if reservation is not None:
+                await self.db.delete(reservation)
+            await self.db.delete(transfer)
+        if transfers:
+            await self.db.flush()
+        return len(transfers)
+
     async def serialize(self, transfer: FileTransferModel) -> dict:
         sender = await self.db.scalar(select(UserModel).where(UserModel.id == transfer.sender_user_id))
         recipient = await self.db.scalar(select(UserModel).where(UserModel.id == transfer.recipient_user_id))
@@ -396,4 +441,7 @@ async def maintain_file_transfers(
     async with session_factory() as db:
         async with db.begin():
             cleaned = await FileTransferService(db, principal)._cleanup_resolved_staging(batch_size=batch_size)
-    return {"expired": expired, "cleaned": cleaned}
+    async with session_factory() as db:
+        async with db.begin():
+            messages_deleted = await FileTransferService(db, principal)._cleanup_expired_messages(batch_size=batch_size)
+    return {"expired": expired, "cleaned": cleaned, "messages_deleted": messages_deleted}

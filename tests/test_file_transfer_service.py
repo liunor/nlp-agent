@@ -94,6 +94,33 @@ async def test_expiry_maintenance_claims_a_bounded_batch_with_skip_locked() -> N
 
 
 @pytest.mark.asyncio
+async def test_message_cleanup_deletes_only_old_terminal_requests_and_their_reservation() -> None:
+    transfer = SimpleNamespace(
+        id="transfer-old",
+        quota_reservation_id="reservation-old",
+    )
+    db = SimpleNamespace(
+        scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [transfer])),
+        scalar=AsyncMock(return_value=SimpleNamespace(id="reservation-old")),
+        delete=AsyncMock(),
+        flush=AsyncMock(),
+    )
+    service = _service(db)
+
+    removed = await service._cleanup_expired_messages(batch_size=25)
+
+    statement = db.scalars.await_args.args[0]
+    sql = str(statement.compile(dialect=mysql.dialect())).upper()
+    assert "CREATED_AT" in sql
+    assert "STAGING_DELETED_AT IS NOT NULL" in sql
+    assert "LIMIT" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert removed == 1
+    assert db.delete.await_count == 2
+    db.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_duplicate_idempotency_key_returns_the_committed_request(monkeypatch) -> None:
     root = Path.cwd() / f".file-transfer-idempotency-{uuid4().hex}"
     source_path = root / "source.txt"

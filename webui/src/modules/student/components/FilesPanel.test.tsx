@@ -90,7 +90,7 @@ describe("FilesPanel", () => {
 
   it("opens a server file in the same document preview used by learning imports", async () => {
     vi.mocked(api.listStorageFiles).mockResolvedValue({
-      items: [{ id: "file-1", kind: "file", name: "lesson.md", mime_type: "text/markdown", size_bytes: 18, created_at: null, updated_at: null }],
+      items: [{ id: "file-1", kind: "file", name: "lesson.md", mime_type: "text/markdown", size_bytes: 18, created_at: "2026-10-10T06:00:00Z", updated_at: "2026-10-10T06:15:00Z" }],
     });
     vi.mocked(api.readStorageFile).mockResolvedValue({
       content: "# 来自我的文件\n\n这是服务器文件内容。",
@@ -101,12 +101,18 @@ describe("FilesPanel", () => {
 
     render(<FilesPanel workspaceId="workspace-1" />);
     const fileButton = await screen.findByRole("button", { name: "查看 lesson.md" });
+    expect(screen.getByText(/修改于/)).toBeInTheDocument();
     fireEvent.click(fileButton);
 
+    expect(screen.getByRole("tab", { name: "学习文档导入" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(api.readStorageFile).toHaveBeenCalledWith("file-1", "workspace-1"));
     const preview = await screen.findByTestId("markdown-preview");
     expect(preview).toHaveTextContent("来自我的文件");
     expect(preview).toHaveTextContent("这是服务器文件内容。");
+
+    fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    expect(screen.queryByTestId("markdown-preview")).not.toBeInTheDocument();
   });
 
 function markdownFile(name = "notes.md", content = "# 学习笔记") {
@@ -304,8 +310,8 @@ function upload(files: File[]) {
     render(<FilesPanel workspaceId="workspace-1" />);
     fireEvent.click(await screen.findByRole("button", { name: /消息/ }));
 
-    expect(await screen.findByText("甲")).toBeVisible();
-    expect(screen.getByText("乙")).toBeVisible();
+    expect(await screen.findByText(/来自 甲/)).toBeVisible();
+    expect(screen.getByText(/来自 乙/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "同意 a.md" }));
     await waitFor(() => expect(api.acceptFileTransfer).toHaveBeenCalledWith("transfer-1"));
   });
