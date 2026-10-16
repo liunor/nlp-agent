@@ -707,7 +707,10 @@ async def test_stream_finish_drain_is_bounded_for_all_provider_families(provider
     async def consume():
         return [chunk async for chunk in runtime.astream([HumanMessage(content="hello")])]
 
-    chunks = await asyncio.wait_for(consume(), timeout=0.75)
+    # Timeout budget: _FINISH_USAGE_DRAIN_S (0.50s) + cancel-drain (0.25s) + headroom (0.75s).
+    # The important property is that the stream terminates at all; the exact
+    # ceiling is kept generous so slow CI hosts don't produce flaky failures.
+    chunks = await asyncio.wait_for(consume(), timeout=1.5)
     assert [chunk.content for chunk in chunks] == ["partial", ""]
 
 

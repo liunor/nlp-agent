@@ -44,7 +44,7 @@ from core.observability.runtime import global_telemetry
 from utils.logger import get_logger
 
 
-_FINISH_USAGE_DRAIN_S = 0.25
+_FINISH_USAGE_DRAIN_S = 0.50  # extended: some providers (GLM, Kimi) send usage late
 _STREAM_CANCEL_DRAIN_S = 0.25
 logger = get_logger("nlp_agent.model_runtime")
 
@@ -1043,6 +1043,18 @@ class ResilientChatModel:
                         provider_response_id,
                         complete=True,
                     )
+                    if final_usage.source == "none" and received:
+                        # The provider sent content but no usage metadata within
+                        # the drain window.  This causes silent zero-token
+                        # reporting.  Log a warning so it can be detected in
+                        # monitoring without disrupting the successful response.
+                        logger.warning(
+                            "Model stream completed without usage data; "
+                            "tokens may be under-reported",
+                            provider=candidate.provider_name,
+                            model=candidate.definition.model_id,
+                            operation_id=operation_id,
+                        )
                     await self._report_attempt_best_effort(
                         invocation=invocation,
                         usage=final_usage,

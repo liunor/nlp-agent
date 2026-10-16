@@ -29,6 +29,28 @@ _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 180.0
 _DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
 
 
+def _error_kind_for_turn(error: BaseException) -> str:
+    """Translate a turn-level execution error to a user-meaningful error_kind.
+
+    ``ModelRuntimeExhaustedError`` wraps the last provider error as ``__cause__``.
+    Unwrapping it lets the front-end distinguish rate-limiting from quota
+    exhaustion, context-length overrun, and other failure modes instead of
+    showing a single opaque ``ModelRuntimeExhaustedError`` string.
+    """
+    # Local import avoids a circular dependency between gateway and core.
+    from core.model_runtime.runtime import (
+        ModelRuntimeExhaustedError,
+        StreamInterruptedError,
+        classify_model_error,
+    )
+    if isinstance(error, StreamInterruptedError):
+        return "stream_interrupted"
+    if isinstance(error, ModelRuntimeExhaustedError) and error.__cause__ is not None:
+        return classify_model_error(error.__cause__).kind
+    return type(error).__name__
+
+
+
 def _coordinator_stream_timeouts() -> tuple[float, float]:
     """Return the first-token and stream-idle limits for the coordinator route."""
 
@@ -251,7 +273,7 @@ class InProcessTurnExecutor:
             self._repository.update_turn,
             task.turn_id,
             TurnStatus.FAILED,
-            error_kind=type(error).__name__,
+            error_kind=_error_kind_for_turn(error),
             error_message=str(error),
             **self._fence(execution_context),
         )

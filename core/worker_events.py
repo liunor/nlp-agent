@@ -211,6 +211,25 @@ class WorkerEventBus:
                 events.append(event)
             else:
                 deferred.append(event)
+
+        # When the main queue was full, publish() puts events into _overflow
+        # instead of the queue.  The sync drain path never calls _refill, so
+        # overflow must be scanned explicitly; otherwise terminal Worker results
+        # that overflowed are invisible to the caller and the turn will hang
+        # until its execution timeout fires.
+        overflow = self._overflow[session_id]
+        retained_overflow: deque[WorkerCompletedEvent] = deque()
+        while overflow and len(events) < limit:
+            event = overflow.popleft()
+            if event.parent_turn_id == parent_turn_id and (
+                worker_ids is None or event.worker_id in worker_ids
+            ):
+                events.append(event)
+            else:
+                retained_overflow.append(event)
+        # Restore events that belong to other turns, preserving FIFO order.
+        overflow.extendleft(reversed(retained_overflow))
+
         self.metrics.consumed += len(events)
         return events
 
