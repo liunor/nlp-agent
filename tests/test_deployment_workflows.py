@@ -50,7 +50,7 @@ def test_deployment_workflows_retry_transient_registry_reads() -> None:
         workflow = workflow_path.read_text(encoding="utf-8")
 
         assert (
-            'bash "$GITHUB_WORKSPACE/.github/scripts/'
+            'bash "$AUTH_DEPLOY_SOURCE_DIR/.github/scripts/'
             'run-with-transient-registry-retry.sh"'
         ) in workflow
         assert (
@@ -63,6 +63,22 @@ def test_deployment_workflows_retry_transient_registry_reads() -> None:
             in workflow
         )
         assert "export NOVA_PULL_POLICY=never" in workflow
+
+
+def test_self_hosted_deploy_checkouts_do_not_replace_shared_live_bind_sources() -> None:
+    paths = []
+    for workflow_path in WORKFLOW_PATHS:
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["deploy"]["steps"]
+        checkout = steps[0]["with"]["path"]
+        assert checkout and "/" not in checkout and checkout not in (".", "..")
+        paths.append(checkout)
+        deploy = next(step for step in steps if "AUTH_DEPLOY_SOURCE_DIR" in step.get("env", {}))
+        assert deploy["working-directory"] == checkout
+        assert deploy["env"]["AUTH_DEPLOY_SOURCE_DIR"] == "${{ github.workspace }}/" + checkout
+        assert "$GITHUB_WORKSPACE/.github/scripts/" not in deploy["run"]
+        assert '$AUTH_DEPLOY_SOURCE_DIR/.github/scripts/prepare-auth-release.py' in deploy["run"]
+    assert len(set(paths)) == len(paths)
 
 
 def test_registry_retry_helper_retries_eof_and_preserves_success() -> None:
