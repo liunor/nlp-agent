@@ -228,7 +228,8 @@ def test_sqlite_repository_migrates_trace_identity_columns_before_indexing(tmp_p
 
 
 def test_telemetry_overview_surfaces_all_users_and_operational_dimensions():
-    now = "2026-09-04T10:00:00+00:00"
+    now_dt = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
+    now = now_dt.isoformat()
     overview = build_telemetry_overview(
         traces=[
             {
@@ -294,6 +295,7 @@ def test_telemetry_overview_surfaces_all_users_and_operational_dimensions():
             {"timestamp": now, "level": "info", "name": "agent.completed"},
         ],
         days=30,
+        now=now_dt,
     )
 
     assert overview["active_users"] == 2
