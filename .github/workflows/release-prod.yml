@@ -189,7 +189,7 @@ jobs:
             exit 1
           }
           bash "$AUTH_DEPLOY_SOURCE_DIR/.github/scripts/run-with-transient-registry-retry.sh" \
-            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" pull --quiet nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx mysql redis
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" pull --quiet nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx
           # Every image needed by this `up` was pulled above. Prevent Compose
           # from issuing a second registry request after a successful pull.
           export NOVA_PULL_POLICY=never
@@ -201,7 +201,8 @@ jobs:
           python3 "$AUTH_DEPLOY_SOURCE_DIR/.github/scripts/prepare-auth-release.py" check \
             --project "$COMPOSE_PROJECT_NAME" --deploy-dir "$DEPLOY_DIR" --image "$NOVA_IMAGE_REF" \
             --override "$AUTH_PROXY_OVERRIDE" --compose-json "$COMPOSE_CONFIG_JSON"
-          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx; then
+          if ! python3 "$AUTH_DEPLOY_SOURCE_DIR/.github/scripts/update-application-services.py" \
+            --project "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" --override "$AUTH_PROXY_OVERRIDE"; then
             echo "::error::Compose startup failed; collecting migration diagnostics."
             docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" ps || true
             docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" logs --no-color --tail=200 nova-migrate || true

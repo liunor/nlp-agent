@@ -26,11 +26,7 @@ def test_deployment_workflows_update_and_check_worker() -> None:
             "nova-sandbox-manager nginx"
         )
         assert f"pull {pull_services}" in workflow or f"pull --quiet {pull_services}" in workflow
-        assert (
-            "up -d --force-recreate --no-build --remove-orphans "
-            "nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx"
-        ) in workflow
-        assert "if ! docker compose" in workflow
+        assert 'if ! python3 "$AUTH_DEPLOY_SOURCE_DIR/.github/scripts/update-application-services.py"' in workflow
         assert "logs --no-color --tail=200 nova-migrate" in workflow
         assert (
             "ps --status running --services nova-worker | grep -Fxq \"nova-worker\""
@@ -59,10 +55,11 @@ def test_deployment_workflows_retry_transient_registry_reads() -> None:
         )
         assert (
             "pull --quiet " + "nova-migrate nova-web nova-worker nova-monitor "
-            "nova-sandbox-manager nginx mysql redis"
+            "nova-sandbox-manager nginx"
             in workflow
         )
         assert "export NOVA_PULL_POLICY=never" in workflow
+        assert "nginx mysql redis" not in workflow
 
 
 def test_self_hosted_deploy_checkouts_do_not_replace_shared_live_bind_sources() -> None:
