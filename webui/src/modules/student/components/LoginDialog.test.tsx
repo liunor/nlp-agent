@@ -6,7 +6,7 @@ import { LoginDialog } from "./LoginDialog";
 vi.mock("@/platform/http/api", () => ({
   api: {
     getCaptcha: vi.fn(),
-    sendEmailCode: vi.fn(),
+    sendSmsCode: vi.fn(),
     register: vi.fn(),
   },
 }));
@@ -15,7 +15,7 @@ describe("LoginDialog", () => {
   beforeEach(() => {
     vi.mocked(api.getCaptcha).mockReset();
     vi.mocked(api.getCaptcha).mockResolvedValue({ captcha_id: "captcha-1", image: "data:image/png;base64,abc" });
-    vi.mocked(api.sendEmailCode).mockReset();
+    vi.mocked(api.sendSmsCode).mockReset();
   });
   it("renders without loading a decorative logo image", () => {
     render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
@@ -30,6 +30,7 @@ describe("LoginDialog", () => {
 
     fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "nova" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "test-password" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
     fireEvent.click(screen.getByRole("button", { name: "登录并继续" }));
 
     await waitFor(() => expect(authenticate).toHaveBeenCalledWith("nova", "test-password"));
@@ -43,46 +44,63 @@ describe("LoginDialog", () => {
 
     fireEvent.change(screen.getByLabelText("邮箱"), { target: { value: "nova" } });
     fireEvent.change(screen.getByLabelText("密码"), { target: { value: "wrong" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
     fireEvent.click(screen.getByRole("button", { name: "登录并继续" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("账号或密码错误");
     expect(close).not.toHaveBeenCalled();
   });
 
+  it("opens legal documents without leaving the login dialog", () => {
+    render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "《隐私政策》" }));
+    expect(screen.getByRole("dialog", { name: "隐私政策" })).toBeVisible();
+    expect(screen.getByText(/处理目的/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "我已阅读" }));
+    expect(screen.queryByRole("dialog", { name: "隐私政策" })).not.toBeInTheDocument();
+  });
+
   it("renders the registration captcha at a readable fixed size", async () => {
+    vi.mocked(api.sendSmsCode).mockResolvedValue({ message: "sent" });
     render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "立即注册" }));
 
-    const captcha = await screen.findByAltText("验证码");
+    fireEvent.change(await screen.findByLabelText("手机号"), { target: { value: "13800138000" } });
+    fireEvent.change(await screen.findByPlaceholderText("输入图中字符"), { target: { value: "ABCD" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
+
+    const captcha = await screen.findByAltText("注册验证码");
     expect(captcha).toHaveStyle({ width: "160px", height: "64px" });
   });
 
-  it("locks email while sending and refreshes consumed captcha after an email change", async () => {
+  it("locks the phone while sending and refreshes the consumed captcha after a phone change", async () => {
     vi.mocked(api.getCaptcha)
       .mockReset()
-      .mockResolvedValueOnce({ captcha_id: "email-1", image: "data:image/png;base64,email1" })
+      .mockResolvedValueOnce({ captcha_id: "sms-1", image: "data:image/png;base64,sms1" })
       .mockResolvedValueOnce({ captcha_id: "reg-1", image: "data:image/png;base64,reg1" })
-      .mockResolvedValueOnce({ captcha_id: "email-2", image: "data:image/png;base64,email2" });
+      .mockResolvedValueOnce({ captcha_id: "sms-2", image: "data:image/png;base64,sms2" });
     let finishSending!: () => void;
-    vi.mocked(api.sendEmailCode).mockImplementation(() => new Promise((resolve) => {
+    vi.mocked(api.sendSmsCode).mockImplementation(() => new Promise((resolve) => {
       finishSending = () => resolve({ message: "sent" });
     }));
     render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "立即注册" }));
 
-    const email = screen.getByPlaceholderText("请输入邮箱");
-    fireEvent.change(email, { target: { value: "first@example.com" } });
+    const phone = screen.getByPlaceholderText("请输入手机号");
+    fireEvent.change(phone, { target: { value: "13800138000" } });
     fireEvent.change(await screen.findByPlaceholderText("输入图中字符"), { target: { value: "ABCD" } });
     fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
-    expect(email).toBeDisabled();
+    expect(phone).toBeDisabled();
     finishSending();
     await waitFor(() => expect(screen.getByPlaceholderText("6位验证码")).toBeEnabled());
 
-    fireEvent.change(email, { target: { value: "second@example.com" } });
+    fireEvent.change(phone, { target: { value: "13900139000" } });
     expect(screen.getByPlaceholderText("6位验证码")).toBeDisabled();
     await waitFor(() => expect(api.getCaptcha).toHaveBeenCalledTimes(3));
-    expect(screen.getByAltText("验证码")).toHaveAttribute("src", "data:image/png;base64,email2");
+    expect(screen.getByAltText("验证码")).toHaveAttribute("src", "data:image/png;base64,sms2");
   });
 });
 it("shows a session-expired message when reopened after authentication expires", () => {
@@ -137,6 +155,8 @@ it("keeps the expired dialog open when re-login credentials are wrong", async ()
   fireEvent.change(screen.getByLabelText("密码"), {
     target: { value: "wrong-password" },
   });
+
+  fireEvent.click(screen.getByRole("checkbox", { name: "我已阅读并同意用户协议和隐私政策" }));
 
   fireEvent.click(
     screen.getByRole("button", { name: "登录并继续" }),

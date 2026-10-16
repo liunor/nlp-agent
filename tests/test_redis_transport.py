@@ -88,6 +88,7 @@ def test_turn_task_codec_preserves_worker_payload():
         guided_session_id=None,
         exercise_session_id=None,
         model_profile="qwen",
+        thinking_enabled=False,
         authorization=ExecutionAuthorizationContext(
             submitter_user_id="alice", workspace_id="w1", authorization_version=7
         ),
@@ -97,6 +98,7 @@ def test_turn_task_codec_preserves_worker_payload():
 
     assert restored == task
     assert restored.model_profile == "qwen"
+    assert restored.thinking_enabled is False
 
 
 @pytest.mark.asyncio

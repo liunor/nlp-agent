@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import sqlalchemy as sa
 from alembic import command
+import pytest
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -16,109 +17,76 @@ from core.rbac import Permission
 from server.infrastructure.mysql.models import AuthCodeModel
 from server.rbac.catalog import permission_id, permission_row, role_id
 
-
 def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20260920_58_knowledge_book_files"]
-    assert scripts.get_revision("20260920_58_knowledge_book_files").down_revision == (
-        "20260916_57_rbac_menu_cleanup"
+    assert scripts.get_heads() == ["20261016_51_t06_phone_identity"]
+    assert scripts.get_revision("20261016_51_t06_phone_identity").down_revision == "20261016_50_t06"
+    assert scripts.get_revision("20261016_50_t06").down_revision == "20261015_49_t06"
+    assert scripts.get_revision("20261015_49_t06").down_revision == "20261015_48_t06"
+    assert scripts.get_revision("20261015_48_t06").down_revision == "20261010_48_cleanup_index"
+    assert scripts.get_revision("20261009_47_transfer_notify_seq").down_revision == "20261009_46_file_transfers"
+    assert scripts.get_revision("20261009_46_file_transfers").down_revision == "20261009_46_storage_repair"
+    assert scripts.get_revision("20261009_46_storage_repair").down_revision == "20261001_48_account_delete_self"
+    assert scripts.get_revision("20260929_45_wb_catalog").down_revision == (
+        "20260927_42_wb_asset_codes",
+        "20260927_45_merge_storage_heads",
     )
-    assert scripts.get_revision("20260916_57_rbac_menu_cleanup").down_revision == (
-        "20260916_56_guest_agent_perms"
+    assert scripts.get_revision("20260927_45_merge_storage_heads").down_revision == (
+        "20260920_58_knowledge_book_files",
+        "20260927_44_storage_pool_lock",
     )
-    assert scripts.get_revision("20260916_56_guest_agent_perms").down_revision == (
-        "20260914_55_email_registration"
-    )
-    assert scripts.get_revision("20260914_55_email_registration").down_revision == (
-        "20260912_54_usage_cache_fix"
-    )
-    assert scripts.get_revision("20260912_54_usage_cache_fix").down_revision == (
-        "20260910_53_whiteboard_library"
-    )
-    assert scripts.get_revision("20260905_49_phone_schema_repair").down_revision == (
-        "20260904_48_developer_merge"
-    )
-    assert scripts.get_revision("20260907_50_merge_database_heads").down_revision == (
-        "20260904_49_billable_features",
-        "20260905_49_phone_schema_repair",
-    )
-    assert scripts.get_revision("20260907_49_reset_permission").down_revision == (
-        "20260904_49_billable_features"
-    )
-    assert scripts.get_revision("20260907_50_obs_indexes").down_revision == (
-        "20260907_49_reset_permission"
-    )
-    assert scripts.get_revision("20260907_51_merge_database_heads").down_revision == (
-        "20260907_50_merge_database_heads",
-        "20260907_50_obs_indexes",
-    )
-    assert scripts.get_revision("20260904_49_billable_features").down_revision == (
-        "20260904_48_developer_merge"
-    )
-    assert scripts.get_revision("20260904_48_developer_merge").down_revision == (
-        "20260903_46_remove_dev_sessions",
-        "20260903_47_sms_send_locks",
-    )
-    assert scripts.get_revision("20260903_46_remove_dev_sessions").down_revision == (
-        "20260901_45_audit_quota_merge"
-    )
-    assert scripts.get_revision("20260903_47_sms_send_locks").down_revision == (
-        "20260903_46_fixed_role_backfill"
-    )
-    assert scripts.get_revision("20260903_46_fixed_role_backfill").down_revision == (
-        "20260902_45_merge_auth_quota"
-    )
-    assert scripts.get_revision("20260902_45_merge_auth_quota").down_revision == (
-        "20260901_44_quota_summary",
-        "20260831_43_auth_code_identity",
-    )
-    assert scripts.get_revision("20260831_43_auth_code_identity").down_revision == (
-        "20260831_42_merge_heads"
-    )
-    assert scripts.get_revision("20260901_44_quota_summary").down_revision == (
-        "20260901_43_role_credit_ops",
-        "20260831_40_summary_merge",
-    )
-    assert scripts.get_revision("20260901_43_role_credit_ops").down_revision == (
-        "20260831_42_quota_daily_weekly"
-    )
-    assert scripts.get_revision("20260830_43_quota_scope_lock").down_revision == (
-        "20260830_42_quota_phase4"
-    )
-    assert scripts.get_revision("20260830_42_quota_phase4").down_revision == (
-        "20260830_41_quota_menu"
-    )
-    assert scripts.get_revision("20260830_41_quota_menu").down_revision == (
-        "20260830_40_quota_phase3"
-    )
-    assert scripts.get_revision("20260831_39_feedback_student").down_revision == (
-        "20260831_38_feedback_write"
-    )
-    assert scripts.get_revision("20260831_40_summary_merge").down_revision == (
-        "20260831_39_feedback_student",
-        "20260831_39_summary_backoff",
-    )
-    assert scripts.get_revision("20260831_39_feedback_student").down_revision == "20260831_38_feedback_write"
-    assert scripts.get_revision("20260831_38_feedback_write").down_revision == "20260831_37_feedback_meta"
-    assert scripts.get_revision("20260831_37_feedback_meta").down_revision == "20260829_36_usage_indexes"
-    assert scripts.get_revision("20260831_39_summary_backoff").down_revision == "20260830_38_session_title_manual"
-    assert scripts.get_revision("20260830_38_session_title_manual").down_revision == "20260829_37_session_summary"
-    assert scripts.get_revision("20260829_37_session_summary").down_revision == "20260829_36_usage_indexes"
-    assert scripts.get_revision("20260829_36_usage_indexes").down_revision == "20260829_35_user_mgmt_menus"
-    assert scripts.get_revision("20260829_35_user_mgmt_menus").down_revision == "20260828_34_auth_codes"
-    assert scripts.get_revision("20260828_34_auth_codes").down_revision == "20260828_33_user_phone"
-    assert scripts.get_revision("20260828_33_user_phone").down_revision == "20260827_32_book_merge"
-    assert scripts.get_revision("20260827_32_book_merge").down_revision == (
-        "20260826_29",
-        "20260827_31_book_assets",
-    )
+    assert scripts.get_revision("20260927_42_wb_asset_codes").down_revision == "20260910_53_whiteboard_library"
+    assert scripts.get_revision("20260910_53_whiteboard_library") is not None
+    assert scripts.get_revision("20260920_58_knowledge_book_files") is not None
 
 
-def test_migration_revision_ids_fit_alembic_version_column() -> None:
+def test_current_head_revision_fits_legacy_alembic_version_column() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert all(len(revision.revision) <= 32 for revision in scripts.walk_revisions())
+    assert len(scripts.get_heads()) == 1
+    assert len(scripts.get_heads()[0]) <= 32
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [
+        "20260831_39_feedback_student",
+        "20260910_53_whiteboard_library",
+        "20260927_45_merge_storage_heads",
+    ],
+)
+def test_historical_upgrade_entry_points_resolve_to_the_current_head(revision: str) -> None:
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+
+    path = list(scripts.iterate_revisions("20261016_51_t06_phone_identity", revision))
+
+    assert path
+    assert path[0].revision == "20261016_51_t06_phone_identity"
+
+
+def test_migration_revision_ids_fit_the_expanded_alembic_version_column() -> None:
+    scripts = ScriptDirectory.from_config(Config("alembic.ini"))
+
+    assert all(len(revision.revision) <= 64 for revision in scripts.walk_revisions())
+
+
+def test_storage_quota_migration_expands_the_alembic_version_column() -> None:
+    migration = importlib.import_module("migrations.versions.20260927_42_storage_quota")
+    alterations: list[tuple[str, str, int | None]] = []
+
+    def capture_alter(table: str, column: str, **kwargs: object) -> None:
+        type_ = kwargs.get("type_")
+        alterations.append((table, column, getattr(type_, "length", None)))
+
+    original_op = migration.op
+    migration.op = SimpleNamespace(alter_column=capture_alter)
+    try:
+        migration._expand_alembic_version_column()
+    finally:
+        migration.op = original_op
+
+    assert alterations == [("alembic_version", "version_num", 64)]
 
 
 def test_complete_offline_migration_chain_compiles() -> None:
@@ -152,6 +120,40 @@ def test_complete_offline_migration_chain_compiles() -> None:
         assert sum(permission_code in statement for statement in permission_inserts) == 1
     menu_inserts = re.findall(r"INSERT INTO nlp_menus \([^;]+?;", sql, flags=re.DOTALL)
     assert sum("/developer/quotas" in statement for statement in menu_inserts) == 1
+
+
+def test_transfer_cleanup_index_migration_is_safe_to_retry_after_partial_ddl() -> None:
+    migration = importlib.import_module(
+        "migrations.versions.20261010_48_transfer_cleanup_index"
+    )
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    sa.Table(
+        "nlp_file_transfers",
+        metadata,
+        sa.Column("id", sa.String(), primary_key=True),
+        sa.Column("status", sa.String()),
+        sa.Column("created_at", sa.DateTime()),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "CREATE INDEX ix_nlp_file_transfers_cleanup_status_created "
+                "ON nlp_file_transfers (status, created_at, id)"
+            )
+        )
+        migration_context = MigrationContext.configure(connection)
+        migration.op = Operations(migration_context)
+        migration.context = SimpleNamespace(is_offline_mode=lambda: False)
+
+        migration.upgrade()
+
+        assert {
+            index["name"]
+            for index in sa.inspect(connection).get_indexes("nlp_file_transfers")
+        } == {"ix_nlp_file_transfers_cleanup_status_created"}
 
 
 def test_obsolete_rbac_menu_cleanup_removes_only_retired_entries() -> None:
@@ -297,8 +299,6 @@ def test_usage_cache_backfill_repairs_only_provable_legacy_facts(
     assert "route = 'utility'" in sql
     assert "route = 'vision-worker'" in sql
     assert "WHERE purpose <> 'worker'" in sql
-
-
 def test_knowledge_book_page_text_columns_have_no_mysql_default() -> None:
     migration = importlib.import_module(
         "migrations.versions.20260825_25_knowledge_book_pages"

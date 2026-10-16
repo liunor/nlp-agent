@@ -53,6 +53,14 @@ class CreateWhiteboardLibraryBody(StrictModel):
         return value
 
 
+class RenameWhiteboardLibraryBody(StrictModel):
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
 class RenameSessionBody(StrictModel):
     title: str = Field(min_length=1, max_length=255)
 
@@ -168,6 +176,7 @@ class SubmitChatBody(StrictModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+    thinking_enabled: bool = True
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "SubmitChatBody":
@@ -207,6 +216,10 @@ class UpdateToolPoliciesBody(StrictModel):
 
 class UpdateCustomToolsBody(StrictModel):
     custom: dict[str, Any]
+
+
+class UpdateModelPresetsBody(StrictModel):
+    presets: dict[str, Any]
 
 
 class McpServerBody(StrictModel):
@@ -397,6 +410,7 @@ class ChatSendPayload(StrictModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+    thinking_enabled: bool = True
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "ChatSendPayload":

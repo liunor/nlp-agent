@@ -75,6 +75,7 @@ class SubmitTurnRequest(BaseModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
+    thinking_enabled: bool = True
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "SubmitTurnRequest":
@@ -170,6 +171,13 @@ class KnowledgeBookRevisionConflictError(ValueError):
 
 class ResourceNotFoundError(LookupError):
     pass
+
+
+class WhiteboardLibraryInUseError(RuntimeError):
+    def __init__(self, item_id: str, reference_count: int) -> None:
+        self.item_id = item_id
+        self.reference_count = reference_count
+        super().__init__(f"whiteboard library item is used by {reference_count} knowledge-book pages")
 
 
 class TeachingConfigurationError(ValueError):

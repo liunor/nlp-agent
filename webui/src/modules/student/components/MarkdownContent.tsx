@@ -30,6 +30,14 @@ export interface MarkdownCodeActions {
   onOpenInSandbox?: (code: string, language: string) => void;
 }
 
+function containsWhiteboardAnchor(node: ReactNode): boolean {
+  return Children.toArray(node).some((child) => {
+    if (!isValidElement<{ "data-whiteboard-anchor"?: string; className?: string; href?: string; children?: ReactNode }>(child)) return false;
+    if (child.props.href?.startsWith("nova-whiteboard://") || child.props["data-whiteboard-anchor"] === "true" || child.props.className?.includes("knowledge-book-whiteboard-anchor")) return true;
+    return containsWhiteboardAnchor(child.props.children);
+  });
+}
+
 function formatBookFileSize(sizeBytes: number): string {
   if (sizeBytes < 1024) return `${sizeBytes} B`;
   if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
@@ -567,7 +575,7 @@ export function stripInternalChatMetadata(content: string): string {
   return content.replace(/\s*<!--\s*guided-result\s*:\s*(?:\{[\s\S]*?\}\s*-->|[\s\S]*$)/gi, "").trimEnd();
 }
 
-export function MarkdownContent({ children, streaming = false, streamRenderIntervalMs = 30, headingIds, headingIdsByLine, codeActions, allowDataImages = false, bookFileLinks, onPreviewBookFile }: { children: string; streaming?: boolean; streamRenderIntervalMs?: number; headingIds?: string[]; headingIdsByLine?: Record<number, string>; codeActions?: MarkdownCodeActions; allowDataImages?: boolean; bookFileLinks?: Record<string, LearningBookFile>; onPreviewBookFile?: (file: LearningBookFile) => void }) {
+export function MarkdownContent({ children, streaming = false, streamRenderIntervalMs = 30, headingIds, headingIdsByLine, codeActions, allowDataImages = false, bookFileLinks, onPreviewBookFile, whiteboardLink }: { children: string; streaming?: boolean; streamRenderIntervalMs?: number; headingIds?: string[]; headingIdsByLine?: Record<number, string>; codeActions?: MarkdownCodeActions; allowDataImages?: boolean; bookFileLinks?: Record<string, LearningBookFile>; onPreviewBookFile?: (file: LearningBookFile) => void; whiteboardLink?: (href: string, label: string) => ReactNode }) {
   const renderedChildren = useThrottledValue(children, streaming, Math.max(0, streamRenderIntervalMs));
   const renderedMarkdown = useMemo(() => {
     if (streaming) return null;
@@ -603,6 +611,10 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
             const headingId = nextHeadingId(node);
             return <><span id={headingId} className="knowledge-book-heading-anchor" data-knowledge-book-heading-anchor="true" aria-hidden="true" /><h4 {...props} data-knowledge-book-heading-id={headingId}>{value}</h4></>;
           },
+          p: ({ children: value, ...props }) => {
+            const isWhiteboardMarker = containsWhiteboardAnchor(value);
+            return <p {...props} className={isWhiteboardMarker ? "knowledge-book-whiteboard-paragraph" : props.className} data-whiteboard-marker={isWhiteboardMarker ? "true" : undefined}>{value}</p>;
+          },
           pre: ({ children: value }) => {
             const child = Children.toArray(value)[0];
             if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
@@ -619,6 +631,9 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
             return <LessonCodeBlock language={match[1]} code={content} actions={codeActions} streaming={streaming} />;
           },
           a: ({ children: value, href, ...props }) => {
+            if (href?.startsWith("nova-whiteboard://")) {
+              return whiteboardLink?.(href, Children.toArray(value).join("")) ?? <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true">{value}</span>;
+            }
             const resolvedBookFile = href ? bookFileLinks?.[href.toLowerCase()] : undefined;
             if (resolvedBookFile) {
               return <MarkdownBookFileCard file={resolvedBookFile} onPreview={onPreviewBookFile} />;
@@ -648,7 +663,7 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
         {normalizeLatexDelimiters(stripInternalChatMetadata(renderedChildren) || (streaming ? "" : "暂无内容"))}
       </ReactMarkdown>
     );
-  }, [allowDataImages, bookFileLinks, codeActions, headingIds, headingIdsByLine, onPreviewBookFile, renderedChildren, streaming]);
+  }, [allowDataImages, bookFileLinks, codeActions, headingIds, headingIdsByLine, onPreviewBookFile, renderedChildren, streaming, whiteboardLink]);
 
   return (
     <div className="markdown-content prose prose-zinc max-w-none dark:prose-invert prose-headings:scroll-mt-20 prose-pre:p-0">

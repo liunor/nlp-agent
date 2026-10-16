@@ -86,7 +86,9 @@ def test_developer_can_manage_user_lifecycle_and_revoke_sessions(
     target_client = authenticated_client_for(target)
     disabled = admin_client.post(f"/api/v1/users/{target.user_id}/disable")
     assert disabled.status_code == 204
-    assert target_client.get("/api/v1/users/me").status_code == 401
+    disabled_session = target_client.get("/api/v1/users/me")
+    assert disabled_session.status_code == 401
+    assert disabled_session.json()["code"] == "authorization_changed"
     assert admin_client.get(f"/api/v1/users/{target.user_id}").json()["status"] == "disabled"
 
     enabled = admin_client.post(f"/api/v1/users/{target.user_id}/enable")
@@ -100,7 +102,9 @@ def test_developer_can_manage_user_lifecycle_and_revoke_sessions(
         json={"new_password": reset_password},
     )
     assert reset.status_code == 204
-    assert enabled_client.get("/api/v1/users/me").status_code == 401
+    password_session = enabled_client.get("/api/v1/users/me")
+    assert password_session.status_code == 401
+    assert password_session.json()["code"] == "authorization_changed"
 
     reset_credentials = replace(target, password=reset_password)
     reset_client = authenticated_client_for(reset_credentials)

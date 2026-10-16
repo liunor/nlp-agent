@@ -37,6 +37,7 @@ from server.web.contracts import (
     parse_command_payload,
 )
 from server.web.protocol import control_event, gateway_event_envelope
+from server.storage.quota import StorageQuotaExceeded
 from server.quota.errors import QuotaRejectedError
 
 
@@ -521,6 +522,8 @@ class WebSocketConnection:
 
 def _command_error(error: Exception) -> tuple[str, str, dict[str, Any]]:
     name = type(error).__name__
+    if isinstance(error, StorageQuotaExceeded):
+        return "storage_quota_exceeded", "账户通用存储空间已达到配额，请清理会话、记忆或图片后重试", {}
     if isinstance(error, QuotaRejectedError):
         problem = error.problem
         return (
@@ -572,6 +575,7 @@ async def _dispatch_command(
                 learning_context=payload.learning_context,
                 knowledge_book_context=payload.knowledge_book_context,
                 model_profile=payload.model_profile,
+                thinking_enabled=payload.thinking_enabled,
             ),
             auth_session_id=connection.auth_session_id,
         )
@@ -801,7 +805,21 @@ async def _receive_commands(
             except AuthenticationError:
                 await connection.close(code=4401, reason="authentication expired")
                 return
-            except (json.JSONDecodeError, ValidationError, ValueError, PermissionError, RuntimeError, LookupError, FileNotFoundError) as error:
+            except PermissionError as error:
+                if str(error) == "authorization changed; reconnect required":
+                    await connection.close(code=4403, reason="authorization changed")
+                    return
+                code, message, details = _command_error(error)
+                session_id = command.payload.get("session_id") if command is not None else None
+                await connection.send(
+                    control_event(
+                        "command.error",
+                        request_id=request_id,
+                        session_id=session_id if isinstance(session_id, str) else None,
+                        payload={"code": code, "message": message},
+                    )
+                )
+            except (json.JSONDecodeError, ValidationError, ValueError, RuntimeError, LookupError, FileNotFoundError, StorageQuotaExceeded, QuotaRejectedError) as error:
                 code, message, details = _command_error(error)
                 session_id = command.payload.get("session_id") if command is not None else None
                 await connection.send(

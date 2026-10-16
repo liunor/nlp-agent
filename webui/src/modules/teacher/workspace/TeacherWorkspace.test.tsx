@@ -9,19 +9,23 @@ import { TeacherWorkspace } from "./TeacherWorkspace";
 import { TeacherRoutes } from "../routes";
 import type { CourseTopic } from "@/shared/types";
 
-const { ensureAuthMock, generateTeacherAIAnalysisMock, getSettingsMock, getTeacherCatalog, getTeacherOverviewMock, updateTeacherAnalysisAnnotationsMock, updateTeacherCatalog } = vi.hoisted(() => ({
+const { ensureAuthMock, generateTeacherAIAnalysisMock, getSettingsMock, getTeacherCatalog, getTeacherOverviewMock, listClassroomsMock, listJoinRequestsMock, getClassroomJoinCodeMock, createClassroomMock, updateTeacherAnalysisAnnotationsMock, updateTeacherCatalog } = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
   generateTeacherAIAnalysisMock: vi.fn(),
   getSettingsMock: vi.fn(),
   getTeacherCatalog: vi.fn().mockResolvedValue({ catalog: { workspace_id: "default", topics: [{ id: "transformer", name: "Transformer", description: "", status: "enabled", knowledge_points: [{ id: "attention", name: "注意力", markdown: "# Attention", status: "enabled", sort_order: 0 }] }], exercise_blueprints: [], review_blueprints: [], guided_blueprints: [] } }),
   getTeacherOverviewMock: vi.fn().mockResolvedValue({ workspace_id: "default", period_days: 30, summary: { questions: 2, sessions: 2, students: 9, active_days: 2, error_questions: 0, error_rate: 0, questions_per_student: 1, questions_per_session: 1, contextualized_questions: 2, context_coverage_rate: 100, exercises: 3, exercise_pass_rate: 66.67, guided_sessions: 1 }, student_activity: Array.from({ length: 9 }, (_, index) => ({ user_id: `u${index + 1}`, display_name: index === 0 ? "张三" : `学生${index + 1}`, username: `student${index + 1}`, questions: index === 0 ? 2 : 1, sessions: 1, active_days: 1, error_questions: 0, error_rate: 0, questions_per_session: index === 0 ? 2 : 1, last_active: "2026-07-19", top_topic: "Transformer" })), hourly_questions: [{ hour: 9, label: "09:00", count: 2, percentage: 100 }], weekday_questions: [{ weekday: 0, label: "星期一", count: 2, percentage: 100 }], peak_day: { date: "2026-07-19", count: 2 }, peak_hour: { hour: 9, label: "09:00", count: 2 }, weak_topics: [{ topic_id: "transformer", topic: "Transformer", questions: 2, errors: 0, exercises: 3, average_score: 70, pass_rate: 66.67, misconceptions: 1, risk: "medium" }], topic_distribution: [{ name: "Transformer", count: 2, percentage: 100 }], difficulty_distribution: [{ name: "入门", count: 2, percentage: 100 }], mode_distribution: [{ name: "讲解", count: 2, percentage: 100 }], daily_questions: [{ date: "2026-07-19", count: 2 }], knowledge_point_stats: [{ knowledge_point_id: "attention", name: "注意力", topic: "Transformer", exercises: 3, average_score: 70, pass_rate: 66.67, weak_criteria: [{ criterion: "概念准确", hit_rate: 100 }, { criterion: "步骤完整", hit_rate: 33.33 }] }], learning_analysis: { scope: { period_days: 30, period_label: "近 30 天", role_label: "学生", student_count: 9, attempt_count: 8 }, conclusions: { weak: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [{ criterion: "定义域判断", error_rate: 75 }], concern_score: 70, recommendation: { conclusion: "注意力当前掌握率为 50%", action: "补充概念示例和变式练习" } }, declining: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [], concern_score: 70, recommendation: { conclusion: "注意力近期下降", action: "安排复习" } }, good: { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "位置编码", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 4, mastery_rate: 100, previous_mastery_rate: 88, trend: "up", problem_type: "—", data_sufficiency: "sufficient", average_score: 90, weak_criteria: [], concern_score: 0, recommendation: { conclusion: "位置编码掌握较好", action: "继续观察" } } }, diagnoses: [{ content_id: "transformer", content_name: "Transformer", knowledge_point_id: "attention", knowledge_point_name: "注意力", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 2, mastery_rate: 50, previous_mastery_rate: 68, trend: "down", problem_type: "概念掌握不足", data_sufficiency: "sufficient", average_score: 50, weak_criteria: [{ criterion: "定义域判断", error_rate: 75 }], concern_score: 70, recommendation: { conclusion: "注意力当前掌握率为 50%", action: "补充概念示例和变式练习" } }, { content_id: "transformer", content_name: "Transformer", knowledge_point_id: "位置编码", knowledge_point_name: "位置编码", question_count: 4, student_count: 6, attempt_count: 4, correct_count: 4, mastery_rate: 100, previous_mastery_rate: 88, trend: "up", problem_type: "—", data_sufficiency: "sufficient", average_score: 90, weak_criteria: [], concern_score: 0, recommendation: { conclusion: "位置编码掌握较好", action: "继续观察" } }], problem_distribution: [{ name: "概念掌握不足", count: 1, percentage: 50 }, { name: "解题方法不熟", count: 0, percentage: 0 }, { name: "易错点集中", count: 0, percentage: 0 }, { name: "练习覆盖不足", count: 0, percentage: 0 }, { name: "学习参与不足", count: 0, percentage: 0 }, { name: "数据不足，暂不判断", count: 0, percentage: 0 }], mastery_trend: { months: [{ month: "2026-04", label: "2026年04月" }, { month: "2026-05", label: "2026年05月" }, { month: "2026-06", label: "2026年06月" }, { month: "2026-07", label: "2026年07月" }, { month: "2026-08", label: "2026年08月" }], series: [{ knowledge_point_id: "attention", name: "注意力", values: [62, 65, 72, 68, 50] }, { knowledge_point_id: "posenc", name: "位置编码", values: [74, 79, 84, 88, 100] }] } },
   }),
+  listClassroomsMock: vi.fn().mockResolvedValue({ items: [{ id: "class-1", workspace_id: "default", name: "高一语文", status: "active" }] }),
+  listJoinRequestsMock: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  getClassroomJoinCodeMock: vi.fn().mockResolvedValue({ classroom_id: "class-1", classroom_name: "高一语文", join_code: "ABCD2345" }),
+  createClassroomMock: vi.fn(),
   updateTeacherCatalog: vi.fn().mockImplementation(async (_workspaceId, next) => ({ catalog: { workspace_id: "default", ...next } })),
   updateTeacherAnalysisAnnotationsMock: vi.fn().mockResolvedValue({ annotations: { workspace_id: "default", focused: [], ignored: [], notes: {} }, revision: 1, updated_at: "2026-08-31T00:00:00Z" }),
 }));
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: ensureAuthMock,
-  api: { getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog, generateTeacherAIAnalysis: generateTeacherAIAnalysisMock, updateTeacherAnalysisAnnotations: updateTeacherAnalysisAnnotationsMock },
+  api: { getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog, generateTeacherAIAnalysis: generateTeacherAIAnalysisMock, updateTeacherAnalysisAnnotations: updateTeacherAnalysisAnnotationsMock, listClassrooms: listClassroomsMock, listJoinRequests: listJoinRequestsMock, getClassroomJoinCode: getClassroomJoinCodeMock, createClassroom: createClassroomMock },
 }));
 
 describe("TeacherWorkspace catalog CRUD", () => {
@@ -30,6 +34,10 @@ describe("TeacherWorkspace catalog CRUD", () => {
     getTeacherCatalog.mockClear();
     getTeacherOverviewMock.mockClear();
     generateTeacherAIAnalysisMock.mockClear();
+    listClassroomsMock.mockClear();
+    listJoinRequestsMock.mockClear();
+    getClassroomJoinCodeMock.mockClear();
+    createClassroomMock.mockClear();
     ensureAuthMock.mockResolvedValue({ roles: ["teacher"], workspace_ids: ["default"] });
     getSettingsMock.mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } });
   });
@@ -90,6 +98,20 @@ describe("TeacherWorkspace catalog CRUD", () => {
     const topics = screen.getByRole("button", { name: "主题与知识点" });
     expect(home.compareDocumentPosition(book) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(book.compareDocumentPosition(topics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("lets an ordinary teacher enter classroom management and create a class", async () => {
+    history.replaceState({}, "", "/teacher/classrooms");
+    createClassroomMock.mockResolvedValue({ id: "class-2", workspace_id: "default", name: "高二语文", status: "active", join_code: "EFGH5678" });
+    render(<TeacherWorkspace page="classrooms" />);
+
+    expect(await screen.findByRole("heading", { name: "班级管理" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "创建班级" })).toBeVisible();
+    expect(getTeacherCatalog).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("班级名称"), { target: { value: "高二语文" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建班级" }));
+    await waitFor(() => expect(createClassroomMock).toHaveBeenCalledWith({ workspace_id: "default", name: "高二语文" }));
+    expect(await screen.findByText("班级已创建，班级码：EFGH5678")).toBeVisible();
   });
 
   it("updates the visible page when the routed page changes", async () => {
@@ -532,6 +554,19 @@ describe("TeacherWorkspace catalog CRUD", () => {
     fireEvent.click(screen.getByRole("button", { name: "学生问题" }));
 
     expect(await screen.findByText("学生问题全景")).toBeVisible();
+  });
+
+  it("exposes classroom management through the ordinary teacher route", async () => {
+    render(
+      <MemoryRouter initialEntries={["/teacher/classrooms"]}>
+        <Routes>
+          <Route path="/teacher/*" element={<TeacherRoutes />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "班级管理" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "创建班级" })).toBeVisible();
   });
 });
 

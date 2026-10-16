@@ -2,6 +2,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { LockKeyhole, RefreshCw, X } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/platform/http/api";
+import { ConsentNotice, LegalDocumentModal } from "@/modules/auth/LegalConsent";
+import type { LegalDocumentKind } from "@/modules/auth/legalDocuments";
 
 type Tab = "login" | "register";
 
@@ -10,19 +12,26 @@ interface LoginDialogProps {
   expired?: boolean;
   onClose: () => void;
   onAuthenticate: (username: string, password: string) => Promise<void>;
+  notice?: string;
+  onNoticeDismiss?: () => void;
 }
 
-export function LoginDialog({ open, expired = false, onClose, onAuthenticate }: LoginDialogProps) {
+export function LoginDialog({ open, expired = false, onClose, onAuthenticate, notice, onNoticeDismiss }: LoginDialogProps) {
   const [tab, setTab] = useState<Tab>("login");
+  const [registrationNotice, setRegistrationNotice] = useState("");
 
   const close = useCallback(() => {
     setTab("login");
     onClose();
   }, [onClose]);
   const dismiss = useCallback(() => {
-  if (expired) return;
-  close();
-}, [close, expired]);
+    if (expired) return;
+    close();
+  }, [close, expired]);
+  const handleLoginSuccess = useCallback(() => {
+    onNoticeDismiss?.();
+    close();
+  }, [close, onNoticeDismiss]);
 
   return (
     <Dialog.Root open={open} onOpenChange={(nextOpen: boolean) => { if (!nextOpen) dismiss(); }}>
@@ -51,10 +60,11 @@ export function LoginDialog({ open, expired = false, onClose, onAuthenticate }: 
   </p>
 )}
 
+          {tab === "login" && (notice || registrationNotice) && <p className="login-dialog-notice" role="status">{notice || registrationNotice}</p>}
           {tab === "login" ? (
-            <LoginForm onAuthenticate={onAuthenticate} onSuccess={close} onSwitchToRegister={() => setTab("register")} />
+            <LoginForm onAuthenticate={onAuthenticate} onSubmitAttempt={() => setRegistrationNotice("")} onSuccess={handleLoginSuccess} onSwitchToRegister={() => { onNoticeDismiss?.(); setRegistrationNotice(""); setTab("register"); }} />
           ) : (
-            <RegisterForm onSwitchToLogin={() => setTab("login")} />
+            <RegisterForm onSwitchToLogin={() => { onNoticeDismiss?.(); setRegistrationNotice(""); setTab("login"); }} onSuccess={() => { onNoticeDismiss?.(); setRegistrationNotice("注册成功，请使用手机号登录"); setTab("login"); }} />
           )}
         </Dialog.Content>
       </Dialog.Portal>
@@ -68,10 +78,12 @@ export function LoginDialog({ open, expired = false, onClose, onAuthenticate }: 
 
 function LoginForm({
   onAuthenticate,
+  onSubmitAttempt,
   onSuccess,
   onSwitchToRegister,
 }: {
   onAuthenticate: (username: string, password: string) => Promise<void>;
+  onSubmitAttempt: () => void;
   onSuccess: () => void;
   onSwitchToRegister: () => void;
 }) {
@@ -79,10 +91,17 @@ function LoginForm({
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [hasAgreed, setHasAgreed] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!username.trim() || !password || submitting) return;
+    if (!hasAgreed) {
+      setError("请先阅读并同意用户协议和隐私政策");
+      return;
+    }
+    onSubmitAttempt();
     setSubmitting(true);
     setError("");
     try {
@@ -127,11 +146,19 @@ function LoginForm({
       <button
         className="login-dialog-submit"
         type="submit"
-        disabled={submitting || !username.trim() || !password}
+        disabled={submitting || !username.trim() || !password || !hasAgreed}
       >
         <LockKeyhole size={16} />
         {submitting ? "正在验证" : "登录并继续"}
       </button>
+      <ConsentNotice
+        id="dialog-login-consent"
+        checked={hasAgreed}
+        disabled={submitting}
+        onChange={(checked) => { setHasAgreed(checked); setError(""); }}
+        onOpen={setLegalDocument}
+      />
+      <LegalDocumentModal document={legalDocument} onClose={() => setLegalDocument(null)} />
       <div style={{ marginTop: 12, textAlign: "center", fontSize: 13, color: "var(--text-secondary, #6b7280)" }}>
         <span>还没有账号？</span>{" "}
         <button
@@ -152,37 +179,41 @@ function LoginForm({
 
 function RegisterForm({
   onSwitchToLogin,
+  onSuccess,
 }: {
   onSwitchToLogin: () => void;
+  onSuccess?: () => void;
 }) {
-  const [email, setEmail] = useState("");
-  const [emailCode, setEmailCode] = useState("");
+  const [phone, setPhone] = useState("");
+  const [smsCode, setSmsCode] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [emailSending, setEmailSending] = useState(false);
-  const [emailCooldown, setEmailCooldown] = useState(0);
+  const [smsSending, setSmsSending] = useState(false);
+  const [smsCooldown, setSmsCooldown] = useState(0);
 
-  // CAPTCHA state — two separate captchas: one for the email code, one for registration
-  const [emailCaptchaId, setEmailCaptchaId] = useState("");
-  const [emailCaptchaImage, setEmailCaptchaImage] = useState("");
-  const [emailCaptchaCode, setEmailCaptchaCode] = useState("");
+  // Separate captchas are used for SMS sending and account registration.
+  const [smsCaptchaId, setSmsCaptchaId] = useState("");
+  const [smsCaptchaImage, setSmsCaptchaImage] = useState("");
+  const [smsCaptchaCode, setSmsCaptchaCode] = useState("");
   const [regCaptchaId, setRegCaptchaId] = useState("");
   const [regCaptchaImage, setRegCaptchaImage] = useState("");
   const [regCaptchaCode, setRegCaptchaCode] = useState("");
-  const [emailSent, setEmailSent] = useState(false);
-  const captchaRequestVersion = useRef({ email: 0, reg: 0 });
+  const [smsSent, setSmsSent] = useState(false);
+  const [hasAgreed, setHasAgreed] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
+  const captchaRequestVersion = useRef({ sms: 0, reg: 0 });
 
-  const loadCaptcha = useCallback(async (target: "email" | "reg") => {
+  const loadCaptcha = useCallback(async (target: "sms" | "reg") => {
     const requestVersion = ++captchaRequestVersion.current[target];
     try {
       const resp = await api.getCaptcha();
       if (requestVersion !== captchaRequestVersion.current[target]) return true;
-      if (target === "email") {
-        setEmailCaptchaId(resp.captcha_id);
-        setEmailCaptchaImage(resp.image);
+      if (target === "sms") {
+        setSmsCaptchaId(resp.captcha_id);
+        setSmsCaptchaImage(resp.image);
       } else {
         setRegCaptchaId(resp.captcha_id);
         setRegCaptchaImage(resp.image);
@@ -190,9 +221,9 @@ function RegisterForm({
       return true;
     } catch {
       if (requestVersion !== captchaRequestVersion.current[target]) return true;
-      if (target === "email") {
-        setEmailCaptchaId("");
-        setEmailCaptchaImage("");
+      if (target === "sms") {
+        setSmsCaptchaId("");
+        setSmsCaptchaImage("");
       } else {
         setRegCaptchaId("");
         setRegCaptchaImage("");
@@ -201,57 +232,60 @@ function RegisterForm({
     }
   }, []);
 
-  useEffect(() => { void loadCaptcha("email"); }, [loadCaptcha]); // eslint-disable-line react-hooks/set-state-in-effect
+  useEffect(() => { void loadCaptcha("sms"); }, [loadCaptcha]); // eslint-disable-line react-hooks/set-state-in-effect
 
   useEffect(() => {
-    if (emailCooldown <= 0) return;
-    const timer = window.setTimeout(() => setEmailCooldown((value) => Math.max(0, value - 1)), 1000);
+    if (smsCooldown <= 0) return;
+    const timer = window.setTimeout(() => setSmsCooldown((value) => Math.max(0, value - 1)), 1000);
     return () => window.clearTimeout(timer);
-  }, [emailCooldown]);
+  }, [smsCooldown]);
 
-  const changeEmail = (value: string) => {
-    const mustRefreshConsumedCaptcha = emailSent;
-    setEmail(value);
+  const changePhone = (value: string) => {
+    const mustRefreshConsumedCaptcha = smsSent;
+    setPhone(value);
     setError("");
-    setEmailSent(false);
-    setEmailCode("");
+    setSmsSent(false);
+    setSmsCode("");
     setRegCaptchaId("");
     setRegCaptchaImage("");
     setRegCaptchaCode("");
     if (mustRefreshConsumedCaptcha) {
-      setEmailCaptchaId("");
-      setEmailCaptchaImage("");
-      setEmailCaptchaCode("");
-      void loadCaptcha("email");
+      setSmsCaptchaId("");
+      setSmsCaptchaImage("");
+      setSmsCaptchaCode("");
+      void loadCaptcha("sms");
     }
   };
 
   const sendCode = async () => {
-    if (!email.trim() || emailSending || emailCooldown > 0 || !emailCaptchaCode.trim()) return;
-    setEmailSending(true);
+    if (!phone.trim() || smsSending || smsCooldown > 0 || !smsCaptchaCode.trim()) return;
+    setSmsSending(true);
     setError("");
     try {
-      await api.sendEmailCode(email.trim(), emailCaptchaId, emailCaptchaCode.trim());
-      setEmailCooldown(60);
-      setEmailSent(true);
-      // Keep emailCaptchaCode value (don't clear it) - user may need to see what they entered
+      await api.sendSmsCode(phone.trim(), smsCaptchaId, smsCaptchaCode.trim());
+      setSmsCooldown(60);
+      setSmsSent(true);
+      // Keep smsCaptchaCode visible; it has served its purpose for this request.
       // Load registration CAPTCHA for the next step
       if (!(await loadCaptcha("reg"))) {
-        setError("邮箱验证码已发送，但注册验证码加载失败，请点击刷新重试。");
+        setError("短信验证码已发送，但注册验证码加载失败，请点击刷新重试。");
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "发送验证码失败");
-      // Refresh email captcha on failure
-      await loadCaptcha("email");
-      setEmailCaptchaCode("");
+      await loadCaptcha("sms");
+      setSmsCaptchaCode("");
     } finally {
-      setEmailSending(false);
+      setSmsSending(false);
     }
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!email.trim() || !emailCode || !password || !regCaptchaCode.trim() || submitting) return;
+    if (!phone.trim() || !smsCode || !password || !regCaptchaCode.trim() || submitting) return;
+    if (!hasAgreed) {
+      setError("请先阅读并同意用户协议和隐私政策");
+      return;
+    }
     if (password !== confirmPassword) {
       setError("两次输入的密码不一致");
       return;
@@ -264,15 +298,16 @@ function RegisterForm({
     setError("");
     try {
       await api.register({
-        email: email.trim(),
-        email_code: emailCode.trim(),
+        phone_number: phone.trim(),
+        sms_code: smsCode.trim(),
         password,
         display_name: displayName.trim() || undefined,
         captcha_id: regCaptchaId,
         captcha_code: regCaptchaCode.trim(),
       });
       // Registration successful — switch to login tab
-      onSwitchToLogin();
+      if (onSuccess) onSuccess();
+      else onSwitchToLogin();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "注册失败，请稍后重试。");
       // Refresh registration captcha on failure
@@ -287,45 +322,45 @@ function RegisterForm({
     <form onSubmit={(event) => void submit(event)}>
       <Dialog.Title>注册新账户</Dialog.Title>
       <label>
-        <span>邮箱</span>
+        <span>手机号</span>
         <input
-          type="email"
-          autoComplete="email"
+          type="tel"
+          autoComplete="tel"
           autoFocus
-          value={email}
-          onChange={(event) => changeEmail(event.target.value)}
-          disabled={submitting || emailSending}
-          placeholder="请输入邮箱"
-          maxLength={254}
+          value={phone}
+          onChange={(event) => changePhone(event.target.value)}
+          disabled={submitting || smsSending}
+          placeholder="请输入手机号"
+          maxLength={20}
           required
         />
       </label>
 
-      {/* CAPTCHA for sending the email code */}
+      {/* CAPTCHA for sending the SMS code */}
       <label>
         <span>图片验证码</span>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
-            value={emailCaptchaCode}
-            onChange={(event) => setEmailCaptchaCode(event.target.value)}
+            value={smsCaptchaCode}
+            onChange={(event) => setSmsCaptchaCode(event.target.value)}
             disabled={submitting}
             placeholder="输入图中字符"
             maxLength={10}
             required
             style={{ flex: 1, minWidth: 0 }}
           />
-          {emailCaptchaImage && (
+          {smsCaptchaImage && (
             <img
-              src={emailCaptchaImage}
+              src={smsCaptchaImage}
               alt="验证码"
-              style={{ width: 160, height: 64, flexShrink: 0, objectFit: "cover", borderRadius: 4, border: "1px solid var(--border, #d1d5db)", cursor: "pointer" }}
-              onClick={() => void loadCaptcha("email")}
+              style={{ height: 36, borderRadius: 4, border: "1px solid var(--border, #d1d5db)", cursor: "pointer" }}
+              onClick={() => void loadCaptcha("sms")}
               title="点击刷新"
             />
           )}
           <button
             type="button"
-            onClick={() => void loadCaptcha("email")}
+            onClick={() => void loadCaptcha("sms")}
             style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: "var(--text-secondary, #6b7280)" }}
             title="刷新验证码"
           >
@@ -335,12 +370,12 @@ function RegisterForm({
       </label>
 
       <label>
-        <span>邮箱验证码</span>
+        <span>短信验证码</span>
         <div style={{ display: "flex", gap: 8 }}>
           <input
-            value={emailCode}
-            onChange={(event) => setEmailCode(event.target.value)}
-            disabled={submitting || !emailSent}
+            value={smsCode}
+            onChange={(event) => setSmsCode(event.target.value)}
+            disabled={submitting || !smsSent}
             placeholder="6位验证码"
             maxLength={8}
             required
@@ -350,19 +385,19 @@ function RegisterForm({
             type="button"
             aria-label="发送验证码"
             onClick={sendCode}
-            disabled={emailSending || emailCooldown > 0 || !email.trim() || !emailCaptchaCode.trim()}
+            disabled={smsSending || smsCooldown > 0 || !phone.trim() || !smsCaptchaCode.trim()}
             style={{
               whiteSpace: "nowrap",
               padding: "6px 12px",
               borderRadius: 6,
               border: "1px solid var(--border, #d1d5db)",
-              background: emailCooldown > 0 ? "var(--bg-muted, #f3f4f6)" : "var(--accent, #3b82f6)",
-              color: emailCooldown > 0 ? "var(--text-secondary, #6b7280)" : "#fff",
-              cursor: emailSending || emailCooldown > 0 ? "not-allowed" : "pointer",
+              background: smsCooldown > 0 ? "var(--bg-muted, #f3f4f6)" : "var(--accent, #3b82f6)",
+              color: smsCooldown > 0 ? "var(--text-secondary, #6b7280)" : "#fff",
+              cursor: smsSending || smsCooldown > 0 ? "not-allowed" : "pointer",
               fontSize: 13,
             }}
           >
-            {emailSending ? "发送中..." : emailCooldown > 0 ? `${emailCooldown}s` : "发送验证码"}
+            {smsSending ? "发送中..." : smsCooldown > 0 ? `${smsCooldown}s` : "发送验证码"}
           </button>
         </div>
       </label>
@@ -404,7 +439,7 @@ function RegisterForm({
       </label>
 
       {/* CAPTCHA for registration */}
-      {emailSent && (
+      {smsSent && (
         <label>
           <span>注册验证</span>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -442,11 +477,19 @@ function RegisterForm({
       <button
         className="login-dialog-submit"
         type="submit"
-        disabled={submitting || !email.trim() || !emailCode || !password || !regCaptchaCode.trim()}
+        disabled={submitting || !phone.trim() || !smsCode || !password || !regCaptchaCode.trim() || !hasAgreed}
       >
         <LockKeyhole size={16} />
         {submitting ? "注册中..." : "注册"}
       </button>
+      <ConsentNotice
+        id="dialog-register-consent"
+        checked={hasAgreed}
+        disabled={submitting}
+        onChange={(checked) => { setHasAgreed(checked); setError(""); }}
+        onOpen={setLegalDocument}
+      />
+      <LegalDocumentModal document={legalDocument} onClose={() => setLegalDocument(null)} />
       <div style={{ marginTop: 12, textAlign: "center", fontSize: 13, color: "var(--text-secondary, #6b7280)" }}>
         <span>已有账号？</span>{" "}
         <button

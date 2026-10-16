@@ -37,11 +37,21 @@ class FakeSessions:
 
 
 class FakeAuthorizationSession:
+    class _Transaction:
+        async def __aenter__(self) -> "FakeAuthorizationSession._Transaction":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
     async def __aenter__(self) -> "FakeAuthorizationSession":
         return self
 
     async def __aexit__(self, *args: object) -> None:
         return None
+
+    def begin(self) -> "FakeAuthorizationSession._Transaction":
+        return self._Transaction()
 
 
 class FakeAuthorizationSessionFactory:
@@ -200,6 +210,18 @@ def test_database_authenticated_upload_uses_database_session_dependencies(
         "principal_for_user_id",
         principal_for_user_id,
     )
+
+    class NoopQuota:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def reserve(self, *_args, **_kwargs):
+            return object()
+
+        async def finalize(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(uploads_controller, "AsyncStorageQuota", NoopQuota)
 
     client = TestClient(app)
     client.cookies.set("nlp_session", "database-token")

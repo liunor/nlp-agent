@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,10 +20,16 @@ from server.infrastructure.mysql.models import (
     TurnEventModel,
     TurnModel,
 )
+from server.storage.policy import StorageBucket
+from server.storage.quota import AsyncStorageQuota
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _json_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":")).encode("utf-8"))
 
 
 class LostTurnClaimError(RuntimeError):
@@ -160,7 +167,10 @@ class TurnReliabilityService:
             turn.claimed_by = None
             turn.heartbeat_at = None
             turn.lease_expires_at = None
+            quota = AsyncStorageQuota(session, owner_user_id=turn.user_id, roles=None)
+            reservation = await quota.reserve(StorageBucket.CORE, 256, resource_type="turn_event", resource_key=f"{turn.id}:handover:{turn.claim_generation}")
             session.add(TurnEventModel(id=str(uuid.uuid4()), turn_id=turn.id, sequence=(await self._next_sequence(session, turn.id)), claim_generation=turn.claim_generation, event_type="turn.handover", payload_json={"reason": "lease_expired"}))
+            await quota.finalize(reservation, reconcile=True)
             original = await session.scalar(
                 select(OutboxMessageModel.payload_json)
                 .where(
@@ -181,29 +191,65 @@ class TurnReliabilityService:
         turn = await session.scalar(select(TurnModel).where(TurnModel.id == turn_id).with_for_update())
         if turn is None or turn.claim_generation != generation:
             raise LostTurnClaimError(turn_id)
+        quota = AsyncStorageQuota(session, owner_user_id=turn.user_id, roles=None)
+        reservation = await quota.reserve(StorageBucket.CORE, len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")) + 256, resource_type="turn_event", resource_key=f"{turn_id}:{event_type}")
         event = TurnEventModel(id=str(uuid.uuid4()), turn_id=turn_id, sequence=await self._next_sequence(session, turn_id), claim_generation=generation, event_type=event_type, payload_json=payload)
         session.add(event)
         await session.flush()
+        await quota.finalize(reservation, reconcile=True)
         return event
 
     async def record_operation(self, session: AsyncSession, *, turn_id: str, generation: int, operation_id: str, tool_name: str, request: dict[str, Any]) -> ToolCallModel:
         operation = await session.scalar(select(ToolCallModel).where(ToolCallModel.turn_id == turn_id, ToolCallModel.operation_id == operation_id).with_for_update())
         if operation is not None:
             return operation
+        turn = await session.scalar(select(TurnModel).where(TurnModel.id == turn_id).with_for_update())
+        if turn is None or turn.claim_generation != generation:
+            raise LostTurnClaimError(turn_id)
+        quota = AsyncStorageQuota(session, owner_user_id=turn.user_id, roles=None)
+        reservation = await quota.reserve(
+            StorageBucket.CORE,
+            _json_bytes(request) + len(tool_name.encode("utf-8")) + 256,
+            resource_type="tool_call",
+            resource_key=f"{turn_id}:{operation_id}:request",
+        )
         operation = ToolCallModel(id=str(uuid.uuid4()), turn_id=turn_id, operation_id=operation_id, claim_generation=generation, tool_name=tool_name, idempotency_key=f"{turn_id}:{operation_id}", request_json=request)
-        session.add(operation)
-        await session.flush()
-        return operation
+        try:
+            session.add(operation)
+            await session.flush()
+            await quota.finalize(reservation, reconcile=True)
+            return operation
+        except Exception:
+            await quota.release(reservation)
+            raise
 
     async def complete_operation(self, session: AsyncSession, *, turn_id: str, generation: int, operation_id: str, result: dict[str, Any]) -> ToolCallModel:
         turn = await session.scalar(select(TurnModel).where(TurnModel.id == turn_id).with_for_update())
         operation = await session.scalar(select(ToolCallModel).where(ToolCallModel.turn_id == turn_id, ToolCallModel.operation_id == operation_id).with_for_update())
         if turn is None or operation is None or turn.claim_generation != generation or operation.claim_generation != generation:
             raise LostTurnClaimError(turn_id)
+        old_result = operation.result_json
+        # Reserve at least one byte even when a result replaces an equally
+        # small/empty value, so finalize still performs the measured-usage
+        # check instead of allowing a zero-byte quota bypass.
+        result_delta = max(1, _json_bytes(result) - _json_bytes(old_result or {}))
+        quota = AsyncStorageQuota(session, owner_user_id=turn.user_id, roles=None)
+        reservation = await quota.reserve(
+            StorageBucket.CORE,
+            result_delta,
+            resource_type="tool_call",
+            resource_key=f"{turn_id}:{operation_id}:result",
+        )
         operation.status = "succeeded"
         operation.result_json = result
-        await session.flush()
-        return operation
+        try:
+            await session.flush()
+            await quota.finalize(reservation, reconcile=True)
+            return operation
+        except Exception:
+            await quota.release(reservation)
+            operation.result_json = old_result
+            raise
 
     async def _next_sequence(self, session: AsyncSession, turn_id: str) -> int:
         events = (await session.scalars(select(TurnEventModel.sequence).where(TurnEventModel.turn_id == turn_id).order_by(TurnEventModel.sequence.desc()).limit(1))).first()

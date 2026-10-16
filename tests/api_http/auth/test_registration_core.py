@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -11,12 +12,14 @@ from ..support.auth import set_test_auth_code
 from ..support.database import MySqlProbe
 from ..support.http import json_response, problem_response
 from server.user.email import normalize_email
+from server.user.phone import normalize_phone_number
 
 
 pytestmark = pytest.mark.api_core
 
 CAPTCHA_CODE = "ABCD"
 EMAIL_CODE = "123456"
+SMS_CODE = "654321"
 
 
 def _unique_email(prefix: str = "user") -> str:
@@ -92,6 +95,31 @@ def _register(
     )
 
 
+def _register_phone(
+    client: httpx.Client,
+    mysql_probe: MySqlProbe,
+    phone: str,
+) -> httpx.Response:
+    captcha_id = _captcha(client, mysql_probe)
+    set_test_auth_code(
+        mysql_probe,
+        kind="sms",
+        subject=normalize_phone_number(phone),
+        code=SMS_CODE,
+    )
+    return client.post(
+        "/api/v1/auth/register",
+        json={
+            "phone_number": phone,
+            "sms_code": SMS_CODE,
+            "password": "Phase4-register-password!",
+            "display_name": "Phone Registered User",
+            "captcha_id": captcha_id,
+            "captcha_code": CAPTCHA_CODE,
+        },
+    )
+
+
 def test_captcha_is_json_and_single_use(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
@@ -149,6 +177,7 @@ def test_email_code_lifecycle_and_registration_provision_resources(
     registered = _register(http_client, mysql_probe, email=email)
     payload = json_response(registered, 201)
     assert isinstance(payload, dict)
+    assert "nlp_session" not in registered.headers.get("set-cookie", "")
     user_id = str(payload["user_id"])
     assert payload["username"].startswith("user")
 
@@ -160,6 +189,7 @@ def test_email_code_lifecycle_and_registration_provision_resources(
     assert isinstance(user, dict)
     assert user["roles"] == ["guest"]
     assert user["status"] == "active"
+    assert payload["roles"] == ["guest"]
 
     registered_login = api_http_client_factory(
         base_url=http_client.base_url,
@@ -178,6 +208,9 @@ def test_email_code_lifecycle_and_registration_provision_resources(
     assert isinstance(login_payload, dict)
     assert login_payload["user_id"] == user_id
     assert login_payload["workspace_ids"]
+    assert login_payload["roles"] == ["guest"]
+    assert "classroom:join_request:submit" in login_payload["permissions"]
+    assert "learning:progress:read_self" not in login_payload["permissions"]
 
 
 def test_email_wrong_expired_and_replayed_codes_are_rejected(
@@ -237,6 +270,74 @@ def test_email_resend_rate_limit_is_enforced(
     assert first.status_code == 200, first.text
     second = _send_email(http_client, mysql_probe, email)
     assert second.status_code == 429, second.text
+
+
+def test_phone_registration_returns_guest_without_logging_in(
+    http_client: httpx.Client,
+    mysql_probe: MySqlProbe,
+    api_http_client_factory,
+) -> None:
+    phone = f"139{uuid.uuid4().int % 10**8:08d}"
+    registered = _register_phone(http_client, mysql_probe, phone)
+    payload = json_response(registered, 201)
+    assert isinstance(payload, dict)
+    assert "nlp_session" not in registered.headers.get("set-cookie", "")
+    assert payload["username"] == normalize_phone_number(phone).lstrip("+")
+    assert payload["roles"] == ["guest"]
+
+    login_client = api_http_client_factory(base_url=http_client.base_url, timeout=15)
+    login_response = login_client.post(
+        "/api/v1/auth/login",
+        headers={"Origin": str(http_client.base_url).rstrip("/")},
+        json={"username": phone, "password": "Phase4-register-password!"},
+    )
+    login_payload = json_response(login_response, 200)
+    assert isinstance(login_payload, dict)
+    assert login_payload["user_id"] == payload["user_id"]
+    assert login_payload["roles"] == ["guest"]
+    assert "classroom:join_request:submit" in login_payload["permissions"]
+    assert "learning:progress:read_self" not in login_payload["permissions"]
+
+
+def test_concurrent_duplicate_phone_registrations_return_one_conflict(
+    http_client: httpx.Client,
+    mysql_probe: MySqlProbe,
+    api_http_client_factory,
+) -> None:
+    digits = f"137{uuid.uuid4().int % 10**8:08d}"
+    phone_variants = (digits, f"{digits[:3]}-{digits[3:7]}-{digits[7:]}")
+    clients = [
+        api_http_client_factory(base_url=http_client.base_url, timeout=15)
+        for _ in phone_variants
+    ]
+    requests = []
+    for client, phone in zip(clients, phone_variants, strict=True):
+        captcha_id = _captcha(client, mysql_probe)
+        set_test_auth_code(
+            mysql_probe,
+            kind="sms",
+            subject=normalize_phone_number(phone),
+            code=SMS_CODE,
+        )
+        requests.append(
+            {
+                "phone_number": phone,
+                "sms_code": SMS_CODE,
+                "password": "Phase4-register-password!",
+                "captcha_id": captcha_id,
+                "captcha_code": CAPTCHA_CODE,
+            }
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(
+            executor.map(
+                lambda pair: pair[0].post("/api/v1/auth/register", json=pair[1]),
+                zip(clients, requests, strict=True),
+            )
+        )
+
+    assert sorted(response.status_code for response in responses) == [201, 400]
 
 
 def test_email_provider_failure_has_explicit_gateway_error(

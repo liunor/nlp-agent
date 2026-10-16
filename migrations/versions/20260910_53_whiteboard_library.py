@@ -32,7 +32,7 @@ def upgrade() -> None:
         mysql_engine="InnoDB",
         mysql_charset="utf8mb4",
         mysql_collate="utf8mb4_unicode_ci",
-        comment="教师和开发者创建的全局共享白板素材。",
+        comment="可在知识教材中关联的命名白板素材。",
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 from server.auth import code_store
+from sqlalchemy.exc import IntegrityError
 from server.infrastructure.mysql import DatabaseConfig, create_engine, create_session_factory
 
 from server.infrastructure.mysql.models import SessionModel, UserModel, WorkspaceMemberModel
@@ -15,8 +17,9 @@ from server.rbac.service import rbac_service
 from core.rbac import Permission
 from server.user.controller import _user_response_with_roles
 from server.user.schemas import UserCreate, UserCreateWithRole, UserRegister
-from server.user.service import UserService
-from server.web.auth import AuthenticationError, OriginRejectedError
+from server.user.phone import normalize_phone_number
+from server.user.service import UserAlreadyExistsError, UserService
+from server.web.auth import AuthorizationChangedError, AuthenticationError, OriginRejectedError
 from server.web.database_auth import DatabaseSessionAuth, DatabaseSessionClaims
 
 
@@ -170,6 +173,35 @@ async def test_email_registration_uses_unified_service_transaction(
 
 
 @pytest.mark.asyncio
+async def test_phone_registration_uses_guest_role_and_consumes_sms_code(
+    mysql_session_factory, monkeypatch
+) -> None:
+    consume_code = AsyncMock(return_value=True)
+    monkeypatch.setattr(code_store, "consume_code", consume_code)
+    phone = f"138{uuid4().int % 10**8:08d}"
+    data = UserRegister(
+        phone_number=phone,
+        sms_code="123456",
+        password="InitialPw0rd1",
+        display_name="Phone guest",
+        captcha_id="captcha-phone-test",
+        captcha_code="ABCD",
+    )
+
+    async with mysql_session_factory() as session:
+        async with session.begin():
+            user = await UserService(session).register_user(data)
+            assert user.username == normalize_phone_number(phone).lstrip("+")
+            assert user.registration_source == "phone"
+            assert await rbac_service.roles_for(session, user.id) == frozenset({"guest"})
+
+    assert [call.kwargs["kind"] for call in consume_code.await_args_list] == [
+        "captcha",
+        "sms",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_admin_create_response_can_serialize_after_role_assignment(
     mysql_session_factory,
 ) -> None:
@@ -194,6 +226,37 @@ async def test_admin_create_response_can_serialize_after_role_assignment(
 
         assert response.username == data.username
         assert response.roles == ["student"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_phone_registration_has_one_winner(
+    mysql_session_factory, monkeypatch
+) -> None:
+    phone = f"138{uuid4().int % 10**8:08d}"
+    data = UserRegister(
+        phone_number=phone,
+        sms_code="123456",
+        password="InitialPw0rd1",
+        display_name="Concurrent registration",
+        captcha_id="captcha-concurrent-test",
+        captcha_code="ABCD",
+    )
+
+    async def attempt() -> str:
+        async with mysql_session_factory() as session:
+            try:
+                async with session.begin():
+                    await UserService(session).register_user(data)
+                return "created"
+            except (IntegrityError, UserAlreadyExistsError):
+                return "duplicate"
+
+    async def consume_code(*_args, **_kwargs) -> bool:
+        return True
+
+    monkeypatch.setattr(code_store, "consume_code", consume_code)
+    outcomes = await asyncio.gather(attempt(), attempt())
+    assert sorted(outcomes) == ["created", "duplicate"]
 
 
 @pytest.mark.asyncio
@@ -282,7 +345,7 @@ async def test_password_change_revokes_database_sessions(mysql_session_factory) 
             select(SessionModel.revoked_at).where(SessionModel.user_id == user.id)
         )
         assert remaining is not None
-        with pytest.raises(AuthenticationError, match="invalid|expired"):
+        with pytest.raises(AuthorizationChangedError, match="authorization changed"):
             await auth.authenticate(mysql_session_factory, token)
 
 

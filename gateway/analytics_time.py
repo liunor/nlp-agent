@@ -12,7 +12,7 @@ existing fixed-offset Beijing handling in ``server.web.feedback`` and avoids a
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 # IANA names whose current offset is fixed (no summer-time transitions).  Kept
@@ -65,3 +65,10 @@ def localize_turn_time(value: Any, timezone_name: str = "UTC") -> tuple[str, int
     aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
     local = aware.astimezone(timezone(offset))
     return local.strftime("%Y-%m-%d"), local.hour, local.weekday()
+
+
+def analytics_today(timezone_name: str = "UTC", *, now: datetime | None = None) -> date:
+    """Return today's calendar date in the configured analytics timezone."""
+    current = now or datetime.now(timezone.utc)
+    day, _, _ = localize_turn_time(current, timezone_name)
+    return date.fromisoformat(day)

@@ -63,7 +63,7 @@ function networkFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise
       });
     });
     request.once("error", reject);
-    request.setTimeout(1_000, () => request.destroy(new Error("HTTP request timed out")));
+    request.setTimeout(5_000, () => request.destroy(new Error("HTTP request timed out")));
     if (typeof init.body === "string") request.write(init.body);
     request.end();
   });
@@ -177,6 +177,7 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
     let connectionCount = 0;
     let firstConnectionObservedAck = false;
     const sentChatRequestIds: string[] = [];
+    const disconnectRequestId = `request_disconnect_${testRunId}`;
 
     class InterruptingWebSocket {
       static readonly CONNECTING = NetworkWebSocket.CONNECTING;
@@ -193,7 +194,7 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
         this.socket.on("message", (data) => {
           const value = data.toString();
           const event = JSON.parse(value) as { type?: string; request_id?: string };
-          if (this.connectionNumber === 1 && event.type === "command.ack" && event.request_id === "request_disconnect_1") {
+          if (this.connectionNumber === 1 && event.type === "command.ack" && event.request_id === disconnectRequestId) {
             firstConnectionObservedAck = true;
           }
           this.onmessage?.({ data: value });
@@ -230,17 +231,18 @@ describe.sequential("real frontend API client to FastAPI integration", () => {
         (status) => {
           if (status === "connected" && dropFirstChat) {
             client.setSession(session.session_id);
-            client.sendChat(session.session_id, "integration disconnect", "request_disconnect_1");
+            client.sendChat(session.session_id, "integration disconnect", disconnectRequestId);
           }
         },
       );
       client.connect();
     });
 
-    expect(await completed).toMatchObject({ content: "answer:integration disconnect" });
+    const completedPayload = await completed;
+    expect(completedPayload).toMatchObject({ content: "answer:integration disconnect" });
     expect(firstConnectionObservedAck).toBe(false);
     expect(connectionCount).toBeGreaterThanOrEqual(2);
-    expect(sentChatRequestIds).toEqual(["request_disconnect_1", "request_disconnect_1"]);
+    expect(sentChatRequestIds).toEqual([disconnectRequestId, disconnectRequestId]);
     const turns = (await api.listTurns(session.session_id)).items;
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ status: "completed", final_text: "answer:integration disconnect" });

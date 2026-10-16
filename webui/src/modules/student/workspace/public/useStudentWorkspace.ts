@@ -4,7 +4,7 @@ import { api } from "@/platform/http/api";
 import { useOptionalAuth } from "@/platform/auth/AuthContext";
 import { StudentSocket } from "@/platform/realtime/client";
 import { clearImportedFiles } from "../../components/importedFiles";
-import type { AuthSession, ChatMessage, RuntimeModelProfile } from "@/shared/types";
+import type { AuthSession, ChatMessage, RealtimeRequestError, RuntimeModelProfile } from "@/shared/types";
 
 import { useWorkspaceBootstrap } from "../internal/bootstrap";
 import { usePreferencesController } from "../internal/preferences-controller";
@@ -33,7 +33,10 @@ export function useStudentWorkspace() {
     setMessages([]);
     setLoadingMessages(Boolean(sessionId));
   }, []);
-  const [requestError, setRequestError] = useState("");
+  const [requestError, setRequestError] = useState<RealtimeRequestError | null>(null);
+  const handleRequestError = useCallback((message: string) => {
+    setRequestError({ code: "session_error", message });
+  }, []);
   const {
     sessions,
     setSessions,
@@ -55,7 +58,7 @@ export function useStudentWorkspace() {
     preferences,
     persistPreferences,
     updateSessionMeta,
-    onRequestError: setRequestError,
+    onRequestError: handleRequestError,
     onActiveSessionChange: handleActiveSessionChange,
   });
   const [modelProfiles, setModelProfiles] = useState<Record<string, RuntimeModelProfile>>({});
@@ -98,12 +101,12 @@ export function useStudentWorkspace() {
       startNewChat();
       setSessions([]);
       setAuthSession(null);
-      setRequestError("");
+      setRequestError(null);
       setError("");
       setBootStatus("loading");
     }
     previousAuthenticatedUserIdRef.current = authenticatedUserId;
-  }, [authenticatedUserId, cancelledTurnIds, freshSessionIdsRef, inFlightTurnIds, invalidateSessionLoads, pendingRequests, setSessions, startNewChat]);
+  }, [authenticatedUserId, cancelledTurnIds, freshSessionIdsRef, handleRequestError, inFlightTurnIds, invalidateSessionLoads, pendingRequests, setSessions, startNewChat]);
   const handleEvent = useMemo(
     // The factory stores refs for the socket callback; it does not read them during render.
     // eslint-disable-next-line react-hooks/refs
@@ -139,8 +142,7 @@ export function useStudentWorkspace() {
 
   useEffect(() => {
     if (bootStatus !== "ready") return;
-
-    const socket = new StudentSocket(handleEvent, setSocketStatus);
+    const socket = new StudentSocket(handleEvent, setSocketStatus, undefined, globalAuth?.refreshSession);
     socketRef.current = socket;
     socket.setSession(activeSessionRef.current);
     socket.connect();
@@ -149,7 +151,27 @@ export function useStudentWorkspace() {
       socket.close();
       socketRef.current = null;
     };
-  }, [activeSessionRef, bootStatus, handleEvent]);
+  }, [activeSessionRef, bootStatus, globalAuth?.refreshSession, handleEvent]);
+
+  useEffect(() => {
+    // AuthProvider is the single global 401 boundary. If a request made by
+    // this workspace discovers a revoked/changed session, stop the socket and
+    // return the workspace to its unauthenticated recovery state as well.
+    if (globalAuth?.isAuthenticated !== false || !authSession?.user_id) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      socketRef.current?.close();
+      socketRef.current = null;
+      setAuthSession(null);
+      setSessions([]);
+      setActiveSessionId(null);
+      setMessages([]);
+      setModelProfiles({});
+      setBootStatus("unauthenticated");
+    });
+    return () => { active = false; };
+  }, [authSession?.user_id, globalAuth?.isAuthenticated, setActiveSessionId, setSessions]);
 
   useEffect(() => {
     loadGenerationRef.current += 1;
@@ -192,12 +214,12 @@ const authenticate = useCallback(async (username: string, password: string) => {
     : await api.login(username, password);
 
   setError("");
-  setRequestError("");
+  setRequestError(null);
   return result;
 }, [globalAuth]);
   const retryAuthentication = useCallback(() => {
     setError("");
-    setRequestError("");
+    setRequestError(null);
     setBootStatus("loading");
     setAuthRevision((current) => current + 1);
   }, []);
@@ -238,7 +260,7 @@ const authenticate = useCallback(async (username: string, password: string) => {
     bootStatus,
     error,
     requestError,
-    clearRequestError: () => setRequestError(""),
+    clearRequestError: () => setRequestError(null),
     socketStatus,
     loadingMessages,
     isRunning,

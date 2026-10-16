@@ -32,6 +32,17 @@ describe("student ICP record bar", () => {
     expect(recordLink).toHaveAttribute("href", "https://beian.miit.gov.cn/");
     expect(recordLink).toHaveAttribute("target", "_blank");
     expect(recordLink).toHaveAttribute("rel", "noreferrer");
+
+    const policeRecordLink = screen.getByRole("link", {
+      name: "川公网安备51110202002432号",
+    });
+    expect(policeRecordLink).toHaveAttribute(
+      "href",
+      "https://beian.mps.gov.cn/#/query/webSearch?code=51110202002432",
+    );
+    expect(policeRecordLink).toHaveAttribute("target", "_blank");
+    expect(policeRecordLink).toHaveAttribute("rel", "noreferrer");
+    expect(policeRecordLink.querySelector("img")).toBeInTheDocument();
   });
 
   it("does not add the record bar to non-student routes", () => {
@@ -47,6 +58,9 @@ describe("student ICP record bar", () => {
 
     expect(screen.getByRole("button", { name: "教师页面" })).toBeVisible();
     expect(screen.queryByRole("link", { name: "蜀ICP备2026055638号" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "川公网安备51110202002432号" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the record bar lightweight and reserves the conversation safe area", () => {

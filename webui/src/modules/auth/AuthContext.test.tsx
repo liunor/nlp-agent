@@ -7,6 +7,11 @@ import { AuthProvider, useAuth } from "@/platform/auth/AuthContext";
 
 vi.mock("@/platform/http/api", () => ({
   AUTH_EXPIRED_EVENT: "nova:auth-expired",
+  AuthStateChangedError: class extends Error {},
+  getAuthGeneration: () => 0,
+  subscribeAuthChanges: () => () => undefined,
+  AUTH_REQUIRED_EVENT: "nlp-auth-required",
+  clearCsrfToken: vi.fn(),
   ensureAuth: vi.fn(),
   api: {
     login: vi.fn(),
@@ -32,12 +37,9 @@ function Consumer() {
       <span data-testid="authenticated">{String(auth.isAuthenticated)}</span>
       <span data-testid="expired">{String(auth.isAuthExpired)}</span>
       <span data-testid="roles">{auth.roles.join(",")}</span>
-      <button
-  type="button"
-  onClick={() => void auth.login("user", "password").catch(() => undefined)}
->
-  login
-</button>
+      <span data-testid="notice">{auth.authNotice ?? ""}</span>
+      <button type="button" onClick={() => void auth.login("user", "password").catch(() => undefined)}>login</button>
+      <button type="button" onClick={() => void auth.refreshSession()}>refresh</button>
       <button type="button" onClick={() => void auth.logout()}>logout</button>
     </div>
   );
@@ -166,5 +168,54 @@ it("clears the expired-auth state after re-login succeeds", async () => {
       view.unmount();
       vi.useRealTimers();
     }
+  });
+
+  it("deduplicates authorization-change 401 events and exposes one login notice", async () => {
+    vi.mocked(ensureAuth).mockRejectedValue(new Error("HTTP 401"));
+    render(<AuthProvider><Consumer /></AuthProvider>);
+    await waitFor(() => expect(screen.getByTestId("authenticated")).toHaveTextContent("false"));
+
+    await act(async () => {
+      const event = () => new CustomEvent("nlp-auth-required", {
+        detail: { code: "authorization_changed", message: "账号权限已更新，请重新登录" },
+      });
+      window.dispatchEvent(event());
+      window.dispatchEvent(event());
+    });
+
+    expect(screen.getByTestId("notice")).toHaveTextContent("账号权限已更新，请重新登录");
+  });
+
+  it("keeps authorization changes from being downgraded by weaker 401 events", async () => {
+    vi.mocked(ensureAuth).mockRejectedValue(new Error("HTTP 401"));
+    render(<AuthProvider><Consumer /></AuthProvider>);
+    await waitFor(() => expect(screen.getByTestId("authenticated")).toHaveTextContent("false"));
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("nlp-auth-required", {
+        detail: { code: "authentication_required", message: "请先登录" },
+      }));
+      window.dispatchEvent(new CustomEvent("nlp-auth-required", {
+        detail: { code: "session_expired", message: "登录已过期，请重新登录" },
+      }));
+      window.dispatchEvent(new CustomEvent("nlp-auth-required", {
+        detail: { code: "authorization_changed", message: "账号权限已更新，请重新登录" },
+      }));
+      window.dispatchEvent(new CustomEvent("nlp-auth-required", {
+        detail: { code: "authentication_required", message: "请先登录" },
+      }));
+    });
+
+    expect(screen.getByTestId("notice")).toHaveTextContent("账号权限已更新，请重新登录");
+  });
+
+  it("updates the shared roles when a live connection refreshes the HTTP session", async () => {
+    const studentSession = { ...session, roles: ["student"], permissions: ["classroom:join_request:submit", "learning:progress:read_self"] };
+    vi.mocked(ensureAuth).mockRejectedValueOnce(new Error("HTTP 401")).mockResolvedValueOnce(studentSession);
+    render(<AuthProvider><Consumer /></AuthProvider>);
+    await waitFor(() => expect(screen.getByTestId("authenticated")).toHaveTextContent("false"));
+
+    await act(async () => { screen.getByRole("button", { name: "refresh" }).click(); });
+    expect(screen.getByTestId("roles")).toHaveTextContent("student");
   });
 });

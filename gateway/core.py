@@ -36,6 +36,7 @@ from gateway.contracts import (
     TurnConflictError,
     TurnRecord,
     TurnStatus,
+    WhiteboardLibraryInUseError,
 )
 from gateway.dispatch import (
     ExecutionAuthorizationContext,
@@ -54,6 +55,11 @@ from gateway.redis_transport import TurnTaskCodec
 from server.agent.session_service import DatabaseSessionService, LocalSessionService, local_session_service
 from server.application.turn_reliability import TurnReliabilityService
 from server.infrastructure.mysql import MySQLRuntime
+from server.storage.service import (
+    purge_expired_guest_data,
+    purge_expired_storage_trash,
+    reconcile_all_storage_accounts,
+)
 from server.quota.contracts import AdmitTurn, QuotaProblem
 from server.quota.errors import QuotaErrorCode, QuotaRejectedError
 from server.quota.operations import QuotaOperationsService
@@ -269,6 +275,7 @@ class BackendGateway:
         )
         self._maintenance_stop = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
+        self._storage_reconciled = False
         self._quota_reaper: QuotaReservationReaper | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
@@ -327,11 +334,21 @@ class BackendGateway:
                 await self.prune_events()
 
     async def prune_events(self) -> dict[str, int]:
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             self.repository.prune_events,
             retention_days=self.event_retention_days,
             max_events_per_session=self.max_events_per_session,
         )
+        factory = self.authorization_session_factory
+        if factory is not None:
+            async with factory() as session:
+                async with session.begin():
+                    if not self._storage_reconciled:
+                        result["storage_accounts_reconciled"] = await reconcile_all_storage_accounts(session)
+                        self._storage_reconciled = True
+                    result["storage_trash_removed"] = await purge_expired_storage_trash(session)
+                    result["guest_data_accounts_removed"] = await purge_expired_guest_data(session)
+        return result
 
     async def begin_shutdown(self) -> None:
         """Enter draining state before network channels are stopped."""
@@ -565,6 +582,7 @@ class BackendGateway:
             guided_session_id=guided_session.get("id"),
             exercise_session_id=(teaching_session.get("id") if teaching_session is not None else None),
             model_profile=request.model_profile,
+            thinking_enabled=request.thinking_enabled,
             authorization=ExecutionAuthorizationContext(
                 submitter_user_id=principal.user_id,
                 workspace_id=context.workspace_id,
@@ -629,7 +647,8 @@ class BackendGateway:
             learning_progress=task.learning_progress,
             exercise_state=task.exercise_state, teaching_materials=task.teaching_materials,
             guided_session_id=task.guided_session_id, exercise_session_id=task.exercise_session_id,
-            model_profile=task.model_profile, authorization=task.authorization,
+            model_profile=task.model_profile, thinking_enabled=task.thinking_enabled,
+            authorization=task.authorization,
             reservation_id=(
                 self.quota_service.reservation_id_for_turn(turn.turn_id)
                 if self.quota_service is not None
@@ -839,27 +858,6 @@ class BackendGateway:
             changes,
         )
 
-    async def list_whiteboard_library(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
-        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
-        return await asyncio.to_thread(self.repository.list_whiteboard_library)
-
-    async def create_whiteboard_library_item(
-        self,
-        principal: AuthenticatedPrincipal,
-        *,
-        name: str,
-        elements: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
-            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
-        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
-        return await asyncio.to_thread(
-            self.repository.create_whiteboard_library_item,
-            name=name,
-            elements=elements,
-            created_by=principal.user_id,
-        )
-
     async def get_teaching_catalog(self, principal: AuthenticatedPrincipal, workspace_id: str) -> dict[str, Any]:
         authorization_service.require(
             principal,
@@ -1004,6 +1002,62 @@ class BackendGateway:
             asset_path,
         )
 
+    async def list_whiteboard_library(self, principal: AuthenticatedPrincipal) -> list[dict[str, Any]]:
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
+        return await asyncio.to_thread(self.repository.list_whiteboard_library)
+
+    async def create_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        *,
+        name: str,
+        elements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        return await asyncio.to_thread(
+            self.repository.create_whiteboard_library_item,
+            name=name,
+            elements=elements,
+            created_by=principal.user_id,
+        )
+
+    async def rename_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        item_id: str,
+        *,
+        name: str,
+    ) -> dict[str, Any]:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        item = await asyncio.to_thread(
+            self.repository.rename_whiteboard_library_item,
+            item_id,
+            name=name,
+        )
+        if item is None:
+            raise ResourceNotFoundError("whiteboard library item not found")
+        return item
+
+    async def delete_whiteboard_library_item(
+        self,
+        principal: AuthenticatedPrincipal,
+        item_id: str,
+    ) -> None:
+        if not principal.roles.intersection(_WHITEBOARD_LIBRARY_MANAGER_ROLES):
+            raise AccessDeniedError("whiteboard library management requires teacher or developer role")
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_MANAGE)
+        deleted, reference_count = await asyncio.to_thread(
+            self.repository.delete_whiteboard_library_item_if_unreferenced,
+            item_id,
+        )
+        if reference_count > 0:
+            raise WhiteboardLibraryInUseError(item_id, reference_count)
+        if not deleted:
+            raise ResourceNotFoundError("whiteboard library item not found")
     async def create_knowledge_book_file(
         self,
         principal: AuthenticatedPrincipal,

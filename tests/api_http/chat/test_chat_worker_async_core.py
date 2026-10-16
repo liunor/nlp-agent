@@ -37,6 +37,11 @@ def test_chat_turn_is_consumed_and_persisted_with_ordered_events(
     assert completed["status"] == "completed"
     assert completed["final_text"] == "deterministic-worker:Phase 5 real Worker success"
 
+    # The turn status is persisted before the worker appends the terminal
+    # event.  Wait for that event explicitly instead of racing the event
+    # reader against the final status update.
+    wait_for_event(authenticated_client, turn_id, "turn.completed")
+
     events_response = authenticated_client.get(
         f"/api/v1/chat/turns/{turn_id}/events",
     )

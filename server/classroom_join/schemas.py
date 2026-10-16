@@ -8,8 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class JoinRequestCreate(BaseModel):
-    """学生提交加入申请（学号选填）。"""
+    """Guest/student 提交加入申请（学号选填）。"""
 
+    student_number: str | None = Field(None, max_length=32, description="学号（选填）")
+
+
+class JoinRequestByCodeCreate(BaseModel):
+    """学生通过教师提供的短班级码申请入班。"""
+
+    join_code: str = Field(..., min_length=1, max_length=12)
     student_number: str | None = Field(None, max_length=32, description="学号（选填）")
 
 

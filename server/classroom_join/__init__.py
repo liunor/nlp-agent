@@ -1,6 +1,6 @@
 """班级加入申请模块（V3 适配版）。
 
-仅实现「学生提交加入申请 → 教师审批/拒绝」工作流，复用 V3 既有的
+仅实现「guest/student 提交加入申请 → 教师审批/拒绝」工作流，复用 V3 既有的
 ``nlp_classrooms`` / ``nlp_classroom_members`` 与 RBAC 权限体系，不引入第二套
 班级系统，也不重复实现类 CRUD / 成员管理（由 ``server/web/app.py`` 的
 ``/api/v1/classrooms`` 提供）。对应 review 文档阶段4「班级工作流」的接入部分，
@@ -9,6 +9,15 @@
 
 from __future__ import annotations
 
-from server.classroom_join.api import router
-
 __all__ = ["router"]
+
+
+def __getattr__(name: str):
+    # Keep the package lightweight for services that only need join-code
+    # helpers. Importing the API router eagerly would create a cycle through
+    # auth.dependencies -> rbac.service.
+    if name == "router":
+        from server.classroom_join.api import router
+
+        return router
+    raise AttributeError(name)

@@ -1,8 +1,34 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { FilesPanel } from "./FilesPanel";
+import { api } from "@/platform/http/api";
+
+import { FilesPanel, parseUtcTimestamp } from "./FilesPanel";
+
+vi.mock("@/platform/http/api", () => ({
+  api: {
+    getStorageUsage: vi.fn(),
+    listStorageFiles: vi.fn(),
+    createStorageFolder: vi.fn(),
+    uploadStorageFile: vi.fn(),
+    renameStorageFile: vi.fn(),
+    readStorageFile: vi.fn(),
+    deleteStorageFile: vi.fn(),
+    listStorageTrash: vi.fn(),
+    restoreStorageFile: vi.fn(),
+    permanentlyDeleteStorageFile: vi.fn(),
+    lookupTransferRecipient: vi.fn(),
+    preflightFileTransfer: vi.fn(),
+    createFileTransfer: vi.fn(),
+    listFileTransfers: vi.fn(),
+    getFileTransferSummary: vi.fn(),
+    acceptFileTransfer: vi.fn(),
+    rejectFileTransfer: vi.fn(),
+    cancelFileTransfer: vi.fn(),
+  },
+  storageFileDownloadUrl: (fileId: string) => `/api/v1/storage/files/${fileId}/download`,
+}));
 
 vi.mock("./DocumentCodeView", () => ({
   DocumentCodeView: ({ code, language }: { code: string; language: string }) => <pre data-testid="code-preview" data-language={language}>{code}</pre>,
@@ -10,6 +36,88 @@ vi.mock("./DocumentCodeView", () => ({
 vi.mock("./MarkdownContent", () => ({
   MarkdownContent: ({ children }: { children: string }) => <div data-testid="markdown-preview">{children}</div>,
 }));
+
+const usage = {
+  role: "student",
+  core: { used_bytes: 90, quota_bytes: 100, used_ratio: 0.9, state: "critical" as const },
+  files: { used_bytes: 95, quota_bytes: 100, used_ratio: 0.95, state: "critical" as const },
+  files_count: 1,
+  max_file_bytes: 10,
+  max_items: 500,
+};
+
+describe("FilesPanel", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.mocked(api.getStorageUsage).mockResolvedValue(usage);
+    vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [] });
+    vi.mocked(api.listStorageTrash).mockResolvedValue({ items: [] });
+    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 0, notification_version: 0 });
+    vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [] });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows independent Windows-like meters for core and personal file space", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    expect(await screen.findByRole("progressbar", { name: "通用空间" })).toHaveAttribute("aria-valuenow", "90");
+    expect(screen.getByRole("progressbar", { name: "个人文件" })).toHaveAttribute("aria-valuenow", "95");
+    expect(screen.getByRole("progressbar", { name: "通用空间" }).parentElement).toHaveClass("critical");
+    expect(api.getStorageUsage).toHaveBeenCalledWith("workspace-1");
+  });
+
+  it("keeps the learning-document importer behind a separate tab", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    expect(screen.getByText("导入学习文档")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
+    await waitFor(() => expect(screen.getByText("此文件夹为空")).toBeInTheDocument());
+  });
+
+  it("exposes a recoverable recycle-bin view in the file manager", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "回收站" }));
+    await waitFor(() => expect(api.listStorageTrash).toHaveBeenCalledWith("workspace-1"));
+    expect(screen.getByText("回收站为空")).toBeInTheDocument();
+  });
+
+  it("opens a server file in the same document preview used by learning imports", async () => {
+    vi.mocked(api.listStorageFiles).mockResolvedValue({
+      items: [{ id: "file-1", kind: "file", name: "lesson.md", mime_type: "text/markdown", size_bytes: 18, created_at: "2026-10-10T06:00:00Z", updated_at: "2026-10-10T06:15:00Z" }],
+    });
+    vi.mocked(api.readStorageFile).mockResolvedValue({
+      content: "# 来自我的文件\n\n这是服务器文件内容。",
+      truncated: false,
+      mime_type: "text/markdown",
+      bytes_read: 18,
+    });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+    const fileButton = await screen.findByRole("button", { name: "查看 lesson.md" });
+    expect(screen.getByText(/修改于/)).toBeInTheDocument();
+    fireEvent.click(fileButton);
+
+    expect(screen.getByRole("tab", { name: "学习文档导入" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(api.readStorageFile).toHaveBeenCalledWith("file-1", "workspace-1"));
+    const preview = await screen.findByTestId("markdown-preview");
+    expect(preview).toHaveTextContent("来自我的文件");
+    expect(preview).toHaveTextContent("这是服务器文件内容。");
+
+    fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    expect(screen.queryByTestId("markdown-preview")).not.toBeInTheDocument();
+  });
+
+  it("treats legacy storage timestamps without an offset as UTC", () => {
+    expect(parseUtcTimestamp("2026-10-10T06:15:00").toISOString()).toBe("2026-10-10T06:15:00.000Z");
+  });
 
 function markdownFile(name = "notes.md", content = "# 学习笔记") {
   return new File([content], name, { type: "text/markdown" });
@@ -20,15 +128,10 @@ function pythonFile() {
 }
 
 function upload(files: File[]) {
+  fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
   fireEvent.change(screen.getByLabelText("选择本地文件"), { target: { files } });
 }
 
-afterEach(() => {
-  localStorage.clear();
-  vi.unstubAllGlobals();
-});
-
-describe("FilesPanel", () => {
   it("imports markdown and code files, previews them, and persists under a scoped key", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
@@ -47,6 +150,7 @@ describe("FilesPanel", () => {
 
     unmount();
     render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
     expect(screen.getByRole("button", { name: "预览 notes.md" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "预览 demo.py" })).toBeInTheDocument();
   });
@@ -66,6 +170,7 @@ describe("FilesPanel", () => {
         bytes: 20,
       }}
     />);
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
 
     expect(await screen.findByText("来自知识教材")).toBeInTheDocument();
     expect(await screen.findByTestId("markdown-preview")).toHaveTextContent("# 教材内容");
@@ -73,6 +178,44 @@ describe("FilesPanel", () => {
       "/api/v1/learning/book/workspace-1/files/book-file-1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+
+  it("switches from a stored-file preview to a newer textbook preview request", async () => {
+    vi.mocked(api.listStorageFiles).mockResolvedValue({
+      items: [{ id: "file-1", kind: "file", name: "我的文件.md", mime_type: "text/markdown", size_bytes: 12, created_at: null, updated_at: null }],
+    });
+    vi.mocked(api.readStorageFile).mockResolvedValue({
+      content: "# 我的文件预览",
+      truncated: false,
+      mime_type: "text/markdown",
+      bytes_read: 12,
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "# 新教材预览" });
+    vi.stubGlobal("fetch", fetchMock);
+    const firstRequest = {
+      id: "book-file-1",
+      name: "旧教材.md",
+      url: "/api/v1/learning/book/workspace-1/files/book-file-1",
+      mediaType: "text/markdown",
+      bytes: 12,
+    };
+    const secondRequest = {
+      id: "book-file-2",
+      name: "新教材.md",
+      url: "/api/v1/learning/book/workspace-1/files/book-file-2",
+      mediaType: "text/markdown",
+      bytes: 12,
+    };
+
+    const view = render(<FilesPanel workspaceId="workspace-1" previewRequest={firstRequest} />);
+    fireEvent.click(await screen.findByRole("button", { name: "查看 我的文件.md" }));
+    expect(await screen.findByText("# 我的文件预览")).toBeInTheDocument();
+
+    view.rerender(<FilesPanel workspaceId="workspace-1" previewRequest={secondRequest} />);
+
+    expect(await screen.findByText("# 新教材预览")).toBeInTheDocument();
+    expect(screen.queryByText("# 我的文件预览")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(secondRequest.url, expect.objectContaining({ credentials: "include" }));
   });
 
   it("keeps only plain-text previews for text files", async () => {
@@ -91,12 +234,12 @@ describe("FilesPanel", () => {
     first.unmount();
 
     const bob = render(<FilesPanel userId="bob" workspaceId="workspace-1" />);
-    expect(screen.getByText("导入学习文档")).toBeInTheDocument();
+    expect(await screen.findByText("此文件夹为空")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "预览 alice-ws1.md" })).not.toBeInTheDocument();
     bob.unmount();
 
     const otherWorkspace = render(<FilesPanel userId="alice" workspaceId="workspace-2" />);
-    expect(screen.getByText("导入学习文档")).toBeInTheDocument();
+    expect(await screen.findByText("此文件夹为空")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "预览 alice-ws1.md" })).not.toBeInTheDocument();
     otherWorkspace.unmount();
   });
@@ -141,7 +284,9 @@ describe("FilesPanel", () => {
 
   it("loads a supported file through the actual drop event", async () => {
     render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
-    const panel = screen.getByLabelText("文件工具");
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    const panels = screen.getAllByLabelText("文件工具");
+    const panel = panels[panels.length - 1];
     const dropped = new File(["# 拖入文件"], "dropped.md", { type: "text/markdown" });
     fireEvent.drop(panel, { dataTransfer: { files: [dropped] } });
 
@@ -151,7 +296,9 @@ describe("FilesPanel", () => {
 
   it("tracks nested drag-enter/leave events instead of flickering while crossing child elements", () => {
     render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
-    const panel = screen.getByLabelText("文件工具");
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    const panels = screen.getAllByLabelText("文件工具");
+    const panel = panels[panels.length - 1];
 
     fireEvent.dragEnter(panel);
     fireEvent.dragEnter(panel);
@@ -170,5 +317,44 @@ describe("FilesPanel", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
     expect(within(list).getByRole("button", { name: "预览 notes.md" })).toBeInTheDocument();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("finds a recipient only after an exact identity ID lookup and sends the selected file", async () => {
+    vi.mocked(api.listStorageFiles).mockResolvedValue({
+      items: [{ id: "file-1", kind: "file", name: "lesson.md", mime_type: "text/markdown", size_bytes: 18, created_at: null, updated_at: null }],
+    });
+    vi.mocked(api.lookupTransferRecipient).mockResolvedValue({ identity_id: "NV7ABC234DEF567", display_name: "小明" });
+    vi.mocked(api.preflightFileTransfer).mockResolvedValue({ can_receive: true, reason: null });
+    vi.mocked(api.createFileTransfer).mockResolvedValue({ id: "transfer-1", status: "pending" });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "发送 lesson.md" }));
+    expect(screen.queryByText("小明")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("接收人身份 ID"), { target: { value: "nv7abc234def567" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询接收人" }));
+
+    await waitFor(() => expect(api.lookupTransferRecipient).toHaveBeenCalledWith("nv7abc234def567"));
+    expect(await screen.findByText("小明")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "确认发送" }));
+
+    await waitFor(() => expect(api.createFileTransfer).toHaveBeenCalledWith(expect.objectContaining({ source_file_id: "file-1", recipient_identity_id: "NV7ABC234DEF567", workspace_id: "workspace-1", idempotency_key: expect.any(String) })));
+  });
+
+  it("lists multiple incoming requests together and lets the recipient accept one", async () => {
+    vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 2, notification_version: 2 });
+    vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [
+      { id: "transfer-1", status: "pending", file_name: "a.md", size_bytes: 12, sender: { identity_id: "NV2AAAAAAAAAAAAA", display_name: "甲" } },
+      { id: "transfer-2", status: "pending", file_name: "b.txt", size_bytes: 20, sender: { identity_id: "NV3BBBBBBBBBBBBB", display_name: "乙" } },
+    ] });
+    vi.mocked(api.acceptFileTransfer).mockResolvedValue({ id: "transfer-1", status: "accepted" });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /消息/ }));
+
+    expect(await screen.findByText(/来自 甲/)).toBeVisible();
+    expect(screen.getByText(/来自 乙/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "同意 a.md" }));
+    await waitFor(() => expect(api.acceptFileTransfer).toHaveBeenCalledWith("transfer-1"));
   });
 });

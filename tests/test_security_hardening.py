@@ -105,10 +105,10 @@ async def test_classroom_approve_rejects_cross_class_request_id(mysql_session_fa
             )
         await session.flush()
         session.add(
-            ClassroomModel(id=class_a, workspace_id=workspace_a_id, name="Class A", status="active")
+            ClassroomModel(id=class_a, workspace_id=workspace_a_id, name="Class A", join_code="T06CLASS", status="active")
         )
         session.add(
-            ClassroomModel(id=class_b, workspace_id=workspace_b_id, name="Class B", status="active")
+            ClassroomModel(id=class_b, workspace_id=workspace_b_id, name="Class B", join_code="T06OTHER", status="active")
         )
         session.add(
             UserModel(

@@ -53,6 +53,17 @@
   box-shadow: 0 4px 16px rgb(41 43 56 / 12%);
 }
 
+.whiteboard-library-warning button {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid #c79b45;
+  border-radius: 5px;
+  background: #fff;
+  color: #8a5a00;
+  font: inherit;
+  cursor: pointer;
+}
+
 .whiteboard-panel .excalidraw {
   width: 100%;
   height: 100%;
@@ -95,10 +106,9 @@
   display: none;
 }
 
-/* Students see a read-only catalogue. Teachers and developers keep
- * Excalidraw's native controls so they can create globally shared assets.
- * These selectors target Excalidraw's public component class names; the
- * package source is untouched.
+/* Keep the native library canvas and item rendering, but make the library a
+ * read-only catalogue of our bundled teaching assets. These selectors target
+ * Excalidraw's public component class names; the package source is untouched.
  */
 .whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-control-buttons,
 .whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-dropdown-container,
@@ -106,15 +116,42 @@
   display: none;
 }
 
-/* The bundled and server-created items are loaded as published items. Hide
- * pending/personal items for learners, while managers can use the native
- * personal section to create a new item before it is published globally.
+/* The bundled items are loaded as published items, so the personal section is
+ * not useful here. Hide it (including pending/unpublished user-created items)
+ * while leaving the published teaching-library grid visible.
  */
 .whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items-container__header:not(.library-menu-items-container__header--excal),
 .whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items__no-items,
 .whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items-container__items > .library-menu-items-container__header:not(.library-menu-items-container__header--excal) + .library-menu-items-container__grid,
 .whiteboard-panel:not(.whiteboard-can-manage-library) .library-menu-items-container__grid:has(~ .library-menu-items-container__header--excal) {
   display: none;
+}
+
+/* Publishing to Excalidraw's public catalogue is not part of the product;
+ * managed items are published to our own shared library automatically. */
+.whiteboard-panel .library-menu-dropdown-container [data-testid="lib-dropdown--remove"] {
+  display: none;
+}
+
+.whiteboard-library-hover-tooltip {
+  z-index: 120;
+  max-width: min(220px, calc(100vw - 24px));
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--default-border-color, #d8dce8);
+  border-radius: 8px;
+  background: var(--island-bg-color, #fff);
+  color: var(--text-primary-color, #2f3440);
+  box-shadow: 0 8px 22px rgb(15 23 42 / 18%);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.whiteboard-library-rename-item {
+  width: 100%;
 }
 
 /* Excalidraw 0.18.1 exposes the embed and Mermaid entries with the same test
@@ -132,8 +169,8 @@
   }
 }
 
-/* Context menus are rendered outside the panel. The adapter marks the body
- * while an authorized manager's whiteboard is mounted. */
+/* The native context menu also offers “add to library”. Keep the bundled
+ * catalogue read-only even when a user right-clicks a selected element. */
 body:not(.whiteboard-library-manager) .context-menu > li[data-testid="addToLibrary"] {
   display: none;
 }

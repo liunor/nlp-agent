@@ -21,6 +21,8 @@ from server.tools.vision.safety import (
     ImageSafetyLimits,
     load_validated_image,
 )
+from server.storage.policy import StorageBucket
+from server.storage.quota import AsyncStorageQuota, StorageQuotaExceeded
 
 router = APIRouter(prefix="/api/v1/uploads", tags=["uploads"])
 
@@ -136,29 +138,30 @@ async def upload_image(
         )
 
     uploads_dir = session_uploads_root(context)
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-
-    temp_name = f"_tmp_{uuid.uuid4().hex}"
-    temp_path = uploads_dir / temp_name
+    factory = getattr(getattr(request.app.state, "gateway", None), "authorization_session_factory", None)
     try:
-        temp_path.write_bytes(data)
-        try:
-            asset = load_validated_image(temp_path, _LIMITS)
-        except VisionError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=exc.message,
-            ) from exc
-        ext = _MEDIA_TYPE_TO_EXT.get(asset.reference.media_type, ".bin")
-        safe_name = f"{uuid.uuid4().hex}{ext}"
-        final_path = uploads_dir / safe_name
-        temp_path.rename(final_path)
-    except HTTPException:
-        temp_path.unlink(missing_ok=True)
-        raise
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
+        if factory is None:
+            # Local/injected development mode has no durable account ledger.
+            async with _image_write_transaction(uploads_dir, data, _LIMITS) as result:
+                asset, safe_name = result
+        else:
+            async with factory() as db:
+                async with db.begin():
+                    quota = AsyncStorageQuota(db, owner_user_id=principal.user_id, roles=principal.roles)
+                    reservation = await quota.reserve(
+                        StorageBucket.CORE,
+                        len(data),
+                        resource_type="chat_image",
+                        resource_key=f"{session_id}:{uuid.uuid4().hex}",
+                    )
+                    async with _image_write_transaction(uploads_dir, data, _LIMITS) as result:
+                        asset, safe_name = result
+                    await quota.finalize(reservation, reconcile=True)
+    except StorageQuotaExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="通用空间已达到配额，无法继续保存聊天图片",
+        ) from exc
 
     return UploadResponse(
         file_name=safe_name,
@@ -169,6 +172,48 @@ async def upload_image(
         height=asset.reference.height,
         sha256=asset.reference.sha256,
     )
+
+
+class _ImageWriteTransaction:
+    def __init__(self, uploads_dir: Path, data: bytes, limits: ImageSafetyLimits) -> None:
+        self.uploads_dir = uploads_dir
+        self.data = data
+        self.limits = limits
+        self.temp_path: Path | None = None
+        self.final_path: Path | None = None
+        self.asset = None
+
+    async def __aenter__(self):
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_path = self.uploads_dir / f"_tmp_{uuid.uuid4().hex}"
+        try:
+            self.temp_path.write_bytes(self.data)
+            self.asset = load_validated_image(self.temp_path, self.limits)
+            ext = _MEDIA_TYPE_TO_EXT.get(self.asset.reference.media_type, ".bin")
+            safe_name = f"{uuid.uuid4().hex}{ext}"
+            self.final_path = self.uploads_dir / safe_name
+            self.temp_path.rename(self.final_path)
+            return self.asset, safe_name
+        except VisionError as exc:
+            self.temp_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=exc.message,
+            ) from exc
+        except Exception:
+            self.temp_path.unlink(missing_ok=True)
+            raise
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is not None and self.final_path is not None:
+            self.final_path.unlink(missing_ok=True)
+        if self.temp_path is not None:
+            self.temp_path.unlink(missing_ok=True)
+        return False
+
+
+def _image_write_transaction(uploads_dir: Path, data: bytes, limits: ImageSafetyLimits) -> _ImageWriteTransaction:
+    return _ImageWriteTransaction(uploads_dir, data, limits)
 
 
 @router.get("/{session_id}/{file_name}")

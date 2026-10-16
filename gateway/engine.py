@@ -17,7 +17,12 @@ from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, 
 from core.observability.context import bind_telemetry_context, current_telemetry_context
 from core.observability.runtime import global_telemetry
 from core.task_manager import global_task_manager
-from core.model_runtime.selection import bind_model_profile, current_model_profile
+from core.model_runtime.selection import (
+    bind_model_profile,
+    bind_thinking_enabled,
+    current_model_profile,
+    current_thinking_enabled,
+)
 from core.worker_events import global_worker_event_bus
 from server.agent.compression.internal_context import (
     looks_like_internal_output,
@@ -38,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 class AgentEngine(Protocol):
     async def start(self, event_sink: EngineEventSink) -> None: ...
-    async def run_turn(self, context: SessionContext, turn_id: str, content: str, *, learning_context: LearningContext | None = None, learning_progress: LearningProgress | None = None, exercise_state: ExerciseState | None = None, teaching_materials: TeachingMaterials | None = None, knowledge_book_context: KnowledgeBookContext | None = None, model_profile: str | None = None) -> str: ...
+    async def run_turn(self, context: SessionContext, turn_id: str, content: str, *, learning_context: LearningContext | None = None, learning_progress: LearningProgress | None = None, exercise_state: ExerciseState | None = None, teaching_materials: TeachingMaterials | None = None, knowledge_book_context: KnowledgeBookContext | None = None, model_profile: str | None = None, thinking_enabled: bool = True) -> str: ...
     async def inject(self, context: SessionContext, content: str) -> str | None: ...
     async def cancel_turn(self, context: SessionContext, turn_id: str) -> None: ...
     async def delete_session(self, context: SessionContext) -> None: ...
@@ -58,6 +63,7 @@ class LangGraphAgentEngine:
         self._foreground_outputs: dict[str, list[str]] = {}
         self._abandoned_tasks: set[asyncio.Task[Any]] = set()
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._session_thinking_enabled: dict[str, bool] = {}
 
     async def start(self, event_sink: EngineEventSink) -> None:
         if self._started:
@@ -98,8 +104,16 @@ class LangGraphAgentEngine:
         selected_profile = current_model_profile() or self._session_model_profiles.get(
             context.storage_key
         )
-        if selected_profile is not None and current_model_profile() != selected_profile:
-            with bind_model_profile(selected_profile):
+        selected_thinking = current_thinking_enabled()
+        if selected_thinking is None:
+            selected_thinking = self._session_thinking_enabled.get(
+                context.storage_key, True
+            )
+        if (
+            current_model_profile() != selected_profile
+            or current_thinking_enabled() != selected_thinking
+        ):
+            with bind_model_profile(selected_profile), bind_thinking_enabled(selected_thinking):
                 await self._invoke(
                     messages,
                     context,
@@ -274,11 +288,13 @@ class LangGraphAgentEngine:
         teaching_materials: TeachingMaterials | None = None,
         knowledge_book_context: KnowledgeBookContext | None = None,
         model_profile: str | None = None,
+        thinking_enabled: bool = True,
     ) -> str:
         self._session_model_profiles[context.storage_key] = model_profile
+        self._session_thinking_enabled[context.storage_key] = thinking_enabled
         self._foreground_outputs[turn_id] = []
         try:
-            with bind_model_profile(model_profile):
+            with bind_model_profile(model_profile), bind_thinking_enabled(thinking_enabled):
                 return await self._run_selected_turn(
                     context,
                     turn_id,
@@ -361,6 +377,7 @@ class LangGraphAgentEngine:
 
     async def delete_session(self, context: SessionContext) -> None:
         self._session_model_profiles.pop(context.storage_key, None)
+        self._session_thinking_enabled.pop(context.storage_key, None)
         if self._runtime is not None:
             await self._runtime.release_session(context.session_id)
         if self._app is not None:

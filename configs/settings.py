@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     NLP_AGENT_AUTH_IDLE_TIMEOUT_S: int = 900
     NLP_AGENT_AUTH_MAX_LOGIN_ATTEMPTS: int = 5
     NLP_AGENT_AUTH_RATE_WINDOW_S: int = 300
+    NLP_AGENT_AUTH_MAX_IP_LOGIN_ATTEMPTS: int = 100
+    NLP_AGENT_AUTH_IP_RATE_WINDOW_S: int | None = None
     NLP_AGENT_EMAIL_DEVELOPMENT_MODE: bool = False
     NLP_AGENT_EMAIL_PROVIDER: str = "smtp"
     NLP_AGENT_TENCENT_SES_SECRET_ID: str = ""
@@ -42,6 +44,9 @@ class Settings(BaseSettings):
     NLP_AGENT_AUDIT_SUCCESSFUL_READS: bool = False
     NLP_AGENT_WEB_HOST: str = ""
     NLP_AGENT_WEB_PORT: int = 0
+    # Immutable deployment path selected by the release workflow. The previous
+    # runtime YAML remains intact so an older container can still roll back.
+    NLP_AGENT_WEB_STATIC_DIR: str = ""
     NLP_AGENT_WEB_ALLOWED_HOSTS: str = ""
     NLP_AGENT_WEB_ALLOWED_ORIGINS: str = ""
     NLP_AGENT_MONITOR_HOST: str = ""
@@ -57,6 +62,9 @@ class Settings(BaseSettings):
     NLP_AGENT_REDIS_URL: str = ""
     NLP_AGENT_STATE_FACTORY: str = ""
     NLP_AGENT_DATABASE_URL: str = ""
+    # Test and production use separate databases. Monitor labels the selected
+    # process explicitly and never combines sibling environments.
+    NLP_AGENT_DEPLOYMENT_ENV: str = "unknown"
     NLP_AGENT_QUOTA_ENFORCEMENT: bool = False
     NLP_AGENT_QUOTA_ENFORCEMENT_PERCENT: int | None = None
     NLP_AGENT_QUOTA_ENFORCEMENT_USERS: str = ""
@@ -113,6 +121,12 @@ class Settings(BaseSettings):
     NLP_AGENT_SANDBOX_PROJECT_STORAGE_ENABLED: bool = False
     NLP_AGENT_SANDBOX_PROJECT_STORAGE_ROOT: str = ""
     NLP_AGENT_SANDBOX_SNAPSHOTS_ENABLED: bool = False
+    NLP_AGENT_USER_FILES_ROOT: str = ""
+    NLP_AGENT_USER_FILES_GLOBAL_LIMIT_BYTES: int = 30 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES: int = 30 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_MIN_FREE_BYTES: int = 15 * 1024 * 1024 * 1024
+    NLP_AGENT_STORAGE_TRASH_RETENTION_DAYS: int = 7
+    NLP_AGENT_GUEST_STORAGE_RETENTION_DAYS: int = 30
 
     _config: dict = {}
 
@@ -238,6 +252,8 @@ class Settings(BaseSettings):
     @property
     def web_runtime(self) -> dict:
         config = dict(self._config.get("web", {}))
+        if self.NLP_AGENT_WEB_STATIC_DIR.strip():
+            config["static_dir"] = self.NLP_AGENT_WEB_STATIC_DIR.strip()
         if self.NLP_AGENT_WEB_SECRET:
             config["auth_secret"] = self.NLP_AGENT_WEB_SECRET
         if self.NLP_AGENT_AUTH_USERNAME:

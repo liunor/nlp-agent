@@ -1,14 +1,21 @@
-import type { AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, DeveloperRuntimeHealth, DeveloperSnapshot, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookFile, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, WhiteboardLibraryItem } from "@/shared/types";
-import type { FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList } from "@/shared/types";
+import type { AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, ClassroomCreatedResponse, ClassroomJoinCodeResponse, ClassroomSummary, DeveloperRuntimeHealth, DeveloperSnapshot, FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList, JoinRequest, JoinRequestListResponse, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookFile, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, WhiteboardLibraryItem, Workspace, WorkspaceMember } from "@/shared/types";
+import { AUTH_EXPIRED_EVENT, AUTH_REQUIRED_EVENT } from "@/platform/auth/auth-events";
+
+export { AUTH_EXPIRED_EVENT, AUTH_REQUIRED_EVENT } from "@/platform/auth/auth-events";
 
 const API_ROOT = "/api/v1";
-export const AUTH_EXPIRED_EVENT = "nova:auth-expired";
+
+export interface AuthRequiredEventDetail {
+  code: string;
+  message: string;
+}
 
 export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
     public readonly code?: string,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
   }
@@ -16,12 +23,75 @@ export class ApiError extends Error {
 
 let csrfToken = "";
 let authRequest: Promise<AuthSession> | null = null;
+let authGeneration = 0;
+let authMutation: Promise<void> | null = null;
+const AUTH_CHANGED_STORAGE_KEY = "nova:auth-changed";
+
+export function clearCsrfToken(): void {
+  csrfToken = "";
+}
+
+export class AuthStateChangedError extends Error {
+  constructor() {
+    super("登录状态已更新，请重试。");
+  }
+}
+
+export function getAuthGeneration(): number {
+  return authGeneration;
+}
+
+function beginAuthChange(): number {
+  authGeneration += 1;
+  authRequest = null;
+  return authGeneration;
+}
+
+function notifyAuthChanged(): void {
+  // Only a change notification is stored, never session data or tokens.
+  try {
+    window.localStorage.setItem(AUTH_CHANGED_STORAGE_KEY, `${Date.now()}:${Math.random()}`);
+  } catch {
+    // Disabled browser storage must not fail a successful login/logout.
+  }
+}
+
+export function subscribeAuthChanges(listener: () => void): () => void {
+  const changed = (event: StorageEvent) => {
+    if (event.key !== AUTH_CHANGED_STORAGE_KEY || !event.newValue || event.newValue === event.oldValue) return;
+    beginAuthChange();
+    csrfToken = "";
+    listener();
+  };
+  window.addEventListener("storage", changed);
+  return () => window.removeEventListener("storage", changed);
+}
+
+function runAuthMutation<T>(operation: () => Promise<T>): Promise<T> {
+  // Login/logout responses can set cookies, so keep those operations in order.
+  const result = authMutation ? authMutation.then(operation) : operation();
+  const settled = result.then(() => undefined, () => undefined);
+  authMutation = settled;
+  void settled.then(() => {
+    if (authMutation === settled) authMutation = null;
+  });
+  return result;
+}
+
+interface RequestOptions {
+  /** 401 表示业务错误（如密码错误）而非会话过期：不广播全局 auth-expired 事件、不清除 CSRF 令牌。 */
+  ignoreAuthExpired?: boolean;
+}
 
 async function request<T>(
   path: string,
   init: RequestInit = {},
   retryCsrf = true,
+  options: RequestOptions = {},
 ): Promise<T> {
+  const requestGeneration = authGeneration;
+  const requestCsrfToken = csrfToken;
+  const requestStartedDuringAuthMutation = authMutation !== null;
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) {
@@ -38,29 +108,58 @@ async function request<T>(
     credentials: "include",
   });
   if (!response.ok) {
-    const problem = await response.json().catch(() => ({})) as { detail?: string; title?: string; code?: string };
+    const problem = await response.json().catch(() => ({})) as { detail?: unknown; title?: string; code?: string };
+    const nestedDetail = typeof problem.detail === "object" && problem.detail !== null
+      ? problem.detail as { code?: string; detail?: string; message?: string }
+      : null;
+    const code = problem.code ?? nestedDetail?.code;
+    const message = typeof problem.detail === "string"
+      ? problem.detail
+      : nestedDetail?.detail ?? nestedDetail?.message ?? problem.title ?? `HTTP ${response.status}`;
     if (
       response.status === 403 &&
-      problem.code === "csrf_rejected" &&
+      code === "csrf_rejected" &&
       retryCsrf &&
       !["GET", "HEAD", "OPTIONS"].includes(method) &&
-      path !== "/auth/session"
+      path !== "/auth/session" &&
+      path !== "/auth/login" &&
+      requestGeneration === authGeneration &&
+      requestCsrfToken === csrfToken &&
+      !authMutation
     ) {
       await ensureAuth();
-      return request<T>(path, init, false);
+      if (requestGeneration !== authGeneration) throw new AuthStateChangedError();
+      return request<T>(path, init, false, options);
     }
-    if (
-  response.status === 401 &&
-  csrfToken &&
-  path !== "/auth/session" &&
-  path !== "/auth/login"
-) {
-  csrfToken = "";
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
-  }
-}
-    throw new ApiError(problem.detail ?? problem.title ?? `HTTP ${response.status}`, response.status, problem.code);
+    const currentAuthFailure = response.status === 401 &&
+      requestGeneration === authGeneration &&
+      !requestStartedDuringAuthMutation &&
+      !authMutation &&
+      !path.startsWith("/auth/login") &&
+      !options.ignoreAuthExpired &&
+      typeof window !== "undefined";
+    if (currentAuthFailure) {
+      if (
+        requestCsrfToken &&
+        requestCsrfToken === csrfToken &&
+        path !== "/auth/session" &&
+        path !== "/auth/login"
+      ) {
+        beginAuthChange();
+        csrfToken = "";
+        window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+      }
+      clearCsrfToken();
+      window.dispatchEvent(new CustomEvent<AuthRequiredEventDetail>(AUTH_REQUIRED_EVENT, {
+        detail: { code: code ?? "authentication_required", message },
+      }));
+    }
+    const seconds = Number(response.headers.get("Retry-After"));
+    const retryAfterSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : undefined;
+    const resolvedMessage = response.status === 429 && code === "login_rate_limited"
+      ? retryAfterSeconds ? `登录尝试过多，请等待 ${retryAfterSeconds} 秒后重试。` : "登录尝试过多，请稍后重试。"
+      : message;
+    throw new ApiError(resolvedMessage, response.status, code, retryAfterSeconds);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -68,8 +167,14 @@ async function request<T>(
 
 export function ensureAuth(): Promise<AuthSession> {
   if (authRequest) return authRequest;
-  const pending = request<AuthSession>("/auth/session")
+  const generation = authGeneration;
+  const restore = () => {
+    if (generation !== authGeneration) throw new AuthStateChangedError();
+    return request<AuthSession>("/auth/session");
+  };
+  const pending = (authMutation ? authMutation.then(restore) : restore())
     .then((session) => {
+      if (generation !== authGeneration) throw new AuthStateChangedError();
       csrfToken = session.csrf_token;
       return session;
     })
@@ -88,6 +193,53 @@ export interface UploadResponse {
   width: number;
   height: number;
   sha256: string;
+}
+
+export type StorageUsageState = "normal" | "warning" | "critical" | "full";
+
+export interface StorageUsageBucket {
+  used_bytes: number;
+  committed_used_bytes?: number;
+  reserved_bytes?: number;
+  quota_bytes: number;
+  used_ratio: number;
+  state: StorageUsageState;
+}
+
+export interface StorageUsage {
+  role: string;
+  core: StorageUsageBucket;
+  files: StorageUsageBucket;
+  files_count: number;
+  max_file_bytes: number;
+  max_items: number;
+}
+
+export interface StorageFile {
+  id: string;
+  kind: "file" | "folder";
+  name: string;
+  mime_type: string | null;
+  size_bytes: number;
+  created_at: string | null;
+  updated_at: string | null;
+  deleted_at?: string | null;
+}
+
+export interface FileTransferRecipient {
+  identity_id: string;
+  display_name: string;
+}
+
+export interface FileTransfer {
+  id: string;
+  status: "pending" | "accepted" | "rejected" | "cancelled" | "expired" | "failed";
+  file_name?: string;
+  size_bytes?: number;
+  sender?: FileTransferRecipient;
+  recipient?: FileTransferRecipient;
+  created_at?: string;
+  expires_at?: string;
 }
 
 export interface SandboxRuntimeProfile {
@@ -119,20 +271,88 @@ export async function uploadAttachment(
   });
 }
 
+function storageQuery(workspaceId?: string, parentId?: string) {
+  const query = new URLSearchParams();
+  if (workspaceId) query.set("workspace_id", workspaceId);
+  if (parentId) query.set("parent_id", parentId);
+  return query.size ? `?${query.toString()}` : "";
+}
+
+export function storageFileDownloadUrl(fileId: string, workspaceId?: string) {
+  return `${API_ROOT}/storage/files/${encodeURIComponent(fileId)}/download${storageQuery(workspaceId)}`;
+}
+
+export interface StorageFilePreview {
+  content: string;
+  truncated: boolean;
+  mime_type: string | null;
+  bytes_read: number;
+}
+
+export function readStorageFile(fileId: string, workspaceId?: string): Promise<StorageFilePreview> {
+  return request<StorageFilePreview>(`/storage/files/${encodeURIComponent(fileId)}/preview${storageQuery(workspaceId)}`);
+}
+
 export const api = {
   login: async (username: string, password: string) => {
-    const session = await request<AuthSession>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
+    const generation = beginAuthChange();
+    return runAuthMutation(async () => {
+      if (generation !== authGeneration) throw new AuthStateChangedError();
+      const session = await request<AuthSession>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
+      if (generation !== authGeneration) throw new AuthStateChangedError();
+      csrfToken = session.csrf_token;
+      notifyAuthChanged();
+      return session;
     });
-    csrfToken = session.csrf_token;
-    return session;
   },
   logout: async () => {
-    await request<void>("/auth/session", { method: "DELETE" });
-    csrfToken = "";
+    const generation = beginAuthChange();
+    return runAuthMutation(async () => {
+      if (generation !== authGeneration) throw new AuthStateChangedError();
+      try {
+        await request<void>("/auth/session", { method: "DELETE" });
+      } finally {
+        if (generation === authGeneration) {
+          csrfToken = "";
+          notifyAuthChanged();
+        }
+      }
+    });
   },
   getAuthSession: ensureAuth,
+  getStorageUsage: (workspaceId?: string) => request<StorageUsage>(`/storage/usage${storageQuery(workspaceId)}`),
+  listStorageFiles: (workspaceId?: string, parentId?: string) => request<{ items: StorageFile[] }>(`/storage/files${storageQuery(workspaceId, parentId)}`),
+  listStorageTrash: (workspaceId?: string) => request<{ items: StorageFile[] }>(`/storage/trash${storageQuery(workspaceId)}`),
+  readStorageFile,
+  createStorageFolder: (name: string, workspaceId?: string, parentId?: string) => request<StorageFile>(`/storage/folders${storageQuery(workspaceId, parentId)}`, {
+    method: "POST",
+    body: JSON.stringify({ name, parent_id: parentId ?? null }),
+  }),
+  uploadStorageFile: (file: File, workspaceId?: string, parentId?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (parentId) form.append("parent_id", parentId);
+    if (workspaceId) form.append("workspace_id", workspaceId);
+    return request<StorageFile>("/storage/files", { method: "POST", body: form });
+  },
+  renameStorageFile: (fileId: string, name: string, workspaceId?: string) => request<StorageFile>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  }),
+  deleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
+  restoreStorageFile: (fileId: string, workspaceId?: string) => request<StorageFile>(`/storage/trash/${encodeURIComponent(fileId)}/restore${storageQuery(workspaceId)}`, { method: "POST" }),
+  permanentlyDeleteStorageFile: (fileId: string, workspaceId?: string) => request<void>(`/storage/trash/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, { method: "DELETE" }),
+  lookupTransferRecipient: (identityId: string) => request<FileTransferRecipient>(`/storage/transfer-recipients/${encodeURIComponent(identityId.trim())}`),
+  preflightFileTransfer: (input: { source_file_id: string; recipient_identity_id: string; workspace_id?: string }) => request<{ can_receive: boolean; reason: string | null }>("/storage/transfers/preflight", { method: "POST", body: JSON.stringify(input) }),
+  createFileTransfer: (input: { source_file_id: string; recipient_identity_id: string; workspace_id?: string; idempotency_key: string }) => request<FileTransfer>("/storage/transfers", { method: "POST", body: JSON.stringify(input) }),
+  listFileTransfers: (box: "incoming" | "outgoing") => request<{ items: FileTransfer[] }>(`/storage/transfers?box=${box}`),
+  getFileTransferSummary: () => request<{ pending_count: number; notification_version: number }>("/storage/transfers/summary"),
+  acceptFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/accept`, { method: "POST", body: "{}" }),
+  rejectFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/reject`, { method: "POST", body: "{}" }),
+  cancelFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/cancel`, { method: "POST", body: "{}" }),
   ensureSandboxLease: () => request<{
     phase: number;
       runtime_available: boolean;
@@ -266,6 +486,7 @@ export const api = {
   updateToolPolicies: (policies: Record<string, unknown>) =>
     request<Record<string, unknown>>("/developer/tools/policies", { method: "PUT", body: JSON.stringify({ policies }) }),
   updateCustomTools: (custom: Record<string, unknown>) => request<{ restart_required: boolean; reason: string }>("/developer/tools/custom", { method: "PUT", body: JSON.stringify({ custom }) }),
+  updateModelPresets: (presets: Record<string, unknown>) => request<Record<string, unknown>>("/developer/models/presets", { method: "PUT", body: JSON.stringify({ presets }) }),
   saveMcp: (name: string, config: Record<string, unknown>) =>
     request<Record<string, unknown>>(`/developer/mcp/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ config }) }),
   testMcp: (name: string, config: Record<string, unknown>) =>
@@ -314,6 +535,8 @@ export const api = {
   getLearningCatalog: (workspaceId = "default") => request<{ catalog: TeacherCatalog }>(`/learning/catalog/${encodeURIComponent(workspaceId)}`),
   getWhiteboardLibrary: () => request<{ items: WhiteboardLibraryItem[] }>("/whiteboard/library"),
   createWhiteboardLibraryItem: (name: string, elements: unknown[]) => request<{ item: WhiteboardLibraryItem }>("/whiteboard/library", { method: "POST", body: JSON.stringify({ name, elements }) }),
+  renameWhiteboardLibraryItem: (itemId: string, name: string) => request<{ item: WhiteboardLibraryItem }>(`/whiteboard/library/${encodeURIComponent(itemId)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteWhiteboardLibraryItem: (itemId: string) => request<void>(`/whiteboard/library/${encodeURIComponent(itemId)}`, { method: "DELETE" }),
   getTeacherBookNavigation: (workspaceId = "default") => request<{ workspace_id: string; items: TeacherBookNavigationItem[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/navigation`),
   getTeacherBookPage: (workspaceId: string, knowledgePointId: string) => request<{ page: TeacherBookPage }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}`),
   getTeacherBookFiles: (workspaceId: string, knowledgePointId: string) => request<{ items: TeacherBookFile[] }>(`/teacher/book/${encodeURIComponent(workspaceId)}/pages/${encodeURIComponent(knowledgePointId)}/files`),
@@ -358,6 +581,8 @@ export const api = {
     request<UserListResponse["users"][number]>(`/users/${encodeURIComponent(userId)}/restore`, { method: "POST", body: "{}" }),
   deleteUser: (userId: string) =>
     request<void>(`/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  hardDeleteUser: (userId: string) =>
+    request<void>(`/users/${encodeURIComponent(userId)}/permanent`, { method: "DELETE" }),
   revokeUserSessions: (userId: string) =>
     request<void>(`/users/${encodeURIComponent(userId)}/sessions/revoke`, { method: "POST", body: "{}" }),
   resetUserPassword: (userId: string, new_password: string) =>
@@ -382,18 +607,47 @@ export const api = {
     return request<AuthorizationAuditListResponse>(`/audit/authorization${suffix}`);
   },
   getAuthorizationAuditStats: (days = 30) => request<AuthorizationAuditSummary>(`/audit/authorization/stats?days=${days}`),
+  listWorkspaces: () => request<{ workspaces: Workspace[]; total: number }>("/workspaces"),
+  listWorkspaceMembers: (workspaceId: string) =>
+    request<WorkspaceMember[]>(`/workspaces/${encodeURIComponent(workspaceId)}/members`),
+  listClassrooms: () => request<{ items: ClassroomSummary[] }>("/classrooms"),
+  createClassroom: (input: { workspace_id: string; name: string }) =>
+    request<ClassroomCreatedResponse>("/classrooms", { method: "POST", body: JSON.stringify(input) }),
+  getClassroomJoinCode: (classroomId: string) =>
+    request<ClassroomJoinCodeResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-code`),
+  listJoinRequests: (classroomId: string) =>
+    request<JoinRequestListResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-requests`),
+  approveJoinRequest: (classroomId: string, requestId: string) =>
+    request<JoinRequest>(
+      `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/approve`,
+      { method: "POST", body: "{}" },
+    ),
+  rejectJoinRequest: (classroomId: string, requestId: string) =>
+    request<JoinRequest>(
+      `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/reject`,
+      { method: "POST" },
+    ),
+  submitClassroomJoinRequest: (input: { join_code: string; student_number?: string }) =>
+    request<JoinRequest>("/classrooms/join-requests", { method: "POST", body: JSON.stringify(input) }),
+  listMyJoinRequests: () =>
+    request<JoinRequestListResponse>("/classrooms/my-join-requests"),
   // ---------------------------------------------------------------------------
   // Registration (public)
   // ---------------------------------------------------------------------------
   getCaptcha: () =>
     request<{ captcha_id: string; image: string }>("/auth/captcha"),
-  register: (data: { email: string; email_code: string; password: string; display_name?: string; captcha_id: string; captcha_code: string }) =>
-    request<UserProfile>("/auth/register", {
+  register: (data: { phone_number: string; sms_code: string; password: string; display_name?: string; captcha_id: string; captcha_code: string }) =>
+    request<{ message: string; user_id: string; username: string; display_name: string; roles: string[] }>("/auth/register", {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  sendSmsCode: (phoneNumber: string, captchaId: string, captchaCode: string) =>
+    request<{ message: string }>("/auth/sms/send", {
+      method: "POST",
+      body: JSON.stringify({ phone_number: phoneNumber, captcha_id: captchaId, captcha_code: captchaCode }),
+    }),
   sendEmailCode: (email: string, captchaId: string, captchaCode: string) =>
-    request<{ message: string }>("/auth/email/send", {
+    request<{ message: string; expires_in?: number; resend_after?: number }>("/auth/email/send", {
       method: "POST",
       body: JSON.stringify({ email, captcha_id: captchaId, captcha_code: captchaCode }),
     }),
@@ -412,4 +666,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  deleteAccount: (password: string) =>
+    request<void>("/users/me", { method: "DELETE", body: JSON.stringify({ password }) }, true, { ignoreAuthExpired: true }),
+  verifyPassword: (password: string) =>
+    request<void>("/users/me/password/verify", { method: "POST", body: JSON.stringify({ password }) }, true, { ignoreAuthExpired: true }),
 };

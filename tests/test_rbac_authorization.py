@@ -36,9 +36,15 @@ def test_guest_can_only_use_public_capabilities() -> None:
     # guest 是"来试用智能体的人"：允许基础会话/对话能力。
     assert authorization.allowed(principal("guest"), Permission.AGENT_TURN_SUBMIT)
     assert authorization.allowed(principal("guest"), Permission.AGENT_SESSION_READ)
+    assert authorization.allowed(
+        principal("guest"), Permission.CLASSROOM_JOIN_REQUEST_SUBMIT
+    )
     # 但学习增强能力仍仅限 student 及以上。
     assert not authorization.allowed(
         principal("guest"), Permission.AGENT_CHECKPOINT_RESTORE
+    )
+    assert not authorization.allowed(
+        principal("guest"), Permission.LEARNING_PROGRESS_READ_SELF
     )
 
 

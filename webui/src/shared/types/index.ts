@@ -10,6 +10,7 @@ export type ChatMessageStatus = TurnStatus | "cancelling";
 
 export interface AuthSession {
   user_id: string;
+  identity_id?: string;
   username?: string;
   display_name?: string;
   workspace_ids: string[];
@@ -21,6 +22,8 @@ export interface AuthSession {
 
 export interface WhiteboardLibraryItem {
   id: string;
+  asset_code: string;
+  source_key?: string;
   status: "published" | "unpublished";
   elements: unknown[];
   created: number;
@@ -485,6 +488,11 @@ export interface ServerEvent {
   payload: Record<string, unknown>;
 }
 
+export interface RealtimeRequestError {
+  code: string;
+  message: string;
+}
+
 export interface LearningContext {
   topic_id: string | null;
   topic_name: string;
@@ -589,6 +597,7 @@ export type UserStatus = "active" | "disabled" | "locked";
 
 export interface UserProfile {
   id: string;
+  identity_id: string;
   username: string;
   display_name: string;
   status: UserStatus;
@@ -901,4 +910,56 @@ export interface UserListResponse {
   total: number;
   offset: number;
   limit: number;
+}
+export interface Workspace {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceMember {
+  workspace_id: string;
+  user_id: string;
+  member_type: string;
+  status: string;
+  created_at: string;
+}
+
+export interface ClassroomSummary {
+  id: string;
+  workspace_id: string;
+  name: string;
+  status: string;
+}
+
+export interface ClassroomCreatedResponse extends ClassroomSummary {
+  join_code: string;
+}
+
+export interface ClassroomJoinCodeResponse {
+  classroom_id: string;
+  classroom_name: string;
+  join_code: string;
+}
+
+export interface JoinRequest {
+  id: string;
+  class_id: string;
+  class_name: string;
+  user_id: string;
+  user_name: string;
+  display_name: string;
+  student_number: string | null;
+  status: string;
+  requested_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+}
+
+export interface JoinRequestListResponse {
+  items: JoinRequest[];
+  total: number;
 }

@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 
 import core.coordinator_runtime as coordinator_runtime_module
 import core.model_runtime.runtime as model_runtime_module
-from core.model_runtime.adapters.deepseek import DeepSeekChatModel
+from core.model_runtime.adapters.deepseek import DeepSeekAdapter, DeepSeekChatModel
 from core.model_runtime.adapters.qwen import QwenAdapter
 from core.model_runtime.contracts import (
     CircuitBreakerPolicy,
@@ -465,6 +465,20 @@ def test_qwen_adapter_translates_thinking_and_preserves_provider_metadata():
     })
     assert result.generations[0].message.additional_kwargs["reasoning_content"] == "完整分析"
     assert result.generations[0].message.additional_kwargs["provider_usage"]["total_tokens"] == 7
+
+
+@pytest.mark.parametrize(
+    ("effort", "expected"),
+    [("low", "low"), ("medium", "high"), ("high", "high"), ("max", "max")],
+)
+def test_deepseek_adapter_preserves_configured_thinking_effort(effort, expected):
+    configured = ModelPresetConfig(
+        model="deepseek-model",
+        thinking=ThinkingConfig(enabled=True, effort=effort),
+        generation=GenerationConfig(max_output_tokens=100),
+    )
+
+    assert DeepSeekAdapter._effort(configured) == expected
 
 
 def test_qwen_adapter_adds_search_only_for_an_opted_in_preset():

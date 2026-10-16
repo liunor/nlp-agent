@@ -20,12 +20,14 @@ class Permission(StrEnum):
     QUOTA_USAGE_READ_SELF = "quota:usage:read_self"
     IDENTITY_PROFILE_READ_SELF = "identity:profile:read_self"
     IDENTITY_PROFILE_UPDATE_SELF = "identity:profile:update_self"
+    IDENTITY_ACCOUNT_DELETE_SELF = "identity:account:delete_self"
     LEARNING_CONTENT_READ_PUBLIC = "learning:content:read_public"
     LEARNING_CONTENT_READ_WORKSPACE = "learning:content:read_workspace"
     LEARNING_EXERCISE_SUBMIT = "learning:exercise:submit"
     LEARNING_PROGRESS_READ_SELF = "learning:progress:read_self"
     LEARNING_CONTENT_MANAGE = "learning:content:manage"
     LEARNING_PROGRESS_READ_CLASSROOM = "learning:progress:read_classroom"
+    CLASSROOM_JOIN_REQUEST_SUBMIT = "classroom:join_request:submit"
     LEARNING_FEEDBACK_SUBMIT = "learning:feedback:submit"
     LEARNING_FEEDBACK_READ = "learning:feedback:read"
     LEARNING_FEEDBACK_WRITE = "learning:feedback:write"
@@ -96,7 +98,11 @@ _GUEST: Final[frozenset[Permission]] = frozenset(
     {
         Permission.IDENTITY_PROFILE_READ_SELF,
         Permission.IDENTITY_PROFILE_UPDATE_SELF,
+        Permission.IDENTITY_ACCOUNT_DELETE_SELF,
         Permission.LEARNING_CONTENT_READ_PUBLIC,
+        # A guest may request and inspect only their own classroom enrollment;
+        # this does not grant access to formal classroom learning content.
+        Permission.CLASSROOM_JOIN_REQUEST_SUBMIT,
         # 基础 agent 使用权限：guest 是"来试用智能体的人"，必须能创建/读写会话、提交对话。
         Permission.AGENT_SESSION_CREATE,
         Permission.AGENT_SESSION_READ,

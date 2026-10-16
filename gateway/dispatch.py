@@ -35,6 +35,7 @@ class TurnTask:
     exercise_session_id: str | None
     knowledge_book_context: KnowledgeBookContext | None = None
     model_profile: str | None = None
+    thinking_enabled: bool = True
     authorization: ExecutionAuthorizationContext | None = None
     reservation_id: str | None = None
 

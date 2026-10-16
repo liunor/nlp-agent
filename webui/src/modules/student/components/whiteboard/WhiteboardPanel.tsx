@@ -14,6 +14,7 @@ const LOCAL_SAVE_DEBOUNCE_MS = 250;
 export interface WhiteboardPanelProps {
   userId: string | null;
   canManageLibrary?: boolean;
+  presentRequest?: { requestId: string; assetId: string; elements: unknown[]; name: string } | null;
   /** Exposes the structured scene to page-level business actions. */
   onSceneChange?: (scene: StoredWhiteboardScene) => void;
 }
@@ -22,15 +23,15 @@ export interface WhiteboardPanelProps {
  * The whiteboard deliberately owns no business state. It only adapts the
  * embedded Excalidraw scene to per-user browser storage.
  */
-export function WhiteboardPanel({ userId, canManageLibrary = false, onSceneChange }: WhiteboardPanelProps) {
+export function WhiteboardPanel({ userId, canManageLibrary = false, presentRequest, onSceneChange }: WhiteboardPanelProps) {
   if (!userId) {
     return <div className="whiteboard-shell whiteboard-auth-required" role="status">请登录后使用白板。</div>;
   }
 
-  return <AuthenticatedWhiteboardPanel key={userId} userId={userId} canManageLibrary={canManageLibrary} onSceneChange={onSceneChange} />;
+  return <AuthenticatedWhiteboardPanel key={userId} userId={userId} canManageLibrary={canManageLibrary} presentRequest={presentRequest} onSceneChange={onSceneChange} />;
 }
 
-function AuthenticatedWhiteboardPanel({ userId, canManageLibrary = false, onSceneChange }: WhiteboardPanelProps & { userId: string }) {
+function AuthenticatedWhiteboardPanel({ userId, canManageLibrary = false, presentRequest, onSceneChange }: WhiteboardPanelProps & { userId: string }) {
   const initialScene = useMemo<StoredWhiteboardScene | null>(() => {
     const scene = userId ? readWhiteboardScene(userId) : null;
     return scene ? sanitizeWhiteboardScene(scene) : null;
@@ -40,6 +41,7 @@ function AuthenticatedWhiteboardPanel({ userId, canManageLibrary = false, onScen
   const [saveErrorUserId, setSaveErrorUserId] = useState<string | null>(null);
   const [libraryLoadError, setLibraryLoadError] = useState<WhiteboardLibraryLoadError | null>(null);
   const [libraryPublishError, setLibraryPublishError] = useState<string | null>(null);
+  const [libraryLoadAttempt, setLibraryLoadAttempt] = useState(0);
 
   useEffect(() => {
     latestScene.current = initialScene;
@@ -91,19 +93,22 @@ function AuthenticatedWhiteboardPanel({ userId, canManageLibrary = false, onScen
 
   return <div className="whiteboard-shell">
     <ExcalidrawAdapter
-      key={userId}
+      key={`${userId}:${libraryLoadAttempt}`}
       initialScene={initialScene}
       onChange={handleChange}
       canManageLibrary={canManageLibrary}
+      presentRequest={presentRequest}
       onLibraryLoadError={setLibraryLoadError}
+      onLibraryLoadReady={() => setLibraryLoadError(null)}
       onLibraryPublishError={setLibraryPublishError}
     />
     {libraryLoadError && <div className="whiteboard-library-warning" role="status">
       {libraryLoadError.clearFailed
         ? "白板素材区初始化失败，已尽力恢复，请刷新白板后重试。"
         : libraryLoadError.sharedFailed
-          ? "共享素材加载失败，请刷新白板后重试。"
+          ? "共享素材加载失败，请点击重试。"
           : "部分教学素材加载失败，请刷新白板后重试。"}
+      <button type="button" onClick={() => setLibraryLoadAttempt((attempt) => attempt + 1)}>重试</button>
     </div>}
     {libraryPublishError && <div className="whiteboard-library-warning" role="alert">{libraryPublishError}</div>}
     {userId !== null && saveErrorUserId === userId && <div className="whiteboard-save-warning" role="alert">本地保存失败，请导出白板文件备份。</div>}

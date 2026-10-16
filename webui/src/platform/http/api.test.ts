@@ -1,4 +1,4 @@
-import { api, AUTH_EXPIRED_EVENT, ensureAuth, uploadAttachment } from "./api";
+import { api, AUTH_EXPIRED_EVENT, AUTH_REQUIRED_EVENT, ensureAuth, uploadAttachment } from "./api";
 
 describe("FastAPI client", () => {
   it("deduplicates concurrent authentication restores", async () => {
@@ -146,6 +146,40 @@ it("dispatches auth-expired only once when concurrent requests return 401", asyn
   }
 });
 
+  it("does not dispatch auth-expired when ignoreAuthExpired is set (wrong-password 401)", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        user_id: "local",
+        workspace_ids: ["default"],
+        roles: ["student"],
+        csrf_token: "csrf-token",
+        expires_at: 123,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        detail: "密码错误",
+      }), { status: 401, headers: { "Content-Type": "application/json" } }));
+
+    const onAuthExpired = vi.fn();
+    const onAuthRequired = vi.fn();
+    window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+
+    try {
+      await ensureAuth();
+
+      await expect(api.verifyPassword("wrong-password")).rejects.toMatchObject({
+        status: 401,
+      });
+
+      expect(onAuthExpired).not.toHaveBeenCalled();
+      expect(onAuthRequired).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired);
+      window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+      fetchMock.mockRestore();
+    }
+  });
+
   it("uploads an attachment using FormData without forcing application/json Content-Type", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
@@ -172,6 +206,21 @@ it("dispatches auth-expired only once when concurrent requests return 401", asyn
     expect(init?.method).toBe("POST");
     expect(init?.body).toBeInstanceOf(FormData);
     expect(new Headers(init?.headers).get("Content-Type")).toBeNull();
+    fetchMock.mockRestore();
+  });
+
+  it("reads a bounded stored-file preview through the authenticated preview endpoint", async () => {
+    const preview = { content: "# lesson", truncated: false, mime_type: "text/markdown", bytes_read: 8 };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(preview), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    await expect(api.readStorageFile("file/1", "workspace-1")).resolves.toEqual(preview);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/storage/files/file%2F1/preview?workspace_id=workspace-1",
+      expect.objectContaining({ credentials: "include" }),
+    );
     fetchMock.mockRestore();
   });
 });

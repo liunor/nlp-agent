@@ -20,6 +20,18 @@ vi.mock("@/platform/http/api", () => ({
 import { AccountDialog } from "./AccountDialog";
 
 describe("AccountDialog", () => {
+  it("shows the permanent identity ID and copies it without exposing the database user ID", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(<AccountDialog open session={{ user_id: "internal-user-id", identity_id: "NV7ABC234DEF567", username: "nova", display_name: "Nova 学习者", workspace_ids: ["default"], roles: ["student"], csrf_token: "csrf", expires_at: 1 }} onClose={vi.fn()} onLogout={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getByText("NV7ABC234DEF567")).toBeVisible();
+    expect(screen.queryByText("internal-user-id")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "复制身份 ID" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("NV7ABC234DEF567"));
+  });
+
   it("shows the active account and delegates logout", async () => {
     const logout = vi.fn().mockResolvedValue(undefined);
     render(<AccountDialog open session={{ user_id: "user-id", username: "nova", display_name: "Nova 学习者", workspace_ids: ["default"], roles: ["student"], csrf_token: "csrf", expires_at: 1 }} onClose={vi.fn()} onLogout={logout} />);

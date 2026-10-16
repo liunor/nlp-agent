@@ -336,14 +336,17 @@ DEVELOPER (最高权限)
    → 创建 nlp_workspaces 记录（个人工作空间）
    → 创建 nlp_workspace_members 记录（user as owner）
    → 创建 nlp_user_roles 记录（role = guest）
+   → 创建 nlp_user_roles 记录（role = guest；入班审批前不是 student）
    
 2. POST /api/v1/auth/login
    → 查询 nlp_users（通过 username_lower 或 email_normalized）
    → 验证 password_hash
    → 查询 nlp_user_roles → nlp_roles → nlp_role_permissions
-   → 构建 Principal { roles: ["student"], permissions: [...] }
+   → 构建 Principal { roles: ["guest"], permissions: [classroom:join_request:submit, ...] }
    → 创建 nlp_sessions 记录
    → 返回 session_token（HTTP-only cookie）
+
+3. guest 输入班级码提交入班申请；教师/管理员审批后，在同一事务中将 guest 替换为 student、创建班级成员关系并更新授权版本。
 ```
 
 #### 场景 2：管理员升级用户为教师

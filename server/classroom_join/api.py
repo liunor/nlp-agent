@@ -14,6 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +23,7 @@ from server.auth.dependencies import Principal, WriteClaims, get_db_session
 from server.classroom_join import service
 from server.classroom_join.schemas import (
     ApproveJoinRequest,
+    JoinRequestByCodeCreate,
     JoinRequestCreate,
     JoinRequestListResponse,
     JoinRequestResponse,
@@ -62,6 +64,68 @@ async def _require_classroom_manager(principal: Principal, db: AsyncSession, cla
     )
 
 
+async def _submit_pending_request(
+    *,
+    db: AsyncSession,
+    classroom_id: str,
+    user_id: str,
+    student_number: str | None,
+) -> ClassJoinRequestModel:
+    member = await service.get_active_classroom_membership(db, classroom_id, user_id)
+    if member is not None:
+        raise service.ClassroomMemberExistsError()
+    existing = await service.get_user_pending_request(db, classroom_id, user_id)
+    if existing is not None:
+        raise service.PendingJoinRequestError()
+    try:
+        # The unique constraint remains the final race-safe guard when two
+        # browser tabs submit the same code at the same time.
+        async with db.begin_nested():
+            req = await service.submit_join_request(
+                db, classroom_id, user_id, student_number
+            )
+    except IntegrityError as error:
+        original = str(getattr(error, "orig", error)).casefold()
+        if "pending_key" not in original and "uq_nlp_class_join_requests_pending_key" not in original:
+            raise
+        raise service.PendingJoinRequestError() from error
+    return req
+
+
+async def _loaded_response(db: AsyncSession, request_id: str) -> JoinRequestResponse:
+    result = await db.execute(
+        select(ClassJoinRequestModel)
+        .where(ClassJoinRequestModel.id == request_id)
+        .options(selectinload(ClassJoinRequestModel.user_), selectinload(ClassJoinRequestModel.cls))
+    )
+    return _to_response(result.scalar_one())
+
+
+@router.post(
+    "/join-requests",
+    response_model=JoinRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def submit_join_request_by_code(
+    body: JoinRequestByCodeCreate,
+    principal: Principal,
+    db: DbSession,
+    _write: WriteClaims,
+):
+    """Guest/student join endpoint; UUIDs stay an internal implementation detail."""
+    authorization_service.require(principal, Permission.CLASSROOM_JOIN_REQUEST_SUBMIT)
+    classroom = await service.get_active_classroom_by_join_code(db, body.join_code)
+    if classroom is None:
+        raise service.JoinCodeNotFoundError()
+    req = await _submit_pending_request(
+        db=db,
+        classroom_id=classroom.id,
+        user_id=principal.user_id,
+        student_number=body.student_number,
+    )
+    return await _loaded_response(db, req.id)
+
+
 @router.post(
     "/{classroom_id}/join-requests",
     response_model=JoinRequestResponse,
@@ -74,21 +138,32 @@ async def submit_join_request(
     db: DbSession,
     _write: WriteClaims,
 ):
-    """学生提交加入班级申请（pending）。"""
-    authorization_service.require(principal, Permission.LEARNING_PROGRESS_READ_SELF)
+    """Guest/student 提交加入班级申请（pending）。"""
+    authorization_service.require(principal, Permission.CLASSROOM_JOIN_REQUEST_SUBMIT)
     await rbac_service.classroom(db, classroom_id)
-    existing = await service.get_user_pending_request(db, classroom_id, principal.user_id)
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="您已提交过该班级的加入申请，请等待审核")
-    req = await service.submit_join_request(db, classroom_id, principal.user_id, body.student_number)
-    await db.flush()
-    result = await db.execute(
-        select(ClassJoinRequestModel)
-        .where(ClassJoinRequestModel.id == req.id)
-        .options(selectinload(ClassJoinRequestModel.user_), selectinload(ClassJoinRequestModel.cls))
+    req = await _submit_pending_request(
+        db=db,
+        classroom_id=classroom_id,
+        user_id=principal.user_id,
+        student_number=body.student_number,
     )
-    req = result.scalar_one()
-    return _to_response(req)
+    return await _loaded_response(db, req.id)
+
+
+@router.get("/{classroom_id}/join-code")
+async def get_classroom_join_code(
+    classroom_id: str,
+    principal: Principal,
+    db: DbSession,
+):
+    """Teacher/admin view of the classroom's shareable short code."""
+    await _require_classroom_manager(principal, db, classroom_id)
+    classroom = await rbac_service.classroom(db, classroom_id)
+    return {
+        "classroom_id": classroom.id,
+        "classroom_name": classroom.name,
+        "join_code": classroom.join_code,
+    }
 
 
 @router.get("/{classroom_id}/join-requests", response_model=JoinRequestListResponse)
@@ -123,6 +198,8 @@ async def approve_join_request(
         member_role="student",
         status="active",
         actor_user_id=principal.user_id,
+        preserve_active_sessions=True,
+        promote_guest_to_student=True,
     )
     # P0-5：审批动作写入审计事件
     await rbac_service.audit(
@@ -184,5 +261,6 @@ async def reject_join_request(
 @router.get("/my-join-requests", response_model=JoinRequestListResponse)
 async def my_join_requests(principal: Principal, db: DbSession):
     """当前用户查看自己的全部加入申请。"""
+    authorization_service.require(principal, Permission.CLASSROOM_JOIN_REQUEST_SUBMIT)
     requests = await service.get_user_join_requests(db, principal.user_id)
     return JoinRequestListResponse(items=[_to_response(r) for r in requests], total=len(requests))

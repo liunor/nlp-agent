@@ -14,7 +14,60 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from server.infrastructure.mysql.models import ClassJoinRequestModel
+from server.infrastructure.mysql.models import ClassJoinRequestModel, ClassroomMemberModel, ClassroomModel
+
+
+class ClassJoinError(Exception):
+    """Stable API error for the guest/student classroom-join flow."""
+
+    def __init__(self, *, status_code: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.code = code
+        self.detail = detail
+
+
+class PendingJoinRequestError(ClassJoinError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="class_join_request_pending",
+            detail="已申请该班级，请等待审核",
+        )
+
+
+class ClassroomMemberExistsError(ClassJoinError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=409,
+            code="class_join_member_exists",
+            detail="你已经加入该班级，无需重复申请",
+        )
+
+
+class JoinCodeNotFoundError(ClassJoinError):
+    def __init__(self) -> None:
+        super().__init__(
+            status_code=404,
+            code="class_join_code_not_found",
+            detail="班级码不存在或班级不可加入",
+        )
+
+
+def normalize_join_code(join_code: str) -> str:
+    return join_code.strip().upper()
+
+
+async def get_active_classroom_by_join_code(
+    db: AsyncSession, join_code: str
+) -> ClassroomModel | None:
+    normalized = normalize_join_code(join_code)
+    return await db.scalar(
+        select(ClassroomModel).where(
+            ClassroomModel.join_code == normalized,
+            ClassroomModel.status == "active",
+        )
+    )
 
 
 async def submit_join_request(
@@ -22,9 +75,8 @@ async def submit_join_request(
 ) -> ClassJoinRequestModel:
     """创建一条 pending 申请。
 
-    唯一约束 ``uq_nlp_class_join_requests_cls_usr_sts`` 在数据库层阻止同一
-    (班级, 用户, pending) 重复申请；调用方仍可先用 ``get_user_pending_request``
-    做友好前置校验。
+    ``pending_key`` 在数据库层阻止同一 (班级, 用户) 的并发 pending 重复申请；
+    审批或拒绝后会清空该键，因此历史记录不会阻止用户重新申请。
     """
     req = ClassJoinRequestModel(
         id=str(uuid.uuid4()),
@@ -32,6 +84,7 @@ async def submit_join_request(
         user_id=user_id,
         student_number=student_number,
         status="pending",
+        pending_key=f"{class_id}:{user_id}",
     )
     db.add(req)
     await db.flush()
@@ -96,6 +149,7 @@ async def approve_join_request(
     if req is None:
         return None
     req.status = "approved"
+    req.pending_key = None
     req.reviewed_at = datetime.now(timezone.utc)
     req.reviewed_by = reviewed_by
     if student_number_override is not None:
@@ -122,10 +176,23 @@ async def reject_join_request(
     if req is None:
         return None
     req.status = "rejected"
+    req.pending_key = None
     req.reviewed_at = datetime.now(timezone.utc)
     req.reviewed_by = reviewed_by
     await db.flush()
     return req
+
+
+async def get_active_classroom_membership(
+    db: AsyncSession, class_id: str, user_id: str
+) -> ClassroomMemberModel | None:
+    return await db.scalar(
+        select(ClassroomMemberModel).where(
+            ClassroomMemberModel.classroom_id == class_id,
+            ClassroomMemberModel.user_id == user_id,
+            ClassroomMemberModel.status == "active",
+        )
+    )
 
 
 async def get_user_join_requests(db: AsyncSession, user_id: str) -> list[ClassJoinRequestModel]:

@@ -14,6 +14,7 @@ from urllib.parse import quote
 from configs.settings import settings
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
+from gateway.analytics_time import analytics_today
 from server.teacher.archive import (
     ALLOWED_ASSET_TYPES,
     MAX_ASSET_BYTES,
@@ -853,7 +854,7 @@ class TeacherService:
             principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM
         )
         period_days = max(1, days)
-        period_end = period_end or datetime.now(timezone.utc).date()
+        period_end = period_end or analytics_today(settings.NLP_AGENT_ANALYTICS_TIMEZONE)
         period_start = period_start or period_end - timedelta(days=period_days - 1)
         period_days = max(1, (period_end - period_start).days + 1)
         monthly_start = period_end.replace(day=1)

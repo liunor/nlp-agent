@@ -68,6 +68,7 @@ def test_expired_session_is_rejected_without_waiting(
 
     response = client.get("/api/v1/users/me")
     assert response.status_code == 401
+    assert response.json()["code"] == "session_expired"
 
 
 def test_idle_session_is_rejected_without_waiting(
@@ -85,6 +86,7 @@ def test_idle_session_is_rejected_without_waiting(
 
     response = client.get("/api/v1/users/me")
     assert response.status_code == 401
+    assert response.json()["code"] == "session_expired"
 
 
 def test_authorization_version_change_fences_existing_session(
@@ -100,7 +102,9 @@ def test_authorization_version_change_fences_existing_session(
         json={"role_codes": ["teacher"]},
     )
     assert changed.status_code == 200, changed.text
-    assert target_client.get("/api/v1/users/me").status_code == 401
+    fenced = target_client.get("/api/v1/users/me")
+    assert fenced.status_code == 401
+    assert fenced.json()["code"] == "authorization_changed"
 
     # The role change is authoritative, so a new session sees the new role.
     new_client = authenticated_client_for(replace(target, role="teacher"))

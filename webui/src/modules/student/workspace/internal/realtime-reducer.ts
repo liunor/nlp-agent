@@ -6,6 +6,7 @@ import type {
   ActivityItem,
   ChatMessage,
   LearningPreferences,
+  RealtimeRequestError,
   ServerEvent,
   SessionLearningMeta,
 } from "@/shared/types";
@@ -71,7 +72,7 @@ interface RealtimeHandlerOptions {
   cancelledTurnIds?: MutableRefObject<Set<string>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setActiveSessionId: Dispatch<SetStateAction<string | null>>;
-  setRequestError: Dispatch<SetStateAction<string>>;
+  setRequestError: Dispatch<SetStateAction<RealtimeRequestError | null>>;
   persistPreferences: (update: (current: LearningPreferences) => LearningPreferences) => void;
   updateSessionMeta: (sessionId: string, patch: Partial<SessionLearningMeta>) => void;
   loadSessions: () => Promise<unknown>;
@@ -121,7 +122,10 @@ export function createRealtimeEventHandler({
         void loadSessions();
         return;
       }
-      setRequestError(quotaErrorMessage(event) ?? (typeof event.payload.message === "string" ? event.payload.message : "请求未能提交，请稍后重试。"));
+      setRequestError({
+        code: typeof event.payload.code === "string" && event.payload.code.trim() ? event.payload.code : "request_failed",
+        message: quotaErrorMessage(event) ?? (typeof event.payload.message === "string" && event.payload.message.trim() ? event.payload.message : "请求未能提交，请稍后重试。"),
+      });
       return;
     }
     if (["session.created", "session.deleted", "session.updated"].includes(event.type)) void loadSessions();

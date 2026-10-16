@@ -212,6 +212,9 @@ def test_guest_session_has_only_guest_capabilities(web_app):
         assert response.json()["roles"] == ["guest"]
         # guest 现在具备基础智能体能力，可以读写自己的会话。
         assert client.get("/api/v1/sessions").status_code == 200
+        teacher = client.get("/api/v1/teacher/overview?workspace_id=default")
+        assert teacher.status_code == 403
+        assert teacher.json()["code"] == "forbidden"
         assert client.get("/api/v1/developer/release-notes").status_code == 403
 
 
@@ -420,8 +423,15 @@ def test_learning_release_notes_route_requests_only_published(web_app, monkeypat
             )]
 
     class FakeSession:
+        class _EmptyScalarResult:
+            def all(self):
+                return []
+
         def add(self, obj):
             return None
+
+        async def scalars(self, _statement):
+            return self._EmptyScalarResult()
 
         @asynccontextmanager
         async def begin(self):

@@ -11,6 +11,9 @@ const api = vi.hoisted(() => ({
 vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() {} close() {} setSession() {} sendChat() {} resume() {} cancel() {} } }));
 vi.mock("@/platform/http/api", () => ({
   AUTH_EXPIRED_EVENT: "nova:auth-expired",
+  AuthStateChangedError: class extends Error {},
+  getAuthGeneration: () => 0,
+  subscribeAuthChanges: () => () => undefined,
   ensureAuth: vi.fn().mockResolvedValue({}),
   api,
 }));
@@ -49,8 +52,8 @@ describe("student learning catalogue refresh", () => {
     fireEvent.click(screen.getByRole("button", { name: "教学模式" }));
     fireEvent.click(screen.getByRole("option", { name: "练习模式（未配置）" }));
 
-    expect(screen.getByRole("alert")).toHaveTextContent("练习模式尚未配置蓝图");
-    expect(screen.getByRole("button", { name: "去配置" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("学习配置不可用");
+    expect(screen.queryByRole("button", { name: "去配置" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "关闭提示" }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });

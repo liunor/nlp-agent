@@ -50,7 +50,7 @@ def test_direct_global_rollout_with_zero_percentage_enables_all_users():
 
 
 def test_settings_reports_rollout_configuration_without_turning_everyone_on():
-    configured = Settings(_env_file=None)
+    configured = Settings(_env_file=None, NLP_AGENT_QUOTA_ENFORCEMENT=False)
     configured._config = {
         "gateway": {
             "quota_enforcement": False,

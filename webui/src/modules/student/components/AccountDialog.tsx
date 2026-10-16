@@ -1,8 +1,9 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { LogOut, Settings, ShieldCheck, UserRound, X } from "lucide-react";
-import { useState } from "react";
+import { Check, Copy, LogOut, Settings, ShieldCheck, UserRound, X } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { ProfileDialog } from "@/modules/profile/ProfileDialog";
+import { api } from "@/platform/http/api";
 import type { AuthSession } from "@/shared/types";
 
 export function AccountDialog({
@@ -19,9 +20,30 @@ export function AccountDialog({
   const username = session?.username || session?.display_name || session?.user_id || "Nova 学习者";
   const displayName = session?.display_name || session?.username || "Nova 学习者";
   const roles = session?.roles?.join("、") || "student";
+  const [fetchedIdentity, setFetchedIdentity] = useState<{ userId: string; identityId: string } | null>(null);
+  const fetchedIdentityId = fetchedIdentity && fetchedIdentity.userId === session?.user_id ? fetchedIdentity.identityId : "";
+  const identityId = session?.identity_id ?? fetchedIdentityId;
+  const [copied, setCopied] = useState(false);
   // Profile settings open as an in-platform overlay instead of navigating to a
   // separate page, so the user never leaves the current workspace.
   const [profileOpen, setProfileOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const userId = session?.user_id;
+    if (session?.identity_id || !userId) return;
+    let active = true;
+    void api.getCurrentUser().then((profile) => {
+      if (active) setFetchedIdentity({ userId, identityId: profile.identity_id });
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [open, session?.identity_id, session?.user_id]);
+
+  const copyIdentityId = async () => {
+    if (!identityId) return;
+    await navigator.clipboard.writeText(identityId);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
   return <>
     <Dialog.Root open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }}>
       <Dialog.Portal>
@@ -34,6 +56,7 @@ export function AccountDialog({
         <dl>
           <div><dt>账号</dt><dd>{username}</dd></div>
           <div><dt>名称</dt><dd>{displayName}</dd></div>
+          <div><dt>身份 ID</dt><dd className="account-identity-id"><span>{identityId || "正在读取…"}</span>{identityId && <button type="button" aria-label="复制身份 ID" title="复制身份 ID" onClick={() => void copyIdentityId()}>{copied ? <Check size={14} /> : <Copy size={14} />}</button>}</dd></div>
           <div><dt>角色</dt><dd><ShieldCheck size={15} />{roles}</dd></div>
         </dl>
         <button className="account-dialog-profile" type="button" onClick={() => { onClose(); setProfileOpen(true); }}><Settings size={16} />个人设置</button>

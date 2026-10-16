@@ -7,7 +7,16 @@ import { StudentSocket } from "@/platform/realtime/client";
 import type { QuotaBucketSnapshot, QuotaSnapshot, QuotaUsageBreakdown, QuotaUsageSnapshot } from "@/shared/types";
 
 export const formatMicro = (value: number | null | undefined) => `${Number(value ?? 0).toLocaleString("zh-CN")} μcredits`;
-const formatLimit = (value: number | null) => value == null ? "无限" : formatMicro(value);
+const formatPercent = (value: number) => `${Math.round(value)}%`;
+const bucketCapacity = (bucket: QuotaBucketSnapshot) => bucket.limit_micro == null ? null : Math.max(0, bucket.limit_micro + bucket.grant_micro + bucket.adjustment_micro);
+const remainingPercent = (bucket: QuotaBucketSnapshot) => {
+  const capacity = bucketCapacity(bucket);
+  return capacity == null ? null : capacity === 0 ? 0 : Math.min(100, Math.max(0, bucket.remaining_micro / capacity * 100));
+};
+const formatResetTime = (value: string) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "重置时间暂不可用" : `${date.toLocaleString("zh-CN", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })} 重置`;
+};
 const ownerLabel = (ownerType: QuotaBucketSnapshot["owner_type"]) => ownerType === "workspace" ? "工作空间" : ownerType === "classroom" ? "课堂" : "个人";
 const periodLabel = (bucketType: QuotaBucketSnapshot["bucket_type"]) => bucketType === "daily" ? "今日" : "本周";
 const ACTIVITY_DAY_COUNT = 182;
@@ -45,13 +54,14 @@ function sundayOf(value: Date) {
 }
 
 function BucketSummary({ bucket }: { bucket: QuotaBucketSnapshot }) {
-  const capacity = bucket.limit_micro == null ? null : Math.max(0, bucket.limit_micro + bucket.grant_micro + bucket.adjustment_micro);
+  const capacity = bucketCapacity(bucket);
   const used = bucket.consumed_micro + bucket.reserved_micro;
-  const progress = capacity == null || capacity === 0 ? 0 : Math.min(100, Math.max(0, used / capacity * 100));
+  const progress = remainingPercent(bucket);
+  const details = capacity == null ? "无限额度" : `剩余 ${formatMicro(bucket.remaining_micro)}；已用及预占 ${formatMicro(used)} / ${formatMicro(capacity)}`;
   return <article className={`quota-balance-row${bucket.over_limit ? " is-over-limit" : ""}`}>
-    <div className="quota-balance-row-heading"><span>{ownerLabel(bucket.owner_type)} · {periodLabel(bucket.bucket_type)}</span><strong>{bucket.limit_micro == null ? "无限" : formatMicro(bucket.remaining_micro)}</strong></div>
-    <div className="quota-progress" aria-label={`${ownerLabel(bucket.owner_type)} ${periodLabel(bucket.bucket_type)}使用进度`}><i style={{ width: `${progress}%` }} /></div>
-    <div className="quota-balance-row-meta"><span>{capacity == null ? "无限额度" : `已用 ${formatMicro(used)} / ${formatLimit(capacity)}`}</span>{bucket.over_limit && <em>已超额</em>}</div>
+    <div className="quota-balance-row-heading"><span>{ownerLabel(bucket.owner_type)} · {periodLabel(bucket.bucket_type)}</span><strong title={details}>{progress == null ? "无限" : formatPercent(progress)}</strong></div>
+    <div className="quota-progress" role={progress == null ? undefined : "progressbar"} aria-hidden={progress == null ? true : undefined} aria-label={`${ownerLabel(bucket.owner_type)} ${periodLabel(bucket.bucket_type)}剩余额度`} aria-valuemin={progress == null ? undefined : 0} aria-valuemax={progress == null ? undefined : 100} aria-valuenow={progress == null ? undefined : Math.round(progress)}><i style={{ width: `${progress ?? 0}%` }} /></div>
+    <div className="quota-balance-row-meta"><time dateTime={bucket.reset_at}>{formatResetTime(bucket.reset_at)}</time>{bucket.over_limit && <em>已超额</em>}</div>
   </article>;
 }
 
@@ -236,19 +246,19 @@ export function QuotaUsagePage({ embedded = false, userId, workspaceIds: provide
   const buckets = useMemo(() => quota?.buckets ?? [], [quota]);
   const personalBuckets = useMemo(() => buckets.filter((item) => item.owner_type === "user"), [buckets]);
   const personalBucketsByPeriod = useMemo(() => new Map(personalBuckets.map((bucket) => [bucket.bucket_type, bucket])), [personalBuckets]);
-  // Admission applies every returned constraint at the same time. The
-  // displayed balance must therefore be the smallest remaining bucket, even
-  // though the compact detail list only shows personal daily/weekly rows.
+  // Every bucket constrains admission; summarize the lowest remaining ratio.
+  // Keep the minimum absolute balance available in the tooltip.
   const finiteBuckets = buckets.filter((item) => item.limit_micro != null);
   const effectiveRemaining = finiteBuckets.length > 0 ? Math.min(...finiteBuckets.map((item) => item.remaining_micro)) : null;
-  const effectiveRemainingLabel = buckets.length === 0 ? "暂无" : finiteBuckets.length === 0 ? "无限" : formatMicro(effectiveRemaining);
+  const effectivePercent = finiteBuckets.length > 0 ? Math.min(...finiteBuckets.map((item) => remainingPercent(item)!)) : null;
+  const effectiveRemainingLabel = buckets.length === 0 ? "暂无" : effectivePercent == null ? "无限" : formatPercent(effectivePercent);
   const activityUsage = activityGranularity === "day" ? dailyUsage : weeklyUsage;
   const totalTokens = recentUsage?.tokens?.total_tokens ?? 0;
   if (loading && !quota) return <main className={`quota-page${embedded ? " quota-page-embedded" : ""}`}><div className="quota-loading"><RefreshCw className="spin" />正在读取额度…</div></main>;
   return <main className={`quota-page${embedded ? " quota-page-embedded" : ""}`}>
     <div className="quota-page-toolbar"><button className="quota-refresh-button" type="button" onClick={() => void load()} disabled={loading} aria-label="刷新额度" title="刷新额度"><RefreshCw size={16} className={loading ? "spin" : ""} /></button></div>
     {error && <div className="quota-error" role="alert"><CircleAlert size={17} /><span>{error}</span><button type="button" onClick={() => void load()}>重试</button></div>}
-    <section className="quota-stat-strip"><div><strong>{effectiveRemainingLabel}</strong><span>当前可用</span></div><div><strong>{Number(recentUsage?.events ?? 0).toLocaleString("zh-CN")}</strong><span>近 7 天请求</span></div><div><strong>{totalTokens.toLocaleString("zh-CN")}</strong><span>近 7 天 Token</span></div><div><strong>{recentUsage?.credits_complete ? "正常" : "待处理"}</strong><span>账务状态</span></div></section>
+    <section className="quota-stat-strip"><div><strong title={effectiveRemaining == null ? undefined : `可用 ${formatMicro(effectiveRemaining)}`}>{effectiveRemainingLabel}</strong><span>当前可用</span></div><div><strong>{Number(recentUsage?.events ?? 0).toLocaleString("zh-CN")}</strong><span>近 7 天请求</span></div><div><strong>{totalTokens.toLocaleString("zh-CN")}</strong><span>近 7 天 Token</span></div><div><strong>{recentUsage?.credits_complete ? "正常" : "待处理"}</strong><span>账务状态</span></div></section>
     <UsageSummary breakdown={activityUsage?.breakdown ?? []} granularity={activityGranularity} />
     <section className="quota-panel quota-balances-panel"><div className="quota-panel-heading"><h2>额度</h2><span>{personalBuckets.length ? "日 / 周" : "暂无额度"}</span></div><div className="quota-balance-list">{personalBuckets.length > 0 && (["daily", "weekly"] as const).map((bucketType) => personalBucketsByPeriod.get(bucketType) ? <BucketSummary bucket={personalBucketsByPeriod.get(bucketType)!} key={`user-${bucketType}`} /> : <UnconfiguredBucketSummary bucketType={bucketType} key={`user-${bucketType}`} />)}{personalBuckets.length === 0 && <div className="quota-empty quota-empty-compact"><Coins size={18} /><span>当前周期暂无可用额度。</span></div>}</div></section>
     <ActivityHeatmap breakdown={activityUsage?.breakdown ?? []} dailyBreakdown={dailyUsage?.breakdown ?? []} granularity={activityGranularity} onGranularityChange={setActivityGranularity} />

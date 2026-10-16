@@ -1,25 +1,26 @@
-import { AlertCircle, BarChart3, BookOpen, ChevronLeft, FileQuestion, GraduationCap, LayoutDashboard, Menu, MessageCircleQuestion, RefreshCw, Sparkles, Target, Users } from "lucide-react";
+import { AlertCircle, BarChart3, BookOpen, ChevronLeft, FileQuestion, GraduationCap, LayoutDashboard, Menu, MessageCircleQuestion, RefreshCw, School, Sparkles, Target, Users } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { BlueprintCatalogEditor, GuidedBlueprintCatalogEditor, TopicCatalogEditor } from "@/modules/teacher/workspace/TeacherCatalogEditor";
 import { TeacherBookEditor } from "@/modules/teacher/workspace/TeacherBookEditor";
 import { StudentQuestionsPage } from "@/modules/teacher/workspace/StudentQuestionsPage";
 import { LearningAnalysisPage } from "@/modules/teacher/workspace/LearningAnalysisPage";
+import { ClassroomManagementPage } from "@/modules/admin/ClassroomManagementPage";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { api, ensureAuth } from "@/platform/http/api";
 import type { TeacherCatalog, TeacherOverview, WeakTopic } from "@/shared/types";
 import { resolveWorkspaceId } from "@/shared/utils/workspace";
 
-export type TeacherPage = "overview" | "topics" | "book" | "exercises" | "reviews" | "guided" | "questions" | "reports";
+export type TeacherPage = "overview" | "topics" | "book" | "exercises" | "reviews" | "guided" | "questions" | "reports" | "classrooms";
 const NAV: Array<{ page: TeacherPage; label: string; icon: typeof LayoutDashboard }> = [
   { page: "overview", label: "教师首页", icon: LayoutDashboard }, { page: "book", label: "教材内容", icon: BookOpen }, { page: "topics", label: "主题与知识点", icon: BookOpen },
   { page: "exercises", label: "出题蓝图", icon: Sparkles }, { page: "reviews", label: "复习蓝图", icon: Target }, { page: "guided", label: "引导模式", icon: MessageCircleQuestion },
-  { page: "questions", label: "学生问题", icon: FileQuestion }, { page: "reports", label: "学习分析", icon: BarChart3 },
+  { page: "questions", label: "学生问题", icon: FileQuestion }, { page: "reports", label: "学习分析", icon: BarChart3 }, { page: "classrooms", label: "班级管理", icon: School },
 ];
 const PAGE_LABELS: Record<TeacherPage, string> = {
   overview: "教师首页", topics: "主题与知识点", book: "教材内容", exercises: "出题蓝图",
-  reviews: "复习蓝图", guided: "引导模式", questions: "学生问题", reports: "学习分析",
+  reviews: "复习蓝图", guided: "引导模式", questions: "学生问题", reports: "学习分析", classrooms: "班级管理",
 };
 const pageFromPath = (): TeacherPage => {
   const candidate = location.pathname.split("/")[2] as TeacherPage;
@@ -65,6 +66,7 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
   const [saveMessage, setSaveMessage] = useState("");
   const page = routedPage ?? localPage;
   const needsOverview = page === "overview" || page === "questions" || page === "reports";
+  const needsCatalog = page !== "classrooms";
   const isCatalogEditor = page === "topics" || page === "exercises" || page === "reviews" || page === "guided";
   const catalogDirty = Boolean(catalog && savedCatalogSnapshot && JSON.stringify(catalog) !== savedCatalogSnapshot);
   const dirty = catalogDirty || bookDirty;
@@ -77,8 +79,8 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
       if (!auth.roles.some((role) => role === "developer" || role === "teacher")) throw new Error("当前账户没有教师权限");
       const settings = await api.getSettings();
       const selectedWorkspaceId = resolveWorkspaceId(auth, settings.preferences.settings ?? {});
-      const [overview, catalogResult] = await Promise.all([needsOverview ? api.getTeacherOverview(selectedWorkspaceId, requestedDays) : Promise.resolve(null), api.getTeacherCatalog(selectedWorkspaceId)]);
-      const nextCatalog = { ...catalogResult.catalog, guided_blueprints: catalogResult.catalog.guided_blueprints ?? [] };
+      const [overview, catalogResult] = await Promise.all([needsOverview ? api.getTeacherOverview(selectedWorkspaceId, requestedDays) : Promise.resolve(null), needsCatalog ? api.getTeacherCatalog(selectedWorkspaceId) : Promise.resolve(null)]);
+      const nextCatalog = catalogResult ? { ...catalogResult.catalog, guided_blueprints: catalogResult.catalog.guided_blueprints ?? [] } : null;
       setWorkspaceId(selectedWorkspaceId);
       setData(overview);
       setCatalog(nextCatalog);
@@ -90,7 +92,7 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
     } finally {
       setLoading(false);
     }
-  }, [needsOverview]);
+  }, [needsCatalog, needsOverview]);
 
   useEffect(() => { queueMicrotask(() => void load()); }, [load]);
   useEffect(() => {
@@ -154,7 +156,9 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
   };
   const saveProps = { saving, saveMessage, onSave: () => void save() };
   const updateDraft = (nextCatalog: TeacherCatalog) => { setCatalog(nextCatalog); setSaveMessage(""); };
-  const content = page === "book"
+  const content = page === "classrooms"
+    ? <ClassroomManagementPage workspaceId={workspaceId} />
+    : page === "book"
     ? <TeacherBookEditor key={bookEditorGeneration} workspaceId={workspaceId} catalog={catalog ?? undefined} onCatalogChange={(nextCatalog) => { setCatalog(nextCatalog); setSavedCatalogSnapshot(JSON.stringify(nextCatalog)); }} onDirtyChange={setBookDirty} />
     : !catalog || (needsOverview && !data) ? null
       : page === "topics" ? <TopicCatalogEditor topics={catalog.topics} onChange={(topics) => updateDraft({ ...catalog, topics })} saveProps={saveProps} />

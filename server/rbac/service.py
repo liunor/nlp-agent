@@ -7,7 +7,8 @@ import inspect
 
 import uuid
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.identity import AuthenticatedPrincipal
@@ -27,7 +28,9 @@ from server.infrastructure.mysql.models import (
     RolePermissionScopeModel,
     MenuModel,
     RoleMenuModel,
+    SessionModel,
 )
+from server.classroom_join.code import generate_join_code
 from server.sandbox.service import sandbox_lifecycle_service
 from server.rbac.catalog import ROLE_NAMES
 
@@ -259,12 +262,34 @@ class RbacService:
     async def create_classroom(self, session: AsyncSession, *, workspace_id: str, name: str, actor_user_id: str) -> ClassroomModel:
         if await session.scalar(select(ClassroomModel.id).where(ClassroomModel.workspace_id == workspace_id).with_for_update()):
             raise ValueError("workspace already has a classroom")
-        classroom = ClassroomModel(id=str(uuid.uuid4()), workspace_id=workspace_id, name=name, status="active")
-        session.add(classroom)
-        # The membership row has a foreign key to the newly-created classroom.
-        # Flush the parent explicitly before adding that child while retaining
-        # the surrounding request transaction for atomicity.
-        await session.flush([classroom])
+        classroom: ClassroomModel | None = None
+        for _attempt in range(5):
+            candidate = ClassroomModel(
+                id=str(uuid.uuid4()),
+                workspace_id=workspace_id,
+                name=name,
+                join_code=generate_join_code(),
+                status="active",
+            )
+            try:
+                async with session.begin_nested():
+                    # The parent must be flushed before the member FK is added.
+                    # Add it after opening the savepoint: begin_nested() flushes
+                    # pending state before creating the savepoint, which would
+                    # otherwise make a unique-code collision abort the outer
+                    # classroom transaction and defeat the retry loop.
+                    session.add(candidate)
+                    await session.flush([candidate])
+            except IntegrityError:
+                try:
+                    session.expunge(candidate)
+                except InvalidRequestError:
+                    pass
+                continue
+            classroom = candidate
+            break
+        if classroom is None:
+            raise RuntimeError("unable to allocate a unique classroom join code")
         # The creator is the first classroom teacher; this is the explicit
         # classroom-scope root rather than an implicit workspace shortcut.
         session.add(ClassroomMemberModel(classroom_id=classroom.id, user_id=actor_user_id, member_role="teacher", status="active"))
@@ -280,7 +305,18 @@ class RbacService:
     async def classrooms_for_user(self, session: AsyncSession, user_id: str) -> list[ClassroomModel]:
         return list((await session.scalars(select(ClassroomModel).join(ClassroomMemberModel, ClassroomMemberModel.classroom_id == ClassroomModel.id).where(ClassroomMemberModel.user_id == user_id, ClassroomMemberModel.status == "active", ClassroomModel.status == "active").order_by(ClassroomModel.name))).all())
 
-    async def replace_classroom_member(self, session: AsyncSession, *, classroom_id: str, user_id: str, member_role: str, status: str, actor_user_id: str) -> None:
+    async def replace_classroom_member(
+        self,
+        session: AsyncSession,
+        *,
+        classroom_id: str,
+        user_id: str,
+        member_role: str,
+        status: str,
+        actor_user_id: str,
+        preserve_active_sessions: bool = False,
+        promote_guest_to_student: bool = False,
+    ) -> None:
         if member_role not in {"student", "teacher"} or status not in {"active", "disabled"}:
             raise ValueError("invalid classroom member role or status")
         classroom = await session.scalar(select(ClassroomModel).where(ClassroomModel.id == classroom_id, ClassroomModel.status == "active").with_for_update())
@@ -289,17 +325,77 @@ class RbacService:
         user = await session.scalar(select(UserModel).where(UserModel.id == user_id).with_for_update())
         if user is None:
             raise KeyError(user_id)
+        role_transition = False
+        if promote_guest_to_student:
+            active_roles = list(
+                (
+                    await session.execute(
+                        select(RoleModel.id, RoleModel.code)
+                        .join(UserRoleModel, UserRoleModel.role_id == RoleModel.id)
+                        .where(
+                            UserRoleModel.user_id == user_id,
+                            RoleModel.status == "active",
+                            (UserRoleModel.expires_at.is_(None))
+                            | (UserRoleModel.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)),
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            role_ids = {code: role_id for role_id, code in active_roles}
+            guest_role_id = await session.scalar(
+                select(RoleModel.id).where(
+                    RoleModel.code == "guest", RoleModel.status == "active"
+                ).with_for_update()
+            )
+            student_role_id = await session.scalar(
+                select(RoleModel.id).where(
+                    RoleModel.code == "student", RoleModel.status == "active"
+                ).with_for_update()
+            )
+            if guest_role_id is None or student_role_id is None:
+                raise UnknownRoleError("guest and student roles must be active")
+            if "student" not in role_ids:
+                session.add(
+                    UserRoleModel(
+                        user_id=user_id,
+                        role_id=student_role_id,
+                        assigned_by_user_id=actor_user_id,
+                    )
+                )
+                role_transition = True
+            if "guest" in role_ids:
+                await session.execute(
+                    delete(UserRoleModel).where(
+                        UserRoleModel.user_id == user_id,
+                        UserRoleModel.role_id == guest_role_id,
+                    )
+                )
+                role_transition = True
         member = await session.scalar(select(ClassroomMemberModel).where(ClassroomMemberModel.classroom_id == classroom_id, ClassroomMemberModel.user_id == user_id).with_for_update())
         if member is None:
             session.add(ClassroomMemberModel(classroom_id=classroom_id, user_id=user_id, member_role=member_role, status=status))
         else:
             member.member_role, member.status = member_role, status
+        previous_authorization_version = user.authorization_version
         user.authorization_version += 1
+        if preserve_active_sessions:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            await session.execute(
+                update(SessionModel)
+                .where(
+                    SessionModel.user_id == user_id,
+                    SessionModel.revoked_at.is_(None),
+                    SessionModel.expires_at > now,
+                    SessionModel.authorization_version == previous_authorization_version,
+                )
+                .values(authorization_version=user.authorization_version)
+            )
         await sandbox_lifecycle_service.revoke_user_leases(
             session, user_id=user_id, reason="authorization.changed:classroom_membership_changed"
         )
         session.add(OutboxMessageModel(id=str(uuid.uuid4()), topic="authorization.changed", payload_json={"user_id": user_id, "reason": "classroom_membership_changed"}))
-        await self.audit(session, actor_user_id=actor_user_id, target_user_id=user_id, decision="allow", reason_code="classroom_member_replaced", permission_code="classroom:member:manage", resource_type="classroom", resource_id=classroom_id, detail={"member_role": member_role, "status": status})
+        await self.audit(session, actor_user_id=actor_user_id, target_user_id=user_id, decision="allow", reason_code="classroom_member_replaced", permission_code="classroom:member:manage", resource_type="classroom", resource_id=classroom_id, detail={"member_role": member_role, "status": status, "guest_promoted_to_student": role_transition})
 
     async def audit(
         self,

@@ -135,6 +135,16 @@ class GatewayRepository:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(workspace_id, asset_path)
                 );
+                CREATE TABLE IF NOT EXISTS gateway_whiteboard_library_items (
+                    id TEXT PRIMARY KEY,
+                    asset_code TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    item_json TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_gateway_whiteboard_library_created
+                    ON gateway_whiteboard_library_items(created_at, id);
                 CREATE TABLE IF NOT EXISTS gateway_knowledge_book_files (
                     id TEXT PRIMARY KEY,
                     workspace_id TEXT NOT NULL,
@@ -236,6 +246,23 @@ class GatewayRepository:
                 DROP TABLE IF EXISTS gateway_outbox;
                 """
             )
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(gateway_whiteboard_library_items)").fetchall()}
+            if "asset_code" not in columns:
+                self._conn.execute("ALTER TABLE gateway_whiteboard_library_items ADD COLUMN asset_code TEXT")
+            rows = self._conn.execute(
+                "SELECT id, asset_code, item_json FROM gateway_whiteboard_library_items ORDER BY created_at ASC, id ASC"
+            ).fetchall()
+            for row in rows:
+                item = json.loads(row["item_json"])
+                existing_code = item.get("asset_code") if isinstance(item, dict) else None
+                asset_code = str(row["asset_code"] or existing_code or f"WB-{row['id'].replace('-', '')[:8].upper()}")
+                if row["asset_code"] != asset_code or existing_code != asset_code:
+                    item = {**item, "asset_code": asset_code}
+                    self._conn.execute(
+                        "UPDATE gateway_whiteboard_library_items SET asset_code=?, item_json=? WHERE id=?",
+                        (asset_code, json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False), row["id"]),
+                    )
+            self._conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_gateway_whiteboard_library_asset_code ON gateway_whiteboard_library_items(asset_code)")
             columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(gateway_turns)")}
             for name in (
                 "learning_context_json", "learning_progress_json", "exercise_state_json",
@@ -874,42 +901,6 @@ class GatewayRepository:
             )
         return {"revision": revision, "settings": merged, "updated_at": updated_at}
 
-    def list_whiteboard_library(self) -> list[dict[str, Any]]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT item_json FROM gateway_whiteboard_library_items "
-                "ORDER BY created_at ASC, id ASC"
-            ).fetchall()
-        return [json.loads(row["item_json"]) for row in rows]
-
-    def create_whiteboard_library_item(
-        self,
-        *,
-        name: str,
-        elements: list[dict[str, Any]],
-        created_by: str,
-    ) -> dict[str, Any]:
-        item = {
-            "id": str(uuid.uuid4()),
-            "status": "published",
-            "created": int(datetime.now(timezone.utc).timestamp() * 1000),
-            "name": name,
-            "elements": elements,
-        }
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO gateway_whiteboard_library_items "
-                "(id,name,item_json,created_by,created_at) VALUES (?,?,?,?,?)",
-                (
-                    item["id"],
-                    name,
-                    json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False),
-                    created_by,
-                    _now(),
-                ),
-            )
-        return item
-
     def get_teaching_catalog(self, workspace_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
@@ -954,6 +945,112 @@ class GatewayRepository:
                 (workspace_id, knowledge_point_id),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def list_whiteboard_library(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT item_json, asset_code FROM gateway_whiteboard_library_items "
+                "ORDER BY created_at ASC, id ASC"
+            ).fetchall()
+        return [{**json.loads(row["item_json"]), "asset_code": json.loads(row["item_json"]).get("asset_code") or row["asset_code"]} for row in rows]
+
+    def create_whiteboard_library_item(
+        self,
+        *,
+        name: str,
+        elements: list[dict[str, Any]],
+        created_by: str,
+    ) -> dict[str, Any]:
+        item_id = str(uuid.uuid4())
+        item = {
+            "id": item_id,
+            "asset_code": f"WB-{item_id.replace('-', '')[:8].upper()}",
+            "status": "published",
+            "created": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "name": name,
+            "elements": elements,
+        }
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO gateway_whiteboard_library_items "
+                "(id,asset_code,name,item_json,created_by,created_at) VALUES (?,?,?,?,?,?)",
+                (
+                    item["id"],
+                    item["asset_code"],
+                    name,
+                    json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False),
+                    created_by,
+                    _now(),
+                ),
+            )
+        return item
+
+    def rename_whiteboard_library_item(self, item_id: str, *, name: str) -> dict[str, Any] | None:
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT item_json, asset_code FROM gateway_whiteboard_library_items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            item = {**json.loads(row["item_json"]), "asset_code": json.loads(row["item_json"]).get("asset_code") or row["asset_code"]}
+            item["name"] = name
+            self._conn.execute(
+                "UPDATE gateway_whiteboard_library_items SET name=?, item_json=? WHERE id=?",
+                (name, json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False), item_id),
+            )
+        return item
+
+    def delete_whiteboard_library_item(self, item_id: str) -> bool:
+        deleted, _ = self.delete_whiteboard_library_item_if_unreferenced(item_id)
+        return deleted
+
+    def delete_whiteboard_library_item_if_unreferenced(self, item_id: str) -> tuple[bool, int]:
+        """Check references and delete while holding the same SQLite lock."""
+
+        with self._lock, self._conn:
+            item_row = self._conn.execute(
+                "SELECT asset_code FROM gateway_whiteboard_library_items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+            if item_row is None:
+                return False, 0
+            rows = self._conn.execute(
+                "SELECT draft_markdown, published_markdown FROM gateway_knowledge_pages"
+            ).fetchall()
+            markers = [f'asset="{item_id}"']
+            if item_row["asset_code"]:
+                markers.append(f'code="{item_row["asset_code"]}"')
+            reference_count = sum(
+                1
+                for row in rows
+                if any(
+                    marker in (row["draft_markdown"] or "")
+                    or marker in (row["published_markdown"] or "")
+                    for marker in markers
+                )
+            )
+            if reference_count:
+                return False, reference_count
+            cursor = self._conn.execute(
+                "DELETE FROM gateway_whiteboard_library_items WHERE id=?",
+                (item_id,),
+            )
+            return cursor.rowcount > 0, 0
+
+    def count_whiteboard_library_references(self, item_id: str) -> int:
+        with self._lock:
+            item_row = self._conn.execute(
+                "SELECT asset_code FROM gateway_whiteboard_library_items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+            rows = self._conn.execute(
+                "SELECT draft_markdown, published_markdown FROM gateway_knowledge_pages"
+            ).fetchall()
+        markers = [f'asset="{item_id}"']
+        if item_row is not None and item_row["asset_code"]:
+            markers.append(f'code="{item_row["asset_code"]}"')
+        return sum(1 for row in rows if any(marker in (row["draft_markdown"] or "") or marker in (row["published_markdown"] or "") for marker in markers))
 
     def list_knowledge_pages(self, workspace_id: str) -> list[dict[str, Any]]:
         with self._lock:

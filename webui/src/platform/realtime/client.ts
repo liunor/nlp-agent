@@ -4,6 +4,7 @@ import { api } from "@/platform/http/api";
 
 type EventHandler = (event: ServerEvent) => void;
 type StatusHandler = (status: "connecting" | "connected" | "reconnecting" | "offline") => void;
+type ReadyHandler = () => void | Promise<unknown>;
 
 interface Command {
   v: "1";
@@ -28,6 +29,7 @@ export class StudentSocket {
     private readonly onEvent: EventHandler,
     private readonly onStatus: StatusHandler,
     private readonly ticketProvider: () => Promise<string> = async () => (await api.createWsTicket()).ticket,
+    private readonly onReady?: ReadyHandler,
   ) {}
 
   connect(): void {
@@ -72,6 +74,7 @@ export class StudentSocket {
       }
       if (event.type === "connection.ready") {
         this.ready = true;
+        void Promise.resolve(this.onReady?.()).catch(() => undefined);
         if (this.activeSession) this.command("session.subscribe", { session_id: this.activeSession });
         for (const [turnId, sequence] of this.lastSequences) {
           this.command("stream.resume", { turn_id: turnId, after_sequence: sequence });
@@ -123,7 +126,7 @@ export class StudentSocket {
     }
   }
 
-  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, knowledgeBookContext?: KnowledgeBookContext): void {
+  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, thinkingEnabled?: boolean, knowledgeBookContext?: KnowledgeBookContext): void {
     this.command("chat.send", {
       session_id: sessionId,
       content,
@@ -132,6 +135,7 @@ export class StudentSocket {
       ...(modelProfile ? { model_profile: modelProfile } : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...(knowledgeBookContext ? { knowledge_book_context: knowledgeBookContext } : {}),
+      ...(typeof thinkingEnabled === "boolean" ? { thinking_enabled: thinkingEnabled } : {}),
     }, requestId);
   }
 

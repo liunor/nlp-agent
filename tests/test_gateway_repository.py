@@ -9,6 +9,113 @@ from gateway.contracts import TeachingConfigurationError
 from gateway.repository import GatewayRepository
 
 
+def test_whiteboard_library_items_are_named_and_retrievable(tmp_path):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+
+    item = repository.create_whiteboard_library_item(
+        name="注意力计算过程",
+        elements=[{"id": "element-1", "type": "rectangle"}],
+        created_by="teacher-1",
+    )
+
+    assert item["name"] == "注意力计算过程"
+    assert item["asset_code"].startswith("WB-")
+    assert item["status"] == "published"
+    assert repository.list_whiteboard_library() == [item]
+
+
+def test_whiteboard_library_items_can_be_renamed_and_deleted(tmp_path):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    item = repository.create_whiteboard_library_item(
+        name="旧名称",
+        elements=[{"id": "element-1", "type": "rectangle"}],
+        created_by="teacher-1",
+    )
+
+    renamed = repository.rename_whiteboard_library_item(item["id"], name="新名称")
+
+    assert renamed["id"] == item["id"]
+    assert renamed["name"] == "新名称"
+    assert repository.list_whiteboard_library() == [renamed]
+    assert repository.delete_whiteboard_library_item(item["id"]) is True
+    assert repository.list_whiteboard_library() == []
+    assert repository.delete_whiteboard_library_item(item["id"]) is False
+
+
+def test_whiteboard_library_reference_count_counts_distinct_pages(tmp_path):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    item = repository.create_whiteboard_library_item(
+        name="注意力计算过程",
+        elements=[{"id": "element-1", "type": "rectangle"}],
+        created_by="teacher-1",
+    )
+    marker = f'<!-- nova-whiteboard asset="{item["id"]}" name="注意力计算过程" -->'
+    repository.update_knowledge_page("workspace-1", "point-1", marker, expected_revision=None)
+    repository.update_knowledge_page("workspace-1", "point-2", f"草稿\n\n{marker}", expected_revision=None)
+
+    assert repository.count_whiteboard_library_references(item["id"]) == 2
+
+
+def test_whiteboard_library_delete_is_atomic_with_reference_check(tmp_path):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    item = repository.create_whiteboard_library_item(
+        name="注意力计算过程",
+        elements=[{"id": "element-1", "type": "rectangle"}],
+        created_by="teacher-1",
+    )
+    repository.update_knowledge_page(
+        "workspace-1",
+        "point-1",
+        f'<!-- nova-whiteboard asset="{item["id"]}" -->',
+        expected_revision=None,
+    )
+
+    deleted, reference_count = repository.delete_whiteboard_library_item_if_unreferenced(item["id"])
+
+    assert deleted is False
+    assert reference_count == 1
+    assert repository.list_whiteboard_library() == [item]
+
+    repository.update_knowledge_page("workspace-1", "point-1", "", expected_revision=1)
+    deleted, reference_count = repository.delete_whiteboard_library_item_if_unreferenced(item["id"])
+
+    assert deleted is True
+    assert reference_count == 0
+    assert repository.list_whiteboard_library() == []
+
+
+def test_existing_whiteboard_library_rows_receive_codes_on_startup(tmp_path):
+    import sqlite3
+
+    database_path = tmp_path / "legacy-whiteboard.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE gateway_whiteboard_library_items (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            item_json TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO gateway_whiteboard_library_items
+            (id, name, item_json, created_by, created_at)
+        VALUES
+            ('11111111-2222-3333-4444-555555555555', '历史图画',
+             '{"id":"11111111-2222-3333-4444-555555555555","status":"published","created":1,"name":"历史图画","elements":[]}',
+             'teacher-1', '2026-01-01T00:00:00Z');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    repository = GatewayRepository(database_path)
+
+    item = repository.list_whiteboard_library()[0]
+    assert item["asset_code"] == "WB-11111111"
+    assert repository.rename_whiteboard_library_item(item["id"], name="历史图画（已命名）")["asset_code"] == "WB-11111111"
+
+
 def test_gateway_repository_idempotency_event_order_and_recovery(tmp_path):
     repository = GatewayRepository(tmp_path / "gateway.sqlite3")
     turn, duplicate = repository.create_turn(

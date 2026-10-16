@@ -366,11 +366,12 @@ def seed(workspace_id: str) -> dict[str, int | str]:
                 user_ids.append(user_id)
                 connection.execute(
                     text("""
-                        INSERT IGNORE INTO nlp_users(id,username,password_hash,display_name,status,registration_source)
-                        VALUES(:id,:username,:password_hash,:display_name,'active',:registration_source)
+                        INSERT IGNORE INTO nlp_users(id,identity_id,username,password_hash,display_name,status,registration_source)
+                        VALUES(:id,:identity_id,:username,:password_hash,:display_name,'active',:registration_source)
                     """),
                     {
                         "id": user_id,
+                        "identity_id": f"NV2{stable_id(f'identity:{username}').replace('-', '')[:13].upper()}",
                         "username": username,
                         "password_hash": "seeded-test-account-not-for-login",
                         "display_name": display_name,

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampedModel
 from .table_comments import TABLE_COMMENTS
+from core.public_identity import generate_public_identity_id
 
 # Quota tables share the same Alembic metadata.  Importing them here keeps
 # metadata-based tooling (including foundation checks) aware of every active
@@ -42,9 +43,15 @@ class UserModel(TimestampedModel, Base):
         # 生成列（见下方定义），保证 "Alice" 与 "alice" 在数据库层视为重复，
         # 杜绝同户名大小写不同的重复账号。
         Index("uq_nlp_users_username_lower", "username_lower", unique=True),
+        UniqueConstraint(
+            "phone_number_normalized", name="uq_nlp_users_phone_number_normalized"
+        ),
+        Index("ix_nlp_users_phone_number", "phone_number"),
+        Index("ix_nlp_users_phone_number_normalized", "phone_number_normalized"),
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    identity_id: Mapped[str] = mapped_column(String(16, collation="ascii_bin"), unique=True, nullable=False, index=True, default=generate_public_identity_id)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     # 大小写归一化的持久化副本，由数据库自动计算（GENERATED ALWAYS AS (LOWER(username)) STORED）
     username_lower: Mapped[str] = mapped_column(
@@ -71,6 +78,8 @@ class UserModel(TimestampedModel, Base):
     email_normalized: Mapped[str | None] = mapped_column(
         String(254), nullable=True, unique=True, index=True
     )
+    phone_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    phone_number_normalized: Mapped[str | None] = mapped_column(String(16), nullable=True)
     registration_source: Mapped[str] = mapped_column(
         String(32), nullable=False, server_default="manual"
     )
@@ -246,12 +255,16 @@ class AuthorizationAuditLogModel(Base):
 
 class ClassroomModel(TimestampedModel, Base):
     __tablename__ = "nlp_classrooms"
+    __table_args__ = (
+        UniqueConstraint("join_code", name="uq_nlp_classrooms_join_code"),
+    )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
         UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), unique=True, nullable=False
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    join_code: Mapped[str] = mapped_column(String(12), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
 
 
@@ -433,7 +446,6 @@ class KnowledgeBookAssetModel(TimestampedModel, Base):
     size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
     sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
 
-
 class KnowledgeBookFileModel(TimestampedModel, Base):
     """Text/code files embedded in teacher-authored knowledge-book pages."""
 
@@ -484,7 +496,6 @@ class KnowledgeBookFileRefModel(Base):
         DATETIME(fsp=6), nullable=False, server_default=func.utc_timestamp(6)
     )
 
-
 class WhiteboardLibraryItemModel(TimestampedModel, Base):
     """Globally shared Excalidraw library entries created by teaching roles."""
 
@@ -492,6 +503,7 @@ class WhiteboardLibraryItemModel(TimestampedModel, Base):
     __table_args__ = (Index("ix_nlp_whiteboard_library_created", "created_at", "id"),)
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    asset_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     item_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_by: Mapped[str] = mapped_column(UUID, nullable=False)
@@ -846,6 +858,11 @@ class LangGraphCheckpointWriteModel(Base):
 class ConversationTranscriptModel(Base):
     __tablename__ = "nlp_conversation_transcripts"
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6),
+        nullable=False,
+        server_default=func.utc_timestamp(6),
+    )
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     message_uuid: Mapped[str] = mapped_column(String(128), nullable=False)
     parent_uuid: Mapped[str | None] = mapped_column(String(128))
@@ -854,7 +871,136 @@ class ConversationTranscriptModel(Base):
     content_json: Mapped[dict | list | str] = mapped_column(JSON, nullable=False)
     tool_json: Mapped[dict | None] = mapped_column(JSON)
     usage_json: Mapped[dict | None] = mapped_column(JSON)
+
+
+class StorageAccountModel(TimestampedModel, Base):
+    """One logical quota ledger per account, shared by every workspace."""
+
+    __tablename__ = "nlp_storage_accounts"
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    core_used_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_used_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    core_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_reserved_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    files_reserved_items: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    file_transfer_notification_version: Mapped[int] = mapped_column(
+        BIGINT(unsigned=True), nullable=False, server_default="0"
+    )
+    core_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    files_quota_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    max_file_override_bytes: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    max_items_override: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+
+
+class StorageReservationModel(Base):
+    """An auditable reservation that prevents concurrent quota oversubscription."""
+
+    __tablename__ = "nlp_storage_reservations"
+    __table_args__ = (
+        Index("ix_nlp_storage_reservations_owner_status", "owner_user_id", "status"),
+        Index("ix_nlp_storage_reservations_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
+    )
+    bucket: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    amount_items: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_key: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="reserved")
+    reserved_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
+class StorageQuotaAuditModel(Base):
+    """Immutable audit record for administrator quota changes."""
+
+    __tablename__ = "nlp_storage_quota_audits"
+    __table_args__ = (
+        Index("ix_nlp_storage_quota_audits_target_created", "target_user_id", "created_at"),
+        Index("ix_nlp_storage_quota_audits_actor_created", "actor_user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    actor_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False
+    )
+    target_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False
+    )
+    previous_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    new_values: Mapped[dict] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False, server_default="")
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False)
+
+
+class UserFileModel(TimestampedModel, Base):
+    """User-owned files and folders stored outside the conversation transcript."""
+
+    __tablename__ = "nlp_user_files"
+    __table_args__ = (
+        Index("ix_nlp_user_files_owner_workspace_parent", "owner_user_id", "workspace_id", "parent_id"),
+        Index("ix_nlp_user_files_owner_workspace_status", "owner_user_id", "workspace_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_id: Mapped[str | None] = mapped_column(UUID, nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True, unique=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True, index=True)
+
+
+class FileTransferModel(TimestampedModel, Base):
+    """Durable consent request backed by an immutable staged file snapshot."""
+
+    __tablename__ = "nlp_file_transfers"
+    __table_args__ = (
+        Index("ix_nlp_file_transfers_recipient_status_created", "recipient_user_id", "status", "created_at"),
+        Index("ix_nlp_file_transfers_sender_status_created", "sender_user_id", "status", "created_at"),
+        Index("ix_nlp_file_transfers_cleanup_status_created", "status", "created_at", "id"),
+        Index("ix_nlp_file_transfers_status_expires", "status", "expires_at"),
+        UniqueConstraint("sender_user_id", "idempotency_key", name="uq_nlp_file_transfers_sender_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    sender_user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False)
+    recipient_user_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False)
+    source_workspace_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False)
+    recipient_workspace_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False)
+    source_file_id: Mapped[str | None] = mapped_column(UUID, ForeignKey("nlp_user_files.id", ondelete="SET NULL"))
+    original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    staging_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    quota_reservation_id: Mapped[str] = mapped_column(UUID, ForeignKey("nlp_storage_reservations.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    recipient_seen_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    responded_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    staging_deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    accepted_file_id: Mapped[str | None] = mapped_column(UUID, ForeignKey("nlp_user_files.id", ondelete="SET NULL"))
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class MemoryDocumentModel(TimestampedModel, Base):
@@ -949,8 +1095,10 @@ class ClassJoinRequestModel(TimestampedModel, Base):
     __tablename__ = "nlp_class_join_requests"
     __table_args__ = (
         Index("ix_nlp_class_join_requests_class_status", "class_id", "status"),
-        # 防重复申请：同一 (班级, 用户, 状态) 只能有一条 pending
-        UniqueConstraint("class_id", "user_id", "status", name="uq_nlp_class_join_requests_cls_usr_sts"),
+        # MySQL has no partial unique index.  ``pending_key`` is populated only
+        # while a request is pending, so historical approved/rejected rows can
+        # coexist while concurrent pending submissions still have one winner.
+        Index("uq_nlp_class_join_requests_pending_key", "pending_key", unique=True),
     )
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
@@ -959,6 +1107,9 @@ class ClassJoinRequestModel(TimestampedModel, Base):
     )
     user_id: Mapped[str] = mapped_column(
         UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False, comment="申请人"
+    )
+    pending_key: Mapped[str | None] = mapped_column(
+        String(73, collation="ascii_bin"), nullable=True, comment="仅 pending 状态使用的并发唯一键"
     )
     student_number: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="学生选填学号")
     status: Mapped[str] = mapped_column(

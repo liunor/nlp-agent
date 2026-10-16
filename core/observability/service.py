@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from core.identity import AccessDeniedError, AuthenticatedPrincipal
 from core.observability.runtime import TelemetryRuntime, global_telemetry
 from core.rbac import Permission, authorization_service
+from server.storage.monitoring import current_storage_snapshot
 
 
 class ObservabilityService:
@@ -237,6 +240,14 @@ class ObservabilityService:
     async def health(self, principal: AuthenticatedPrincipal) -> dict[str, Any]:
         self._require_monitor(principal)
         return await asyncio.to_thread(self.runtime.health)
+
+    async def space(
+        self, principal: AuthenticatedPrincipal, db: AsyncSession
+    ) -> dict[str, Any]:
+        """Return storage for this deployment's database and visible disk only."""
+
+        self._require_monitor(principal)
+        return await current_storage_snapshot(db)
 
     def subscribe(
         self, principal: AuthenticatedPrincipal, maxsize: int = 500

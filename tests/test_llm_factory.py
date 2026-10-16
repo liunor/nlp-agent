@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -115,6 +116,71 @@ def test_real_factory_builds_the_dedicated_qwen_web_preset(monkeypatch):
         "forced_search": True,
         "search_strategy": "turbo",
     }
+
+
+def test_turn_thinking_override_disables_reasoning_on_the_provider_request(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    raw = yaml.safe_load(
+        (root / "configs" / "agent_config.yaml").read_text(encoding="utf-8")
+    )
+    config = ModelRuntimeConfig.model_validate(
+        {
+            "providers": raw["providers"],
+            "models": raw["models"],
+            "model_presets": raw["model_presets"],
+            "model_routes": raw["model_routes"],
+            "model_profiles": raw["model_profiles"],
+            "default_model_profile": raw["defaults"]["model_profile"],
+        }
+    )
+    factory = ModelFactory(config)
+    monkeypatch.setattr(factory, "_api_key", lambda _env_name: "test")
+
+    runtime = factory.build_profile_role(
+        "deepseek", "coordinator", thinking_enabled=False
+    )
+    candidate = runtime.candidates[0]
+    payload = candidate.model._get_request_payload(
+        [HumanMessage(content="用一句话解释 Transformer")]
+    )
+
+    assert candidate.preset.thinking.enabled is False
+    assert candidate.preset.thinking.effort.value == "none"
+    assert payload["extra_body"]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in payload
+
+
+def test_model_factory_reload_applies_updated_thinking_preset(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    raw = yaml.safe_load(
+        (root / "configs" / "agent_config.yaml").read_text(encoding="utf-8")
+    )
+    config = ModelRuntimeConfig.model_validate(
+        {
+            "providers": raw["providers"],
+            "models": raw["models"],
+            "model_presets": raw["model_presets"],
+            "model_routes": raw["model_routes"],
+            "model_profiles": raw["model_profiles"],
+            "default_model_profile": raw["defaults"]["model_profile"],
+        }
+    )
+    factory = ModelFactory(config)
+    monkeypatch.setattr(factory, "_api_key", lambda _env_name: "test")
+    before = factory.build_profile_role("deepseek", "coordinator")
+
+    updated = deepcopy(raw)
+    updated["model_presets"]["coordinator-pro"]["thinking"] = {
+        "enabled": True,
+        "effort": "low",
+    }
+    monkeypatch.setattr("core.model_runtime.factory.settings._config", updated)
+    factory.reload_from_settings()
+    after = factory.build_profile_role("deepseek", "coordinator")
+
+    assert after is not before
+    assert after.candidates[0].preset.thinking.effort.value == "low"
+    assert after.candidates[0].model.reasoning_effort == "low"
 
 
 def test_native_search_profile_model_is_locked_and_exclusive(monkeypatch):

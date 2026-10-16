@@ -2,17 +2,19 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { DeveloperWorkspace } from "./DeveloperWorkspace";
 
-const { ensureAuthMock, listVisibleMenusMock, getDeveloperSnapshotMock, listFeedbackMock } = vi.hoisted(() => ({
+const { ensureAuthMock, listVisibleMenusMock, getDeveloperSnapshotMock, listFeedbackMock, saveModelPresetMock } = vi.hoisted(() => ({
   ensureAuthMock: vi.fn(),
   listVisibleMenusMock: vi.fn(),
   getDeveloperSnapshotMock: vi.fn(),
   listFeedbackMock: vi.fn(),
+  saveModelPresetMock: vi.fn(),
 }));
 vi.mock("@/platform/http/api", () => ({
   api: {
     listVisibleMenus: listVisibleMenusMock,
     getDeveloperSnapshot: getDeveloperSnapshotMock,
     listFeedback: listFeedbackMock,
+    saveModelPreset: saveModelPresetMock,
   },
   ensureAuth: ensureAuthMock,
 }));
@@ -50,6 +52,7 @@ describe("DeveloperWorkspace shell access", () => {
     listVisibleMenusMock.mockReset();
     getDeveloperSnapshotMock.mockReset();
     listFeedbackMock.mockReset();
+    saveModelPresetMock.mockReset();
     ensureAuthMock.mockResolvedValue({ roles: ["custom"], permissions: ["learning:feedback:read"] });
     listFeedbackMock.mockResolvedValue({ items: [], total: 0 });
     history.replaceState({}, "", "/developer");
@@ -144,5 +147,38 @@ describe("DeveloperWorkspace shell access", () => {
 
     await waitFor(() => expect(getDeveloperSnapshotMock).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("无法读取运行时快照")).toBeVisible();
+  });
+
+  it("saves edited model thinking presets from the developer page", async () => {
+    listVisibleMenusMock.mockResolvedValue({ items: [menu("/developer/models")] });
+    getDeveloperSnapshotMock.mockResolvedValue({
+      ...snapshot,
+      models: {
+        ...snapshot.models,
+        providers: { openai: { adapter: "openai_compatible", base_url: "https://example.test", api_key_configured: true } },
+        models: { "deepseek-v4-flash": { provider: "openai", model_id: "deepseek-v4-flash", context_window_tokens: 32000, capabilities: { thinking: true } } },
+        profiles: {},
+        presets: {
+          "coordinator-fast": {
+            model: "deepseek-v4-flash",
+            thinking: { enabled: true, effort: "high" },
+            generation: { max_output_tokens: 16000, temperature: null },
+          },
+        },
+      },
+    });
+    saveModelPresetMock.mockResolvedValue({ preset: "coordinator-fast" });
+
+    render(<DeveloperWorkspace page="models" />);
+
+    await screen.findByRole("heading", { name: "模型与 Provider" });
+    fireEvent.click(screen.getByRole("tab", { name: "模型预设" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "coordinator-fast 思考强度" }), { target: { value: "low" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存模型预设" }));
+
+    await waitFor(() => expect(saveModelPresetMock).toHaveBeenCalledWith("coordinator-fast", expect.objectContaining({
+      model: "deepseek-v4-flash",
+      thinking: { enabled: true, effort: "low" },
+    })));
   });
 });

@@ -25,6 +25,7 @@ from email.mime.text import MIMEText
 from typing import Any, Optional, Protocol
 
 from configs.settings import auth_env_bool, auth_env_value
+from server.auth.verification_policy import EMAIL_CODE_TTL_S
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class SmtpEmailProvider:
 
     def _send_sync(self, to: str, code: str) -> None:
         message = MIMEText(
-            f"你的 Nova 验证码是 {code}，2 分钟内有效。如非本人操作请忽略本邮件。",
+            f"你的 Nova 验证码是 {code}，{EMAIL_CODE_TTL_S // 60} 分钟内有效。如非本人操作请忽略本邮件。",
             "plain",
             "utf-8",
         )

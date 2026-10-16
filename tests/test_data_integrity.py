@@ -101,20 +101,20 @@ async def test_username_lower_generated_unique(mysql_session_factory) -> None:
         await s.execute(
             text(
                 "INSERT INTO nlp_users "
-                "(id, username, password_hash, display_name, status, authorization_version, created_at, updated_at) "
-                "VALUES (:id, :username, 'x', 'B', 'active', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))"
+                "(id, identity_id, username, password_hash, display_name, status, authorization_version, created_at, updated_at) "
+                "VALUES (:id, :identity_id, :username, 'x', 'B', 'active', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))"
             ),
-            {"id": str(uuid4()), "username": username.upper()},
+            {"id": str(uuid4()), "identity_id": f"NV2{uuid4().hex[:13].upper()}", "username": username.upper()},
         )
         await s.flush()
         try:
             await s.execute(
                 text(
                     "INSERT INTO nlp_users "
-                    "(id, username, password_hash, display_name, status, authorization_version, created_at, updated_at) "
-                    "VALUES (:id, :username, 'x', 'B2', 'active', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))"
+                    "(id, identity_id, username, password_hash, display_name, status, authorization_version, created_at, updated_at) "
+                    "VALUES (:id, :identity_id, :username, 'x', 'B2', 'active', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))"
                 ),
-                {"id": str(uuid4()), "username": username.lower()},
+                {"id": str(uuid4()), "identity_id": f"NV3{uuid4().hex[:13].upper()}", "username": username.lower()},
             )
             await s.commit()
         except SQLAlchemyIntegrityError:

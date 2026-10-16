@@ -19,6 +19,7 @@ from server.auth.dependencies import Principal, WriteClaims, get_db_session
 
 from .schemas import (
     PasswordChange,
+    PasswordConfirm,
     PasswordReset,
     UserAdminUpdate,
     UserCreateWithRole,
@@ -27,6 +28,7 @@ from .schemas import (
     UserUpdate,
 )
 from .service import (
+    HardDeleteBlockedError,
     SelfDeleteForbiddenError,
     UserAlreadyExistsError,
     UserNotFoundError,
@@ -220,6 +222,79 @@ async def change_own_password(
         resource_type="user",
         resource_id=principal.user_id,
     )
+
+
+@router.post("/me/password/verify", status_code=status.HTTP_204_NO_CONTENT)
+async def verify_own_password(
+    data: PasswordConfirm,
+    db: DbSession,
+    _write: WriteClaims,
+    principal: Principal,
+):
+    """Verify the current user's password without taking any action.
+
+    Used by the self-service account-deletion flow as a re-authentication gate:
+    the frontend confirms the password first, then shows a countdown before the
+    destructive DELETE is actually issued.  Returns 204 on success, 401 on a
+    wrong password.
+    """
+    authorization_service.require(principal, Permission.IDENTITY_ACCOUNT_DELETE_SELF)
+
+    service = UserService(db)
+    user = await service.get_user(principal.user_id)
+    if not await service.verify_password(user, data.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="密码错误",
+        )
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_current_user(
+    data: PasswordConfirm,
+    db: DbSession,
+    _write: WriteClaims,
+    principal: Principal,
+):
+    """Permanently delete the current user's own account and all data (self-service).
+
+    This is the "注销账号" entry point.  It hard-deletes the account together
+    with every owned record (conversations, feedback, monitor/observability
+    rows, sandbox state, quota accounting, roles and the personal workspace) and
+    schedules removal of the user's local files — leaving no trace.
+
+    Before deletion, the caller must re-authenticate by providing their current
+    password (review §6.1: re-authentication for destructive self-service), so a
+    stolen session alone cannot erase the account.
+    """
+    authorization_service.require(principal, Permission.IDENTITY_ACCOUNT_DELETE_SELF)
+
+    service = UserService(db)
+    user = await service.get_user(principal.user_id)
+    if not await service.verify_password(user, data.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="密码错误",
+        )
+    try:
+        await service.self_delete_account(principal.user_id)
+        # 审计：账号自注销属于高危操作，但记录时不得保留被删除的身份。
+        await rbac_service.audit(
+            db,
+            actor_user_id=None,
+            target_user_id=None,
+            decision="allow",
+            reason_code="user_account_self_deleted",
+            permission_code="identity:account:delete_self",
+            resource_type="user",
+            resource_id=None,
+        )
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except HardDeleteBlockedError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -435,6 +510,40 @@ async def restore_user(
         return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="Deleted user not found")
+    except LastDeveloperForbiddenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.delete("/{user_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
+async def permanently_delete_user(
+    user_id: str,
+    db: DbSession,
+    _write: WriteClaims,
+    principal: Principal,
+):
+    """Permanently remove an account and its owned data (admin only)."""
+    authorization_service.require(principal, Permission.SYSTEM_USER_MANAGE)
+
+    service = UserService(db)
+    try:
+        await service.hard_delete_user(user_id, actor_user_id=principal.user_id)
+        # Record the operator's action without retaining the erased identity.
+        await rbac_service.audit(
+            db,
+            actor_user_id=principal.user_id,
+            target_user_id=None,
+            decision="allow",
+            reason_code="user_account_hard_deleted",
+            permission_code="system:user:manage",
+            resource_type="user",
+            resource_id=None,
+        )
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except SelfDeleteForbiddenError:
+        raise HTTPException(status_code=403, detail="Cannot delete your own account")
+    except HardDeleteBlockedError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except LastDeveloperForbiddenError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
