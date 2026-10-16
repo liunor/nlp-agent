@@ -78,6 +78,15 @@ def test_proxy_plan_uses_exact_peer_gateway_and_immutable_files(release, planned
     assert all(item["read_only"] for item in overlay["services"]["nginx"]["volumes"])
 
 
+def test_release_files_survive_actions_checkout_cleanup(release, planned, monkeypatch):
+    deploy_dir = planned.args[1]
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(deploy_dir.parent))
+    with pytest.raises(ValueError, match="RELEASE_INSIDE_ACTIONS_CHECKOUT"):
+        release.plan(*planned.args)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(deploy_dir / "checkout"))
+    release.plan(*planned.args)
+
+
 @pytest.mark.parametrize("change,code", [("host", "HOST_PROXY_CHANGED"), ("volume", "WRONG_BUSINESS_VOLUME"),
                                         ("network", "LIVE_PROJECT_OR_NETWORK"), ("image", "IMMUTABLE_IMAGE")])
 def test_plan_rejects_changed_host_or_foreign_resources(release, planned, change, code):

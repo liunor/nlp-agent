@@ -103,6 +103,10 @@ def proxy_config(source):
 def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, extra_containers=None):
     require(project in PROJECTS, "PROJECT_OUT_OF_SCOPE")
     require(re.fullmatch(r"ghcr\.io/[A-Za-z0-9_./-]+@sha256:[0-9a-f]{64}", image), "IMMUTABLE_IMAGE_REQUIRED")
+    workspace = os.environ.get("GITHUB_WORKSPACE", "").strip()
+    if workspace:
+        require(not deploy_dir.resolve().is_relative_to(Path(workspace).resolve()),
+                "RELEASE_INSIDE_ACTIONS_CHECKOUT")
     require(sha(host_config) == HOST_SHA, "HOST_PROXY_CHANGED_REAUDIT_REQUIRED")
     require(re.search(r"(?:127\.0\.0\.1|localhost):" + str(PROJECTS[project]) + r"(?![0-9])",
                       host_config.decode()), "HOST_LOOPBACK_UPSTREAM_MISSING")
