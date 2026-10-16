@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { useAuth } from "@/platform/auth/AuthContext";
 import { api } from "@/platform/http/api";
+import { emailCodeNotice } from "@/shared/utils/emailCodeNotice";
 import { ConsentNotice, LegalDocumentModal } from "./LegalConsent";
 import type { LegalDocumentKind } from "./legalDocuments";
 
@@ -150,6 +151,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
   const [emailSending, setEmailSending] = useState(false);
   const [emailCooldown, setEmailCooldown] = useState(0);
   const [emailSent, setEmailSent] = useState(false);
+  const [emailNotice, setEmailNotice] = useState("");
   const [hasAgreed, setHasAgreed] = useState(false);
   const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
   const [consentError, setConsentError] = useState("");
@@ -201,6 +203,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
     setEmail(value);
     setError("");
     setEmailSent(false);
+    setEmailNotice("");
     setEmailCode("");
     setRegCaptchaId("");
     setRegCaptchaImage("");
@@ -218,8 +221,9 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
     setEmailSending(true);
     setError("");
     try {
-      await api.sendEmailCode(email.trim(), emailCaptchaId, emailCaptchaCode.trim());
-      setEmailCooldown(60);
+      const sent = await api.sendEmailCode(email.trim(), emailCaptchaId, emailCaptchaCode.trim());
+      setEmailCooldown(sent?.resend_after ?? 60);
+      setEmailNotice(emailCodeNotice(sent?.expires_in));
       setEmailSent(true);
       // 保留用户已输入的图片验证码字符串，不在此处清空
       if (!(await loadCaptcha("reg"))) {
@@ -314,6 +318,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
             {emailSending ? "发送中..." : emailCooldown > 0 ? `${emailCooldown}s` : "发送验证码"}
           </button>
         </div>
+        {emailSent && <p className="mt-2 text-xs text-gray-500" role="status">{emailNotice}</p>}
       </div>
 
       <div>

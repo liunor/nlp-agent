@@ -25,6 +25,14 @@ class AuthenticationError(PermissionError):
     pass
 
 
+class LoginRateLimitError(AuthenticationError):
+    """A temporary login cooldown, separate from an expired session."""
+
+    def __init__(self, retry_after_s: int) -> None:
+        super().__init__("too many login attempts")
+        self.retry_after_s = max(1, int(retry_after_s))
+
+
 class OriginRejectedError(PermissionError):
     pass
 

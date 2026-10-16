@@ -2,6 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { LockKeyhole, RefreshCw, X } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/platform/http/api";
+import { emailCodeNotice } from "@/shared/utils/emailCodeNotice";
 import { ConsentNotice, LegalDocumentModal } from "@/modules/auth/LegalConsent";
 import type { LegalDocumentKind } from "@/modules/auth/legalDocuments";
 
@@ -189,6 +190,7 @@ function RegisterForm({
   const [regCaptchaImage, setRegCaptchaImage] = useState("");
   const [regCaptchaCode, setRegCaptchaCode] = useState("");
   const [emailSent, setEmailSent] = useState(false);
+  const [emailNotice, setEmailNotice] = useState("");
   const [hasAgreed, setHasAgreed] = useState(false);
   const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
   const captchaRequestVersion = useRef({ email: 0, reg: 0 });
@@ -232,6 +234,7 @@ function RegisterForm({
     setEmail(value);
     setError("");
     setEmailSent(false);
+    setEmailNotice("");
     setEmailCode("");
     setRegCaptchaId("");
     setRegCaptchaImage("");
@@ -249,8 +252,9 @@ function RegisterForm({
     setEmailSending(true);
     setError("");
     try {
-      await api.sendEmailCode(email.trim(), emailCaptchaId, emailCaptchaCode.trim());
-      setEmailCooldown(60);
+      const sent = await api.sendEmailCode(email.trim(), emailCaptchaId, emailCaptchaCode.trim());
+      setEmailCooldown(sent?.resend_after ?? 60);
+      setEmailNotice(emailCodeNotice(sent?.expires_in));
       setEmailSent(true);
       // Keep emailCaptchaCode value (don't clear it) - user may need to see what they entered
       // Load registration CAPTCHA for the next step
@@ -387,6 +391,7 @@ function RegisterForm({
             {emailSending ? "发送中..." : emailCooldown > 0 ? `${emailCooldown}s` : "发送验证码"}
           </button>
         </div>
+        {emailSent && <p role="status" style={{ fontSize: 12, color: "var(--text-secondary, #6b7280)" }}>{emailNotice}</p>}
       </label>
       <label>
         <span>密码</span>

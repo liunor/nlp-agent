@@ -627,7 +627,7 @@ class UserService:
 def generate_email_code() -> str:
     """Generate a 6-digit verification code.
 
-    This is a pure random generator: persistence, the 120s expiry, single-use
+    This is a pure random generator: persistence, the policy expiry, single-use
     semantics and server-side send-rate limits all live in
     :mod:`server.auth.code_store` (shared ``nlp_auth_codes`` table), so codes
     survive multi-instance deployments.

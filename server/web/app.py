@@ -42,6 +42,7 @@ from server.infrastructure.mysql.models import ClassroomModel
 from server.web.auth import (
     AuthenticationError,
     CsrfRejectedError,
+    LoginRateLimitError,
     OriginRejectedError,
     SameOriginSessionAuth,
     SessionClaims,
@@ -871,6 +872,19 @@ def create_app(
         SessionClaims | DatabaseSessionClaims, Depends(write_access)
     ]
 
+    @app.exception_handler(LoginRateLimitError)
+    async def login_rate_limit_error(request: Request, error: LoginRateLimitError):
+        response = _problem(
+            request,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            code="login_rate_limited",
+            title="Too many login attempts",
+            detail="Try again after the login cooldown.",
+            extra={"retry_after_s": error.retry_after_s},
+        )
+        response.headers["Retry-After"] = str(error.retry_after_s)
+        return response
+
     @app.exception_handler(AuthenticationError)
     async def authentication_error(request: Request, _error: AuthenticationError):
         return _problem(
@@ -1010,7 +1024,7 @@ def create_app(
           - per-email cooldown / per-email hourly / per-IP hourly send limits;
           - real delivery via the configured email provider; missing production
             configuration returns 503 and never prints the verification code;
-        - the code is stored hashed with a hard 120s expiry enforced at
+        - the code is stored hashed with the shared verification-policy expiry enforced at
           consumption time.
         """
         await code_store.purge_expired(db)
@@ -1055,7 +1069,9 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="email_send_busy") from error
         except EmailConfigurationError as error:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-        return {"message": "Email code sent successfully"}
+        return {"message": "Email code sent successfully",
+                "expires_in": code_store.EMAIL_CODE_TTL_S,
+                "resend_after": code_store.EMAIL_RESEND_COOLDOWN_S}
 
     @app.post("/api/v1/auth/login", status_code=status.HTTP_200_OK, tags=["auth"])
     async def login(body: LoginBody, request: Request, response: Response):

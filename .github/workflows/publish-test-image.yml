@@ -224,10 +224,13 @@ jobs:
           ' "$DEPLOY_DIR/.env" > "$DEPLOY_ENV_FILE"
           chmod 600 "$DEPLOY_ENV_FILE"
           export NOVA_ENV_FILE="$DEPLOY_ENV_FILE"
+          export NOVA_WEB_BIND_ADDRESS=127.0.0.1
+          AUTH_PROXY_OVERRIDE="$(python3 "$GITHUB_WORKSPACE/.github/scripts/prepare-auth-release.py" prepare \
+            --project "$COMPOSE_PROJECT_NAME" --deploy-dir "$DEPLOY_DIR" --image "$NOVA_IMAGE_REF")"
           mkdir -p /var/lock/nova-sandbox
           compose_config_json="$(mktemp)"
           COMPOSE_CONFIG_JSON="$compose_config_json"
-          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml config --format json > "$COMPOSE_CONFIG_JSON"
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" config --format json > "$COMPOSE_CONFIG_JSON"
           python3 - "$COMPOSE_CONFIG_JSON" <<'PY'
           import json
           import sys
@@ -246,26 +249,34 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/run-with-transient-registry-retry.sh" \
             docker pull --quiet "$SANDBOX_CONFIGURED_REF"
           test "$NOVA_IMAGE_REF" = "ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}"
-          resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml config --images)"
+          resolved_images="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" config --images)"
           printf '%s\n' "$resolved_images"
           printf '%s\n' "$resolved_images" | grep -Fxq "$NOVA_IMAGE_REF" || {
             echo "Compose did not resolve the expected published image: $NOVA_IMAGE_REF"
             exit 1
           }
           bash "$GITHUB_WORKSPACE/.github/scripts/run-with-transient-registry-retry.sh" \
-            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml pull --quiet nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx mysql redis
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" pull --quiet nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx mysql redis
           # Every image needed by this `up` was pulled above. Prevent Compose
           # from issuing a second registry request after a successful pull.
           export NOVA_PULL_POLICY=never
-          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx; then
+          python3 "$GITHUB_WORKSPACE/.github/scripts/prepare-auth-release.py" stage \
+            --project "$COMPOSE_PROJECT_NAME" --deploy-dir "$DEPLOY_DIR" --image "$NOVA_IMAGE_REF" \
+            --override "$AUTH_PROXY_OVERRIDE"
+          docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" \
+            -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" config --format json > "$COMPOSE_CONFIG_JSON"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/prepare-auth-release.py" check \
+            --project "$COMPOSE_PROJECT_NAME" --deploy-dir "$DEPLOY_DIR" --image "$NOVA_IMAGE_REF" \
+            --override "$AUTH_PROXY_OVERRIDE" --compose-json "$COMPOSE_CONFIG_JSON"
+          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" up -d --force-recreate --no-build --remove-orphans nova-migrate nova-web nova-worker nova-monitor nova-sandbox-manager nginx; then
             echo "::error::Compose startup failed; collecting migration diagnostics."
-            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps || true
-            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml logs --no-color --tail=200 nova-migrate || true
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" ps || true
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" logs --no-color --tail=200 nova-migrate || true
             exit 1
           fi
           worker_running=0
           for worker_attempt in {1..12}; do
-            if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker"; then
+            if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" ps --status running --services nova-worker | grep -Fxq "nova-worker"; then
               worker_running=1
               break
             fi
@@ -273,12 +284,12 @@ jobs:
           done
           if [ "$worker_running" -ne 1 ]; then
             echo "::error::nova-worker is not running; cannot validate outbound network configuration."
-            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps || true
-            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml logs --no-color --tail=200 nova-worker || true
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" ps || true
+            docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" logs --no-color --tail=200 nova-worker || true
             exit 1
           fi
           echo "Proxy connectivity preflight"
-          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-worker .venv/bin/python -c '
+          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" exec -T nova-worker .venv/bin/python -c '
           import os
           import socket
           import sys
@@ -308,15 +319,18 @@ jobs:
             exit 1
           fi
           for attempt in {1..12}; do
-            if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
-              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
-              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-worker | grep -Fxq "nova-worker" \
-              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml ps --status running --services nova-sandbox-manager | grep -Fxq "nova-sandbox-manager" \
-              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
+            if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" ps --status running --services nova-worker | grep -Fxq "nova-worker" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" ps --status running --services nova-sandbox-manager | grep -Fxq "nova-sandbox-manager" \
+              && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" exec -T nginx wget -q -O - "http://127.0.0.1/health/live" >/dev/null; then
               docker image inspect "$SANDBOX_CONFIGURED_REF" >/dev/null || {
                 echo "::error::Configured sandbox runtime image is missing after deployment: $SANDBOX_CONFIGURED_REF"
                 exit 1
               }
+              python3 "$GITHUB_WORKSPACE/.github/scripts/prepare-auth-release.py" verify \
+                --project "$COMPOSE_PROJECT_NAME" --deploy-dir "$DEPLOY_DIR" --image "$NOVA_IMAGE_REF" \
+                --override "$AUTH_PROXY_OVERRIDE"
               exit 0
             fi
             sleep 5

@@ -12,8 +12,10 @@ services:
     logging: *default-logging
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/trusted-edge-http.conf:/etc/nginx/trusted-edge-http.conf:ro
+      - ./nginx/trusted-edge-addresses.conf:/etc/nginx/trusted-edge-addresses.conf:ro
     ports:
-      - "${NOVA_WEB_HOST_PORT:?Set NOVA_WEB_HOST_PORT}:80"
+      - "${NOVA_WEB_BIND_ADDRESS:-127.0.0.1}:${NOVA_WEB_HOST_PORT:?Set NOVA_WEB_HOST_PORT}:80"
     restart: unless-stopped
     depends_on:
       nova-web:

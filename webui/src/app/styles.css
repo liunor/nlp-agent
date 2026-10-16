@@ -2610,6 +2610,11 @@ button { color: inherit; }
 .developer-quota-page .quota-button-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .developer-quota-page .quota-inline-tool-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:14px; }
 .developer-quota-page .quota-compact-input { min-width:190px; min-height:32px; box-sizing:border-box; padding:6px 8px; border:1px solid var(--border); border-radius:8px; background:var(--soft-bg); color:var(--fg); font:inherit; }
+.developer-quota-page .quota-role-table { min-width: 790px; }
+.developer-quota-page .quota-role-table input { width: 110px; min-height: 34px; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--soft-bg); color: var(--fg); font: inherit; }
+.developer-quota-page .quota-role-table td:nth-child(5) input { width: 56px; }
+.developer-quota-page .quota-role-table input:disabled { opacity: .6; }
+.developer-quota-page .quota-role-panel > .quota-form-help:last-child { margin-top: 12px; }
 .developer-quota-page .quota-inline-notice { display:flex; align-items:flex-start; gap:7px; margin-top:12px; padding:9px 10px; border:1px solid color-mix(in srgb, #b42318 28%, var(--border)); border-radius:8px; background:color-mix(in srgb, #b42318 7%, var(--bg)); color:#9e2b22; font-size:11px; line-height:1.5; }
 .developer-quota-page .quota-inline-notice.success { border-color:color-mix(in srgb, #22a65a 28%, var(--border)); background:color-mix(in srgb, #22a65a 7%, var(--bg)); color:#18834b; }
 .developer-quota-page .quota-alert-list { display:grid; gap:8px; }

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { api, AUTH_EXPIRED_EVENT, ensureAuth } from "@/platform/http/api";
+import { api, AUTH_EXPIRED_EVENT, AuthStateChangedError, ensureAuth, getAuthGeneration, subscribeAuthChanges } from "@/platform/http/api";
 import type { AuthSession } from "@/shared/types";
 
 interface AuthContextValue {
@@ -29,22 +29,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    ensureAuth()
+    const restore = () => {
+      const generation = getAuthGeneration();
+      return ensureAuth()
       .then((session) => {
-        if (!active) return;
+        if (!active || generation !== getAuthGeneration()) return;
         setUser(session);
         setError("");
+        setIsAuthExpired(false);
       })
       .catch((e: unknown) => {
-        if (!active) return;
+        if (!active || generation !== getAuthGeneration() || e instanceof AuthStateChangedError) return;
         const status = typeof e === "object" && e !== null && "status" in e ? e.status : undefined;
         if (status !== 401) setError(e instanceof Error ? e.message : "认证失败");
       })
       .finally(() => {
-        if (active) setIsLoading(false);
+        if (active && generation === getAuthGeneration()) setIsLoading(false);
       });
+    };
+    const unsubscribe = subscribeAuthChanges(() => {
+      setUser(null);
+      setError("");
+      setIsAuthExpired(false);
+      setIsLoading(true);
+      void restore();
+    });
+    void restore();
     return () => {
       active = false;
+      unsubscribe();
     };
   }, []);
   useEffect(() => {
@@ -97,29 +110,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [isAuthExpired, user]);
   const login = useCallback(async (username: string, password: string) => {
     setError("");
+    const pending = api.login(username, password);
+    const generation = getAuthGeneration();
     try {
-      const session = await api.login(username, password);
+      const session = await pending;
+      if (generation !== getAuthGeneration()) throw new AuthStateChangedError();
       setUser(session);
       setIsAuthExpired(false);
+      setIsLoading(false);
       return session;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "登录失败");
+      if (generation === getAuthGeneration() && !(reason instanceof AuthStateChangedError)) {
+        setError(reason instanceof Error ? reason.message : "登录失败");
+        setIsLoading(false);
+      }
       throw reason;
     }
   }, []);
 
   const logout = useCallback(async () => {
+    const pending = api.logout();
+    const generation = getAuthGeneration();
     try {
-      await api.logout();
+      await pending;
     } catch (err) {
       console.error("Logout failed:", err);
     } finally {
       // A locally expired/revoked cookie must not leave the React tree looking
       // authenticated after the server has rejected logout.
-      setUser(null);
-      setError("");
-      // Redirect to login page
-      window.location.href = "/";
+      if (generation === getAuthGeneration()) {
+        setUser(null);
+        setError("");
+        // Redirect to login page
+        window.location.href = "/";
+      }
     }
   }, []);
 

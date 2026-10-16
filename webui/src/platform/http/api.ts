@@ -8,6 +8,7 @@ export class ApiError extends Error {
     message: string,
     public readonly status: number,
     public readonly code?: string,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
   }
@@ -15,6 +16,56 @@ export class ApiError extends Error {
 
 let csrfToken = "";
 let authRequest: Promise<AuthSession> | null = null;
+let authGeneration = 0;
+let authMutation: Promise<void> | null = null;
+const AUTH_CHANGED_STORAGE_KEY = "nova:auth-changed";
+
+export class AuthStateChangedError extends Error {
+  constructor() {
+    super("登录状态已更新，请重试。");
+  }
+}
+
+export function getAuthGeneration(): number {
+  return authGeneration;
+}
+
+function beginAuthChange(): number {
+  authGeneration += 1;
+  authRequest = null;
+  return authGeneration;
+}
+
+function notifyAuthChanged(): void {
+  // Only a change notification is stored, never session data or tokens.
+  try {
+    window.localStorage.setItem(AUTH_CHANGED_STORAGE_KEY, `${Date.now()}:${Math.random()}`);
+  } catch {
+    // Disabled browser storage must not fail a successful login/logout.
+  }
+}
+
+export function subscribeAuthChanges(listener: () => void): () => void {
+  const changed = (event: StorageEvent) => {
+    if (event.key !== AUTH_CHANGED_STORAGE_KEY || !event.newValue || event.newValue === event.oldValue) return;
+    beginAuthChange();
+    csrfToken = "";
+    listener();
+  };
+  window.addEventListener("storage", changed);
+  return () => window.removeEventListener("storage", changed);
+}
+
+function runAuthMutation<T>(operation: () => Promise<T>): Promise<T> {
+  // Login/logout responses can set cookies, so keep those operations in order.
+  const result = authMutation ? authMutation.then(operation) : operation();
+  const settled = result.then(() => undefined, () => undefined);
+  authMutation = settled;
+  void settled.then(() => {
+    if (authMutation === settled) authMutation = null;
+  });
+  return result;
+}
 
 interface RequestOptions {
   /** 401 表示业务错误（如密码错误）而非会话过期：不广播全局 auth-expired 事件、不清除 CSRF 令牌。 */
@@ -27,6 +78,8 @@ async function request<T>(
   retryCsrf = true,
   options: RequestOptions = {},
 ): Promise<T> {
+  const requestGeneration = authGeneration;
+  const requestCsrfToken = csrfToken;
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) {
@@ -49,24 +102,38 @@ async function request<T>(
       problem.code === "csrf_rejected" &&
       retryCsrf &&
       !["GET", "HEAD", "OPTIONS"].includes(method) &&
-      path !== "/auth/session"
+      path !== "/auth/session" &&
+      path !== "/auth/login" &&
+      requestGeneration === authGeneration &&
+      requestCsrfToken === csrfToken &&
+      !authMutation
     ) {
       await ensureAuth();
-      return request<T>(path, init, false);
+      if (requestGeneration !== authGeneration) throw new AuthStateChangedError();
+      return request<T>(path, init, false, options);
     }
     if (
   response.status === 401 &&
-  csrfToken &&
+  requestCsrfToken &&
+  requestGeneration === authGeneration &&
+  requestCsrfToken === csrfToken &&
+  !authMutation &&
   path !== "/auth/session" &&
   path !== "/auth/login" &&
   !options.ignoreAuthExpired
 ) {
+  beginAuthChange();
   csrfToken = "";
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
   }
 }
-    throw new ApiError(problem.detail ?? problem.title ?? `HTTP ${response.status}`, response.status, problem.code);
+    const seconds = Number(response.headers.get("Retry-After"));
+    const retryAfterSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : undefined;
+    const message = response.status === 429 && problem.code === "login_rate_limited"
+      ? retryAfterSeconds ? `登录尝试过多，请等待 ${retryAfterSeconds} 秒后重试。` : "登录尝试过多，请稍后重试。"
+      : problem.detail ?? problem.title ?? `HTTP ${response.status}`;
+    throw new ApiError(message, response.status, problem.code, retryAfterSeconds);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -74,8 +141,14 @@ async function request<T>(
 
 export function ensureAuth(): Promise<AuthSession> {
   if (authRequest) return authRequest;
-  const pending = request<AuthSession>("/auth/session")
+  const generation = authGeneration;
+  const restore = () => {
+    if (generation !== authGeneration) throw new AuthStateChangedError();
+    return request<AuthSession>("/auth/session");
+  };
+  const pending = (authMutation ? authMutation.then(restore) : restore())
     .then((session) => {
+      if (generation !== authGeneration) throw new AuthStateChangedError();
       csrfToken = session.csrf_token;
       return session;
     })
@@ -196,16 +269,32 @@ export function readStorageFile(fileId: string, workspaceId?: string): Promise<S
 
 export const api = {
   login: async (username: string, password: string) => {
-    const session = await request<AuthSession>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
+    const generation = beginAuthChange();
+    return runAuthMutation(async () => {
+      if (generation !== authGeneration) throw new AuthStateChangedError();
+      const session = await request<AuthSession>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
+      if (generation !== authGeneration) throw new AuthStateChangedError();
+      csrfToken = session.csrf_token;
+      notifyAuthChanged();
+      return session;
     });
-    csrfToken = session.csrf_token;
-    return session;
   },
   logout: async () => {
-    await request<void>("/auth/session", { method: "DELETE" });
-    csrfToken = "";
+    const generation = beginAuthChange();
+    return runAuthMutation(async () => {
+      if (generation !== authGeneration) throw new AuthStateChangedError();
+      try {
+        await request<void>("/auth/session", { method: "DELETE" });
+      } finally {
+        if (generation === authGeneration) {
+          csrfToken = "";
+          notifyAuthChanged();
+        }
+      }
+    });
   },
   getAuthSession: ensureAuth,
   getStorageUsage: (workspaceId?: string) => request<StorageUsage>(`/storage/usage${storageQuery(workspaceId)}`),
@@ -503,7 +592,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   sendEmailCode: (email: string, captchaId: string, captchaCode: string) =>
-    request<{ message: string }>("/auth/email/send", {
+    request<{ message: string; expires_in?: number; resend_after?: number }>("/auth/email/send", {
       method: "POST",
       body: JSON.stringify({ email, captcha_id: captchaId, captcha_code: captchaCode }),
     }),

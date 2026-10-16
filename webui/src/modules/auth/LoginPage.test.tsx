@@ -9,6 +9,9 @@ import { LoginPage } from "./LoginPage";
 
 vi.mock("@/platform/http/api", () => ({
   AUTH_EXPIRED_EVENT: "nova:auth-expired",
+  AuthStateChangedError: class extends Error {},
+  getAuthGeneration: () => 0,
+  subscribeAuthChanges: () => () => undefined,
   ensureAuth: vi.fn(),
   api: {
     login: vi.fn(),
@@ -101,7 +104,7 @@ describe("LoginPage", () => {
       .mockResolvedValueOnce({ captcha_id: "email-2", image: "data:image/png;base64,email2" });
     let finishSending!: () => void;
     vi.mocked(api.sendEmailCode).mockImplementation(() => new Promise((resolve) => {
-      finishSending = () => resolve({ message: "sent" });
+      finishSending = () => resolve({ message: "sent", expires_in: 300, resend_after: 60 });
     }));
     render(
       <MemoryRouter initialEntries={["/login"]}>
@@ -120,8 +123,10 @@ describe("LoginPage", () => {
     expect(email).toBeDisabled();
     finishSending();
     await waitFor(() => expect(screen.getByPlaceholderText("6位验证码")).toBeEnabled());
+    expect(screen.getByRole("status")).toHaveTextContent("有效期 5 分钟");
 
     fireEvent.change(email, { target: { value: "second@example.com" } });
+    expect(screen.queryByText(/有效期 5 分钟/)).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText("6位验证码")).toBeDisabled();
     expect(screen.queryByText("注册验证")).not.toBeInTheDocument();
     await waitFor(() => expect(api.getCaptcha).toHaveBeenCalledTimes(3));

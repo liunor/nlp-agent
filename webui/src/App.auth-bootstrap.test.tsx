@@ -25,6 +25,9 @@ const harness = vi.hoisted(() => {
 vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() {} close() {} setSession() {} sendChat() {} resume() {} cancel() {} } }));
 vi.mock("@/platform/http/api", () => ({
   AUTH_EXPIRED_EVENT: "nova:auth-expired",
+  AuthStateChangedError: class extends Error {},
+  getAuthGeneration: () => 0,
+  subscribeAuthChanges: () => () => undefined,
   ensureAuth: harness.authenticate,
   api: {
     listSessions: vi.fn().mockResolvedValue({ items: [] }),

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import math
 import secrets
 import uuid
 from collections import defaultdict, deque
@@ -34,7 +35,7 @@ from server.infrastructure.mysql.models import (
 )
 from server.user.service import PasswordHasherSingleton
 from server.sandbox.service import sandbox_lifecycle_service
-from server.web.auth import AuthenticationError, CsrfRejectedError, OriginRejectedError
+from server.web.auth import AuthenticationError, CsrfRejectedError, LoginRateLimitError, OriginRejectedError
 
 
 def _utc_now() -> datetime:
@@ -72,17 +73,55 @@ class _RateLimiter:
         self._failures: dict[str, deque[float]] = defaultdict(deque)
 
     def allowed(self, key: str) -> bool:
+        return self.retry_after(key) == 0
+
+    def retry_after(self, key: str) -> int:
         now = monotonic()
         failures = self._failures[key]
         while failures and now - failures[0] >= self.window_s:
             failures.popleft()
-        return len(failures) < self.max_attempts
+        if len(failures) < self.max_attempts:
+            return 0
+        # Concurrent attempts can overshoot the threshold. Wait until enough
+        # failures, rather than just the oldest one, leave the sliding window.
+        blocked_until = failures[len(failures) - self.max_attempts] + self.window_s
+        return max(1, math.ceil(blocked_until - now))
 
     def record_failure(self, key: str) -> None:
         self._failures[key].append(monotonic())
 
     def clear(self, key: str) -> None:
         self._failures.pop(key, None)
+
+
+# Keep increments and TTL assignment atomic. An interrupted process must not
+# leave a permanent lockout counter behind. Status also repairs old counters
+# that lack a TTL, without extending the window on every blocked request.
+_LOGIN_RATE_STATUS = """
+local retry = 0
+for i = 1, 2 do
+    local count = tonumber(redis.call('GET', KEYS[i]) or '0')
+    if count >= tonumber(ARGV[i]) then
+        local ttl = redis.call('TTL', KEYS[i])
+        if ttl < 0 then
+            ttl = tonumber(ARGV[i + 2])
+            redis.call('EXPIRE', KEYS[i], ttl)
+        end
+        retry = math.max(retry, math.max(1, ttl))
+    end
+end
+return retry
+"""
+
+_LOGIN_RATE_FAILURE = """
+for i = 1, 2 do
+    local count = redis.call('INCR', KEYS[i])
+    if count == 1 or redis.call('TTL', KEYS[i]) < 0 then
+        redis.call('EXPIRE', KEYS[i], tonumber(ARGV[i]))
+    end
+end
+return 1
+"""
 
 
 class DatabaseSessionAuth:
@@ -98,6 +137,8 @@ class DatabaseSessionAuth:
         idle_timeout_s: int = 900,
         max_login_attempts: int = 5,
         rate_window_s: int = 300,
+        max_ip_login_attempts: int = 100,
+        ip_rate_window_s: int | None = None,
     ) -> None:
         self.cookie_name = cookie_name
         self.ttl_s = min(max(int(ttl_s), 300), 604_800)
@@ -108,7 +149,10 @@ class DatabaseSessionAuth:
         }
         self._hasher = PasswordHasherSingleton.get()
         self._username_rate_limiter = _RateLimiter(max_login_attempts, rate_window_s)
-        self._client_rate_limiter = _RateLimiter(max_login_attempts, rate_window_s)
+        self._client_rate_limiter = _RateLimiter(
+            max_ip_login_attempts,
+            rate_window_s if ip_rate_window_s is None else ip_rate_window_s,
+        )
         self._redis = None
         self._rate_prefix = "nlp-agent:auth-login:"
 
@@ -117,30 +161,41 @@ class DatabaseSessionAuth:
         self._redis = redis_client
 
     async def _rate_allowed(self, username: str, client_key: str) -> bool:
+        return await self._rate_retry_after(username, client_key) == 0
+
+    def _rate_keys(self, username: str, client_key: str) -> tuple[str, str]:
+        return f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}"
+
+    async def _rate_retry_after(self, username: str, client_key: str) -> int:
         if self._redis is None:
-            return self._username_rate_limiter.allowed(username) and self._client_rate_limiter.allowed(client_key)
-        for key in (f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}"):
-            value = await self._redis.get(key)
-            if value is not None and int(value) >= self._username_rate_limiter.max_attempts:
-                return False
-        return True
+            return max(self._username_rate_limiter.retry_after(username),
+                       self._client_rate_limiter.retry_after(client_key))
+        return int(await self._redis.eval(
+            _LOGIN_RATE_STATUS, 2, *self._rate_keys(username, client_key),
+            self._username_rate_limiter.max_attempts,
+            self._client_rate_limiter.max_attempts,
+            self._username_rate_limiter.window_s,
+            self._client_rate_limiter.window_s,
+        ))
 
     async def _rate_failure(self, username: str, client_key: str) -> None:
         if self._redis is None:
             self._username_rate_limiter.record_failure(username)
             self._client_rate_limiter.record_failure(client_key)
             return
-        for key in (f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}"):
-            count = await self._redis.incr(key)
-            if int(count) == 1:
-                await self._redis.expire(key, self._username_rate_limiter.window_s)
+        await self._redis.eval(
+            _LOGIN_RATE_FAILURE, 2, *self._rate_keys(username, client_key),
+            self._username_rate_limiter.window_s,
+            self._client_rate_limiter.window_s,
+        )
 
     async def _rate_clear(self, username: str, client_key: str) -> None:
         if self._redis is None:
             self._username_rate_limiter.clear(username)
-            self._client_rate_limiter.clear(client_key)
             return
-        await self._redis.delete(f"{self._rate_prefix}user:{username}", f"{self._rate_prefix}ip:{client_key}")
+        # One valid account must not reset failures belonging to every other
+        # account on a shared IP (or allow an attacker to reset the IP budget).
+        await self._redis.delete(self._rate_keys(username, client_key)[0])
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "DatabaseSessionAuth":
@@ -154,6 +209,11 @@ class DatabaseSessionAuth:
             idle_timeout_s=auth_env_int("NLP_AGENT_AUTH_IDLE_TIMEOUT_S", 900),
             max_login_attempts=auth_env_int("NLP_AGENT_AUTH_MAX_LOGIN_ATTEMPTS", 5),
             rate_window_s=auth_env_int("NLP_AGENT_AUTH_RATE_WINDOW_S", 300),
+            max_ip_login_attempts=auth_env_int("NLP_AGENT_AUTH_MAX_IP_LOGIN_ATTEMPTS", 100),
+            ip_rate_window_s=auth_env_int(
+                "NLP_AGENT_AUTH_IP_RATE_WINDOW_S",
+                auth_env_int("NLP_AGENT_AUTH_RATE_WINDOW_S", 300),
+            ),
         )
 
     @staticmethod
@@ -202,8 +262,9 @@ class DatabaseSessionAuth:
         workspace_id: str | None = None,
     ) -> tuple[str, DatabaseSessionClaims]:
         normalized = username.casefold()
-        if not await self._rate_allowed(normalized, client_key):
-            raise AuthenticationError("too many login attempts")
+        retry_after_s = await self._rate_retry_after(normalized, client_key)
+        if retry_after_s:
+            raise LoginRateLimitError(retry_after_s)
 
         async with factory.begin() as session:
             # 主登录入口同时接受用户名与规范化邮箱。邮箱命中唯一的

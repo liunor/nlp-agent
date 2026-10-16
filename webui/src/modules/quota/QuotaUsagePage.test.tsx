@@ -54,12 +54,16 @@ describe("QuotaUsagePage", () => {
     }));
   });
 
-  it("shows the minimum effective remaining balance across every active bucket", async () => {
+  it("shows the lowest remaining percentage across every active bucket", async () => {
     render(<QuotaUsagePage />);
 
-    await waitFor(() => expect(screen.getAllByText("30 μcredits").length).toBeGreaterThan(0));
-    expect(screen.getByText("30 μcredits")).toBeInTheDocument();
-    expect(screen.queryByText("310 μcredits")).not.toBeInTheDocument();
+    expect(await screen.findByText("25%")).toHaveAttribute("title", "可用 30 μcredits");
+    expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.getByText("40%")).toBeInTheDocument();
+    const daily = screen.getByRole("progressbar", { name: "个人 今日剩余额度" });
+    const weekly = screen.getByRole("progressbar", { name: "个人 本周剩余额度" });
+    expect(daily.querySelector("i")).toHaveStyle({ width: "80%" });
+    expect(weekly.querySelector("i")).toHaveStyle({ width: "40%" });
     expect(screen.queryByText("工作空间 · 今日")).not.toBeInTheDocument();
   });
 
@@ -104,8 +108,46 @@ describe("QuotaUsagePage", () => {
 
     render(<QuotaUsagePage />);
 
-    await waitFor(() => expect(screen.getByText("30 μcredits")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("25%")).toBeInTheDocument());
     expect(screen.getByRole("alert")).toHaveTextContent("部分用量数据加载失败");
+  });
+
+  it("rounds the real remaining balance to an integer percentage and shows the server reset time", async () => {
+    getQuota.mockResolvedValue({
+      quota: { user_id: "user-1", workspace_id: null, buckets: [
+        { owner_type: "user", owner_id: "user-1", bucket_type: "daily", limit_micro: 3000000, grant_micro: 0, adjustment_micro: 0, consumed_micro: 2381, reserved_micro: 0, remaining_micro: 2997619, reset_at: "2026-10-13T00:00:00+00:00", over_limit: false },
+      ] }, policy: null,
+    });
+    render(<QuotaUsagePage />);
+    expect((await screen.findAllByText("100%")).length).toBe(2);
+    expect(screen.queryByText("99.92%")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "个人 今日剩余额度" }).querySelector("i")).toHaveStyle({ width: `${2997619 / 3000000 * 100}%` });
+    expect(document.querySelector("time")).toHaveAttribute("datetime", "2026-10-13T00:00:00+00:00");
+    expect(document.querySelector("time")).toHaveTextContent("重置");
+  });
+
+  it("includes grants, adjustments, and reservations in the remaining percentage", async () => {
+    getQuota.mockResolvedValue({
+      quota: { user_id: "user-1", workspace_id: null, buckets: [
+        { owner_type: "user", owner_id: "user-1", bucket_type: "daily", limit_micro: 1000, grant_micro: 1000, adjustment_micro: -200, consumed_micro: 840, reserved_micro: 450, remaining_micro: 510, reset_at: "2026-10-13T00:00:00+00:00", over_limit: false },
+      ] }, policy: null,
+    });
+    render(<QuotaUsagePage />);
+    expect((await screen.findAllByText("28%")).length).toBe(2);
+  });
+
+  it.each([
+    { limit: 0, remaining: 0 },
+    { limit: 100, remaining: -5 },
+  ])("shows zero remaining percentage for an exhausted quota (%j)", async ({ limit, remaining }) => {
+    getQuota.mockResolvedValue({
+      quota: { user_id: "user-1", workspace_id: null, buckets: [
+        { owner_type: "user", owner_id: "user-1", bucket_type: "daily", limit_micro: limit, grant_micro: 0, adjustment_micro: 0, consumed_micro: limit - remaining, reserved_micro: 0, remaining_micro: remaining, reset_at: "2026-10-13T00:00:00+00:00", over_limit: remaining < 0 },
+      ] }, policy: null,
+    });
+    render(<QuotaUsagePage />);
+    expect((await screen.findAllByText("0%")).length).toBe(2);
+    expect(screen.getByRole("progressbar", { name: "个人 今日剩余额度" }).querySelector("i")).toHaveStyle({ width: "0%" });
   });
 
   it("keeps the workspace scope internal without exposing a selector", async () => {
