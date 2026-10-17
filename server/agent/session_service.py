@@ -246,16 +246,27 @@ class DatabaseSessionService:
                     await session.scalars(
                         select(ConversationTranscriptModel)
                         .where(ConversationTranscriptModel.session_id == session_id)
-                        .order_by(ConversationTranscriptModel.created_at, ConversationTranscriptModel.id)
+                        .order_by(ConversationTranscriptModel.id)
                     )
                 ).all()
             )
+        # Transcript rows have no created_at column. Their parent UUID chain
+        # is the ordering source; UUID primary keys are not chronological.
+        remaining = {row.message_uuid: row for row in rows}
+        ordered = []
+        while remaining:
+            ready = [row for row in remaining.values() if row.parent_uuid not in remaining]
+            if not ready:
+                raise ValueError("cyclic transcript parent chain")
+            for row in ready:
+                ordered.append(row)
+                remaining.pop(row.message_uuid)
         return [
             {
                 "uuid": row.message_uuid,
                 "parentUuid": row.parent_uuid,
                 "sessionId": row.session_id,
-                "timestamp": row.created_at.timestamp(),
+                "timestamp": None,
                 "type": row.message_type,
                 "role": row.role,
                 "content": row.content_json.get("content", row.content_json)
@@ -265,7 +276,7 @@ class DatabaseSessionService:
                 if isinstance(row.tool_json, dict)
                 else row.tool_json,
             }
-            for row in rows
+            for row in ordered
         ]
 
     async def touch(

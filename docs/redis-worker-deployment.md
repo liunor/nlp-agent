@@ -20,12 +20,18 @@ Worker 会持续重试短暂失败的租约续期和消费迭代。无法解码�
 
 Worker 产生的事件先写入状态端口，再尽力发送到 Redis Pub/Sub。Pub/Sub 失败不会回滚已完成 Turn 或阻止 ACK；浏览器断线、Redis 短暂不可用或消息丢失后仍通过持久事件日志和 `stream.resume` 恢复。
 
-若进程在“写入终态”和“追加终态事件”之间退出，重投处理会先通过 `ensure_event` 幂等补齐缺失的 `message.completed`/`turn.completed`、`turn.failed` 或 `turn.cancelled`，确认恢复日志完整后才 ACK；不会为补事件而重新调用模型或工具。
+MySQL 终态与必要终态事件在同一事务提交。对于历史遗留的缺事件数据，重投处理仍通过 `ensure_event` 幂等补齐 `message.completed`/`turn.completed`、`turn.failed` 或 `turn.cancelled`，确认恢复日志完整后才 ACK；不会为补事件而重新调用模型或工具。
 
 ## 状态数据库迁移
 
-`gateway.state.TurnExecutionState` 是 Worker 使用的持久化接口，`gateway.state_factory.build_turn_execution_state` 是组装入口。当前默认实现是 `GatewayRepository`；迁移 MSSQL 时实现该接口，并把 `NLP_AGENT_STATE_FACTORY` 配置为 `package.module:function` 即可替换 Worker 状态适配器，Redis 任务与事件协议不需要改变。
+`gateway.state.TurnExecutionState` 是 Worker 使用的持久化接口，`gateway.state_factory.build_turn_execution_state` 是组装入口。生产使用 MySQL 与 Alembic；不要通过更换状态工厂绕过 claim、事务终态或事件去重。
 
 ## 扩容与约束
 
-当前受支持的部署保持一个 Worker。Redis Streams 是 **at-least-once** 传输：心跳、终态去重和幂等事件修复覆盖正常长任务及常见崩溃窗口，但 Redis 中断超过租约后仍不能对外部工具副作用提供 exactly-once 保证。迁移共享 MSSQL 后，如需增加 Worker 副本，应先为执行 claim 增加持久 fencing token，并让有副作用的工具按 `turn_id + operation_id` 幂等；在此之前不要通过 `docker compose up --scale nova-worker=N` 扩容执行器。
+生产仍保持一个 Worker、一个执行槽，Compose 默认 concurrency 为 1。只有隔离 test/staging 才逐步设置 `NLP_AGENT_WORKER_CONCURRENCY=4` 并验证 1×4、2×4；当前补丁不授权直接扩容生产。
+
+Redis Streams 是 **at-least-once** 传输。当前 SQL 终态、事件与学习状态使用 generation/owner/lease fencing；生产允许 pending reclaim，任一执行槽释放后可继续拉取。它们不等于外部模型和工具副作用 exactly-once：工具幂等、checkpoint/transcript 审计、detached background resume 权威生命周期与模型额度账本仍需补齐。
+
+Web、两个 Worker、Monitor、Sandbox manager 的同步及异步池合计上限为 59，含 10 条运维预留为 69，当前 MySQL `max_connections=100`。同步辅助存储按进程共享 engine；pool timeout 为 5 秒。修改副本数、进程数或池配置后必须重新核算。
+
+本轮实现、测试结果和未完成 gate 见 [T07 复审验证记录](specs/t07-review-fix-verification.md)。未通过完整 50/30 负载、故障注入和额度一致性验收前，不执行 `docker compose up --scale nova-worker=2`。

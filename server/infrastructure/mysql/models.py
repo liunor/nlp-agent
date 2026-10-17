@@ -19,7 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.mysql import BIGINT, DATETIME, LONGBLOB, MEDIUMTEXT
+from sqlalchemy.dialects.mysql import BIGINT, DATETIME, INTEGER, LONGBLOB, MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampedModel
@@ -602,12 +602,144 @@ class TurnModel(TimestampedModel, Base):
     error_message: Mapped[str | None] = mapped_column(String(1000))
     learning_state_json: Mapped[dict | None] = mapped_column(JSON)
     idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    quota_reservation_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_model_quota_reservations.id", ondelete="SET NULL"), index=True
+    )
     claim_generation: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
     claimed_by: Mapped[str | None] = mapped_column(String(128))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     started_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
     completed_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+
+
+class RuntimeCapacityModel(Base):
+    __tablename__ = "nlp_runtime_capacity"
+    scope_key: Mapped[str] = mapped_column(String(32, collation="ascii_bin"), primary_key=True)
+    queued_count: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    running_count: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    queue_capacity: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, server_default="200")
+    per_user_active_limit: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, server_default="3")
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False
+    )
+
+
+class TurnUserCapacityModel(Base):
+    __tablename__ = "nlp_turn_user_capacity"
+    user_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    active_count: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False
+    )
+
+
+class ModelQuotaAccountModel(Base):
+    __tablename__ = "nlp_model_quota_accounts"
+    user_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    quota_tokens: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    token_limit: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    window_started_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    window_ends_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    reserved_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    consumed_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    used_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    unknown_usage_events: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6), onupdate=func.utc_timestamp(6), nullable=False
+    )
+
+
+class ModelQuotaReservationModel(Base):
+    __tablename__ = "nlp_model_quota_reservations"
+    __table_args__ = (
+        UniqueConstraint("turn_id", name="uq_nlp_model_quota_reservations_turn_id"),
+        Index("ix_nlp_model_quota_reservations_user_status", "user_id", "status"),
+        Index("ix_nlp_model_quota_reservations_status_turn", "status", "turn_id"),
+    )
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_model_quota_accounts.user_id", ondelete="RESTRICT"), nullable=False
+    )
+    workspace_id: Mapped[str | None] = mapped_column(UUID)
+    turn_id: Mapped[str] = mapped_column(UUID, nullable=False)
+    model_profile: Mapped[str | None] = mapped_column(String(64))
+    reserved_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    used_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    settled_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    pending_invocations: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False, server_default="0")
+    unknown_usage_events: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="reserved")
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+    finalized_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6))
+
+
+class ModelUsageIntentModel(Base):
+    __tablename__ = "nlp_model_usage_intents"
+    __table_args__ = (Index("ix_nlp_model_usage_intents_reservation", "reservation_id", "status"),)
+    operation_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    reservation_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_model_quota_reservations.id", ondelete="RESTRICT")
+    )
+    user_id: Mapped[str] = mapped_column(UUID, nullable=False)
+    reserved_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    invocation_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, server_default=func.utc_timestamp(6))
+
+
+class ModelUsageEventModel(Base):
+    __tablename__ = "nlp_model_usage_events"
+    __table_args__ = (
+        Index("ix_nlp_model_usage_events_user_completed", "user_id", "completed_at"),
+        Index("ix_nlp_model_usage_events_turn", "turn_id", "completed_at"),
+    )
+    operation_id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    reservation_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_model_quota_reservations.id", ondelete="SET NULL")
+    )
+    user_id: Mapped[str] = mapped_column(UUID, nullable=False)
+    workspace_id: Mapped[str | None] = mapped_column(UUID)
+    conversation_id: Mapped[str | None] = mapped_column(SESSION_IDENTIFIER)
+    turn_id: Mapped[str | None] = mapped_column(UUID)
+    worker_id: Mapped[str | None] = mapped_column(String(128))
+    parent_operation_id: Mapped[str | None] = mapped_column(UUID)
+    purpose: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_profile: Mapped[str | None] = mapped_column(String(64))
+    preset: Mapped[str] = mapped_column(String(128), nullable=False)
+    route: Mapped[str | None] = mapped_column(String(128))
+    pricing_key: Mapped[str | None] = mapped_column(String(160))
+    pricing_version: Mapped[str | None] = mapped_column(String(64))
+    charge_units: Mapped[int | None] = mapped_column(BIGINT(unsigned=True))
+    attempt: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False)
+    fallback_index: Mapped[int] = mapped_column(INTEGER(unsigned=True), nullable=False)
+    input_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    cached_input_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    cache_write_input_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    reasoning_output_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    total_tokens: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    usage_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_response_id: Mapped[str | None] = mapped_column(String(256))
+    outcome_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    finish_reason: Mapped[str | None] = mapped_column(String(128))
+    error_kind: Mapped[str | None] = mapped_column(String(128))
+    started_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64, collation="ascii_bin"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=6), server_default=func.utc_timestamp(6), nullable=False
+    )
 
 
 class ConversationMessageModel(Base):
@@ -1288,7 +1420,7 @@ class AuthCodeModel(Base):
 
     __tablename__ = "nlp_auth_codes"
     __table_args__ = (
-        UniqueConstraint("kind", "subject", name="uq_nlp_auth_codes_kind_subject"),
+        UniqueConstraint("kind", "active_subject", name="uq_nlp_auth_codes_kind_subject"),
         Index("ix_nlp_auth_codes_kind_subject", "kind", "subject"),
         Index("ix_nlp_auth_codes_kind_ip_created", "kind", "client_ip", "created_at"),
     )
@@ -1296,6 +1428,9 @@ class AuthCodeModel(Base):
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     subject: Mapped[str] = mapped_column(String(254), nullable=False)
+    active_subject: Mapped[str | None] = mapped_column(
+        String(254), Computed("CASE WHEN kind IN ('sms_history','sms_attempt') THEN NULL ELSE subject END", persisted=True),
+    )
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False, index=True)
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)

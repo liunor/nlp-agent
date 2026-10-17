@@ -5,9 +5,71 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+_SMS_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="tencent-sms")
+
+
+class SmsGatewayBusyError(RuntimeError):
+    """Raised instead of queueing an unbounded number of SMS sends."""
+
+
+class SmsGatewayTimeoutError(TimeoutError):
+    """Raised when an SMS provider does not respond within its budget."""
+
+
+class SmsGatewayFailedError(RuntimeError):
+    """Raised when a provider responds unsuccessfully."""
+
+
+class BoundedSmsSender:
+    """Bounds provider concurrency and gives each request a strict time budget."""
+
+    def __init__(self, *, max_concurrency: int = 8, timeout_s: float = 5.0) -> None:
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be at least 1")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        self._semaphore = asyncio.BoundedSemaphore(max_concurrency)
+        self.timeout_s = timeout_s
+
+    def _release_after(self, task: asyncio.Task[bool]) -> None:
+        def release(completed: asyncio.Task[bool]) -> None:
+            try:
+                completed.exception()
+            except asyncio.CancelledError:
+                pass
+            self._semaphore.release()
+
+        task.add_done_callback(release)
+
+    async def send(self, provider, phone: str, code: str) -> bool:
+        # Do not build an in-memory wait queue when the provider is saturated.
+        if self._semaphore.locked():
+            raise SmsGatewayBusyError("SMS provider concurrency is exhausted")
+        await self._semaphore.acquire()
+        release_here = True
+        operation: asyncio.Task[bool] | None = None
+        try:
+            operation = asyncio.create_task(provider.send_verification_code(phone, code))
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(operation), timeout=self.timeout_s
+                )
+            except TimeoutError as error:
+                self._release_after(operation)
+                release_here = False
+                raise SmsGatewayTimeoutError("SMS provider timed out") from error
+        except asyncio.CancelledError:
+            if operation is not None and not operation.done():
+                self._release_after(operation)
+                release_here = False
+            raise
+        finally:
+            if release_here:
+                self._semaphore.release()
 
 
 def normalize_phone_for_tencent(phone: str) -> str:
@@ -61,7 +123,7 @@ class TencentSmsProvider:
             request.TemplateId = self.template_id
             request.TemplateParamSet = [code]
             request.PhoneNumberSet = [normalize_phone_for_tencent(phone)]
-            response = await asyncio.to_thread(self._get_client().SendSms, request)
+            response = await asyncio.get_running_loop().run_in_executor(_SMS_EXECUTOR, self._get_client().SendSms, request)
             return bool(response.SendStatusSet and response.SendStatusSet[0].Code == "Ok")
         except Exception:
             logger.exception("Tencent SMS delivery failed")

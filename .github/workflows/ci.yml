@@ -45,6 +45,8 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen --group dev
       - run: uv lock --check
+      - name: Enable trigger migrations on the isolated MySQL service
+        run: docker exec ${{ job.services.mysql.id }} mysql -uroot -proot -e "SET GLOBAL log_bin_trust_function_creators = 1"
       - name: Upgrade schema to previous release checkpoint
         run: uv run alembic upgrade 20260914_55_email_registration
       - name: Upgrade existing schema to head
@@ -94,6 +96,9 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: npm ci
       - run: uv sync --frozen --group dev
+        working-directory: .
+      - name: Enable trigger migrations on the isolated MySQL service
+        run: docker exec ${{ job.services.mysql.id }} mysql -uroot -proot -e "SET GLOBAL log_bin_trust_function_creators = 1"
         working-directory: .
       - run: uv run alembic upgrade head
         working-directory: .

@@ -62,13 +62,22 @@ async def test_recovery_invalidates_old_generation_and_emits_handover_without_re
     latest_sequence = MagicMock()
     latest_sequence.first.return_value = 7
     session.scalars.side_effect = [scalars, latest_sequence]
-    session.scalar.return_value = {"turn_id": "turn-1", "task": "encoded-turn-task"}
+    recovered_dispatch = {"turn_id": "turn-1", "task": "encoded-turn-task"}
+    session.scalar.side_effect = [recovered_dispatch, turn, None]
     service = TurnReliabilityService()
 
     recovered = await service.recover_stuck_turns(session)
 
     assert recovered == ["turn-1"]
     assert turn.claim_generation == 3
+    assert turn.status == "accepted"
+    assert turn.claimed_by is None
+    assert turn.lease_expires_at is None
+    next_generation = await service.claim_turn(
+        session, turn_id="turn-1", worker_id="worker-b", lease_s=30
+    )
+    assert next_generation == 4
+    assert turn.claimed_by == "worker-b"
     added = [call.args[0] for call in session.add.call_args_list]
     assert any(getattr(item, "event_type", None) == "turn.handover" and getattr(item, "sequence", None) == 8 for item in added)
     assert any(
@@ -232,16 +241,104 @@ async def test_outbox_relay_publishes_turn_task_in_worker_stream_format() -> Non
     )
     rows = MagicMock()
     rows.all.return_value = [row]
-    session = AsyncMock()
-    session.scalars.return_value = rows
-    redis = AsyncMock()
-    redis.xadd.return_value = "1-0"
+    claim_session = AsyncMock()
+    claim_session.scalars.return_value = rows
+    finalize_session = AsyncMock()
+    finalize_session.scalar.return_value = row
 
-    published = await OutboxRelay(redis, stream="turns", relay_id="relay-1").publish_batch(session)
+    class _UnitOfWork:
+        def __init__(self, session):
+            self.session = session
+            self.committed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            self.committed = True
+
+    first_uow = _UnitOfWork(claim_session)
+    second_uow = _UnitOfWork(finalize_session)
+
+    class _UowFactory:
+        def __init__(self):
+            self._uows = iter((first_uow, second_uow))
+
+        def begin(self):
+            return next(self._uows)
+
+    redis = AsyncMock()
+
+    async def _publish(stream, fields):
+        assert first_uow.committed
+        assert not second_uow.committed
+        assert stream == "turns"
+        assert fields == {"payload": "encoded-turn-task"}
+        return "1-0"
+
+    redis.xadd.side_effect = _publish
+
+    published = await OutboxRelay(redis, stream="turns", relay_id="relay-1").publish_batch(_UowFactory())
 
     assert published == 1
     redis.xadd.assert_awaited_once_with("turns", {"payload": "encoded-turn-task"})
     assert row.status == "published"
+    assert first_uow.committed and second_uow.committed
+
+
+@pytest.mark.asyncio
+async def test_outbox_relay_retries_provider_failure_after_releasing_database_claim() -> None:
+    from server.application.turn_reliability import OutboxRelay
+
+    row = MagicMock(
+        id="outbox-failed",
+        topic="turn.dispatch",
+        payload_json={"task": "encoded-turn-task"},
+        attempts=0,
+        status="pending",
+    )
+    claim_rows = MagicMock()
+    claim_rows.all.return_value = [row]
+    claim_session = AsyncMock()
+    claim_session.scalars.return_value = claim_rows
+    finalize_session = AsyncMock()
+    finalize_session.scalar.return_value = row
+
+    class _UnitOfWork:
+        def __init__(self, session):
+            self.session = session
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            return None
+
+    class _UowFactory:
+        def __init__(self):
+            self._uows = iter((_UnitOfWork(claim_session), _UnitOfWork(finalize_session)))
+
+        def begin(self):
+            return next(self._uows)
+
+    redis = AsyncMock()
+    redis.xadd.side_effect = ConnectionError("redis unavailable")
+    before = utc_now()
+
+    published = await OutboxRelay(redis, stream="turns", relay_id="relay-1").publish_batch(_UowFactory())
+
+    assert published == 0
+    assert row.status == "retry"
+    assert row.locked_by is None
+    assert row.locked_until is None
+    assert row.attempts == 1
+    assert row.available_at > before
 
 
 @pytest.mark.asyncio
@@ -253,6 +350,9 @@ async def test_outbox_dispatcher_only_tracks_task_persisted_by_turn_repository()
 
     reliability = AsyncMock()
     transport = AsyncMock()
+    transport.worker_heartbeats.return_value = [
+        {"active_slots": 2}, {"active_slots": 1}
+    ]
     task = TurnTask(
         context=SessionContext(session_id="session-1"),
         turn_id="turn-1",
@@ -270,4 +370,7 @@ async def test_outbox_dispatcher_only_tracks_task_persisted_by_turn_repository()
 
     reliability.enqueue.assert_not_awaited()
     transport.submit.assert_not_awaited()
-    assert dispatcher.active_count() == 1
+    assert await dispatcher.worker_heartbeats() == [
+        {"active_slots": 2}, {"active_slots": 1}
+    ]
+    assert dispatcher.active_count() == 0

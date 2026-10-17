@@ -47,7 +47,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def api_http_environment() -> ManagedHttpEnvironment:
     environment = ManagedHttpEnvironment.start()
     try:
-        yield environment
+        # Settings may have been imported during collection/seed setup. Bind
+        # both the environment and cached settings only AFTER the harness has
+        # selected an isolated database and checked caller configuration.
+        from configs.settings import settings
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("NLP_AGENT_DATABASE_URL", environment.env["NLP_AGENT_DATABASE_URL"])
+            patch.setattr(settings, "NLP_AGENT_DATABASE_URL", environment.env["NLP_AGENT_DATABASE_URL"])
+            yield environment
     finally:
         environment.close()
 

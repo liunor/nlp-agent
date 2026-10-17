@@ -343,15 +343,25 @@ class LangGraphAgentEngine:
                 str(error),
             )
         from server.agent.session_storage import record_transcript
+        from gateway.execution_fence import current_turn_write_fence
 
         if state_messages:
-            self._schedule_transcript_persistence(
+            persist = (
+                self._persist_transcript_best_effort
+                if current_turn_write_fence() is not None
+                else self._schedule_transcript_persistence
+            )
+            persistence = persist(
                 record_transcript,
                 context.session_id,
                 public_transcript_messages(state_messages),
                 user_id=context.user_id,
                 workspace_id=context.workspace_id,
             )
+            if persistence is not None:
+                # Foreground persistence must finish before the owning Turn
+                # becomes terminal and its shared execution fence is revoked.
+                await persistence
         for item in reversed(state_messages):
             if isinstance(item, AIMessage) and item.content:
                 return sanitize_public_output(item.content)

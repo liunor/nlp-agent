@@ -24,6 +24,7 @@ from core.rbac import (
 from core.session_context import SessionContext
 from core.learning import KnowledgeBookContext, LearningContext, TeachingMaterials, default_progress
 from gateway.contracts import (
+    AdmissionLimitError,
     GatewayEvent,
     GatewayEventType,
     GatewayHealth,
@@ -37,6 +38,7 @@ from gateway.contracts import (
     TurnRecord,
     TurnStatus,
     WhiteboardLibraryInUseError,
+    WorkerUnavailableError,
 )
 from gateway.dispatch import (
     ExecutionAuthorizationContext,
@@ -70,6 +72,50 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_UPLOADS_ROOT = _PROJECT_ROOT / ".data" / "uploads"
 logger = logging.getLogger(__name__)
 _WHITEBOARD_LIBRARY_MANAGER_ROLES = frozenset({"teacher", "developer", "admin"})
+
+
+def active_turn_count(durable_state: dict[str, Any] | None, *, fallback: int) -> int:
+    """Prefer the authoritative running count over locally submitted work."""
+    if durable_state is None or durable_state.get("running_turns") is None:
+        return max(0, int(fallback))
+    return max(0, int(durable_state["running_turns"]))
+
+
+def active_worker_slot_count(workers: list[dict[str, Any]] | None) -> int | None:
+    """Aggregate live Worker heartbeats; None means telemetry is unavailable."""
+    if workers is None:
+        return None
+    return sum(max(0, int(worker.get("active_slots", 0))) for worker in workers)
+
+
+def _estimate_turn_reservation_tokens(content: str, model_profile: str | None) -> int:
+    """Reserve the first call's full context budget, including unseen history/tools.
+
+    The actual prompt is assembled in the Worker. Short user text cannot bound
+    its history, system messages, materials or tool schemas at admission time.
+    Every subsequent Provider attempt obtains its own budget before dispatch.
+    """
+    from core.model_runtime.factory import get_global_model_factory
+
+    factory = get_global_model_factory()
+    profile = model_profile or factory.config.default_model_profile
+    if profile:
+        preset_names = (factory.profile_preset(profile, "coordinator"),)
+    else:
+        candidates = factory.config.route_presets("coordinator")
+        preset_names = tuple(name for name, _preset in candidates)
+    context_limits = [
+        factory.config.models[factory.config.model_presets[name].model].context_window_tokens
+        for name in preset_names
+    ]
+    if not context_limits:
+        raise RuntimeError("coordinator route has no model context limit")
+    estimated_input = max(context_limits)
+    output_reserve = max(
+        factory.config.model_presets[name].generation.max_output_tokens
+        for name in preset_names
+    )
+    return max(1, int(estimated_input) + int(output_reserve))
 
 
 def _session_uploads_root(context: SessionContext) -> Path:
@@ -205,6 +251,10 @@ class BackendGateway:
                         "redis_dead_letter_stream", "nlp-agent:turns:dead"
                     )
                 ),
+                worker_concurrency=int(gateway_config.get("worker_concurrency", 4)),
+                shutdown_grace_s=float(gateway_config.get("worker_shutdown_grace_s", 30)),
+                worker_heartbeat_interval_s=float(gateway_config.get("worker_heartbeat_interval_s", 5)),
+                worker_heartbeat_ttl_s=int(gateway_config.get("worker_heartbeat_ttl_s", 15)),
             )
             redis_dispatcher = RedisTurnDispatcher.from_config(redis_config)
             if self._database_runtime is None:
@@ -231,7 +281,24 @@ class BackendGateway:
                 ),
             )
             self._in_process_executor = executor
-            self.dispatcher = dispatcher or InProcessTurnDispatcher(executor.run)
+            execute = executor.run
+            if dispatcher is None and isinstance(self.repository, MySQLGatewayRepository):
+                from server.worker.fencing import FencedTurnExecutor
+
+                if self._database_runtime is None:
+                    # Explicit MySQL repositories must share the same database,
+                    # not silently select the process's default DSN.
+                    dsn = self.repository._engine.url.render_as_string(hide_password=False)
+                    self._database_runtime = MySQLRuntime.from_runtime({
+                        **settings.database_runtime,
+                        "url": dsn.replace("mysql+pymysql://", "mysql+aiomysql://", 1),
+                    })
+                execute = FencedTurnExecutor(
+                    self._database_runtime.uow, TurnReliabilityService(), executor.run,
+                    worker_id=f"inprocess-{uuid.uuid4()}",
+                    lease_s=int(gateway_config.get("mysql_turn_lease_s", 60)),
+                )
+            self.dispatcher = dispatcher or InProcessTurnDispatcher(execute)
         self._session_turn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.shutdown_grace_s = max(
             0.0,
@@ -359,6 +426,21 @@ class BackendGateway:
         if not self._started or not self._accepting:
             raise GatewayNotStartedError("Backend Gateway is not accepting turns")
 
+    async def _queue_state(self, turn_id: str, status: TurnStatus) -> dict[str, int]:
+        if status != TurnStatus.ACCEPTED:
+            return {}
+        reader = getattr(self.repository, "queue_position", None)
+        if reader is None:
+            return {}
+        state = await asyncio.to_thread(reader, turn_id)
+        return state or {}
+
+    async def _with_queue_state(self, turn: TurnRecord) -> TurnRecord:
+        if turn.queue_position is not None:
+            return turn
+        state = await self._queue_state(turn.turn_id, turn.status)
+        return turn.model_copy(update=state) if state else turn
+
     async def create_session(
         self,
         principal: AuthenticatedPrincipal,
@@ -406,6 +488,7 @@ class BackendGateway:
         enriched_content = _enrich_content_with_attachments(
             context, request.content, request.attachments
         )
+        resubmission_reservation_id: str | None = None
         if request.idempotency_key:
             existing = await asyncio.to_thread(
                 self.repository.turn_for_idempotency,
@@ -429,7 +512,21 @@ class BackendGateway:
                     session_id=existing.session_id,
                     status=existing.status,
                     duplicate=True,
+                    **await self._queue_state(existing.turn_id, existing.status),
                 )
+            if existing is not None and existing.error_kind == "dispatch_failed":
+                reservation_reader = getattr(
+                    self.repository, "quota_reservation_for_turn", None
+                )
+                if reservation_reader is not None:
+                    resubmission_reservation_id = await asyncio.to_thread(
+                        reservation_reader, existing.turn_id
+                    )
+        healthy_workers = getattr(self.dispatcher, "healthy_worker_count", None)
+        if healthy_workers is not None:
+            worker_count = await healthy_workers()
+            if worker_count == 0:
+                raise WorkerUnavailableError("no healthy turn workers are available")
         active = await asyncio.to_thread(
             self.repository.active_turn_for_session, context.session_id
         )
@@ -570,6 +667,11 @@ class BackendGateway:
                 idempotency_key=request.idempotency_key or turn_id,
             )
             reservation_id = self.quota_service.reservation_id_for_turn(turn_id)
+        durable_quota = isinstance(self.repository, MySQLGatewayRepository)
+        quota_reservation_id = (resubmission_reservation_id or str(uuid.uuid4())) if durable_quota else None
+        reserved_tokens = _estimate_turn_reservation_tokens(
+            enriched_content, request.model_profile
+        ) if durable_quota else 0
         task = TurnTask(
             context=context,
             turn_id=turn_id,
@@ -589,6 +691,7 @@ class BackendGateway:
                 authorization_version=principal.authorization_version,
             ),
             reservation_id=reservation_id,
+            quota_reservation_id=quota_reservation_id,
         )
         turn, duplicate = await asyncio.to_thread(
             self.repository.create_turn,
@@ -615,6 +718,9 @@ class BackendGateway:
             quota_admission=quota_admission,
             quota_role_codes=tuple(principal.roles),
             quota_classroom_ids=tuple(principal.classroom_ids),
+            quota_reservation_id=quota_reservation_id,
+            reserved_tokens=reserved_tokens,
+            model_profile=request.model_profile,
         )
         resubmitted = bool(
             duplicate
@@ -627,6 +733,7 @@ class BackendGateway:
                 session_id=turn.session_id,
                 status=turn.status,
                 duplicate=True,
+                **await self._queue_state(turn.turn_id, turn.status),
             )
         if resubmitted:
             turn = await asyncio.to_thread(
@@ -634,12 +741,16 @@ class BackendGateway:
                 turn.turn_id,
                 TurnStatus.ACCEPTED,
                 dispatch_payload=TurnTaskCodec.dumps(task) if self._remote_execution else None,
+                quota_reservation_id=quota_reservation_id,
+                reserved_tokens=reserved_tokens,
+                model_profile=request.model_profile,
             )
+        queue_state = await self._queue_state(turn.turn_id, TurnStatus.ACCEPTED)
         await self._emit(
             turn.turn_id,
             context.session_id,
             GatewayEventType.TURN_ACCEPTED,
-            {"status": TurnStatus.ACCEPTED.value},
+            {"status": TurnStatus.ACCEPTED.value, **queue_state},
         )
         task = task.__class__(
             context=task.context, turn_id=turn.turn_id, content=task.content,
@@ -654,6 +765,7 @@ class BackendGateway:
                 if self.quota_service is not None
                 else None
             ),
+            quota_reservation_id=task.quota_reservation_id,
         )
         try:
             await self.dispatcher.submit(task)
@@ -688,6 +800,7 @@ class BackendGateway:
             session_id=context.session_id,
             status=TurnStatus.ACCEPTED,
             duplicate=resubmitted,
+            **queue_state,
         )
 
     async def inject_message(
@@ -778,7 +891,7 @@ class BackendGateway:
             Permission.AGENT_SESSION_READ,
             ResourceRef("turn", owner_user_id=turn.user_id, workspace_id=turn.workspace_id),
         )
-        return turn
+        return await self._with_queue_state(turn)
 
     async def replay_events(
         self,
@@ -806,11 +919,14 @@ class BackendGateway:
     ) -> list[TurnRecord]:
         context = await self.sessions.resolve(principal, session_id)
         authorization_service.require(principal, Permission.AGENT_SESSION_READ, workspace_id=context.workspace_id)
-        return await asyncio.to_thread(
+        turns = await asyncio.to_thread(
             self.repository.list_turns,
             session_id,
             limit=limit,
         )
+        if hasattr(self.repository, "queue_position"):
+            return [await self._with_queue_state(turn) for turn in turns]
+        return turns
 
     async def subscribe_session_events(
         self,
@@ -1368,8 +1484,12 @@ class BackendGateway:
         event_type: GatewayEventType,
         payload: dict | None = None,
     ) -> GatewayEvent:
+        writer = self.repository.ensure_event if event_type in {
+            GatewayEventType.MESSAGE_COMPLETED, GatewayEventType.TURN_COMPLETED,
+            GatewayEventType.TURN_FAILED, GatewayEventType.TURN_CANCELLED,
+        } else self.repository.append_event
         event = await asyncio.to_thread(
-            self.repository.append_event,
+            writer,
             turn_id=turn_id,
             session_id=session_id,
             event_type=event_type,
@@ -1384,11 +1504,33 @@ class BackendGateway:
             status="ok" if self._started else "stopped",
             started=self._started,
             accepting_turns=self._accepting,
-            active_turns=self.dispatcher.active_count(),
+            active_turns=active_turn_count(
+                repository, fallback=self.dispatcher.active_count()
+            ),
             subscribers=self.events.subscriber_count,
             database=repository["database"],
             durable_events=repository["durable_events"],
         )
+
+    async def runtime_metrics(self) -> dict[str, Any]:
+        reader = getattr(self.repository, "operational_metrics", None)
+        metrics = (
+            await asyncio.to_thread(reader)
+            if reader is not None
+            else {"queue": {}, "quota": {}, "database_sync_pool": {}}
+        )
+        if self._database_runtime is not None:
+            metrics["database_async_pool"] = self._database_runtime.pool_metrics()
+        worker_reader = getattr(self.dispatcher, "worker_heartbeats", None)
+        if worker_reader is not None:
+            metrics["workers"] = await worker_reader()
+            metrics["worker_active_slots"] = active_worker_slot_count(
+                metrics["workers"]
+            )
+        else:
+            metrics["workers"] = None
+            metrics["worker_active_slots"] = self.dispatcher.active_count()
+        return metrics
 
     async def close(self, *, force: bool = False) -> None:
         async with self._lifecycle_lock:

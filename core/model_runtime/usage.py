@@ -62,6 +62,7 @@ class UsageAttributionContext(UsageFrozenModel):
     conversation_id: str | None = None
     turn_id: str | None = None
     reservation_id: str | None = None
+    token_reservation_id: str | None = None
     worker_id: str | None = None
     parent_operation_id: str | None = None
     purpose: UsagePurpose

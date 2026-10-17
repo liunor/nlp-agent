@@ -1,4 +1,5 @@
 import { StudentSocket } from "./client";
+import { api } from "@/platform/http/api";
 
 class FakeWebSocket {
   static readonly CONNECTING = 0;
@@ -18,8 +19,27 @@ class FakeWebSocket {
 
 describe("StudentSocket", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("fetches the default ticket when recovery is provided as the fourth callback", async () => {
+    const instances: FakeWebSocket[] = [];
+    vi.stubGlobal("WebSocket", class extends FakeWebSocket {
+      constructor(url: string) { super(url); instances.push(this); }
+    });
+    const ticket = vi.spyOn(api, "createWsTicket").mockResolvedValue({ ticket: "signed-ticket", expires_in: 30 });
+    const recover = vi.fn(async () => undefined);
+    const client = new StudentSocket(vi.fn(), vi.fn(), undefined, recover);
+    client.connect();
+    await vi.waitFor(() => expect(instances).toHaveLength(1));
+    expect(ticket).toHaveBeenCalledOnce();
+    expect(instances[0].url).toContain("ticket=signed-ticket");
+    instances[0].open();
+    instances[0].onmessage?.({ data: JSON.stringify({ type: "connection.ready", payload: {} }) });
+    expect(recover).toHaveBeenCalledOnce();
+    client.close();
   });
 
   it("uses the versioned backend command envelope and session subscription", async () => {
@@ -67,6 +87,30 @@ describe("StudentSocket", () => {
 
     await Promise.resolve();
     expect(refreshSession).toHaveBeenCalledTimes(1);
+    client.close();
+  });
+
+  it("waits for auth/history recovery before replaying commands", async () => {
+    const instances: FakeWebSocket[] = [];
+    vi.stubGlobal("WebSocket", class extends FakeWebSocket {
+      constructor(url: string) { super(url); instances.push(this); }
+    });
+    let release!: () => void;
+    const recovered = new Promise<void>((resolve) => { release = resolve; });
+    const status = vi.fn();
+    const client = new StudentSocket(vi.fn(), status, async () => "test-ticket", () => recovered);
+    client.setSession("session-1");
+    client.sendChat("session-1", "pending question", "request-1");
+    await Promise.resolve();
+    instances[0].open();
+    instances[0].onmessage?.({ data: JSON.stringify({ type: "connection.ready", payload: {} }) });
+    expect(instances[0].sent).toEqual([]);
+    expect(status).not.toHaveBeenCalledWith("connected");
+    release();
+    await recovered;
+    await Promise.resolve();
+    expect(status).toHaveBeenCalledWith("connected");
+    expect(instances[0].sent.map((frame) => JSON.parse(frame).type)).toEqual(["session.subscribe", "chat.send"]);
     client.close();
   });
 

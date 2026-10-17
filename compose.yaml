@@ -24,6 +24,7 @@ services:
   mysql:
     image: mysql:8.4
     logging: *default-logging
+    command: ["mysqld", "--max-connections=100"]
     environment:
       MYSQL_DATABASE: ${NLP_AGENT_MYSQL_DATABASE:-nlp_agent}
       MYSQL_USER: ${NLP_AGENT_MYSQL_USER:-nlp_agent}
@@ -101,6 +102,12 @@ services:
       NLP_AGENT_LOG_SERVICE: nova-web
       NLP_AGENT_LOG_STDOUT: "${NLP_AGENT_LOG_STDOUT:-true}"
       NLP_AGENT_LOG_RETENTION_DAYS: "${NLP_AGENT_LOG_RETENTION_DAYS:-14}"
+      # One async pool (10) plus the shared synchronous pool (10).
+      NLP_AGENT_DB_POOL_SIZE: "5"
+      NLP_AGENT_DB_MAX_OVERFLOW: "5"
+      NLP_AGENT_DB_SYNC_POOL_SIZE: "5"
+      NLP_AGENT_DB_SYNC_MAX_OVERFLOW: "5"
+      NLP_AGENT_DB_POOL_TIMEOUT_S: "5"
     volumes:
       - nova-data:/app/.data
       - nova-logs:/app/logs
@@ -141,6 +148,17 @@ services:
       NLP_AGENT_LOG_SERVICE: nova-worker
       NLP_AGENT_LOG_STDOUT: "${NLP_AGENT_LOG_STDOUT:-true}"
       NLP_AGENT_LOG_RETENTION_DAYS: "${NLP_AGENT_LOG_RETENTION_DAYS:-14}"
+      # Keep the deployment at 1x1 until the T07 load/fault gates pass.
+      NLP_AGENT_WORKER_CONCURRENCY: "${NLP_AGENT_WORKER_CONCURRENCY:-1}"
+      NLP_AGENT_WORKER_SHUTDOWN_GRACE_S: "${NLP_AGENT_WORKER_SHUTDOWN_GRACE_S:-30}"
+      NLP_AGENT_WORKER_HEARTBEAT_INTERVAL_S: "${NLP_AGENT_WORKER_HEARTBEAT_INTERVAL_S:-5}"
+      NLP_AGENT_WORKER_HEARTBEAT_TTL_S: "${NLP_AGENT_WORKER_HEARTBEAT_TTL_S:-15}"
+      # Claim/runtime + checkpoint each use 3; all sync stores share 6.
+      NLP_AGENT_DB_POOL_SIZE: "2"
+      NLP_AGENT_DB_MAX_OVERFLOW: "1"
+      NLP_AGENT_DB_SYNC_POOL_SIZE: "4"
+      NLP_AGENT_DB_SYNC_MAX_OVERFLOW: "2"
+      NLP_AGENT_DB_POOL_TIMEOUT_S: "5"
     volumes:
       - nova-data:/app/.data
       - nova-logs:/app/logs
@@ -171,6 +189,11 @@ services:
       NLP_AGENT_LOG_SERVICE: nova-sandbox-manager
       NLP_AGENT_LOG_STDOUT: "${NLP_AGENT_LOG_STDOUT:-true}"
       NLP_AGENT_LOG_RETENTION_DAYS: "${NLP_AGENT_LOG_RETENTION_DAYS:-14}"
+      NLP_AGENT_DB_POOL_SIZE: "2"
+      NLP_AGENT_DB_MAX_OVERFLOW: "2"
+      NLP_AGENT_DB_SYNC_POOL_SIZE: "3"
+      NLP_AGENT_DB_SYNC_MAX_OVERFLOW: "3"
+      NLP_AGENT_DB_POOL_TIMEOUT_S: "5"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "${NOVA_SANDBOX_HOST_LOCK_DIR:-/var/lock/nova-sandbox}:/run/nova-sandbox-lock:rw"
@@ -197,6 +220,11 @@ services:
       NLP_AGENT_LOG_SERVICE: nova-monitor
       NLP_AGENT_LOG_STDOUT: "${NLP_AGENT_LOG_STDOUT:-true}"
       NLP_AGENT_LOG_RETENTION_DAYS: "${NLP_AGENT_LOG_RETENTION_DAYS:-14}"
+      NLP_AGENT_DB_POOL_SIZE: "2"
+      NLP_AGENT_DB_MAX_OVERFLOW: "1"
+      NLP_AGENT_DB_SYNC_POOL_SIZE: "1"
+      NLP_AGENT_DB_SYNC_MAX_OVERFLOW: "1"
+      NLP_AGENT_DB_POOL_TIMEOUT_S: "5"
     ports:
       # Bind to loopback by default.  Set NOVA_MONITOR_BIND_ADDRESS explicitly
       # when an internal reverse proxy/VPN should expose the monitor.

@@ -7,6 +7,7 @@ pattern in ``test_web_api.py`` (see the release-notes route test).
 """
 
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 import pytest
 from argon2 import PasswordHasher
@@ -40,9 +41,15 @@ class FakeSession:
         yield
 
 
-@asynccontextmanager
-async def fake_session_factory():
-    yield FakeSession()
+class FakeSessionFactory:
+    @asynccontextmanager
+    async def __call__(self):
+        yield FakeSession()
+
+    begin = __call__
+
+
+fake_session_factory = FakeSessionFactory()
 
 
 def _fake_rbac_principal(monkeypatch, role: str) -> None:
@@ -101,6 +108,10 @@ def _fake_authorization_session_factory(monkeypatch):
         "authorization_session_factory",
         property(lambda self: fake_session_factory),
     )
+    # These HTTP contract tests keep background storage SQL at its own seam;
+    # its real transaction/reconcile behaviour has separate integration tests.
+    for name in ("reconcile_all_storage_accounts", "purge_expired_storage_trash", "purge_expired_guest_data"):
+        monkeypatch.setattr(f"gateway.core.{name}", AsyncMock(return_value=0))
 
 
 @pytest.fixture

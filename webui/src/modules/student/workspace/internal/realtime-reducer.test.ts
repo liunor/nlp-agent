@@ -3,6 +3,25 @@ import type { ChatMessage, LearningPreferences, ServerEvent } from "@/shared/typ
 import { createRealtimeEventHandler } from "./realtime-reducer";
 
 describe("realtime acknowledgement reconciliation", () => {
+  it("keeps live deltas when status changes instead of overwriting them with stale HTTP history", () => {
+    let messages: ChatMessage[] = [];
+    const loadTurns = vi.fn(async () => undefined);
+    const inFlightTurnIds = { current: new Set(["turn-1"]) };
+    const handler = createRealtimeEventHandler({
+      socketRef: { current: null }, activeSessionRef: { current: "session-1" },
+      pendingRequests: { current: new Map() }, inFlightTurnIds,
+      setMessages: (update) => { messages = typeof update === "function" ? update(messages) : update; },
+      setActiveSessionId: vi.fn(), setRequestError: vi.fn(), persistPreferences: vi.fn(),
+      updateSessionMeta: vi.fn(), loadSessions: vi.fn(), loadTurns,
+    });
+    for (const [type, payload] of [["chat.started", {}], ["chat.delta", { delta: "live text" }], ["chat.completed", { content: "live text" }]] as const) {
+      handler({ v: "1", type, payload, turn_id: "turn-1", session_id: "session-1", timestamp: new Date().toISOString() });
+    }
+    expect(messages[0]).toMatchObject({ content: "live text", status: "completed" });
+    expect(loadTurns).not.toHaveBeenCalled();
+    expect(inFlightTurnIds.current.size).toBe(0);
+  });
+
   it("reconciles an acknowledgement that arrives after the user switches sessions", () => {
     let messages: ChatMessage[] = [];
     const pendingRequests = { current: new Map([["request-1", "request-1:user"]]) };

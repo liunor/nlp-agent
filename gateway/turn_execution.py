@@ -10,7 +10,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from gateway.contracts import GatewayEventType, TurnStatus
+from gateway.contracts import AdmissionLimitError, GatewayEventType, TurnStatus
 from core.agent_runtime import configured_budget
 from core.vision_execution import attached_image_names, bind_image_turn, image_turn_timeout
 from core.rbac import Permission
@@ -19,6 +19,7 @@ from gateway.engine import AgentEngine
 from gateway.state import TurnExecutionState
 from core.model_runtime.usage import UsageAttributionContext, bind_usage_attribution
 from server.quota.contracts import FinishTurn
+from gateway.execution_fence import LostTurnClaimError, current_turn_write_fence
 
 
 EventSink = Callable[[str, str, GatewayEventType, dict], Awaitable[None]]
@@ -43,6 +44,10 @@ def _error_kind_for_turn(error: BaseException) -> str:
         StreamInterruptedError,
         classify_model_error,
     )
+    if isinstance(error, AdmissionLimitError):
+        return error.code
+    if isinstance(error, TimeoutError) and not isinstance(error, TurnExecutionTimeoutError):
+        return classify_model_error(error).kind
     if isinstance(error, StreamInterruptedError):
         return "stream_interrupted"
     if isinstance(error, ModelRuntimeExhaustedError) and error.__cause__ is not None:
@@ -236,6 +241,9 @@ class InProcessTurnExecutor:
                     return
         except asyncio.CancelledError:
             await self._engine.cancel_turn(task.context, task.turn_id)
+            # Interruption of a fenced owner is recoverable, not a user cancel.
+            if current_turn_write_fence() is not None:
+                raise
             updated = await asyncio.to_thread(
                 self._repository.update_turn,
                 task.turn_id,
@@ -252,6 +260,8 @@ class InProcessTurnExecutor:
                     **fence,
                 )
             await self._finish_quota(task)
+            raise
+        except LostTurnClaimError:
             raise
         except Exception as error:
             await self._converge_failed_turn(task, error, execution_context)
@@ -296,7 +306,7 @@ class InProcessTurnExecutor:
         updated_status = getattr(updated, "status", TurnStatus.FAILED)
         if updated_status == TurnStatus.FAILED:
             error_kind = getattr(updated, "error_kind", None) or (
-                type(fallback_error).__name__
+                _error_kind_for_turn(fallback_error)
                 if fallback_error is not None
                 else "turn_failed"
             )
@@ -532,9 +542,27 @@ class InProcessTurnExecutor:
             kwargs["knowledge_book_context"] = task.knowledge_book_context
         if self._accepts_thinking_enabled:
             kwargs["thinking_enabled"] = task.thinking_enabled
-        return await self._engine.run_turn(
-            task.context, task.turn_id, task.content, **kwargs
+        from core.model_runtime.usage import (
+            UsageAttributionContext,
+            bind_usage_attribution,
         )
+
+        fence = current_turn_write_fence()
+        attribution = UsageAttributionContext(
+            request_id=task.turn_id,
+            user_id=task.context.user_id,
+            workspace_id=task.context.workspace_id,
+            conversation_id=task.context.session_id,
+            turn_id=task.turn_id,
+            reservation_id=task.reservation_id,
+            token_reservation_id=task.quota_reservation_id,
+            worker_id=fence.worker_id if fence is not None else None,
+            purpose="worker" if fence is not None else "coordinator",
+        )
+        with bind_usage_attribution(attribution):
+            return await self._engine.run_turn(
+                task.context, task.turn_id, task.content, **kwargs
+            )
 
     async def _finalize_learning(self, task: TurnTask, final_text: str) -> tuple[str, object]:
         if task.guided_session_id is not None:

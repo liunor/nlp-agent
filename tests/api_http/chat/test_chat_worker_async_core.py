@@ -112,6 +112,8 @@ def test_chat_turn_idempotency_is_replayable_but_conflicts_on_changed_input(
         "session_id": session["session_id"],
         "status": "completed",
         "duplicate": True,
+        "queue_position": None,
+        "waited_s": None,
     }
 
     conflict = authenticated_client.post(
@@ -128,16 +130,17 @@ def test_chat_turn_idempotency_is_replayable_but_conflicts_on_changed_input(
 
 
 @pytest.mark.parametrize(
-    "content",
+    ("content", "expected_error_kind"),
     [
-        "__api_http_timeout__",
-        "__api_http_failure__",
+        ("__api_http_timeout__", "upstream_timeout"),
+        ("__api_http_failure__", "RuntimeError"),
     ],
 )
 def test_worker_provider_failure_is_a_durable_failed_terminal_result(
     authenticated_client: httpx.Client,
     student_user,
     content: str,
+    expected_error_kind: str,
 ) -> None:
     session = create_session(
         authenticated_client,
@@ -150,16 +153,10 @@ def test_worker_provider_failure_is_a_durable_failed_terminal_result(
     )
     terminal = wait_for_turn(authenticated_client, accepted["turn_id"])
 
-    # The current coordinator contract does not turn provider failures into a
-    # successful assistant message. The Gateway must durably expose the failed
-    # terminal state and publish only a failure terminal event.
     assert terminal["status"] == "failed"
-    assert terminal["final_text"] is None
-    assert terminal["error_kind"]
-    assert terminal["error_message"]
-    terminal_events = event_types(authenticated_client, accepted["turn_id"])
-    assert "turn.failed" in terminal_events
-    assert "turn.completed" not in terminal_events
+    assert terminal["error_kind"] == expected_error_kind
+    assert event_types(authenticated_client, accepted["turn_id"]).count("turn.failed") == 1
+    assert authenticated_client.get("/api/v1/auth/session").status_code == 200
 
 
 def test_chat_cancel_is_persisted_and_published_without_waiting_fixed_time(

@@ -57,6 +57,7 @@ nano.md
 .coverage
 coverage/
 htmlcov/
+.artifacts/
 evaluation/result/
 
 # ── 本地截图和敏感文档 ──

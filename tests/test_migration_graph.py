@@ -17,11 +17,15 @@ from core.rbac import Permission
 from server.infrastructure.mysql.models import AuthCodeModel
 from server.rbac.catalog import permission_id, permission_row, role_id
 
-def test_migration_graph_has_one_head_after_all_feature_branches_are_merged() -> None:
+def test_migration_graph_has_one_deployable_head_after_t07_additions() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20261016_51_t06_phone_identity"]
-    assert scripts.get_revision("20261016_51_t06_phone_identity").down_revision == "20261016_50_t06"
+    assert scripts.get_heads() == ["20261017_55_t07_sms_history"]
+    assert scripts.get_revision("20261017_55_t07_sms_history").down_revision == "20261017_54_t07"
+    assert scripts.get_revision("20261017_54_t07").down_revision == "20261017_53_t07"
+    assert scripts.get_revision("20261017_53_t07").down_revision == "20261016_52_t07"
+    assert scripts.get_revision("20261016_52_t07").down_revision == "20261016_51_t07"
+    assert scripts.get_revision("20261016_51_t07").down_revision == "20261016_51_t06_phone_identity"
     assert scripts.get_revision("20261016_50_t06").down_revision == "20261015_49_t06"
     assert scripts.get_revision("20261015_49_t06").down_revision == "20261015_48_t06"
     assert scripts.get_revision("20261015_48_t06").down_revision == "20261010_48_cleanup_index"

@@ -28,6 +28,31 @@ class RecordingGraph:
         return SimpleNamespace(values={"messages": [AIMessage(content="done")]})
 
 
+@pytest.mark.asyncio
+async def test_fenced_turn_persists_transcript_before_releasing_ownership(monkeypatch):
+    from gateway.execution_fence import TurnWriteFence, bind_turn_write_fence, current_turn_write_fence
+
+    persisted = []
+
+    async def record(*args, **kwargs):
+        await asyncio.sleep(0.01)
+        current_turn_write_fence().require_valid("turn")
+        persisted.append(args[0])
+
+    monkeypatch.setattr("server.agent.session_storage.record_transcript", record)
+    engine = LangGraphAgentEngine()
+    engine._app = RecordingGraph()
+    engine._runtime = CoordinatorRuntime(WorkerEventBus(), engine._invoke)
+    engine._started = True
+    with bind_turn_write_fence(TurnWriteFence("turn", 1, "worker")):
+        try:
+            assert await engine.run_turn(SessionContext(session_id="session", user_id="user"), "turn", "hello") == "done"
+            assert persisted == ["session"]
+        finally:
+            await asyncio.gather(*engine._background_tasks, return_exceptions=True)
+            await engine._runtime.close()
+
+
 class ToolEventGraph(RecordingGraph):
     async def astream_events(self, _state, *, config, version):
         self.configs.append(config)

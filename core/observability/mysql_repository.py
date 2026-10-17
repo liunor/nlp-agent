@@ -8,7 +8,8 @@ from collections.abc import Iterable, Sequence
 from math import ceil
 from typing import Any
 
-from sqlalchemy import Integer, String, and_, case, cast, create_engine, delete, false, func, or_, select, text
+from sqlalchemy import Integer, String, and_, case, cast, delete, false, func, or_, select, text
+from server.infrastructure.mysql.sync_engine import configured_engine, release_engine
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.orm import aliased
 
@@ -43,7 +44,8 @@ def _record_key(kind: str, payload: dict[str, Any]) -> str:
 
 class MySQLTelemetryRepository:
     def __init__(self, database_url: str) -> None:
-        self._engine = create_engine(database_url.replace("mysql+aiomysql://", "mysql+pymysql://"), pool_pre_ping=True)
+        from configs.settings import settings
+        self._engine = configured_engine(database_url, settings.database_runtime)
         self._runtime_lock_enabled = True
 
     def _runtime_begin(self):
@@ -633,7 +635,9 @@ class MySQLTelemetryRepository:
             connection.execute(delete(ObservabilityRecordModel).where(ObservabilityRecordModel.session_id == session_id))
 
     def close(self) -> None:
-        self._engine.dispose()
+        if not getattr(self, "_closed", False):
+            self._closed = True
+            release_engine(self._engine)
 
     def flush(self) -> None:
         return None

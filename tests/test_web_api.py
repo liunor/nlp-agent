@@ -6,6 +6,7 @@ import io
 import json
 import time
 import zipfile
+from unittest.mock import AsyncMock
 
 import pytest
 from argon2 import PasswordHasher
@@ -437,9 +438,16 @@ def test_learning_release_notes_route_requests_only_published(web_app, monkeypat
         async def begin(self):
             yield
 
-    @asynccontextmanager
-    async def fake_session_factory():
-        yield FakeSession()
+    class FakeSessionFactory:
+        @asynccontextmanager
+        async def __call__(self):
+            yield FakeSession()
+
+        begin = __call__
+
+    fake_session_factory = FakeSessionFactory()
+    for name in ("reconcile_all_storage_accounts", "purge_expired_storage_trash", "purge_expired_guest_data"):
+        monkeypatch.setattr(f"gateway.core.{name}", AsyncMock(return_value=0))
 
     monkeypatch.setattr("server.web.app.release_note_service", FakeReleaseNoteService())
     monkeypatch.setattr(

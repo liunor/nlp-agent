@@ -17,7 +17,6 @@ class OutboxTurnDispatcher:
     ) -> None:
         self._reliability = reliability
         self._transport = transport
-        self._active: set[str] = set()
 
     async def submit(self, task: TurnTask) -> None:
         """Track a task already persisted atomically with its Turn.
@@ -26,21 +25,26 @@ class OutboxTurnDispatcher:
         rows.  Keeping the dispatcher write-free prevents a second transaction
         from producing an orphaned outbox message.
         """
-        self._active.add(task.turn_id)
+        # Submission is durable but not execution. Live Worker heartbeats and
+        # MySQL Turn status provide the execution gauges.
+
+    async def healthy_worker_count(self) -> int | None:
+        return await self._transport.healthy_worker_count()
+
+    async def worker_heartbeats(self) -> list[dict[str, Any]] | None:
+        return await self._transport.worker_heartbeats()
 
     async def cancel(self, turn_id: str) -> None:
         await self._transport.cancel(turn_id)
-        self._active.discard(turn_id)
 
     async def inject(self, turn_id: str, content: str) -> None:
         await self._transport.inject(turn_id, content)
 
     async def close(self, *, force: bool = False, grace_s: float = 0) -> None:
         await self._transport.close(force=force, grace_s=grace_s)
-        self._active.clear()
 
     def active_count(self) -> int:
-        return len(self._active)
+        return 0
 
     @property
     def client(self) -> Any:

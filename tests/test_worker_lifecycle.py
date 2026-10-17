@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+import json
+
 import pytest
 from unittest.mock import Mock
 
@@ -10,7 +12,40 @@ from core.worker_lifecycle import (
     WorkerResourceBudget,
     WorkerRetryPolicy,
     classify_worker_error,
+    detached_worker_allowed,
 )
+
+
+def test_durable_turn_does_not_allow_worker_to_outlive_its_parent_fence():
+    assert detached_worker_allowed(join=False, parent_turn_is_fenced=True) is False
+    assert detached_worker_allowed(join=True, parent_turn_is_fenced=True) is True
+    assert detached_worker_allowed(join=False, parent_turn_is_fenced=False) is True
+
+
+@pytest.mark.asyncio
+async def test_spawn_worker_refuses_detached_child_inside_a_durable_turn():
+    from gateway.execution_fence import TurnWriteFence, bind_turn_write_fence
+    from server.tools.worker_tool import spawn_worker
+
+    config = {
+        "configurable": {
+            "thread_id": "session-1",
+            "user_id": "user-1",
+            "workspace_id": "default",
+            "turn_id": "turn-1",
+        }
+    }
+    with bind_turn_write_fence(TurnWriteFence("turn-1", 2, "worker-1")):
+        response = await spawn_worker.coroutine(
+            agent_name="nlp_calculator",
+            directive="calculate 1+1",
+            config=config,
+            join=False,
+        )
+
+    result = json.loads(response)
+    assert result["status"] == "failed"
+    assert "join=true" in result["summary"]
 
 
 @pytest.mark.asyncio

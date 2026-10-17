@@ -367,12 +367,14 @@ async def record_transcript(
     *,
     user_id: str | None = None,
     workspace_id: str | None = None,
+    turn_id: str | None = None,
 ):
     """
     暴露给上层的封装调用：对比当前 Graph 内的 messages 链，提取并附加新消息。
     """
     """Persist the current transcript snapshot in MySQL; JSONL is legacy-read only."""
-    from sqlalchemy import create_engine, delete, text
+    from sqlalchemy import delete, text
+    from server.infrastructure.mysql.sync_engine import configured_engine, release_engine
     from sqlalchemy.dialects.mysql import insert
     from configs.settings import settings
     from server.infrastructure.mysql.models import ConversationTranscriptModel
@@ -383,7 +385,7 @@ async def record_transcript(
         url = settings.NLP_AGENT_DATABASE_URL.strip()
         if not url:
             raise RuntimeError("NLP_AGENT_DATABASE_URL is required for transcript storage")
-        engine = create_engine(url.replace("mysql+aiomysql://", "mysql+pymysql://"), pool_pre_ping=True)
+        engine = configured_engine(url, settings.database_runtime)
         try:
             with engine.begin() as connection:
                 if not user_id or not workspace_id:
@@ -402,6 +404,36 @@ async def record_transcript(
                 ).first()
                 if owner is None:
                     raise PermissionError("transcript does not belong to the principal")
+                from gateway.execution_fence import (
+                    LostTurnClaimError,
+                    current_turn_write_fence,
+                )
+                fence = current_turn_write_fence()
+                if turn_id and fence is None:
+                    raise LostTurnClaimError(turn_id)
+                if fence is not None:
+                    fence.require_valid()
+                    if turn_id and fence.turn_id != turn_id:
+                        fence.revoke()
+                        raise LostTurnClaimError(fence.turn_id)
+                    active_turn = connection.execute(
+                        text(
+                            "SELECT id FROM nlp_turns "
+                            "WHERE id=:turn_id AND conversation_id=:session_id "
+                            "AND status='running' "
+                            "AND claim_generation=:generation AND claimed_by=:worker_id "
+                            "AND lease_expires_at>UTC_TIMESTAMP(6) FOR UPDATE"
+                        ),
+                        {
+                            "turn_id": fence.turn_id,
+                            "session_id": session_id,
+                            "generation": fence.generation,
+                            "worker_id": fence.worker_id,
+                        },
+                    ).first()
+                    if active_turn is None:
+                        fence.revoke()
+                        raise LostTurnClaimError(fence.turn_id)
                 quota = SyncStorageQuota(connection, owner_user_id=user_id)
                 old_size = int(
                     connection.execute(
@@ -441,7 +473,7 @@ async def record_transcript(
                 else:
                     quota.reconcile()
         finally:
-            engine.dispose()
+            release_engine(engine)
 
     await asyncio.to_thread(persist)
 

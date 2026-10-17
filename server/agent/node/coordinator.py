@@ -307,6 +307,12 @@ async def coordinator_node(state: AgentState, config: RunnableConfig) -> dict:
             active_model, messages, config, name="coordinator.model"
         )
     except Exception as error:
+        from gateway.execution_fence import current_turn_write_fence
+
+        if current_turn_write_fence() is not None:
+            # The remote Turn executor persists the classified failed outcome.
+            # Do not convert an exhausted Provider failure into completion.
+            raise
         logger.exception("Coordinator model runtime exhausted", error=str(error))
         global_telemetry.event(
             "agent.run.completed",

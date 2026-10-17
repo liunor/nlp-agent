@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import uuid
 import json
+import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from gateway.execution_fence import LostTurnClaimError
 
 from server.infrastructure.mysql.models import (
     ConversationModel,
@@ -23,17 +25,17 @@ from server.infrastructure.mysql.models import (
 from server.storage.policy import StorageBucket
 from server.storage.quota import AsyncStorageQuota
 
+logger = logging.getLogger(__name__)
+
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    # MySQL DATETIME carries naive UTC values, including values loaded from
+    # aiomysql. Keep lease comparisons in that same convention.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _json_bytes(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":")).encode("utf-8"))
-
-
-class LostTurnClaimError(RuntimeError):
-    pass
 
 
 class TurnCancellationRequested(RuntimeError):
@@ -53,6 +55,14 @@ class TurnReliabilityService:
         session.add(message)
         await session.flush()
         return message
+
+    async def quota_reservation_for_turn(
+        self, session: AsyncSession, *, turn_id: str
+    ) -> str | None:
+        reservation_id = await session.scalar(
+            select(TurnModel.quota_reservation_id).where(TurnModel.id == turn_id)
+        )
+        return str(reservation_id) if reservation_id else None
 
     async def claim_turn(
         self,
@@ -111,9 +121,20 @@ class TurnReliabilityService:
         return turn.claim_generation
 
     async def heartbeat(self, session: AsyncSession, *, turn_id: str, generation: int, worker_id: str, lease_s: int) -> bool:
-        turn = await session.scalar(select(TurnModel).where(TurnModel.id == turn_id).with_for_update())
-        if turn is None or turn.claim_generation != generation or turn.claimed_by != worker_id:
+        turn = await session.scalar(select(TurnModel).where(
+            TurnModel.id == turn_id,
+            TurnModel.claim_generation == generation,
+            TurnModel.claimed_by == worker_id,
+            TurnModel.lease_expires_at > func.utc_timestamp(6),
+        ).with_for_update())
+        if turn is None or turn.claim_generation != generation or turn.claimed_by != worker_id or turn.lease_expires_at is None or turn.lease_expires_at <= utc_now():
             raise LostTurnClaimError(turn_id)
+        # A cancellation request racing the terminal commit must never turn a
+        # completed/failed result into a second, contradictory terminal state.
+        if turn.status == "cancelled":
+            return False
+        if turn.status in {"completed", "failed", "interrupted"}:
+            return True
         cancellation = await session.scalar(
             select(TurnCancellationModel).where(
                 TurnCancellationModel.turn_id == turn_id
@@ -126,6 +147,8 @@ class TurnReliabilityService:
             turn.lease_expires_at = None
             await session.flush()
             return False
+        if turn.status != "running":
+            raise LostTurnClaimError(turn_id)
         now = utc_now()
         turn.heartbeat_at = now
         turn.lease_expires_at = now + timedelta(seconds=lease_s)
@@ -257,35 +280,106 @@ class TurnReliabilityService:
 
 
 class OutboxRelay:
-    """Claims outbox rows in MySQL before the at-least-once Redis XADD."""
+    """Publishes outbox rows without holding MySQL locks across Redis I/O."""
 
     def __init__(self, redis: Any, *, stream: str, relay_id: str, authorization_channel: str = "nlp-agent:authorization", lock_s: int = 30) -> None:
         self._redis, self._stream, self._relay_id, self._authorization_channel, self._lock_s = redis, stream, relay_id, authorization_channel, lock_s
 
-    async def publish_batch(self, session: AsyncSession, *, limit: int = 100) -> int:
+    async def _claim_batch(self, session: AsyncSession, *, limit: int) -> list["_ClaimedOutboxMessage"]:
         now = utc_now()
-        rows = (await session.scalars(select(OutboxMessageModel).where(OutboxMessageModel.status.in_(("pending", "retry")), OutboxMessageModel.available_at <= now, or_(OutboxMessageModel.locked_until.is_(None), OutboxMessageModel.locked_until < now)).order_by(OutboxMessageModel.available_at, OutboxMessageModel.id).limit(limit).with_for_update(skip_locked=True))).all()
+        rows = (await session.scalars(select(OutboxMessageModel).where(OutboxMessageModel.status.in_(("pending", "retry", "publishing")), OutboxMessageModel.available_at <= now, or_(OutboxMessageModel.locked_until.is_(None), OutboxMessageModel.locked_until < now)).order_by(OutboxMessageModel.available_at, OutboxMessageModel.id).limit(limit).with_for_update(skip_locked=True))).all()
+        claimed: list[_ClaimedOutboxMessage] = []
         for row in rows:
             row.status, row.locked_by, row.locked_until, row.attempts = "publishing", self._relay_id, now + timedelta(seconds=self._lock_s), row.attempts + 1
+            claimed.append(_ClaimedOutboxMessage(row.id, row.topic, row.payload_json, row.attempts))
         await session.flush()
-        for row in rows:
-            if row.topic == "authorization.changed":
-                payload = __import__("json").dumps(row.payload_json, ensure_ascii=False)
-                redis_id = await self._redis.publish(self._authorization_channel, payload)
-            elif row.topic == "turn.dispatch":
-                task_payload = row.payload_json.get("task")
-                if not isinstance(task_payload, str):
-                    raise ValueError("turn.dispatch outbox payload requires an encoded task")
-                fields = {"payload": task_payload}
-            else:
-                fields = {
-                    "topic": row.topic,
-                    "payload": __import__("json").dumps(
-                        row.payload_json, ensure_ascii=False
-                    ),
-                }
-            if row.topic != "authorization.changed":
-                redis_id = await self._redis.xadd(self._stream, fields)
-            row.status, row.redis_message_id, row.published_at, row.locked_until = "published", str(redis_id), utc_now(), None
+        return claimed
+
+    async def _publish(self, message: "_ClaimedOutboxMessage") -> str:
+        if message.topic == "authorization.changed":
+            payload = json.dumps(message.payload_json, ensure_ascii=False)
+            return str(await self._redis.publish(self._authorization_channel, payload))
+        if message.topic == "turn.dispatch":
+            task_payload = message.payload_json.get("task")
+            if not isinstance(task_payload, str):
+                raise ValueError("turn.dispatch outbox payload requires an encoded task")
+            fields = {"payload": task_payload}
+        else:
+            fields = {
+                "topic": message.topic,
+                "payload": json.dumps(message.payload_json, ensure_ascii=False),
+            }
+        return str(await self._redis.xadd(self._stream, fields))
+
+    async def _finalize_batch(
+        self,
+        session: AsyncSession,
+        results: list[tuple["_ClaimedOutboxMessage", str | None]],
+    ) -> int:
+        published = 0
+        for message, redis_id in results:
+            row = await session.scalar(
+                select(OutboxMessageModel)
+                .where(
+                    OutboxMessageModel.id == message.id,
+                    OutboxMessageModel.status == "publishing",
+                    OutboxMessageModel.locked_by == self._relay_id,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                # A newer relay owns this claim (or the row was already handled).
+                continue
+            if redis_id is not None:
+                row.status = "published"
+                row.redis_message_id = redis_id
+                row.published_at = utc_now()
+                row.locked_by = None
+                row.locked_until = None
+                published += 1
+                continue
+            delay_s = min(30, 2 ** min(message.attempts, 5))
+            row.status = "retry"
+            row.available_at = utc_now() + timedelta(seconds=delay_s)
+            row.locked_by = None
+            row.locked_until = None
         await session.flush()
-        return len(rows)
+        return published
+
+    async def publish_batch(self, uow_factory: Any, *, limit: int = 100) -> int:
+        """Claim, publish outside transactions, then durably finalize outcomes.
+
+        A process crash after Redis accepts a message but before finalization can
+        cause an at-least-once duplicate after the claim lease expires. Consumers
+        must continue to use Turn fencing/idempotency.
+        """
+        async with uow_factory.begin() as unit_of_work:
+            if unit_of_work.session is None:
+                raise RuntimeError("outbox relay unit of work has no session")
+            claimed = await self._claim_batch(unit_of_work.session, limit=limit)
+            await unit_of_work.commit()
+
+        results: list[tuple[_ClaimedOutboxMessage, str | None]] = []
+        for message in claimed:
+            try:
+                results.append((message, await self._publish(message)))
+            except Exception:
+                logger.exception("outbox publish failed: id=%s topic=%s", message.id, message.topic)
+                results.append((message, None))
+
+        if not results:
+            return 0
+        async with uow_factory.begin() as unit_of_work:
+            if unit_of_work.session is None:
+                raise RuntimeError("outbox relay unit of work has no session")
+            published = await self._finalize_batch(unit_of_work.session, results)
+            await unit_of_work.commit()
+        return published
+
+
+@dataclass(frozen=True)
+class _ClaimedOutboxMessage:
+    id: str
+    topic: str
+    payload_json: dict[str, Any]
+    attempts: int

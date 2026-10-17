@@ -73,7 +73,9 @@ from core.worker_lifecycle import (
     WorkerResourceBudget,
     WorkerRetryPolicy,
     classify_worker_error,
+    detached_worker_allowed,
 )
+from gateway.execution_fence import current_turn_write_fence
 from core.worker_protocol import WorkerCommand, WorkerWaitMode
 from core.vision_execution import current_image_turn
 from langchain_core.runnables import RunnableConfig
@@ -960,6 +962,22 @@ async def spawn_worker(
     session_id = config.get("configurable", {}).get("thread_id", "default_session")
     parent_context = SessionContext.from_config(config, require=True)
     parent_turn_id = config.get("configurable", {}).get("turn_id", "")
+    parent_fence = current_turn_write_fence()
+    parent_turn_is_fenced = bool(
+        parent_fence is not None and parent_fence.turn_id == parent_turn_id
+    )
+    if not detached_worker_allowed(
+        join=join, parent_turn_is_fenced=parent_turn_is_fenced
+    ):
+        return WorkerNotificationSpec(
+            task_id=create_agent_id(agent_name),
+            status="failed",
+            summary=(
+                "当前 Worker 执行没有独立持久生命周期；在课堂 Turn 内启动的后台 Worker "
+                "必须设置 join=true，确保父 Turn 完成前等待其结束。"
+            ),
+            join=join,
+        ).model_dump_json(exclude_none=True)
     parent_worker_id = config.get("configurable", {}).get("worker_id", "")
     worker_id = create_agent_id(agent_name)
 

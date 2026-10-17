@@ -38,10 +38,13 @@ def test_database_config_requires_aiomysql_and_valid_pool_limits() -> None:
     config = DatabaseConfig("mysql+aiomysql://user:password@localhost/nlp_agent")
 
     assert config.pool_size == 10
+    assert config.pool_timeout_s == 5
     with pytest.raises(ValueError, match="mysql\\+aiomysql"):
         DatabaseConfig("sqlite:///gateway.sqlite3")
     with pytest.raises(ValueError, match="pool_size"):
         replace(config, pool_size=0)
+    with pytest.raises(ValueError, match="pool_timeout_s"):
+        replace(config, pool_timeout_s=0)
 
 
 def test_engine_applies_connection_and_statement_timeouts() -> None:
@@ -49,6 +52,7 @@ def test_engine_applies_connection_and_statement_timeouts() -> None:
         "mysql+aiomysql://user:password@localhost/nlp_agent",
         connect_timeout_s=7,
         statement_timeout_s=31,
+        pool_timeout_s=7,
     )
     with patch("server.infrastructure.mysql.engine.create_async_engine") as create_async_engine:
         create_engine(config)
@@ -57,6 +61,7 @@ def test_engine_applies_connection_and_statement_timeouts() -> None:
         "connect_timeout": 7,
         "init_command": "SET SESSION max_execution_time = 31000",
     }
+    assert create_async_engine.call_args.kwargs["pool_timeout"] == 7
 
 
 def test_database_runtime_uses_environment_dsn_without_storing_it_in_yaml() -> None:

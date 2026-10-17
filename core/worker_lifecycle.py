@@ -83,6 +83,12 @@ def validate_transition(current: str, target: str) -> None:
         raise InvalidWorkerTransition(f"Invalid Worker transition: {current} -> {target}")
 
 
+def detached_worker_allowed(*, join: bool, parent_turn_is_fenced: bool) -> bool:
+    """A fenced Turn may only start Workers that finish before their parent does."""
+
+    return join or not parent_turn_is_fenced
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerResourceBudget:
     max_turns: int = 6

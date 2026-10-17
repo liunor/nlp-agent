@@ -13,7 +13,7 @@ from langgraph.checkpoint.base import (
     get_checkpoint_id,
     get_checkpoint_metadata,
 )
-from sqlalchemy import and_, delete, desc, select
+from sqlalchemy import and_, delete, desc, func, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -23,6 +23,7 @@ from .models import (
     LangGraphCheckpointBlobModel,
     LangGraphCheckpointModel,
     LangGraphCheckpointWriteModel,
+    TurnModel,
 )
 from server.storage.policy import StorageBucket
 from server.storage.quota import AsyncStorageQuota
@@ -103,6 +104,45 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
             owner_user_id=owner_user_id,
             record_name="checkpoint conversation",
         )
+
+    async def _require_active_turn_fence(
+        self,
+        session: AsyncSession,
+        *,
+        configured_turn_id: str | None,
+        configured_thread_id: str,
+    ) -> None:
+        """Hold the claimed Turn row while an execution writes checkpoint state."""
+
+        from gateway.execution_fence import (
+            LostTurnClaimError,
+            current_turn_write_fence,
+        )
+
+        fence = current_turn_write_fence()
+        if fence is None:
+            if configured_turn_id:
+                raise LostTurnClaimError(configured_turn_id)
+            return
+        fence.require_valid()
+        if not configured_turn_id or fence.turn_id != configured_turn_id:
+            fence.revoke()
+            raise LostTurnClaimError(fence.turn_id)
+        active_turn_id = await session.scalar(
+            select(TurnModel.id)
+            .where(
+                TurnModel.id == fence.turn_id,
+                TurnModel.conversation_id == configured_thread_id,
+                TurnModel.status == "running",
+                TurnModel.claim_generation == fence.generation,
+                TurnModel.claimed_by == fence.worker_id,
+                TurnModel.lease_expires_at > func.utc_timestamp(6),
+            )
+            .with_for_update()
+        )
+        if active_turn_id is None:
+            fence.revoke()
+            raise LostTurnClaimError(fence.turn_id)
 
     async def aclose(self) -> None:
         await self._engine.dispose()
@@ -189,16 +229,23 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
             and blob.value_type != "empty"
         }
         return CheckpointTuple(
-            config={"configurable": {"thread_id": row.thread_id, "checkpoint_ns": row.checkpoint_ns, "checkpoint_id": row.checkpoint_id, "workspace_id": row.workspace_id, "user_id": row.owner_user_id}},
+            config={"configurable": {"thread_id": row.thread_id, "checkpoint_ns": row.checkpoint_ns, "checkpoint_id": row.checkpoint_id, "workspace_id": row.workspace_id, "user_id": row.owner_user_id, **self._current_turn_config()}},
             checkpoint={**checkpoint, "channel_values": values},
             metadata=metadata,
-            parent_config=({"configurable": {"thread_id": row.thread_id, "checkpoint_ns": row.checkpoint_ns, "checkpoint_id": row.parent_checkpoint_id, "workspace_id": row.workspace_id, "user_id": row.owner_user_id}} if row.parent_checkpoint_id else None),
+            parent_config=({"configurable": {"thread_id": row.thread_id, "checkpoint_ns": row.checkpoint_ns, "checkpoint_id": row.parent_checkpoint_id, "workspace_id": row.workspace_id, "user_id": row.owner_user_id, **self._current_turn_config()}} if row.parent_checkpoint_id else None),
             pending_writes=[
                 (item.task_id, item.channel, self.serde.loads_typed((item.value_type, item.value_blob)))
                 for item in writes
                 if item.value_type != "empty"
             ],
         )
+
+    @staticmethod
+    def _current_turn_config() -> dict[str, str]:
+        from gateway.execution_fence import current_turn_write_fence
+
+        fence = current_turn_write_fence()
+        return {"turn_id": fence.turn_id} if fence is not None else {}
 
     async def aget_tuple(self, config: dict[str, Any]) -> CheckpointTuple | None:
         configured = config["configurable"]
@@ -276,6 +323,11 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
 
         async def put_once() -> None:
             async with self._sessions.begin() as session:
+                await self._require_active_turn_fence(
+                    session,
+                    configured_turn_id=configured.get("turn_id"),
+                    configured_thread_id=thread_id,
+                )
                 await self._require_thread_owner(
                     session,
                     thread_id=thread_id,
@@ -388,6 +440,7 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
                 "checkpoint_id": checkpoint["id"],
                 "workspace_id": workspace_id,
                 "user_id": owner_user_id,
+                **({"turn_id": configured["turn_id"]} if configured.get("turn_id") else {}),
             }
         }
 
@@ -419,6 +472,11 @@ class MySQLCheckpointSaver(BaseCheckpointSaver):
 
         async def put_writes_once() -> None:
             async with self._sessions.begin() as session:
+                await self._require_active_turn_fence(
+                    session,
+                    configured_turn_id=configured.get("turn_id"),
+                    configured_thread_id=thread_id,
+                )
                 await self._require_thread_owner(
                     session,
                     thread_id=thread_id,

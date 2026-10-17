@@ -35,18 +35,19 @@ export function turnMessages(turn: TurnRecord): ChatMessage[] {
     attachments: restoredAttachments(turn),
     createdAt,
   }];
-  if (turn.final_text || turn.status !== "accepted") {
-    result.push({
-      id: `${turn.turn_id}:assistant`,
-      turnId: turn.turn_id,
-      role: "assistant",
-      content: turn.final_text ?? "",
-      status: turn.status,
-      createdAt: turn.started_at ?? createdAt,
-      startedAt: turn.started_at ?? undefined,
-      completedAt: turn.completed_at ?? undefined,
-    });
-  }
+  result.push({
+    id: `${turn.turn_id}:assistant`,
+    turnId: turn.turn_id,
+    role: "assistant",
+    content: turn.final_text ?? "",
+    status: turn.status,
+    createdAt: turn.started_at ?? createdAt,
+    startedAt: turn.started_at ?? undefined,
+    completedAt: turn.completed_at ?? undefined,
+    queuePosition: turn.queue_position ?? undefined,
+    queueWaitedS: turn.waited_s ?? undefined,
+    queueObservedAt: turn.status === "accepted" ? new Date().toISOString() : undefined,
+  });
   return result;
 }
 

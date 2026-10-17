@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import re
 import uuid
+import weakref
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy import delete, func, select
+from server.infrastructure.mysql.sync_engine import configured_engine, release_engine
 from sqlalchemy.dialects.mysql import insert
 
 from configs.settings import settings
@@ -29,7 +31,11 @@ class MySQLMemoryManager:
         url = settings.NLP_AGENT_DATABASE_URL.strip()
         if not url:
             raise RuntimeError("NLP_AGENT_DATABASE_URL is required for memory storage")
-        self._engine = create_engine(url.replace("mysql+aiomysql://", "mysql+pymysql://"), pool_pre_ping=True)
+        self._engine = configured_engine(url, settings.database_runtime)
+        self._release_engine = weakref.finalize(self, release_engine, self._engine)
+
+    def close(self) -> None:
+        self._release_engine()
 
     @staticmethod
     def _scope_for_type(memory_type: str) -> MemoryScopeKind:

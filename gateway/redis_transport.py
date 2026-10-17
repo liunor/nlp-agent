@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import inspect
 import asyncio
+import inspect
 import logging
+import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,8 +35,22 @@ class RedisTransportConfig:
     cancel_key_prefix: str = "nlp-agent:cancel:"
     cancel_ttl_s: int = 604_800
     dead_letter_stream: str = "nlp-agent:turns:dead"
+    worker_concurrency: int = 4
+    shutdown_grace_s: float = 30.0
+    worker_heartbeat_prefix: str = "nlp-agent:workers:heartbeat:"
+    worker_heartbeat_interval_s: float = 5.0
+    worker_heartbeat_ttl_s: int = 15
 
     def __post_init__(self) -> None:
+        if not 1 <= self.worker_concurrency <= 16:
+            raise ValueError("worker_concurrency must be between 1 and 16")
+        if self.shutdown_grace_s < 0:
+            raise ValueError("shutdown_grace_s must not be negative")
+        if self.worker_heartbeat_interval_s <= 0:
+            raise ValueError("worker_heartbeat_interval_s must be positive")
+        if self.worker_heartbeat_ttl_s <= self.worker_heartbeat_interval_s:
+            raise ValueError("worker_heartbeat_ttl_s must exceed its interval")
+
         if not 1 <= self.poll_block_ms <= 4_000:
             raise ValueError(
                 "poll_block_ms must be between 1 and 4000 milliseconds"
@@ -87,6 +102,51 @@ class RedisTurnDispatcher:
     def active_count(self) -> int:
         return len(self._active)
 
+    async def healthy_worker_count(self) -> int | None:
+        """Return live worker heartbeats, or None when Redis health is unknown."""
+        try:
+            if not await self._redis.ping():
+                return None
+            workers = await self.worker_heartbeats()
+            return len(workers) if workers is not None else None
+        except Exception:
+            logger.warning("Unable to read worker heartbeats; preserving MySQL outbox admission", exc_info=True)
+            return None
+
+    async def worker_heartbeats(self) -> list[dict[str, Any]] | None:
+        """Read current TTL-backed Worker slot gauges without identity labels."""
+        try:
+            if not await self._redis.ping():
+                return None
+            workers: list[dict[str, Any]] = []
+            async for key in self._redis.scan_iter(
+                match=f"{self.config.worker_heartbeat_prefix}*"
+            ):
+                raw = await self._redis.get(key)
+                if not raw:
+                    continue
+                value = json.loads(raw)
+                if not isinstance(value, dict):
+                    continue
+                if not all(
+                    isinstance(value.get(name), int)
+                    for name in ("concurrency", "active_slots")
+                ):
+                    continue
+                workers.append(
+                    {
+                        "worker_id": str(value.get("worker_id") or ""),
+                        "started_at": float(value.get("started_at") or 0),
+                        "concurrency": max(0, int(value["concurrency"])),
+                        "active_slots": max(0, int(value["active_slots"])),
+                        "version": int(value.get("version") or 0),
+                    }
+                )
+            return workers
+        except Exception:
+            logger.warning("Unable to read Worker heartbeat gauges", exc_info=True)
+            return None
+
     def observe(self, event: GatewayEvent) -> None:
         if event.type.value in {"turn.completed", "turn.failed", "turn.cancelled"}:
             self._active.discard(event.turn_id)
@@ -126,7 +186,14 @@ class RedisWorkerRuntime:
         self._active: dict[str, asyncio.Task[Any]] = {}
         self._active_turns: dict[str, TurnTask] = {}
         self._cancel_waiters: dict[str, asyncio.Event] = {}
+        self._processing: set[asyncio.Task[int]] = set()
+        self._turn_processors: dict[str, asyncio.Task[Any]] = {}
         self._command_cancelled: set[str] = set()
+        self._started_at = time.time()
+
+    @property
+    def active_count(self) -> int:
+        return len(self._active)
 
     @classmethod
     def for_fenced_mysql(
@@ -171,10 +238,13 @@ class RedisWorkerRuntime:
         self._group_ready = True
 
     async def run_once(self, *, block_ms: int | None = None) -> int:
+        if self._closed:
+            return 0
         await self._ensure_group()
-        effective_block_ms = (
-            self.config.poll_block_ms if block_ms is None else block_ms
-        )
+        available_slots = max(0, self.config.worker_concurrency - len(self._processing))
+        if available_slots == 0:
+            return await self._wait_for_completion()
+        effective_block_ms = self.config.poll_block_ms if block_ms is None else block_ms
         batches = []
         if self._reclaim_pending and hasattr(self._redis, "xautoclaim"):
             claimed = await self._redis.xautoclaim(
@@ -183,7 +253,7 @@ class RedisWorkerRuntime:
                 self.consumer_name,
                 self.config.reclaim_idle_ms,
                 "0-0",
-                count=1,
+                count=available_slots,
             )
             if len(claimed) > 1 and claimed[1]:
                 batches = [(self.config.task_stream, claimed[1])]
@@ -192,93 +262,156 @@ class RedisWorkerRuntime:
                 self.config.task_group,
                 self.consumer_name,
                 {self.config.task_stream: ">"},
-                count=1,
+                count=available_slots,
                 block=effective_block_ms,
             )
-        processed = 0
-        for _stream, messages in batches:
-            for message_id, fields in messages:
-                try:
-                    task = TurnTaskCodec.loads(fields["payload"])
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-                    await self._dead_letter(message_id, fields, error)
+        messages = [
+            (message_id, fields)
+            for _stream, stream_messages in batches
+            for message_id, fields in stream_messages
+        ][:available_slots]
+        processors: list[asyncio.Task[int]] = []
+        for message_id, fields in messages:
+            task = asyncio.create_task(
+                self._process_message(message_id, fields),
+                name=f"redis-turn-message-{message_id}",
+            )
+            self._processing.add(task)
+            task.add_done_callback(self._processing.discard)
+            processors.append(task)
+        if not self._processing:
+            await asyncio.sleep(0)
+            return 0
+        return await self._wait_for_completion()
+
+    async def _wait_for_completion(self) -> int:
+        processing = set(self._processing)
+        if not processing:
+            return 0
+        done, _pending = await asyncio.shield(asyncio.wait(
+            processing, return_when=asyncio.FIRST_COMPLETED
+        ))
+        return sum(task.result() for task in done if not task.cancelled() and task.exception() is None)
+
+    async def _process_message(self, message_id: str, fields: dict[str, Any]) -> int:
+        owned_turn_id: str | None = None
+        processor = asyncio.current_task()
+        try:
+            task = TurnTaskCodec.loads(fields["payload"])
+            owner = self._turn_processors.get(task.turn_id)
+            if owner is not None and owner is not processor:
+                # Share the existing processor's durable outcome. A duplicate
+                # must not replace its active execution/cancellation handle.
+                await asyncio.wait({owner})
+                if await self._is_durable_terminal(task):
                     await self._ack(message_id)
-                    processed += 1
-                    continue
-                try:
-                    cancel_requested = await self._redis.get(
-                        f"{self.config.cancel_key_prefix}{task.turn_id}"
+                    return 1
+                return 0
+            if processor is not None:
+                self._turn_processors[task.turn_id] = processor
+                owned_turn_id = task.turn_id
+            if await self._redis.get(
+                f"{self.config.cancel_key_prefix}{task.turn_id}"
+            ):
+                if self._cancel_pending is not None:
+                    await self._call(self._cancel_pending, task)
+                if await self._is_durable_terminal(task):
+                    await self._ack(message_id)
+                    return 1
+                return 0
+            if await self._call_predicate(self._is_terminal, task):
+                await self._ack(message_id)
+                return 1
+
+            start_gate = asyncio.Event()
+            cancel_requested = asyncio.Event()
+            cancel_waiter = asyncio.create_task(cancel_requested.wait())
+            future = asyncio.create_task(self._execute_after(start_gate, task))
+            heartbeat = asyncio.create_task(
+                self._heartbeat(message_id, task.turn_id)
+            )
+            self._active[task.turn_id] = future
+            self._active_turns[task.turn_id] = task
+            self._cancel_waiters[task.turn_id] = cancel_requested
+            try:
+                if await self._redis.get(
+                    f"{self.config.cancel_key_prefix}{task.turn_id}"
+                ):
+                    await self._cancel_and_drain(future)
+                    if self._cancel_pending is not None:
+                        await self._call(self._cancel_pending, task)
+                else:
+                    start_gate.set()
+                    done, _pending = await asyncio.wait({future, cancel_waiter}, return_when=asyncio.FIRST_COMPLETED)
+                    if cancel_waiter in done:
+                        await self._cancel_and_drain(future)
+                        if self._cancel_pending is not None:
+                            await self._call(self._cancel_pending, task)
+                    else:
+                        await future
+                if not await self._is_durable_terminal(task):
+                    logger.warning(
+                        "Turn execution returned without a durable terminal state; leaving Redis message pending",
+                        extra={"turn_id": task.turn_id},
                     )
-                    if cancel_requested:
-                        if self._cancel_pending is not None:
-                            await self._call(self._cancel_pending, task)
-                        terminal = False
-                    else:
-                        terminal = await self._call_predicate(self._is_terminal, task)
-                except LookupError as error:
-                    # Redis can outlive the authoritative MySQL row. Retrying
-                    # such a delivery can never succeed, so retain evidence in
-                    # the dead-letter stream and ACK the poison message.
-                    await self._dead_letter(message_id, fields, error)
+                    return 0
+                await self._ack(message_id)
+                return 1
+            except TurnCancellationRequested:
+                if self._cancel_pending is not None:
+                    await self._call(self._cancel_pending, task)
+                if await self._is_durable_terminal(task):
                     await self._ack(message_id)
-                    processed += 1
-                    continue
-                if cancel_requested or terminal:
+                    return 1
+                return 0
+            except asyncio.CancelledError:
+                if task.turn_id not in self._command_cancelled:
+                    raise
+                if self._cancel_pending is not None:
+                    await self._call(self._cancel_pending, task)
+                if await self._is_durable_terminal(task):
                     await self._ack(message_id)
-                    processed += 1
-                    continue
-                start_gate = asyncio.Event()
-                cancel_requested = asyncio.Event()
-                future = asyncio.create_task(self._execute_after(start_gate, task))
-                heartbeat = asyncio.create_task(
-                    self._heartbeat(message_id, task.turn_id)
-                )
-                cancel_waiter = asyncio.create_task(cancel_requested.wait())
-                self._active[task.turn_id] = future
-                self._active_turns[task.turn_id] = task
-                self._cancel_waiters[task.turn_id] = cancel_requested
-                try:
-                    if await self._redis.get(
-                        f"{self.config.cancel_key_prefix}{task.turn_id}"
-                    ):
-                        cancel_requested.set()
-                        await self._cancel_and_drain(future)
-                        if self._cancel_pending is not None:
-                            await self._call(self._cancel_pending, task)
-                    else:
-                        start_gate.set()
-                        done, _pending = await asyncio.wait(
-                            {future, cancel_waiter},
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        if cancel_waiter in done:
-                            await self._cancel_and_drain(future)
-                            if self._cancel_pending is not None:
-                                await self._call(self._cancel_pending, task)
-                        else:
-                            await future
-                except TurnCancellationRequested:
-                    if self._cancel_pending is not None:
-                        await self._call(self._cancel_pending, task)
-                except asyncio.CancelledError:
-                    if task.turn_id not in self._command_cancelled:
-                        raise
-                    if self._cancel_pending is not None:
-                        await self._call(self._cancel_pending, task)
-                finally:
-                    if not future.done():
-                        await self._cancel_and_drain(future)
-                    cancel_waiter.cancel()
-                    await asyncio.gather(cancel_waiter, return_exceptions=True)
-                    heartbeat.cancel()
-                    await asyncio.gather(heartbeat, return_exceptions=True)
+                    return 1
+                return 0
+            finally:
+                if not future.done():
+                    await self._cancel_and_drain(future)
+                cancel_waiter.cancel()
+                await asyncio.gather(cancel_waiter, return_exceptions=True)
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+                if self._active.get(task.turn_id) is future:
                     self._active.pop(task.turn_id, None)
                     self._active_turns.pop(task.turn_id, None)
                     self._cancel_waiters.pop(task.turn_id, None)
                     self._command_cancelled.discard(task.turn_id)
+        except asyncio.CancelledError:
+            raise
+        except (LookupError, TypeError, ValueError, json.JSONDecodeError) as error:
+            try:
+                await self._dead_letter(message_id, fields, error)
                 await self._ack(message_id)
-                processed += 1
-        return processed
+                return 1
+            except Exception:
+                logger.exception("Failed to dead-letter malformed Redis turn message")
+                return 0
+        except Exception:
+            logger.exception(
+                "Redis turn message failed; leaving it pending for recovery",
+                extra={"message_id": message_id},
+            )
+            return 0
+        finally:
+            if owned_turn_id is not None and self._turn_processors.get(owned_turn_id) is processor:
+                self._turn_processors.pop(owned_turn_id, None)
+
+    async def _is_durable_terminal(self, task: TurnTask) -> bool:
+        # The production executor returns only after its terminal transaction
+        # commits. When a repository predicate is available, verify that fact
+        # before ACK so a transient persistence failure remains recoverable.
+        if self._is_terminal is None:
+            return True
+        return await self._call_predicate(self._is_terminal, task)
 
     async def _cancel_and_drain(self, future: asyncio.Task[Any]) -> None:
         if future.done():
@@ -380,6 +513,7 @@ class RedisWorkerRuntime:
 
     async def run_forever(self) -> None:
         control = asyncio.create_task(self._listen_control())
+        heartbeat = asyncio.create_task(self._publish_worker_heartbeat())
         try:
             while not self._closed:
                 try:
@@ -391,7 +525,37 @@ class RedisWorkerRuntime:
                     await asyncio.sleep(1)
         finally:
             control.cancel()
-            await asyncio.gather(control, return_exceptions=True)
+            heartbeat.cancel()
+            await asyncio.gather(control, heartbeat, return_exceptions=True)
+            try:
+                await self._redis.delete(
+                    f"{self.config.worker_heartbeat_prefix}{self.consumer_name}"
+                )
+            except Exception:
+                logger.warning("Failed to remove Worker heartbeat", exc_info=True)
+
+    async def _publish_worker_heartbeat(self) -> None:
+        key = f"{self.config.worker_heartbeat_prefix}{self.consumer_name}"
+        while not self._closed:
+            payload = json.dumps(
+                {
+                    "worker_id": self.consumer_name,
+                    "started_at": self._started_at,
+                    "concurrency": self.config.worker_concurrency,
+                    "active_slots": self.active_count,
+                    "version": 1,
+                },
+                separators=(",", ":"),
+            )
+            try:
+                await self._redis.set(
+                    key, payload, ex=self.config.worker_heartbeat_ttl_s
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Failed to publish Worker heartbeat", exc_info=True)
+            await asyncio.sleep(self.config.worker_heartbeat_interval_s)
 
     async def _listen_control(self) -> None:
         while not self._closed:
@@ -433,12 +597,17 @@ class RedisWorkerRuntime:
             if not self._closed:
                 await asyncio.sleep(1)
 
-    async def close(self) -> None:
+    async def close(self, *, grace_s: float | None = None) -> None:
         self._closed = True
-        for task in self._active.values():
+        processing = set(self._processing)
+        if not processing:
+            return
+        grace = self.config.shutdown_grace_s if grace_s is None else max(0.0, grace_s)
+        _done, pending = await asyncio.wait(processing, timeout=grace)
+        for task in pending:
             task.cancel()
-        if self._active:
-            await asyncio.gather(*self._active.values(), return_exceptions=True)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 class RedisEventPublisher:
@@ -539,6 +708,7 @@ class TurnTaskCodec:
                 "model_profile": task.model_profile,
                 "thinking_enabled": task.thinking_enabled,
                 "reservation_id": task.reservation_id,
+                "quota_reservation_id": task.quota_reservation_id,
                 "authorization": (
                     {
                         "submitter_user_id": task.authorization.submitter_user_id,
@@ -577,4 +747,5 @@ class TurnTaskCodec:
                 ExecutionAuthorizationContext(**value["authorization"])
                 if value.get("authorization") else None
             ),
+            quota_reservation_id=value.get("quota_reservation_id"),
         )

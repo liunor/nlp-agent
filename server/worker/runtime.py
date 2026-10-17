@@ -6,6 +6,7 @@ import asyncio
 import socket
 from functools import partial
 from typing import Any, Mapping
+import time
 
 from configs.settings import settings
 from gateway.contracts import GatewayEventType, TurnStatus
@@ -61,6 +62,10 @@ def redis_config() -> RedisTransportConfig:
         dead_letter_stream=str(
             config.get("redis_dead_letter_stream", "nlp-agent:turns:dead")
         ),
+        worker_concurrency=int(config.get("worker_concurrency", 4)),
+        shutdown_grace_s=float(config.get("worker_shutdown_grace_s", 30)),
+        worker_heartbeat_interval_s=float(config.get("worker_heartbeat_interval_s", 5)),
+        worker_heartbeat_ttl_s=int(config.get("worker_heartbeat_ttl_s", 15)),
     )
 
 def create_worker_quota_reaper(
@@ -82,6 +87,36 @@ def create_worker_quota_reaper(
             float(gateway_config.get("quota_operations_interval_s", 3_600)),
         ),
     )
+
+
+async def close_worker_execution(worker, engine, usage_reporter) -> None:
+    """Keep metering installed until execution and cancellation have drained."""
+    from core.model_runtime.reporters import configure_global_model_usage_reporter
+
+    async def drain():
+        try:
+            try:
+                await worker.close()
+            finally:
+                await engine.close()
+        finally:
+            await usage_reporter.replay_pending()
+
+    task = asyncio.create_task(drain(), name="worker-usage-drain")
+    cancelled = False
+    try:
+        while True:
+            try:
+                await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.done():
+                    raise
+                cancelled = True
+    finally:
+        configure_global_model_usage_reporter(None)
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 async def run_worker() -> None:
@@ -107,11 +142,14 @@ async def run_worker() -> None:
         config.url, channel=config.quota_snapshot_channel
     )
     usage_reporter.set_snapshot_notifier(quota_snapshot_publisher)
+    credit_usage_reporter = usage_reporter
     gateway_config = settings.gateway_runtime
     repository = build_turn_execution_state(gateway_config)
     if getattr(repository, "quota_service", None) is not None:
         repository.quota_service.set_snapshot_notifier(quota_snapshot_publisher)
         await asyncio.to_thread(repository.quota_service.verify_schema)
+    await asyncio.to_thread(repository.reconcile_capacity)
+    await asyncio.to_thread(repository.reconcile_model_quota)
     engine = LangGraphAgentEngine()
     publisher = RedisEventPublisher(redis, config)
     reliability = TurnReliabilityService()
@@ -132,7 +170,7 @@ async def run_worker() -> None:
             event_arguments["expected_claim_generation"] = (
                 execution_context.claim_generation
             )
-        event = await asyncio.to_thread(repository.append_event, **event_arguments)
+        event = await asyncio.to_thread((repository.ensure_event if event_type in {GatewayEventType.MESSAGE_COMPLETED, GatewayEventType.TURN_COMPLETED, GatewayEventType.TURN_FAILED, GatewayEventType.TURN_CANCELLED} else repository.append_event), **event_arguments)
         await publisher.publish(event)
 
     async def cancel_pending(task) -> None:
@@ -146,9 +184,9 @@ async def run_worker() -> None:
         }:
             return
         if turn.status != TurnStatus.CANCELLED:
-            await asyncio.to_thread(
-                repository.update_turn, task.turn_id, TurnStatus.CANCELLED
-            )
+            # A Redis hint is not authority to mutate a newer generation.
+            # The Web command persists cancellation before sending that hint.
+            return
         event = await asyncio.to_thread(
             repository.ensure_event,
             turn_id=task.turn_id,
@@ -243,13 +281,35 @@ async def run_worker() -> None:
     if quota_reaper is not None:
         quota_reaper.start()
 
+    capacity_reconcile_interval_s = max(
+        5, settings.NLP_AGENT_TURN_CAPACITY_RECONCILE_INTERVAL_S
+    )
+    next_capacity_reconcile = time.monotonic() + capacity_reconcile_interval_s
+    from server.model_usage.quota import DurableQuotaUsageReporter
+
+    usage_reporter = DurableQuotaUsageReporter(database_runtime.session_factory, downstream_reporter=credit_usage_reporter)
+    await usage_reporter.replay_pending()
+
     async def relay_forever() -> None:
+        nonlocal next_capacity_reconcile
         relay = OutboxRelay(redis, stream=config.task_stream, relay_id=worker_id, authorization_channel=config.authorization_channel)
         while True:
-            async with database_runtime.uow.begin() as unit_of_work:
-                await reliability.recover_stuck_turns(unit_of_work.session)
-                await relay.publish_batch(unit_of_work.session)
-                await unit_of_work.commit()
+            try:
+                await usage_reporter.replay_pending()
+                if time.monotonic() >= next_capacity_reconcile:
+                    next_capacity_reconcile = time.monotonic() + capacity_reconcile_interval_s
+                    await asyncio.to_thread(repository.reconcile_capacity)
+                    await asyncio.to_thread(repository.reconcile_model_quota)
+                async with database_runtime.uow.begin() as unit_of_work:
+                    await reliability.recover_stuck_turns(unit_of_work.session)
+                    await unit_of_work.commit()
+                await relay.publish_batch(database_runtime.uow)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception("worker outbox relay iteration failed")
             await asyncio.sleep(0.5)
 
     relay_task = asyncio.create_task(relay_forever(), name="mysql-outbox-relay")
@@ -257,7 +317,11 @@ async def run_worker() -> None:
         summary_sweep_loop(database_runtime.session_factory),
         name="session-summary-sweep",
     )
+    usage_reporter_configured = False
     try:
+        from core.model_runtime.reporters import configure_global_model_usage_reporter
+        configure_global_model_usage_reporter(usage_reporter)
+        usage_reporter_configured = True
         await worker.run_forever()
     finally:
         relay_task.cancel()
@@ -265,13 +329,18 @@ async def run_worker() -> None:
         await asyncio.gather(relay_task, summary_sweep_task, return_exceptions=True)
         if quota_reaper is not None:
             await quota_reaper.stop()
-        await worker.close()
-        await engine.close()
-        await sandbox_model_service.close()
-        if sandbox_manager is not None:
-            await sandbox_manager.close()
-        repository.close()
-        quota_snapshot_publisher.close()
-        await redis.aclose()
-        shutdown_usage_reporter(usage_reporter)
-        await database_runtime.close()
+        try:
+            if usage_reporter_configured:
+                await close_worker_execution(worker, engine, usage_reporter)
+            else:
+                await worker.close()
+                await engine.close()
+        finally:
+            await sandbox_model_service.close()
+            if sandbox_manager is not None:
+                await sandbox_manager.close()
+            repository.close()
+            quota_snapshot_publisher.close()
+            await redis.aclose()
+            usage_reporter.close()
+            await database_runtime.close()

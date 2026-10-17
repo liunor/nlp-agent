@@ -98,6 +98,8 @@ class TurnAccepted(BaseModel):
     session_id: str
     status: TurnStatus
     duplicate: bool = False
+    queue_position: int | None = Field(default=None, ge=1)
+    waited_s: int | None = Field(default=None, ge=0)
 
 
 class GuidedSessionRef(BaseModel):
@@ -131,6 +133,8 @@ class TurnRecord(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    queue_position: int | None = Field(default=None, ge=1)
+    waited_s: int | None = Field(default=None, ge=0)
 
 
 class GatewayEvent(BaseModel):
@@ -161,8 +165,33 @@ class GatewayNotStartedError(RuntimeError):
     pass
 
 
+class WorkerUnavailableError(RuntimeError):
+    """No healthy Worker is currently available to accept new classroom work."""
+
+    pass
+
+
 class TurnConflictError(RuntimeError):
     pass
+
+
+class AdmissionLimitError(RuntimeError):
+    """A durable Turn admission limit rejected this request."""
+
+    QUEUE_CAPACITY_EXCEEDED = "queue_capacity_exceeded"
+    USER_ACTIVE_LIMIT_REACHED = "user_turn_limit_reached"
+    MODEL_QUOTA_EXCEEDED = "quota_admission_denied"
+    _CODES = {
+        QUEUE_CAPACITY_EXCEEDED,
+        USER_ACTIVE_LIMIT_REACHED,
+        MODEL_QUOTA_EXCEEDED,
+    }
+
+    def __init__(self, code: str) -> None:
+        if code not in self._CODES:
+            raise ValueError(f"unknown admission limit code: {code}")
+        self.code = code
+        super().__init__(code)
 
 
 class KnowledgeBookRevisionConflictError(ValueError):

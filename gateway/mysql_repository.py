@@ -14,8 +14,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote
 
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import DBAPIError
 
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
 from core.observability.reset_lock import runtime_reset_lock, runtime_write_transaction
@@ -23,9 +24,11 @@ from gateway.analytics_time import localize_turn_time
 from gateway.contracts import (
     GatewayEvent,
     GatewayEventType,
+    AdmissionLimitError,
     KnowledgeBookRevisionConflictError,
     TeachingConfigurationError,
     TurnClaimMismatchError,
+    TurnConflictError,
     TurnRecord,
     TurnStatus,
 )
@@ -33,6 +36,9 @@ from server.storage.policy import StorageBucket
 from server.storage.quota import SyncStorageQuota
 from server.quota.contracts import AdmitTurn
 from server.quota.service import QuotaService, retry_mysql_transaction
+from server.infrastructure.mysql.config import DatabaseConfig
+from server.infrastructure.mysql.sync_engine import create_engine, release_engine
+from gateway.execution_fence import LostTurnClaimError, TurnWriteFence, current_turn_write_fence
 
 
 def _now() -> datetime:
@@ -46,23 +52,81 @@ class MySQLGatewayRepository:
         *,
         knowledge_point_prompt_budget: int = 12_000,
         quota_enforcement: bool = False,
+        database_config: DatabaseConfig | None = None,
     ) -> None:
         if not url.startswith("mysql+aiomysql://"):
             raise ValueError("MySQL Gateway repository requires mysql+aiomysql DSN")
-        self._engine = create_engine(url.replace("mysql+aiomysql://", "mysql+pymysql://"), pool_pre_ping=True)
+        from configs.settings import settings
+        config = database_config or DatabaseConfig.from_runtime({**settings.database_runtime, "url": url}, synchronous=True)
+        self._engine = create_engine(url.replace("mysql+aiomysql://", "mysql+pymysql://"), pool_pre_ping=True,
+            pool_size=config.pool_size, max_overflow=config.max_overflow,
+            pool_timeout=config.pool_timeout_s, pool_recycle=config.pool_recycle_s,
+            connect_args={"connect_timeout": config.connect_timeout_s,
+                "init_command": f"SET SESSION max_execution_time = {config.statement_timeout_s * 1000}"})
         self._runtime_lock_enabled = True
         self.knowledge_point_prompt_budget = max(1, knowledge_point_prompt_budget)
         self.quota_service = QuotaService(self._engine) if quota_enforcement else None
+        deployment_env = settings.NLP_AGENT_DEPLOYMENT_ENV.strip().lower()
+        self._test_model_quota_tokens = (
+            settings.NLP_AGENT_TEST_MODEL_QUOTA_TOKENS
+            if deployment_env in {"test", "testing"}
+            else None
+        )
 
     def _runtime_begin(self):
         return runtime_write_transaction(
             self._engine, enabled=getattr(self, "_runtime_lock_enabled", False)
         )
 
+    @staticmethod
+    def _fence_condition(fence: TurnWriteFence | None, *, terminal_event: bool = False) -> tuple[str, dict[str, Any]]:
+        if fence is None:
+            return "", {}
+        fence.require_valid()
+        states = "('running','completed','failed','interrupted')" if terminal_event else "('running')"
+        return (
+            " AND claim_generation=:fence_generation AND claimed_by=:fence_owner"
+            " AND lease_expires_at>UTC_TIMESTAMP(6) AND status IN " + states,
+            {"fence_generation": fence.generation, "fence_owner": fence.worker_id},
+        )
+
+    def _lock_turn_for_write(self, connection: Connection, turn_id: str | None = None, *, terminal_event: bool = False) -> TurnWriteFence | None:
+        fence = current_turn_write_fence()
+        if fence is None:
+            return None
+        fence.require_valid(turn_id)
+        condition, parameters = self._fence_condition(fence, terminal_event=terminal_event)
+        row = connection.execute(
+            text("SELECT id FROM nlp_turns WHERE id=:fence_turn" + condition + " FOR UPDATE"),
+            {"fence_turn": fence.turn_id, **parameters},
+        ).mappings().first()
+        if row is None:
+            fence.revoke()
+            raise LostTurnClaimError(fence.turn_id)
+        return fence
+
     def _row(self, turn_id: str) -> dict[str, Any] | None:
         with self._engine.connect() as c:
             row = c.execute(text("SELECT * FROM nlp_turns WHERE id=:id"), {"id": turn_id}).mappings().first()
             return dict(row) if row else None
+
+    @staticmethod
+    def _admission_limit_code(error: DBAPIError) -> str | None:
+        original_args = getattr(error.orig, "args", ())
+        if len(original_args) < 2 or original_args[0] != 1644:
+            return None
+        code = str(original_args[1])
+        if code == "user_active_limit_reached":
+            # Older migrations used an internal counter name as the public
+            # problem code. Preserve compatibility while exposing the stable
+            # T07 HTTP contract.
+            return AdmissionLimitError.USER_ACTIVE_LIMIT_REACHED
+        if code in {
+            AdmissionLimitError.QUEUE_CAPACITY_EXCEEDED,
+            AdmissionLimitError.USER_ACTIVE_LIMIT_REACHED,
+        }:
+            return code
+        return None
 
     def _record(self, row: dict[str, Any]) -> TurnRecord:
         state = self._json(row.get("learning_state_json") or {})
@@ -112,6 +176,106 @@ class MySQLGatewayRepository:
         if identity["workspace_id"] != workspace_id or identity["owner_user_id"] != user_id:
             raise PermissionError("conversation identity does not match the current session")
 
+    @staticmethod
+    def _reserve_model_quota(
+        connection: Connection,
+        *,
+        reservation_id: str,
+        turn_id: str,
+        user_id: str,
+        workspace_id: str,
+        reserved_tokens: int,
+        model_profile: str | None,
+        default_quota_tokens: int | None,
+    ) -> None:
+        estimate = max(0, int(reserved_tokens))
+        existing = connection.execute(
+            text(
+                "SELECT id,status FROM nlp_model_quota_reservations "
+                "WHERE turn_id=:turn FOR UPDATE"
+            ),
+            {"turn": turn_id},
+        ).mappings().first()
+        if existing is not None and str(existing["id"]) != reservation_id:
+            raise RuntimeError("a Turn cannot switch its model quota reservation")
+        if existing is not None and existing["status"] == "reserved":
+            return
+        connection.execute(
+            text(
+                "INSERT INTO nlp_model_quota_accounts(user_id,token_limit,quota_tokens) "
+                "VALUES(:user,:quota,:quota) ON DUPLICATE KEY UPDATE "
+                "token_limit=COALESCE(token_limit,VALUES(token_limit)), "
+                "quota_tokens=COALESCE(quota_tokens,VALUES(quota_tokens))"
+            ),
+            {"user": user_id, "quota": default_quota_tokens},
+        )
+        account = connection.execute(
+            text(
+                "SELECT COALESCE(token_limit,quota_tokens) AS token_limit,"
+                "reserved_tokens,GREATEST(used_tokens,consumed_tokens) AS used_tokens "
+                "FROM nlp_model_quota_accounts WHERE user_id=:user FOR UPDATE"
+            ),
+            {"user": user_id},
+        ).mappings().one()
+        quota = account["token_limit"]
+        if quota is not None and (
+            int(account["reserved_tokens"])
+            + int(account["used_tokens"])
+            + estimate
+            > int(quota)
+        ):
+            raise AdmissionLimitError(AdmissionLimitError.MODEL_QUOTA_EXCEEDED)
+        if existing is not None:
+            connection.execute(
+                text(
+                    "UPDATE nlp_model_quota_accounts SET reserved_tokens=reserved_tokens+:tokens, "
+                    "updated_at=UTC_TIMESTAMP(6) WHERE user_id=:user"
+                ),
+                {"tokens": estimate, "user": user_id},
+            )
+            connection.execute(
+                text(
+                    "UPDATE nlp_model_quota_reservations SET reserved_tokens=:tokens, "
+                    "model_profile=COALESCE(:profile,model_profile),settled_tokens=0,"
+                    "status='reserved',expires_at=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY),"
+                    "finalized_at=NULL WHERE id=:id"
+                ),
+                {"tokens": estimate, "profile": model_profile, "id": reservation_id},
+            )
+            return
+        connection.execute(
+            text(
+                "UPDATE nlp_model_quota_accounts SET reserved_tokens=reserved_tokens+:tokens, "
+                "updated_at=UTC_TIMESTAMP(6) WHERE user_id=:user"
+            ),
+            {"tokens": estimate, "user": user_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO nlp_model_quota_reservations "
+                "(id,user_id,workspace_id,turn_id,model_profile,reserved_tokens,expires_at,status) "
+                "VALUES(:id,:user,:workspace,:turn,:profile,:tokens,"
+                "DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 1 DAY),'reserved')"
+            ),
+            {
+                "id": reservation_id,
+                "user": user_id,
+                "workspace": workspace_id,
+                "turn": turn_id,
+                "profile": model_profile,
+                "tokens": estimate,
+            },
+        )
+
+    @staticmethod
+    def _lock_turn_capacity(connection: Connection) -> None:
+        connection.execute(
+            text(
+                "SELECT scope_key FROM nlp_runtime_capacity "
+                "WHERE scope_key='global:turns' FOR UPDATE"
+            )
+        ).scalar_one()
+
     def create_turn(
         self,
         *,
@@ -125,6 +289,9 @@ class MySQLGatewayRepository:
         learning_progress=None,
         exercise_state=None,
         dispatch_payload: str | None = None,
+        quota_reservation_id: str | None = None,
+        reserved_tokens: int = 0,
+        model_profile: str | None = None,
         quota_admission: AdmitTurn | None = None,
         quota_role_codes: tuple[str, ...] = (),
         quota_classroom_ids: tuple[str, ...] = (),
@@ -166,6 +333,14 @@ class MySQLGatewayRepository:
                         role_codes=quota_role_codes,
                         classroom_ids=quota_classroom_ids,
                     )
+                active = c.execute(text("SELECT id FROM nlp_turns WHERE conversation_id=:session AND status IN ('accepted','running') ORDER BY created_at DESC LIMIT 1 FOR UPDATE"), {"session": session_id}).mappings().first()
+                if active is not None:
+                    raise TurnConflictError(str(active["id"]))
+                reservation_identity = quota_reservation_id or str(uuid.uuid4())
+                self._lock_turn_capacity(c)
+                self._reserve_model_quota(c, reservation_id=reservation_identity, turn_id=turn_id,
+                    user_id=user_id, workspace_id=workspace_id, reserved_tokens=reserved_tokens,
+                    model_profile=model_profile, default_quota_tokens=getattr(self, "_test_model_quota_tokens", None))
                 state = {"context": learning_context.model_dump(mode="json") if learning_context else None, "progress": learning_progress.model_dump(mode="json") if learning_progress else None, "exercise": exercise_state.model_dump(mode="json") if exercise_state else None}
                 state_json = json.dumps(state, ensure_ascii=False)
                 storage = SyncStorageQuota(c, owner_user_id=user_id)
@@ -178,7 +353,13 @@ class MySQLGatewayRepository:
                     resource_type="turn",
                     resource_key=turn_id,
                 )
-                c.execute(text("INSERT INTO nlp_turns(id,conversation_id,workspace_id,user_id,status,input_text,learning_state_json,idempotency_key) VALUES(:id,:s,:w,:u,'accepted',:input,:state,:key)"), {"id": turn_id, "s": session_id, "w": workspace_id, "u": user_id, "input": input_text, "state": state_json, "key": idempotency_key})
+                try:
+                    c.execute(text("INSERT INTO nlp_turns(id,conversation_id,workspace_id,user_id,status,input_text,learning_state_json,idempotency_key,quota_reservation_id) VALUES(:id,:s,:w,:u,'accepted',:input,:state,:key,:reservation)"), {"id": turn_id, "s": session_id, "w": workspace_id, "u": user_id, "input": input_text, "state": state_json, "key": idempotency_key, "reservation": reservation_identity})
+                except DBAPIError as error:
+                    code = self._admission_limit_code(error)
+                    if code is None:
+                        raise
+                    raise AdmissionLimitError(code) from error
                 message_sequence = int(
                     c.execute(
                         text("SELECT COALESCE(MAX(sequence),0)+1 FROM nlp_conversation_messages WHERE conversation_id=:session"),
@@ -207,10 +388,11 @@ class MySQLGatewayRepository:
             )
         return record, False
 
-    def update_turn(self, turn_id: str, status: TurnStatus, *, final_text=None, error_kind=None, error_message=None, exercise_state=None, dispatch_payload: str | None = None, expected_claim_generation: int | None = None) -> TurnRecord:
+    def update_turn(self, turn_id: str, status: TurnStatus, *, final_text=None, error_kind=None, error_message=None, exercise_state=None, dispatch_payload: str | None = None, expected_claim_generation: int | None = None, quota_reservation_id: str | None = None, reserved_tokens: int = 0, model_profile: str | None = None) -> TurnRecord:
         terminal = status in {TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.INTERRUPTED}
         preserve_terminal = False
         with self._runtime_begin() as c:
+            fence = self._lock_turn_for_write(c, turn_id)
             current = c.execute(
                 text("SELECT user_id,result_text,error_message,status,error_kind,claim_generation FROM nlp_turns WHERE id=:id FOR UPDATE"),
                 {"id": turn_id},
@@ -248,11 +430,37 @@ class MySQLGatewayRepository:
                         resource_type="turn_result",
                         resource_key=turn_id,
                     )
-                c.execute(text("UPDATE nlp_turns SET status=:status,result_text=:result,error_kind=:kind,error_message=:message,started_at=CASE WHEN :running='running' THEN UTC_TIMESTAMP(6) ELSE started_at END,completed_at=CASE WHEN :terminal=1 THEN UTC_TIMESTAMP(6) ELSE completed_at END WHERE id=:id"), {"status": status.value, "result": final_text, "kind": error_kind, "message": stored_error, "running": status.value, "terminal": int(terminal), "id": turn_id})
+                if retrying_dispatch_failure:
+                    self._lock_turn_capacity(c)
+                    identity = c.execute(text("SELECT workspace_id,quota_reservation_id FROM nlp_turns WHERE id=:id"), {"id": turn_id}).mappings().one()
+                    quota_reservation_id = quota_reservation_id or identity["quota_reservation_id"]
+                    if quota_reservation_id:
+                        self._reserve_model_quota(c, reservation_id=quota_reservation_id, turn_id=turn_id,
+                            user_id=str(current["user_id"]), workspace_id=str(identity["workspace_id"]), reserved_tokens=reserved_tokens,
+                            model_profile=model_profile, default_quota_tokens=getattr(self, "_test_model_quota_tokens", None))
+                condition, fence_parameters = self._fence_condition(fence)
+                updated = c.execute(text("UPDATE nlp_turns SET status=:status,result_text=:result,error_kind=:kind,error_message=:message,quota_reservation_id=COALESCE(:reservation,quota_reservation_id),started_at=CASE WHEN :running='running' THEN COALESCE(started_at,UTC_TIMESTAMP(6)) ELSE started_at END,completed_at=CASE WHEN :terminal=1 THEN UTC_TIMESTAMP(6) ELSE completed_at END WHERE id=:id" + condition), {"status": status.value, "result": final_text, "kind": error_kind, "message": stored_error, "running": status.value, "terminal": int(terminal), "id": turn_id, "reservation": quota_reservation_id, **fence_parameters})
+                if fence is not None and updated.rowcount != 1:
+                    fence.revoke()
+                    raise LostTurnClaimError(turn_id)
             if not preserve_terminal and dispatch_payload is not None:
                 c.execute(text("INSERT INTO nlp_outbox_messages(id,topic,payload_json,status) VALUES(UUID(),'turn.dispatch',:payload,'pending')"), {"payload": json.dumps({"turn_id": turn_id, "task": dispatch_payload})})
             if storage is not None:
                 storage.finalize(storage_reservation, reconcile=True)
+            if terminal and not preserve_terminal:
+                if status == TurnStatus.COMPLETED:
+                    self.ensure_event(turn_id=turn_id, session_id="", event_type=GatewayEventType.MESSAGE_COMPLETED,
+                        payload={"content": final_text or ""}, expected_claim_generation=expected_claim_generation, _connection=c)
+                    event_type = GatewayEventType.TURN_COMPLETED
+                    event_payload = {"status": status.value, "content": final_text or ""}
+                elif status == TurnStatus.CANCELLED:
+                    event_type = GatewayEventType.TURN_CANCELLED
+                    event_payload = {"status": status.value}
+                else:
+                    event_type = GatewayEventType.TURN_FAILED
+                    event_payload = {"status": status.value, "error_kind": error_kind or "turn_failed", "message": stored_error or ""}
+                self.ensure_event(turn_id=turn_id, session_id="", event_type=event_type,
+                    payload=event_payload, expected_claim_generation=expected_claim_generation, _connection=c)
         row = self._row(turn_id)
         if row is None:
             raise KeyError(turn_id)
@@ -268,11 +476,15 @@ class MySQLGatewayRepository:
         """Record cancellation in MySQL before any transport-level signal."""
         with self._runtime_begin() as c:
             row = c.execute(
-                text("SELECT status FROM nlp_turns WHERE id=:id FOR UPDATE"),
+                text("SELECT * FROM nlp_turns WHERE id=:id FOR UPDATE"),
                 {"id": turn_id},
             ).mappings().first()
             if row is None:
                 return None
+            if row["status"] not in {"accepted", "running"}:
+                # Web may have observed running before waiting for this lock.
+                # Preserve the winner of the terminal/cancel race.
+                return self._record(dict(row))
             c.execute(
                 text(
                     "INSERT INTO nlp_turn_cancellations(turn_id,requested_by,reason) "
@@ -293,6 +505,7 @@ class MySQLGatewayRepository:
                     ),
                     {"id": turn_id},
                 )
+                self.ensure_event(turn_id=turn_id, session_id="", event_type=GatewayEventType.TURN_CANCELLED, payload={"status": "cancelled"}, _connection=c)
         return self.get_turn(turn_id)
 
     def active_turn_for_session(self, session_id: str, *, exclude_turn_id: str | None = None) -> TurnRecord | None:
@@ -305,8 +518,18 @@ class MySQLGatewayRepository:
             row = c.execute(text("SELECT * FROM nlp_turns WHERE user_id=:u AND conversation_id=:s AND idempotency_key=:k"), {"u": user_id, "s": session_id, "k": idempotency_key}).mappings().first()
         return self._record(dict(row)) if row else None
 
-    def append_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None, expected_claim_generation: int | None = None) -> GatewayEvent:
-        with self._runtime_begin() as c:
+    def quota_reservation_for_turn(self, turn_id: str) -> str | None:
+        with self._engine.connect() as c:
+            value = c.execute(
+                text("SELECT quota_reservation_id FROM nlp_turns WHERE id=:id"),
+                {"id": turn_id},
+            ).scalar_one_or_none()
+        return str(value) if value else None
+
+    def append_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None, expected_claim_generation: int | None = None, _connection: Connection | None = None) -> GatewayEvent:
+        with (self._runtime_begin() if _connection is None else nullcontext(_connection)) as c:
+            terminal_event = event_type in {GatewayEventType.TURN_COMPLETED, GatewayEventType.MESSAGE_COMPLETED, GatewayEventType.TURN_FAILED, GatewayEventType.TURN_CANCELLED}
+            fence = self._lock_turn_for_write(c, turn_id, terminal_event=terminal_event)
             current_generation = c.execute(
                 text("SELECT claim_generation FROM nlp_turns WHERE id=:id FOR UPDATE"),
                 {"id": turn_id},
@@ -333,7 +556,11 @@ class MySQLGatewayRepository:
             )
             sequence = int(c.execute(text("SELECT COALESCE(MAX(sequence),0)+1 FROM nlp_turn_events WHERE turn_id=:id"), {"id": turn_id}).scalar_one())
             event_id = str(uuid.uuid4())
-            c.execute(text("INSERT INTO nlp_turn_events(id,turn_id,sequence,claim_generation,event_type,payload_json) VALUES(:event,:turn,:seq,:generation,:type,:payload)"), {"event": event_id, "turn": turn_id, "seq": sequence, "generation": current_generation, "type": event_type.value, "payload": payload_json})
+            condition, parameters = self._fence_condition(fence, terminal_event=terminal_event)
+            inserted = c.execute(text("INSERT INTO nlp_turn_events(id,turn_id,sequence,claim_generation,event_type,payload_json) SELECT :event,id,:seq,claim_generation,:type,:payload FROM nlp_turns WHERE id=:turn" + condition), {"event": event_id, "turn": turn_id, "seq": sequence, "type": event_type.value, "payload": payload_json, **parameters})
+            if fence is not None and inserted.rowcount != 1:
+                fence.revoke()
+                raise LostTurnClaimError(turn_id)
             storage.finalize(storage_reservation, reconcile=True)
         return GatewayEvent(event_id=event_id, turn_id=turn_id, session_id=session_id, sequence=sequence, type=event_type, payload=payload or {})
 
@@ -342,14 +569,66 @@ class MySQLGatewayRepository:
             rows = c.execute(text("SELECT e.*, t.conversation_id FROM nlp_turn_events e JOIN nlp_turns t ON t.id=e.turn_id WHERE e.turn_id=:id AND e.sequence>:after ORDER BY e.sequence LIMIT :limit"), {"id": turn_id, "after": max(0, after_sequence), "limit": min(max(1, limit), 2000)}).mappings().all()
         return [GatewayEvent(event_id=r["id"], turn_id=turn_id, session_id=r["conversation_id"], sequence=r["sequence"], type=GatewayEventType(r["event_type"]), created_at=r["created_at"], payload=self._json(r["payload_json"])) for r in rows]
 
-    def ensure_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None, expected_claim_generation: int | None = None) -> GatewayEvent:
-        existing = next((e for e in self.events_after(turn_id, limit=2000) if e.type == event_type), None)
-        return existing or self.append_event(turn_id=turn_id, session_id=session_id, event_type=event_type, payload=payload, expected_claim_generation=expected_claim_generation)
+    def ensure_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None, expected_claim_generation: int | None = None, _connection: Connection | None = None) -> GatewayEvent:
+        # Serialize lookup and insertion on the Turn row, using the caller's
+        # transaction when cancellation already holds it. A separate connection
+        # would deadlock or lose atomicity; paginated replay is not an existence
+        # check, especially for long streams.
+        with (self._runtime_begin() if _connection is None else nullcontext(_connection)) as c:
+            terminal_event = event_type in {
+                GatewayEventType.TURN_COMPLETED, GatewayEventType.MESSAGE_COMPLETED,
+                GatewayEventType.TURN_FAILED, GatewayEventType.TURN_CANCELLED,
+            }
+            self._lock_turn_for_write(c, turn_id, terminal_event=terminal_event)
+            turn = c.execute(text(
+                "SELECT claim_generation,conversation_id FROM nlp_turns WHERE id=:id FOR UPDATE"
+            ), {"id": turn_id}).mappings().first()
+            if turn is None:
+                raise KeyError(turn_id)
+            if expected_claim_generation is not None and int(turn["claim_generation"]) != expected_claim_generation:
+                raise TurnClaimMismatchError(turn_id)
+            existing = c.execute(text(
+                "SELECT id,sequence,created_at,payload_json FROM nlp_turn_events "
+                "WHERE turn_id=:turn AND event_type=:type ORDER BY sequence LIMIT 1 FOR UPDATE"
+            ), {"turn": turn_id, "type": event_type.value}).mappings().first()
+            if existing is not None:
+                return GatewayEvent(
+                    event_id=existing["id"], turn_id=turn_id,
+                    session_id=turn["conversation_id"], sequence=existing["sequence"],
+                    created_at=existing["created_at"], type=event_type,
+                    payload=self._json(existing["payload_json"]),
+                )
+            return self.append_event(
+                turn_id=turn_id, session_id=turn["conversation_id"],
+                event_type=event_type, payload=payload,
+                expected_claim_generation=expected_claim_generation, _connection=c,
+            )
 
     def list_turns(self, session_id: str, *, limit: int = 100) -> list[TurnRecord]:
         with self._engine.connect() as c:
             rows = c.execute(text("SELECT * FROM nlp_turns WHERE conversation_id=:s ORDER BY created_at DESC LIMIT :limit"), {"s": session_id, "limit": min(max(1, limit), 500)}).mappings().all()
-        return [self._record(dict(r)) for r in rows]
+            active_queued = c.execute(
+                text(
+                    "SELECT id,ROW_NUMBER() OVER (ORDER BY created_at,id) AS position, "
+                    "TIMESTAMPDIFF(SECOND,created_at,UTC_TIMESTAMP(6)) AS waited_s "
+                    "FROM nlp_turns WHERE status='accepted'"
+                )
+            ).mappings().all()
+        queue_by_id = {
+            str(row["id"]): {
+                "queue_position": int(row["position"]),
+                "waited_s": max(0, int(row["waited_s"])),
+            }
+            for row in active_queued
+        }
+        result = []
+        for row in rows:
+            record = self._record(dict(row))
+            queue_state = queue_by_id.get(record.turn_id)
+            result.append(
+                record.model_copy(update=queue_state) if queue_state else record
+            )
+        return result
 
     def list_question_turns(self, *, workspace_id: str, since: str, timezone_name: str = "UTC") -> list[dict[str, Any]]:
         """Teacher read model: structured question rows for analytics.
@@ -582,13 +861,16 @@ class MySQLGatewayRepository:
         known = [str(item)[:300] for item in known_concepts if str(item).strip()][:30] if isinstance(known_concepts, list) else []
         mistakes = [str(item)[:300] for item in misconceptions if str(item).strip()][:20] if isinstance(misconceptions, list) else []
         with self._runtime_begin() as c:
+            self._lock_turn_for_write(c)
             row = c.execute(text("SELECT state_json FROM nlp_guided_sessions WHERE id=:id AND status='active' FOR UPDATE"), {"id": guided_session_id}).mappings().first()
             if row is None: return None
             state = self._json(row["state_json"])
             state.update({"stage": "completed" if completed else "awaiting_learner_response", "known_concepts": known, "misconceptions": mistakes, "last_question": tutor_message[:2000]})
             c.execute(text("UPDATE nlp_guided_sessions SET status=:status,state_json=:state,completed_at=CASE WHEN :completed THEN UTC_TIMESTAMP(6) ELSE NULL END WHERE id=:id"), {"id": guided_session_id, "status": "completed" if completed else "active", "state": json.dumps(state, ensure_ascii=False), "completed": completed})
+            self._lock_turn_for_write(c)
     def update_turn_guided_status(self, turn_id: str, *, status: str) -> None:
         with self._runtime_begin() as c:
+            self._lock_turn_for_write(c, turn_id)
             turn = c.execute(text("SELECT user_id FROM nlp_turns WHERE id=:id FOR UPDATE"), {"id": turn_id}).mappings().first()
             if turn is None:
                 raise KeyError(turn_id)
@@ -674,7 +956,9 @@ class MySQLGatewayRepository:
         if len(questions) >= 1: raise ValueError("exercise question count is complete")
         record = {"id": str(uuid.uuid4()), "exercise_session_id": exercise_session_id, "sequence": 1, "question": question, "rubric": session["blueprint_snapshot"].get("rubric", []), "status": "awaiting_answer"}
         with self._runtime_begin() as c:
+            self._lock_turn_for_write(c)
             c.execute(text("INSERT INTO nlp_exercise_questions(id,exercise_session_id,sequence,question,rubric_json,status) VALUES(:id,:session,:sequence,:question,:rubric,:status)"), {"id": record["id"], "session": exercise_session_id, "sequence": 1, "question": question, "rubric": json.dumps(record["rubric"], ensure_ascii=False), "status": "awaiting_answer"})
+            self._lock_turn_for_write(c)
         return record
 
     def grade_exercise_answer(self, exercise_session_id: str, *, answer: str, matches: list[dict[str, Any]], feedback: str) -> ExerciseState:
@@ -689,10 +973,12 @@ class MySQLGatewayRepository:
         normalized = [{"criterion_index": int(item["criterion_index"]), "criterion": str(rubric[int(item["criterion_index"])].get("criterion", "") if isinstance(rubric[int(item["criterion_index"])], dict) else rubric[int(item["criterion_index"])]), "weight": weights[int(item["criterion_index"])], "achieved": bool(item.get("achieved")), "evidence": str(item.get("evidence", ""))[:1000]} for item in sorted(matches, key=lambda item: int(item["criterion_index"]))]
         attempt_number = sum(item["exercise_question_id"] == question["id"] for item in self.exercise_attempts(exercise_session_id)) + 1
         with self._runtime_begin() as c:
+            self._lock_turn_for_write(c)
             c.execute(text("INSERT INTO nlp_exercise_attempts(id,exercise_question_id,answer,attempt_number,rubric_matches_json,normalized_score,passed,feedback) VALUES(UUID(),:question,:answer,:attempt,:matches,:score,:passed,:feedback)"), {"question": question["id"], "answer": answer, "attempt": attempt_number, "matches": json.dumps(normalized, ensure_ascii=False), "score": score, "passed": score >= 60, "feedback": feedback[:4000]})
             c.execute(text("UPDATE nlp_exercise_questions SET status='completed' WHERE id=:id"), {"id": question["id"]})
             c.execute(text("INSERT INTO nlp_learning_evidence(id,exercise_session_id,exercise_question_id,blueprint_snapshot_json,learner_answer,normalized_score,passed,completed_at) VALUES(UUID(),:session,:question,:blueprint,:answer,:score,:passed,UTC_TIMESTAMP(6))"), {"session": exercise_session_id, "question": question["id"], "blueprint": json.dumps(session["blueprint_snapshot"], ensure_ascii=False), "answer": answer, "score": score, "passed": score >= 60})
             c.execute(text("UPDATE nlp_exercise_sessions SET status='completed',completed_at=UTC_TIMESTAMP(6) WHERE id=:id"), {"id": exercise_session_id})
+            self._lock_turn_for_write(c)
         return self.exercise_state(exercise_session_id)
 
     def get_user_settings(self, user_id: str):
@@ -891,8 +1177,298 @@ class MySQLGatewayRepository:
         return {"compacted": int(compacted or 0), "capped": 0, "remaining": remaining}
     def flush(self) -> None: return None
     def health(self):
-        with self._engine.connect() as c: count = int(c.execute(text("SELECT COUNT(*) FROM nlp_turn_events")).scalar_one())
-        return {"database": "mysql", "durable_events": count}
+        with self._engine.connect() as c:
+            count = int(c.execute(text("SELECT COUNT(*) FROM nlp_turn_events")).scalar_one())
+            running_turns = int(
+                c.execute(
+                    text("SELECT COUNT(*) FROM nlp_turns WHERE status='running'")
+                ).scalar_one()
+            )
+        return {
+            "database": "mysql",
+            "durable_events": count,
+            "running_turns": running_turns,
+        }
+
+    def reconcile_capacity(self) -> dict[str, Any]:
+        """Repair the persisted admission counters while serializing Turn writers."""
+        with self._engine.begin() as connection:
+            capacity = connection.execute(
+                text(
+                    "SELECT queued_count,running_count FROM nlp_runtime_capacity "
+                    "WHERE scope_key='global:turns' FOR UPDATE"
+                )
+            ).mappings().one()
+            actual = connection.execute(
+                text(
+                    "SELECT COALESCE(SUM(status='accepted'),0) AS queued_count, "
+                    "COALESCE(SUM(status='running'),0) AS running_count "
+                    "FROM nlp_turns"
+                )
+            ).mappings().one()
+            actual_users = {
+                str(row["user_id"]): int(row["active_count"])
+                for row in connection.execute(
+                    text(
+                        "SELECT user_id,COUNT(*) AS active_count FROM nlp_turns "
+                        "WHERE status IN ('accepted','running') GROUP BY user_id"
+                    )
+                ).mappings()
+            }
+            stored_users = {
+                str(row["user_id"]): int(row["active_count"])
+                for row in connection.execute(
+                    text("SELECT user_id,active_count FROM nlp_turn_user_capacity")
+                ).mappings()
+            }
+            drift_detected = (
+                int(capacity["queued_count"]) != int(actual["queued_count"])
+                or int(capacity["running_count"]) != int(actual["running_count"])
+                or stored_users != actual_users
+            )
+            connection.execute(text("DELETE FROM nlp_turn_user_capacity"))
+            if actual_users:
+                connection.execute(
+                    text(
+                        "INSERT INTO nlp_turn_user_capacity(user_id,active_count) "
+                        "VALUES(:user_id,:active_count)"
+                    ),
+                    [
+                        {"user_id": user_id, "active_count": active_count}
+                        for user_id, active_count in actual_users.items()
+                    ],
+                )
+            connection.execute(
+                text(
+                    "UPDATE nlp_runtime_capacity SET queued_count=:queued, "
+                    "running_count=:running, last_reconciled_at=UTC_TIMESTAMP(6), "
+                    "updated_at=UTC_TIMESTAMP(6) WHERE scope_key='global:turns'"
+                ),
+                {"queued": actual["queued_count"], "running": actual["running_count"]},
+            )
+        return {
+            "queued_count": int(actual["queued_count"]),
+            "running_count": int(actual["running_count"]),
+            "active_users": len(actual_users),
+            "drift_detected": drift_detected,
+        }
+
+    def capacity_snapshot(self) -> dict[str, Any]:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT queued_count,running_count,queue_capacity,"
+                    "per_user_active_limit,last_reconciled_at FROM nlp_runtime_capacity "
+                    "WHERE scope_key='global:turns'"
+                )
+            ).mappings().one()
+            oldest_wait_s = connection.execute(
+                text(
+                    "SELECT COALESCE(TIMESTAMPDIFF(SECOND,MIN(created_at),UTC_TIMESTAMP(6)),0) "
+                    "FROM nlp_turns WHERE status='accepted'"
+                )
+            ).scalar_one()
+        return {
+            "queued_count": int(row["queued_count"]),
+            "running_count": int(row["running_count"]),
+            "queue_capacity": int(row["queue_capacity"]),
+            "per_user_active_limit": int(row["per_user_active_limit"]),
+            "oldest_queued_wait_s": int(oldest_wait_s),
+            "last_reconciled_at": row["last_reconciled_at"],
+        }
+
+    def operational_metrics(self) -> dict[str, Any]:
+        """Return bounded-cardinality runtime counters for operator views."""
+        capacity = self.capacity_snapshot()
+        with self._engine.connect() as connection:
+            quota = connection.execute(
+                text(
+                    "SELECT COALESCE(SUM(reserved_tokens),0) AS reserved_tokens, "
+                    "COALESCE(SUM(unknown_usage_events),0) AS unknown_usage_events "
+                    "FROM nlp_model_quota_accounts"
+                )
+            ).mappings().one()
+            quota_leaks = int(
+                connection.execute(
+                    text(
+                        "SELECT COUNT(*) FROM nlp_model_quota_reservations r "
+                        "LEFT JOIN nlp_turns t ON t.id=r.turn_id "
+                        "WHERE r.status='reserved' AND "
+                        "(t.id IS NULL OR t.status NOT IN ('accepted','running')) "
+                        "AND r.pending_invocations=0 AND r.unknown_usage_events=0"
+                    )
+                ).scalar_one()
+            )
+            pending_outbox = int(
+                connection.execute(
+                    text(
+                        "SELECT COUNT(*) FROM nlp_outbox_messages "
+                        "WHERE topic='turn.dispatch' AND status='pending'"
+                    )
+                ).scalar_one()
+            )
+            pending_usage = int(connection.execute(text(
+                "SELECT COUNT(*) FROM nlp_model_usage_intents "
+                "WHERE status IN ('pending','unknown_usage')"
+            )).scalar_one())
+            recoveries_1h = int(
+                connection.execute(
+                    text(
+                        "SELECT COUNT(*) FROM nlp_turn_events WHERE event_type='turn.handover' "
+                        "AND created_at>=UTC_TIMESTAMP(6)-INTERVAL 1 HOUR"
+                    )
+                ).scalar_one()
+            )
+        pool = self._engine.pool
+        return {
+            "queue": capacity,
+            "outbox_pending": pending_outbox,
+            "recoveries_last_hour": recoveries_1h,
+            "quota": {
+                "reserved_tokens": int(quota["reserved_tokens"]),
+                "unknown_usage_events": int(quota["unknown_usage_events"]),
+                "leaked_reservations": quota_leaks,
+                "pending_usage_intents": pending_usage,
+            },
+            "database_sync_pool": {
+                "size": int(pool.size()),
+                "checked_out": int(pool.checkedout()),
+                "overflow": int(pool.overflow()),
+                "checked_in": int(pool.checkedin()),
+                "timeout_s": int(getattr(pool, "_timeout", 0)),
+                "checkout_latency": pool.checkout_metrics(),
+            },
+        }
+
+    def reconcile_model_quota(self) -> dict[str, int | bool]:
+        """Release reservations whose durable Turn is already terminal or gone.
+
+        Lock ordering mirrors Turn settlement and usage reporting:
+        Turn -> global capacity mutex -> Reservation -> Account. Counters are checked
+        against the reservation rows, never silently clamped.
+        """
+        released = 0
+        with self._engine.connect() as connection:
+            candidates = connection.execute(
+                text(
+                    "SELECT id,turn_id FROM nlp_model_quota_reservations "
+                    "WHERE status='reserved' ORDER BY created_at,id"
+                )
+            ).mappings().all()
+        for candidate in candidates:
+            with self._engine.begin() as connection:
+                turn = connection.execute(
+                    text("SELECT status FROM nlp_turns WHERE id=:turn FOR UPDATE"),
+                    {"turn": candidate["turn_id"]},
+                ).mappings().first()
+                if turn is not None and turn["status"] in {"accepted", "running"}:
+                    continue
+                self._lock_turn_capacity(connection)
+                reservation = connection.execute(
+                    text(
+                        "SELECT id,user_id,reserved_tokens,unknown_usage_events,pending_invocations,status "
+                        "FROM nlp_model_quota_reservations WHERE id=:id FOR UPDATE"
+                    ),
+                    {"id": candidate["id"]},
+                ).mappings().first()
+                if reservation is None or reservation["status"] != "reserved":
+                    continue
+                if int(reservation["pending_invocations"]) or int(reservation["unknown_usage_events"]):
+                    continue
+                account = connection.execute(
+                    text(
+                        "SELECT reserved_tokens FROM nlp_model_quota_accounts "
+                        "WHERE user_id=:user FOR UPDATE"
+                    ),
+                    {"user": reservation["user_id"]},
+                ).mappings().first()
+                amount = int(reservation["reserved_tokens"])
+                if account is None or int(account["reserved_tokens"]) < amount:
+                    raise RuntimeError("model quota reservation counter underflow")
+                connection.execute(
+                    text(
+                        "UPDATE nlp_model_quota_accounts SET reserved_tokens=reserved_tokens-:tokens, "
+                        "updated_at=UTC_TIMESTAMP(6) WHERE user_id=:user"
+                    ),
+                    {"tokens": amount, "user": reservation["user_id"]},
+                )
+                final_status = "settled" if turn is not None else "released"
+                connection.execute(
+                    text(
+                        "UPDATE nlp_model_quota_reservations SET status=:status, "
+                        "settled_tokens=used_tokens,expires_at=NULL,"
+                        "finalized_at=UTC_TIMESTAMP(6) WHERE id=:id AND status='reserved'"
+                    ),
+                    {"status": final_status, "id": reservation["id"]},
+                )
+                released += 1
+
+        # A separate transaction avoids reusing the candidates' REPEATABLE READ
+        # snapshot. Admission and terminal triggers take this same mutex before
+        # changing reservations/account counters. Read reservation rows with a
+        # locking (current) read, never a snapshot aggregate followed by a write.
+        with self._engine.begin() as connection:
+            self._lock_turn_capacity(connection)
+            actual: dict[str, int] = {}
+            for row in connection.execute(
+                text(
+                    "SELECT user_id,reserved_tokens FROM nlp_model_quota_reservations "
+                    "WHERE status='reserved' ORDER BY user_id,id FOR UPDATE"
+                )
+            ).mappings():
+                user = str(row["user_id"])
+                actual[user] = actual.get(user, 0) + int(row["reserved_tokens"])
+            accounts = connection.execute(
+                text(
+                    "SELECT user_id,reserved_tokens FROM nlp_model_quota_accounts "
+                    "FOR UPDATE"
+                )
+            ).mappings().all()
+            drifted_accounts = 0
+            for account in accounts:
+                expected = actual.get(str(account["user_id"]), 0)
+                if int(account["reserved_tokens"]) == expected:
+                    continue
+                connection.execute(
+                    text(
+                        "UPDATE nlp_model_quota_accounts SET reserved_tokens=:tokens, "
+                        "updated_at=UTC_TIMESTAMP(6) WHERE user_id=:user"
+                    ),
+                    {"tokens": expected, "user": account["user_id"]},
+                )
+                drifted_accounts += 1
+        return {
+            "released_orphan_reservations": released,
+            "reserved_counter_drifted_accounts": drifted_accounts,
+            "reserved_tokens": sum(actual.values()),
+            "drift_detected": bool(released or drifted_accounts),
+        }
+
+    def queue_position(self, turn_id: str) -> dict[str, int] | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT position,waited_s FROM ("
+                    "SELECT target.id, "
+                    "SUM(CASE WHEN queued.status='accepted' AND "
+                    "(queued.created_at < target.created_at OR "
+                    "(queued.created_at = target.created_at AND queued.id <= target.id)) "
+                    "THEN 1 ELSE 0 END) AS position, "
+                    "TIMESTAMPDIFF(SECOND,target.created_at,UTC_TIMESTAMP(6)) AS waited_s "
+                    "FROM nlp_turns target JOIN nlp_turns queued "
+                    "ON queued.status='accepted' "
+                    "WHERE target.id=:turn_id AND target.status='accepted' "
+                    "GROUP BY target.id,target.created_at"
+                    ") queue_state"
+                ),
+                {"turn_id": turn_id},
+            ).mappings().first()
+        if row is None:
+            return None
+        return {
+            "queue_position": int(row["position"]),
+            "waited_s": max(0, int(row["waited_s"])),
+        }
 
     # Normalized teaching read/write path. The compat projection is deliberately
     # not consulted: catalog revision and entity rows are authoritative here.
@@ -1613,4 +2189,6 @@ class MySQLGatewayRepository:
     def close(self) -> None:
         if self.quota_service is not None:
             self.quota_service.close()
-        self._engine.dispose()
+        if not getattr(self, "_closed", False):
+            self._closed = True
+            release_engine(self._engine)

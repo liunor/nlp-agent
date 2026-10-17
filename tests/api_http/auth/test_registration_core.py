@@ -355,7 +355,8 @@ def test_email_provider_failure_has_explicit_gateway_error(
             "captcha_code": CAPTCHA_CODE,
         },
     )
-    payload = json_response(response, 502)
+    payload = problem_response(response, 502)
+    assert payload["code"] == "sms_gateway_failed"
     assert isinstance(payload, dict)
     assert "Email gateway failed" in str(payload["detail"])
     assert (

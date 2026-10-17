@@ -76,6 +76,7 @@ class ManagedHttpEnvironment:
     full_probe_operations: set[tuple[str, str, str]] = field(default_factory=set)
     observed_websocket_routes: set[str] = field(default_factory=set)
     worker_process: subprocess.Popen[str] | None = None
+    worker_module: str = "tests.api_http.support.worker_entrypoint"
 
     @property
     def web_base_url(self) -> str:
@@ -199,7 +200,7 @@ class ManagedHttpEnvironment:
             [
                 sys.executable,
                 "-m",
-                "tests.api_http.support.worker_entrypoint",
+                self.worker_module,
             ],
             cwd=ROOT,
             env=self.env,
@@ -501,6 +502,7 @@ def _docker_run_mysql(container: str, port: int, database: str) -> None:
             "--env",
             "MYSQL_ROOT_PASSWORD=root_api_http_password",
             MYSQL_IMAGE,
+            "--log-bin-trust-function-creators=ON",
         ]
     )
 
@@ -579,6 +581,10 @@ def _run_migrations(environment: dict[str, str]) -> None:
         if result.returncode == 0:
             return
         last_error = (result.stderr or result.stdout).strip()
+        # MySQL DDL commits before the revision is stamped. Only retry
+        # connection errors; otherwise preserve the first migration failure.
+        if not re.search(r"\((?:2002|2003|2006|2013),", last_error):
+            raise ApiHttpEnvironmentError(f"Alembic migration failed:\n{last_error}")
         time.sleep(2)
     raise ApiHttpEnvironmentError(f"Alembic migration failed after retries:\n{last_error}")
 
@@ -684,6 +690,11 @@ def _safe_child_environment(
             ),
             "NLP_AGENT_REDIS_URL": f"redis://127.0.0.1:{redis_port}/{redis_db}",
             "NLP_AGENT_GATEWAY_TRANSPORT": "redis",
+            "NLP_AGENT_DEPLOYMENT_ENV": "test",
+            "NLP_AGENT_WORKER_CONCURRENCY": "4",
+            "NLP_AGENT_WORKER_SHUTDOWN_GRACE_S": "30",
+            "NLP_AGENT_WORKER_HEARTBEAT_INTERVAL_S": "5",
+            "NLP_AGENT_WORKER_HEARTBEAT_TTL_S": "30",
             "NLP_AGENT_WEB_SECRET": "api-http-test-secret-" + "x" * 48,
             "NLP_AGENT_STATE_FACTORY": "",
             "NLP_AGENT_WEB_HOST": "127.0.0.1",

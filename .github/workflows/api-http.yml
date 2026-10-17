@@ -117,7 +117,7 @@ jobs:
           elif [[ "$GITHUB_EVENT_NAME" == "push" && ( "$GITHUB_REF_NAME" == 'develop' || "$GITHUB_REF_NAME" == 'main' ) ]]; then
             marker='api_core or api_async_core or api_runtime_core'
           else
-            marker='api_smoke'
+            marker='api_smoke or api_async_core'
           fi
           echo "marker=$marker" >> "$GITHUB_OUTPUT"
           echo "Selected marker: $marker"

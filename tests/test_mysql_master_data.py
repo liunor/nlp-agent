@@ -58,10 +58,18 @@ async def test_turn_event_service_delegates_serial_sequence_to_locked_turn_crud(
 
     monkeypatch.setattr("server.api.v1.persistence.service.AsyncStorageQuota", NoopQuota)
     service = TurnEventService(crud)
+    # Isolate the actual storage ledger; do not hand it an unconstrained
+    # AsyncMock database whose execute().all() incorrectly becomes a coroutine.
+    from server.api.v1.persistence import service as services
+    quota = AsyncMock(spec=services.AsyncStorageQuota)
+    reservation = object()
+    quota.reserve.return_value = reservation
+    monkeypatch.setattr(services, "AsyncStorageQuota", lambda *_args, **_kwargs: quota)
 
     await service.append_event(session, AppendTurnEventCommand(turn_id="turn-1", claim_generation=4, event_type="turn.handover"))
 
     crud.append_event.assert_awaited_once_with(session, turn, generation=4, event_type="turn.handover", payload={})
+    quota.finalize.assert_awaited_once_with(reservation, reconcile=True)
 
 
 @pytest.mark.asyncio

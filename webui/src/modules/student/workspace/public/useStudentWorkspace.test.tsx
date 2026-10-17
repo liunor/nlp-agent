@@ -21,6 +21,7 @@ const {
   listTurnsMock,
   sendChatMock,
   renameSessionMock,
+  socketConstructMock,
   socketConnectMock,
   socketCloseMock,
   socketEventHandlerRef,
@@ -40,6 +41,7 @@ const {
     current: undefined as ((event: ServerEvent) => void) | undefined,
   },
   socketCancelMock: vi.fn(),
+  socketConstructMock: vi.fn(),
 }));
 
 vi.mock("@/platform/http/api", () => ({
@@ -64,7 +66,8 @@ vi.mock("@/platform/http/api", () => ({
 
 vi.mock("@/platform/realtime/client", () => ({
   StudentSocket: class {
-    constructor(handler: (event: ServerEvent) => void) {
+    constructor(handler: (event: ServerEvent) => void, ...args: unknown[]) {
+      socketConstructMock(handler, ...args);
       socketEventHandlerRef.current = handler;
     }
 
@@ -107,6 +110,24 @@ describe("useStudentWorkspace settings", () => {
     sendChatMock.mockClear();
     socketCancelMock.mockClear();
     renameSessionMock.mockClear();
+    socketConstructMock.mockClear();
+  });
+
+  it("keeps default WS tickets and refreshes auth before restoring history on ready", async () => {
+    const wrapper = ({ children }: { children: React.ReactNode }) => <AuthProvider>{children}</AuthProvider>;
+    const { result } = renderHook(() => useStudentWorkspace(), { wrapper });
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+    act(() => result.current.selectSession("session-a"));
+    await waitFor(() => expect(api.listTurns).toHaveBeenCalledWith("session-a"));
+    ensureAuthMock.mockClear();
+    vi.mocked(api.listTurns).mockClear();
+    const args = socketConstructMock.mock.lastCall!;
+    expect(args[2]).toBeUndefined();
+    expect(args[3]).toBeTypeOf("function");
+    await act(async () => { await args[3](); });
+    expect(ensureAuthMock).toHaveBeenCalledTimes(1);
+    expect(api.listTurns).toHaveBeenCalledWith("session-a");
+    expect(ensureAuthMock.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.listTurns).mock.invocationCallOrder[0]);
   });
 
   it("rolls back optimistic settings and exposes a visible error on network failure", async () => {

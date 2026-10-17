@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress, TeachingMaterials
@@ -38,6 +38,23 @@ class TurnTask:
     thinking_enabled: bool = True
     authorization: ExecutionAuthorizationContext | None = None
     reservation_id: str | None = None
+    quota_reservation_id: str | None = None
+
+
+def require_durable_quota_reservation(
+    task: TurnTask, durable_reservation_id: str | None
+) -> TurnTask:
+    """Bind legacy task payloads to their persisted reservation, failing closed."""
+    if not isinstance(durable_reservation_id, str) or not durable_reservation_id.strip():
+        raise ValueError("turn has no durable model quota reservation")
+    if (
+        task.quota_reservation_id is not None
+        and task.quota_reservation_id != durable_reservation_id
+    ):
+        raise ValueError("turn task quota reservation does not match durable Turn")
+    if task.quota_reservation_id == durable_reservation_id:
+        return task
+    return replace(task, quota_reservation_id=durable_reservation_id)
 
 
 class TurnDispatcher(Protocol):

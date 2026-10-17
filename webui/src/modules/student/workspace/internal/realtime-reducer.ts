@@ -136,6 +136,32 @@ export function createRealtimeEventHandler({
         setMessages((current) => current.map((message) => message.id === optimisticId ? { ...message, turnId: event.turn_id ?? message.turnId } : message));
         pendingRequests.current.delete(event.request_id);
       }
+      if (event.payload.command === "chat.send" && event.turn_id) {
+        const status = typeof event.payload.status === "string" ? event.payload.status : "accepted";
+        const queuePosition = typeof event.payload.queue_position === "number" ? event.payload.queue_position : undefined;
+        const waitedS = typeof event.payload.waited_s === "number" ? event.payload.waited_s : undefined;
+        setMessages((current) => {
+          const id = `${event.turn_id}:assistant`;
+          const existing = current.findIndex((message) => message.id === id);
+          if (existing >= 0) {
+            return current.map((message) => message.id === id
+              ? { ...message, status: status as ChatMessage["status"], queuePosition, queueWaitedS: waitedS, queueObservedAt: event.timestamp }
+              : message);
+          }
+          return [...current, {
+            id,
+            turnId: event.turn_id!,
+            role: "assistant",
+            content: "",
+            status: status as ChatMessage["status"],
+            queuePosition,
+            queueWaitedS: waitedS,
+            queueObservedAt: event.timestamp,
+            activities: [],
+            createdAt: event.timestamp,
+          }];
+        });
+      }
     }
     if (!event.session_id || event.session_id !== activeSessionRef.current || !event.turn_id) return;
     if (event.type === "stream.gap") void loadTurns(event.session_id);
@@ -171,6 +197,12 @@ export function createRealtimeEventHandler({
       const message = { ...next[index], activities: [...(next[index].activities ?? [])] };
       if (["cancelled", "completed", "failed", "interrupted"].includes(message.status ?? "")) return next;
       if (message.status === "cancelling" && !["chat.cancelled", "chat.error"].includes(event.type)) return next;
+      if (event.type === "chat.accepted") {
+        message.status = "accepted";
+        message.queuePosition = typeof event.payload.queue_position === "number" ? event.payload.queue_position : undefined;
+        message.queueWaitedS = typeof event.payload.waited_s === "number" ? event.payload.waited_s : undefined;
+        message.queueObservedAt = event.timestamp;
+      }
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
       if (event.type === "chat.delta") message.content += delta;
       if (event.type === "chat.reasoning.delta") message.reasoning = `${message.reasoning ?? ""}${delta}`;

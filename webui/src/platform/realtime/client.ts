@@ -58,6 +58,7 @@ export class StudentSocket {
     if (this.stopped) return;
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     this.socket = new WebSocket(`${protocol}//${location.host}/ws/v1?ticket=${encodeURIComponent(ticket)}`);
+    const connection = this.socket;
     this.socket.onopen = () => {
       this.reconnectAttempt = 0;
       // TCP/WebSocket upgrade succeeded, but the server still has to accept
@@ -73,15 +74,16 @@ export class StudentSocket {
         return;
       }
       if (event.type === "connection.ready") {
-        this.ready = true;
-        void Promise.resolve(this.onReady?.()).catch(() => undefined);
-        if (this.activeSession) this.command("session.subscribe", { session_id: this.activeSession });
-        for (const [turnId, sequence] of this.lastSequences) {
-          this.command("stream.resume", { turn_id: turnId, after_sequence: sequence });
+        try {
+          const recovery = this.onReady?.();
+          if (recovery) {
+            void recovery.then(() => this.finishReady(connection), () => connection.close());
+          } else {
+            this.finishReady(connection);
+          }
+        } catch {
+          connection.close();
         }
-        for (const command of [...this.unacknowledgedChats.values()]) this.sendNow(command);
-        while (this.pending.length) this.sendNow(this.pending.shift()!);
-        this.onStatus("connected");
       }
       if ((event.type === "command.ack" || event.type === "command.error") && event.request_id) {
         this.unacknowledgedChats.delete(event.request_id);
@@ -105,6 +107,18 @@ export class StudentSocket {
       const delay = Math.min(10_000, 500 * 2 ** this.reconnectAttempt++);
       this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
     };
+  }
+
+  private finishReady(connection: WebSocket): void {
+    if (this.stopped || this.socket !== connection || connection.readyState !== WebSocket.OPEN) return;
+    this.ready = true;
+    if (this.activeSession) this.command("session.subscribe", { session_id: this.activeSession });
+    for (const [turnId, sequence] of this.lastSequences) {
+      this.command("stream.resume", { turn_id: turnId, after_sequence: sequence });
+    }
+    for (const command of [...this.unacknowledgedChats.values()]) this.sendNow(command);
+    while (this.pending.length) this.sendNow(this.pending.shift()!);
+    this.onStatus("connected");
   }
 
   setSession(sessionId: string | null): void {

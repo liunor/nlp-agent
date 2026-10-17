@@ -1,5 +1,5 @@
 import { Check, Copy, GraduationCap, RotateCcw } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 import { ActivityPanel } from "./ActivityPanel";
 import { ImagePreviewDialog } from "./ImagePreviewDialog";
@@ -48,7 +48,18 @@ const AssistantMessage = memo(function AssistantMessage({ message, showReasoning
   onFollowUp: (text: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [clockMs, setClockMs] = useState(() => Date.now());
   const streaming = ["accepted", "running"].includes(message.status ?? "");
+  useEffect(() => {
+    if (message.status !== "accepted") return;
+    const timer = window.setInterval(() => setClockMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [message.status]);
+  const queueSnapshotMs = Date.parse(message.queueObservedAt ?? message.createdAt);
+  const queueWaitedS = Math.max(
+    0,
+    (message.queueWaitedS ?? 0) + Math.floor((clockMs - queueSnapshotMs) / 1000),
+  );
   const copy = async () => {
     try {
       await copyTextToClipboard(
@@ -72,6 +83,12 @@ const AssistantMessage = memo(function AssistantMessage({ message, showReasoning
           startedAt={message.startedAt}
           completedAt={message.completedAt}
         />
+        {message.status === "accepted" && (
+          <div className="queue-status" role="status">
+            排队中{message.queuePosition ? ` · 前方 ${Math.max(0, message.queuePosition - 1)} 个任务` : ""}
+            {` · 已等待 ${queueWaitedS} 秒`}
+          </div>
+        )}
         {message.status === "failed" && !message.content ? (
           <div className="error-card">这次讲解没有完成，请稍后重试。</div>
         ) : message.status === "cancelled" && !message.content ? (

@@ -7,7 +7,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from gateway.dispatch import TurnTask
+from gateway.dispatch import TurnTask, require_durable_quota_reservation
+from gateway.execution_fence import TurnWriteFence, bind_turn_write_fence
 from core.rbac import Permission, authorization_service
 from core.rbac import required_permission_for_high_risk_tool
 from core.identity import AuthenticatedPrincipal
@@ -109,11 +110,16 @@ class FencedTurnExecutor:
                 permission_code=Permission.AGENT_TURN_SUBMIT.value, resource_type="turn",
                 resource_id=task.turn_id,
             )
+            durable_reservation_id = await self._reliability.quota_reservation_for_turn(
+                unit_of_work.session, turn_id=task.turn_id
+            )
+            task = require_durable_quota_reservation(task, durable_reservation_id)
             await unit_of_work.commit()
 
         heartbeat = asyncio.create_task(
             self._heartbeat(task.turn_id, generation), name=f"turn-lease:{task.turn_id}"
         )
+        fence = TurnWriteFence(task.turn_id, generation, self._worker_id)
         execution_context = TurnExecutionContext(
             turn_id=task.turn_id,
             claim_generation=generation,
@@ -121,8 +127,12 @@ class FencedTurnExecutor:
             principal=principal,
             workspace_id=task.authorization.workspace_id,
         )
+        async def execute_owned() -> None:
+            with bind_turn_write_fence(fence):
+                await self._execute_with_context(task, execution_context)
+
         execution = asyncio.create_task(
-            self._execute_with_context(task, execution_context),
+            execute_owned(),
             name=f"turn-execution:{task.turn_id}",
         )
         try:
@@ -131,6 +141,7 @@ class FencedTurnExecutor:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if heartbeat in completed:
+                fence.revoke()
                 error = heartbeat.exception()
                 if error is None:
                     raise RuntimeError("turn lease heartbeat stopped unexpectedly")
@@ -138,6 +149,9 @@ class FencedTurnExecutor:
             await execution
             return True
         finally:
+            # Revoke inherited context immediately when this Turn stops owning execution.
+            # Child asyncio tasks share this fence object, so late writes fail closed.
+            fence.revoke()
             if not execution.done():
                 execution.cancel()
                 try:

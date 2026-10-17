@@ -471,6 +471,8 @@ export interface TurnRecord {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  queue_position?: number | null;
+  waited_s?: number | null;
   learning_context?: LearningContext | null;
   learning_progress?: Record<string, unknown> | null;
   exercise_state?: Record<string, unknown> | null;
@@ -534,6 +536,9 @@ export interface ChatMessage {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  queuePosition?: number;
+  queueWaitedS?: number;
+  queueObservedAt?: string;
 }
 
 export interface SessionLearningMeta {

@@ -17,6 +17,7 @@ from gateway.contracts import (
     TurnConflictError,
     TurnStatus,
     TeachingConfigurationError,
+    WorkerUnavailableError,
     WhiteboardLibraryInUseError,
 )
 from gateway.core import BackendGateway
@@ -200,6 +201,9 @@ def test_explicit_repository_bypasses_redis_runtime_dispatch(tmp_path, monkeypat
     )
 
     assert isinstance(gateway.dispatcher, InProcessTurnDispatcher)
+class UnhealthyWorkerDispatcher(RecordingTurnDispatcher):
+    async def healthy_worker_count(self):
+        return 0
 
 
 class FlakyTurnDispatcher(RecordingTurnDispatcher):
@@ -651,6 +655,67 @@ async def test_gateway_runs_turn_replays_events_and_deduplicates(tmp_path, princ
 
 
 @pytest.mark.asyncio
+async def test_gateway_refuses_new_turn_when_remote_worker_heartbeats_are_empty(
+    tmp_path, principal
+):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    dispatcher = UnhealthyWorkerDispatcher()
+    gateway = BackendGateway(
+        engine=FakeEngine(),
+        repository=repository,
+        sessions=FakeSessions(),
+        dispatcher=dispatcher,
+    )
+    await gateway.start()
+    session = await gateway.create_session(principal, workspace_id="w1")
+
+    with pytest.raises(WorkerUnavailableError):
+        await gateway.submit_turn(
+            principal,
+            SubmitTurnRequest(session_id=session.session_id, content="try turn"),
+        )
+
+    assert repository.list_turns(session.session_id) == []
+    assert dispatcher.submissions == []
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_idempotent_turn_remains_readable_during_worker_restart(tmp_path, principal):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    dispatcher = RecordingTurnDispatcher()
+    gateway = BackendGateway(engine=FakeEngine(), repository=repository, sessions=FakeSessions(), dispatcher=dispatcher)
+    await gateway.start()
+    try:
+        session = await gateway.create_session(principal, workspace_id="w1")
+        request = SubmitTurnRequest(session_id=session.session_id, content="hello", idempotency_key="existing")
+        accepted = await gateway.submit_turn(principal, request)
+        dispatcher.healthy_worker_count = lambda: asyncio.sleep(0, result=0)
+        retried = await gateway.submit_turn(principal, request)
+        assert retried.duplicate is True
+        assert retried.turn_id == accepted.turn_id
+        assert len(dispatcher.submissions) == 1
+    finally:
+        await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_in_process_emit_reuses_already_persisted_terminal_event(tmp_path, principal):
+    repository = GatewayRepository(tmp_path / "gateway.sqlite3")
+    gateway = BackendGateway(engine=FakeEngine(), repository=repository, sessions=FakeSessions(), dispatcher=RecordingTurnDispatcher())
+    await gateway.start()
+    try:
+        session = await gateway.create_session(principal, workspace_id="w1")
+        accepted = await gateway.submit_turn(principal, SubmitTurnRequest(session_id=session.session_id, content="hello"))
+        persisted = repository.ensure_event(turn_id=accepted.turn_id, session_id=session.session_id, event_type=GatewayEventType.TURN_COMPLETED, payload={"status": "completed"})
+        emitted = await gateway._emit(accepted.turn_id, session.session_id, GatewayEventType.TURN_COMPLETED, {"status": "completed"})
+        assert emitted.event_id == persisted.event_id
+        assert sum(event.type == GatewayEventType.TURN_COMPLETED for event in repository.events_after(accepted.turn_id)) == 1
+    finally:
+        await gateway.close()
+
+
+@pytest.mark.asyncio
 async def test_gateway_passes_evaluation_batch_labels_to_the_engine_context(tmp_path, principal):
     engine = FakeEngine()
     gateway = BackendGateway(
@@ -853,7 +918,16 @@ async def test_gateway_shutdown_cancels_turn_after_grace_before_engine_close(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_serializes_with_new_turn_submission(tmp_path, principal):
+async def test_delete_session_serializes_with_new_turn_submission(tmp_path, principal, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    from core.observability.runtime import global_telemetry
+
+    # This is a session-lock unit test with fake storage/engine. Keep telemetry
+    # behind the same mock boundary rather than contacting the application DB.
+    flush = AsyncMock()
+    delete_telemetry = MagicMock()
+    monkeypatch.setattr(global_telemetry, "flush", flush)
+    monkeypatch.setattr(global_telemetry.repository, "delete_session", delete_telemetry)
     class DeletingEngine(FakeEngine):
         def __init__(self):
             super().__init__()
@@ -890,6 +964,8 @@ async def test_delete_session_serializes_with_new_turn_submission(tmp_path, prin
     result = await asyncio.gather(submitting, return_exceptions=True)
     assert isinstance(result[0], (KeyError, AccessDeniedError))
     assert gateway.repository.list_turns(session.session_id) == []
+    flush.assert_awaited_once()
+    delete_telemetry.assert_called_once_with(session.session_id)
     await gateway.close()
 
 

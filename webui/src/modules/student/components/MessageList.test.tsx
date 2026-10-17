@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { AppErrorBoundary } from "@/shared/ui/AppErrorBoundary";
 import {
@@ -229,6 +229,41 @@ describe("MessageList session updates", () => {
     expect(screen.getByText("已经生成的部分答案")).toBeVisible();
     expect(screen.getByText(/已保留已生成内容/)).toBeVisible();
     expect(screen.getByRole("button", { name: /已处理 5s/ })).toBeVisible();
+  });
+
+  it("continues queue wait from the latest server snapshot without double-counting task age", () => {
+    vi.useFakeTimers();
+    const observedAt = new Date("2026-10-17T12:00:10.000Z");
+    vi.setSystemTime(observedAt);
+    const assistant = Object.assign(
+      {
+        id: "turn-queued:assistant",
+        turnId: "turn-queued",
+        role: "assistant" as const,
+        content: "",
+        status: "accepted" as const,
+        createdAt: "2026-10-17T12:00:00.000Z",
+        queuePosition: 4,
+        queueWaitedS: 12,
+      },
+      { queueObservedAt: observedAt.toISOString() },
+    ) as ChatMessage;
+
+    try {
+      render(
+        <MessageList
+          messages={[assistant]}
+          loading={false}
+          showReasoning={false}
+          onFollowUp={vi.fn()}
+        />,
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("已等待 12 秒");
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(screen.getByRole("status")).toHaveTextContent("已等待 15 秒");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 it("copies only the selected assistant response as Markdown", async () => {

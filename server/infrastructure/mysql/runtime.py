@@ -31,3 +31,15 @@ class MySQLRuntime:
 
     async def close(self) -> None:
         await self._engine.dispose()
+
+    def pool_metrics(self) -> dict[str, object]:
+        """Expose the current async SQLAlchemy pool gauges without DB labels."""
+        pool = self._engine.sync_engine.pool
+        return {
+            "size": int(pool.size()),
+            "checked_out": int(pool.checkedout()),
+            "overflow": int(pool.overflow()),
+            "checked_in": int(pool.checkedin()),
+            "timeout_s": int(getattr(pool, "_timeout", 0)),
+            "checkout_latency": pool.checkout_metrics(),
+        }
