@@ -1,0 +1,73 @@
+name: Isolated beta classroom verification
+
+on:
+  push:
+    branches: [feature/beta-integrated-verification-20261018]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beta-isolated-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  classroom:
+    name: Isolated 50 users (${{ matrix.replicas }} workers x ${{ matrix.concurrency }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - replicas: 1
+            concurrency: 1
+          - replicas: 2
+            concurrency: 4
+    env:
+      PYTHONUNBUFFERED: '1'
+      RUN_API_HTTP: '1'
+      DATABASE_URL: ''
+      REDIS_URL: ''
+      NLP_AGENT_DATABASE_URL: ''
+      NLP_AGENT_REDIS_URL: ''
+      MYSQL_URL: ''
+      API_HTTP_DATABASE_URL: ''
+      API_HTTP_REDIS_URL: ''
+      WEB_BASE_URL: ''
+      MONITOR_BASE_URL: ''
+      NLP_AGENT_WEB_BASE_URL: ''
+      NLP_AGENT_MONITOR_BASE_URL: ''
+      NLP_AGENT_WEB_HOST: ''
+      NLP_AGENT_MONITOR_HOST: ''
+      API_HTTP_WEB_BASE_URL: ''
+      API_HTTP_MONITOR_BASE_URL: ''
+      DEEPSEEK_API_KEY: ''
+      QWEN_API_KEY: ''
+      KIMI_API_KEY: ''
+      GLM_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked dependencies
+        run: uv sync --frozen --group dev
+      - name: Run real applications with disposable MySQL, Redis and loopback fake model
+        run: >-
+          uv run python -m tests.load.run_isolated
+          --run-kind regression
+          --replicas ${{ matrix.replicas }}
+          --concurrency ${{ matrix.concurrency }}
+          --output artifacts/load-tests/t07/integrated-${{ matrix.replicas }}x${{ matrix.concurrency }}.json
+      - name: Upload isolated results and redacted logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-beta-${{ matrix.replicas }}x${{ matrix.concurrency }}-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: artifacts/load-tests/t07/
