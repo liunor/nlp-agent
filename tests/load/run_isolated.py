@@ -69,13 +69,15 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--concurrency", type=int, choices=(1, 4, 8), default=1)
     parser.add_argument("--replicas", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--worker-sync-pool-size", type=int, choices=(4, 8), default=4)
     args = parser.parse_args()
-    if args.run_kind == "baseline" and (args.concurrency, args.replicas) != (1, 1):
+    if args.run_kind == "baseline" and (args.concurrency, args.replicas, args.worker_sync_pool_size) != (1, 1, 4):
         parser.error("frozen baseline must use its actual 1x1 execution topology")
     from tests.load.t07_classroom_load import validate_output_path, validate_run_kind, BASELINE_PRODUCT_COMMIT
     output = validate_output_path(args.output)
     validate_run_kind(argparse.Namespace(run_kind=args.run_kind, baseline_ref=BASELINE_PRODUCT_COMMIT), output)
     profile = json.loads((ROOT / "tests/load/profiles/t07-50-users.json").read_text(encoding="utf-8"))
+    profile["worker_sync_pool_size"] = args.worker_sync_pool_size
     classroom_user_data(profile)
     web_database_env = database_environment(profile)
     worker_database_env = database_environment(profile, worker=True)

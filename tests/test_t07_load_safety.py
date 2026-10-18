@@ -139,13 +139,14 @@ async def test_invalid_classroom_fixture_stops_before_database_access(monkeypatc
     database.assert_not_called()
 
 
-@pytest.mark.parametrize("worker", [False, True])
-def test_isolated_database_settings_match_the_report_profile(worker, monkeypatch):
+@pytest.mark.parametrize("worker,sync_size", [(False, 5), (True, 4), (True, 8)])
+def test_isolated_database_settings_match_the_report_profile(worker, sync_size, monkeypatch):
     import json
     from configs.settings import Settings
     from tests.load.run_isolated import database_environment, ROOT
 
     profile = json.loads((ROOT / "tests/load/profiles/t07-50-users.json").read_text(encoding="utf-8"))
+    profile["worker_sync_pool_size" if worker else "database_sync_pool_size"] = sync_size
     for key, value in database_environment(profile, worker=worker).items():
         monkeypatch.setenv(key, value)
     runtime = Settings(_env_file=None).database_runtime
@@ -156,6 +157,21 @@ def test_isolated_database_settings_match_the_report_profile(worker, monkeypatch
     assert runtime["sync_pool_size"] == profile[f"{sync_prefix}pool_size"]
     assert runtime["sync_max_overflow"] == profile[f"{sync_prefix}max_overflow"]
     assert runtime["pool_timeout_s"] == profile["database_pool_timeout_seconds"]
+
+
+def test_frozen_baseline_rejects_changed_worker_pool_before_startup(monkeypatch):
+    import sys
+    from unittest.mock import Mock
+    from tests.load import run_isolated
+
+    resources = Mock(side_effect=AssertionError("must reject baseline tuning before starting resources"))
+    monkeypatch.setattr(run_isolated, "FakeProviderServer", resources)
+    monkeypatch.setattr(sys, "argv", ["run_isolated", "--run-kind", "baseline", "--worker-sync-pool-size", "8",
+                                     "--output", "artifacts/load-tests/t07/baseline.json"])
+    with pytest.raises(SystemExit) as stopped:
+        run_isolated.main()
+    assert stopped.value.code == 2
+    resources.assert_not_called()
 
 
 def test_fake_provider_configuration_validates_real_model_contract(monkeypatch):
