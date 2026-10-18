@@ -158,7 +158,9 @@ async function request<T>(
     const retryAfterSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : undefined;
     const resolvedMessage = response.status === 429 && code === "login_rate_limited"
       ? retryAfterSeconds ? `登录尝试过多，请等待 ${retryAfterSeconds} 秒后重试。` : "登录尝试过多，请稍后重试。"
-      : message;
+      : code === "email_gateway_failed"
+        ? "邮件发送失败，请稍后重试；若持续失败，请联系管理员。"
+        : message;
     throw new ApiError(resolvedMessage, response.status, code, retryAfterSeconds);
   }
   if (response.status === 204) return undefined as T;
@@ -636,15 +638,10 @@ export const api = {
   // ---------------------------------------------------------------------------
   getCaptcha: () =>
     request<{ captcha_id: string; image: string }>("/auth/captcha"),
-  register: (data: { phone_number: string; sms_code: string; password: string; display_name?: string; captcha_id: string; captcha_code: string }) =>
+  register: (data: { email: string; email_code: string; password: string; display_name?: string; captcha_id: string; captcha_code: string }) =>
     request<{ message: string; user_id: string; username: string; display_name: string; roles: string[] }>("/auth/register", {
       method: "POST",
       body: JSON.stringify(data),
-    }),
-  sendSmsCode: (phoneNumber: string, captchaId: string, captchaCode: string) =>
-    request<{ message: string }>("/auth/sms/send", {
-      method: "POST",
-      body: JSON.stringify({ phone_number: phoneNumber, captcha_id: captchaId, captcha_code: captchaCode }),
     }),
   sendEmailCode: (email: string, captchaId: string, captchaCode: string) =>
     request<{ message: string; expires_in?: number; resend_after?: number }>("/auth/email/send", {

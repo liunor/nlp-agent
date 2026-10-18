@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { useAuth } from "@/platform/auth/AuthContext";
 import { api } from "@/platform/http/api";
+import { emailCodeNotice } from "@/shared/utils/emailCodeNotice";
 import { ConsentNotice, LegalDocumentModal } from "./LegalConsent";
 import type { LegalDocumentKind } from "./legalDocuments";
 
@@ -58,7 +59,7 @@ export function LoginPage() {
             }}
           />
         ) : (
-          <RegisterForm onSuccess={() => { setRegistrationNotice("注册成功，请使用手机号登录"); setTab("login"); }} />
+          <RegisterForm onSuccess={() => { setRegistrationNotice("注册成功，请使用邮箱登录"); setTab("login"); }} />
         )}
 
         {/* Tab switcher at bottom */}
@@ -169,36 +170,37 @@ function LoginForm({ returnPath, onLoginSubmit, onLoginSuccess }: { returnPath: 
 // ---------------------------------------------------------------------------
 
 function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
-  const [phone, setPhone] = useState("");
-  const [smsCode, setSmsCode] = useState("");
+  const [email, setEmail] = useState("");
+  const [emailCode, setEmailCode] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [smsSending, setSmsSending] = useState(false);
-  const [smsCooldown, setSmsCooldown] = useState(0);
-  const [smsSent, setSmsSent] = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailCooldown, setEmailCooldown] = useState(0);
+  const [emailSent, setEmailSent] = useState(false);
+  const [emailNotice, setEmailNotice] = useState("");
   const [hasAgreed, setHasAgreed] = useState(false);
   const [legalDocument, setLegalDocument] = useState<LegalDocumentKind | null>(null);
   const [consentError, setConsentError] = useState("");
 
-  const [smsCaptchaId, setSmsCaptchaId] = useState("");
-  const [smsCaptchaImage, setSmsCaptchaImage] = useState("");
-  const [smsCaptchaCode, setSmsCaptchaCode] = useState("");
+  const [emailCaptchaId, setEmailCaptchaId] = useState("");
+  const [emailCaptchaImage, setEmailCaptchaImage] = useState("");
+  const [emailCaptchaCode, setEmailCaptchaCode] = useState("");
   const [regCaptchaId, setRegCaptchaId] = useState("");
   const [regCaptchaImage, setRegCaptchaImage] = useState("");
   const [regCaptchaCode, setRegCaptchaCode] = useState("");
-  const captchaRequestVersion = useRef({ sms: 0, reg: 0 });
+  const captchaRequestVersion = useRef({ email: 0, reg: 0 });
 
-  const loadCaptcha = useCallback(async (target: "sms" | "reg") => {
+  const loadCaptcha = useCallback(async (target: "email" | "reg") => {
     const requestVersion = ++captchaRequestVersion.current[target];
     try {
       const resp = await api.getCaptcha();
       if (requestVersion !== captchaRequestVersion.current[target]) return true;
-      if (target === "sms") {
-        setSmsCaptchaId(resp.captcha_id);
-        setSmsCaptchaImage(resp.image);
+      if (target === "email") {
+        setEmailCaptchaId(resp.captcha_id);
+        setEmailCaptchaImage(resp.image);
       } else {
         setRegCaptchaId(resp.captcha_id);
         setRegCaptchaImage(resp.image);
@@ -206,9 +208,9 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
       return true;
     } catch {
       if (requestVersion !== captchaRequestVersion.current[target]) return true;
-      if (target === "sms") {
-        setSmsCaptchaId("");
-        setSmsCaptchaImage("");
+      if (target === "email") {
+        setEmailCaptchaId("");
+        setEmailCaptchaImage("");
       } else {
         setRegCaptchaId("");
         setRegCaptchaImage("");
@@ -217,53 +219,57 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
     }
   }, []);
 
-  useEffect(() => { void loadCaptcha("sms"); }, [loadCaptcha]); // eslint-disable-line react-hooks/set-state-in-effect
+  useEffect(() => { void loadCaptcha("email"); }, [loadCaptcha]); // eslint-disable-line react-hooks/set-state-in-effect
 
   useEffect(() => {
-    if (smsCooldown <= 0) return;
-    const timer = window.setTimeout(() => setSmsCooldown((value) => Math.max(0, value - 1)), 1000);
+    if (emailCooldown <= 0) return;
+    const timer = window.setTimeout(() => setEmailCooldown((value) => Math.max(0, value - 1)), 1000);
     return () => window.clearTimeout(timer);
-  }, [smsCooldown]);
+  }, [emailCooldown]);
 
-  const changePhone = (value: string) => {
-    const mustRefreshConsumedCaptcha = smsSent;
-    setPhone(value);
+  const changeEmail = (value: string) => {
+    const mustRefreshConsumedCaptcha = emailSent;
+    setEmail(value);
     setError("");
-    setSmsSent(false);
-    setSmsCode("");
+    setEmailSent(false);
+    setEmailNotice("");
+    setEmailCode("");
     setRegCaptchaId("");
     setRegCaptchaImage("");
     setRegCaptchaCode("");
     if (mustRefreshConsumedCaptcha) {
-      setSmsCaptchaId("");
-      setSmsCaptchaImage("");
-      setSmsCaptchaCode("");
-      void loadCaptcha("sms");
+      setEmailCaptchaId("");
+      setEmailCaptchaImage("");
+      setEmailCaptchaCode("");
+      void loadCaptcha("email");
     }
   };
 
   const sendCode = async () => {
-    if (!phone.trim() || smsSending || smsCooldown > 0 || !smsCaptchaCode.trim()) return;
-    setSmsSending(true);
+    if (!email.trim() || emailSending || emailCooldown > 0 || !emailCaptchaCode.trim()) return;
+    setEmailSending(true);
     setError("");
     try {
-      await api.sendSmsCode(phone.trim(), smsCaptchaId, smsCaptchaCode.trim());
-      setSmsCooldown(60);
-      setSmsSent(true);
+      const sent = await api.sendEmailCode(email.trim(), emailCaptchaId, emailCaptchaCode.trim());
+      setEmailCooldown(sent?.resend_after ?? 60);
+      setEmailNotice(emailCodeNotice(sent?.expires_in));
+      setEmailSent(true);
       // 保留用户已输入的图片验证码字符串，不在此处清空
-      if (!(await loadCaptcha("reg"))) setError("短信验证码已发送，但注册验证码加载失败，请点击刷新重试。");
+      if (!(await loadCaptcha("reg"))) {
+        setError("邮箱验证码已发送，但注册验证码加载失败，请点击刷新重试。");
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "发送验证码失败");
-      await loadCaptcha("sms");
-      setSmsCaptchaCode("");
+      await loadCaptcha("email");
+      setEmailCaptchaCode("");
     } finally {
-      setSmsSending(false);
+      setEmailSending(false);
     }
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!phone.trim() || !smsCode || !password || !regCaptchaCode.trim() || submitting) return;
+    if (!email.trim() || !emailCode || !password || !regCaptchaCode.trim() || submitting) return;
     if (!hasAgreed) {
       setConsentError("请先阅读并同意用户协议和隐私政策");
       return;
@@ -274,8 +280,8 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
     setError("");
     try {
       await api.register({
-        phone_number: phone.trim(),
-        sms_code: smsCode.trim(),
+        email: email.trim(),
+        email_code: emailCode.trim(),
         password,
         display_name: displayName.trim() || undefined,
         captcha_id: regCaptchaId,
@@ -292,7 +298,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
   };
 
   const inputCls = "mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50";
-  const captchaImgCls = "h-9 rounded border border-gray-300 cursor-pointer";
+  const captchaImgCls = "h-16 w-40 shrink-0 rounded border border-gray-300 object-cover cursor-pointer";
 
   return (
     <>
@@ -301,46 +307,47 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
       {consentError && <div className="rounded bg-red-50 p-3 text-sm text-red-700" role="alert">{consentError}</div>}
 
       <div>
-        <label htmlFor="reg-phone" className="block text-sm font-medium text-gray-700">手机号</label>
-        <input id="reg-phone" type="tel" autoComplete="tel" autoFocus required value={phone}
-          onChange={(e) => changePhone(e.target.value)} disabled={submitting || smsSending} placeholder="请输入手机号" maxLength={20} className={inputCls} />
+        <label htmlFor="reg-email" className="block text-sm font-medium text-gray-700">邮箱</label>
+        <input id="reg-email" type="email" autoComplete="email" autoFocus required value={email}
+          onChange={(e) => changeEmail(e.target.value)} disabled={submitting || emailSending} placeholder="请输入邮箱" maxLength={254} className={inputCls} />
       </div>
 
-      {/* CAPTCHA for SMS code */}
+      {/* CAPTCHA for email code */}
       <div>
         <label className="block text-sm font-medium text-gray-700">图片验证码</label>
         <div className="mt-1 flex items-center gap-2">
-          <input type="text" required value={smsCaptchaCode}
-            onChange={(e) => setSmsCaptchaCode(e.target.value)} disabled={submitting}
+          <input type="text" required value={emailCaptchaCode}
+            onChange={(e) => setEmailCaptchaCode(e.target.value)} disabled={submitting}
             placeholder="输入图中字符" maxLength={10} className={`${inputCls} min-w-0 flex-1`} />
-          {smsCaptchaImage && (
-            <img src={smsCaptchaImage} alt="验证码" className={captchaImgCls}
-              onClick={() => void loadCaptcha("sms")} title="点击刷新" />
+          {emailCaptchaImage && (
+            <img src={emailCaptchaImage} alt="验证码" className={captchaImgCls}
+              onClick={() => void loadCaptcha("email")} title="点击刷新" />
           )}
-          <button type="button" onClick={() => void loadCaptcha("sms")}
+          <button type="button" onClick={() => void loadCaptcha("email")}
             className="shrink-0 rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="刷新">
             <RefreshCw size={16} />
           </button>
         </div>
       </div>
 
-      {/* SMS code */}
+      {/* Email code */}
       <div>
-        <label className="block text-sm font-medium text-gray-700">短信验证码</label>
+        <label className="block text-sm font-medium text-gray-700">邮箱验证码</label>
         <div className="mt-1 flex gap-2">
-          <input type="text" required value={smsCode}
-            onChange={(e) => setSmsCode(e.target.value)} disabled={submitting || !smsSent}
+          <input type="text" required value={emailCode}
+            onChange={(e) => setEmailCode(e.target.value)} disabled={submitting || !emailSent}
             placeholder="6位验证码" maxLength={8} className={inputCls} />
           <button type="button" onClick={sendCode}
-            disabled={smsSending || smsCooldown > 0 || !phone.trim() || !smsCaptchaCode.trim()}
+            disabled={emailSending || emailCooldown > 0 || !email.trim() || !emailCaptchaCode.trim()}
             className="shrink-0 whitespace-nowrap rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-white transition-colors disabled:cursor-not-allowed"
             style={{
-              background: smsCooldown > 0 ? "#f3f4f6" : "#3b82f6",
-              color: smsCooldown > 0 ? "#6b7280" : "#fff",
+              background: emailCooldown > 0 ? "#f3f4f6" : "#3b82f6",
+              color: emailCooldown > 0 ? "#6b7280" : "#fff",
             }}>
-            {smsSending ? "发送中..." : smsCooldown > 0 ? `${smsCooldown}s` : "发送验证码"}
+            {emailSending ? "发送中..." : emailCooldown > 0 ? `${emailCooldown}s` : "发送验证码"}
           </button>
         </div>
+        {emailSent && <p className="mt-2 text-xs text-gray-500" role="status">{emailNotice}</p>}
       </div>
 
       <div>
@@ -362,7 +369,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
       </div>
 
       {/* CAPTCHA for registration */}
-      {smsSent && (
+      {emailSent && (
         <div>
           <label className="block text-sm font-medium text-gray-700">注册验证</label>
           <div className="mt-1 flex items-center gap-2">
@@ -370,7 +377,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
               onChange={(e) => setRegCaptchaCode(e.target.value)} disabled={submitting}
               placeholder="输入图中字符" maxLength={10} className={`${inputCls} min-w-0 flex-1`} />
             {regCaptchaImage && (
-              <img src={regCaptchaImage} alt="注册验证码" className="h-16 w-40 rounded border border-gray-300 object-cover cursor-pointer"
+              <img src={regCaptchaImage} alt="注册验证码" className={captchaImgCls}
                 onClick={() => void loadCaptcha("reg")} title="点击刷新" />
             )}
             <button type="button" onClick={() => void loadCaptcha("reg")}
@@ -381,7 +388,7 @@ function RegisterForm({ onSuccess }: { onSuccess: () => void }) {
         </div>
       )}
 
-      <button type="submit" disabled={submitting || !phone.trim() || !smsCode || !password || !regCaptchaCode.trim() || !hasAgreed}
+      <button type="submit" disabled={submitting || !email.trim() || !emailCode || !password || !regCaptchaCode.trim() || !hasAgreed}
         className="w-full rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
         {submitting ? "注册中..." : "注册"}
       </button>

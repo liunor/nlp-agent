@@ -6,7 +6,7 @@ import { LoginDialog } from "./LoginDialog";
 vi.mock("@/platform/http/api", () => ({
   api: {
     getCaptcha: vi.fn(),
-    sendSmsCode: vi.fn(),
+    sendEmailCode: vi.fn(),
     register: vi.fn(),
   },
 }));
@@ -15,7 +15,8 @@ describe("LoginDialog", () => {
   beforeEach(() => {
     vi.mocked(api.getCaptcha).mockReset();
     vi.mocked(api.getCaptcha).mockResolvedValue({ captcha_id: "captcha-1", image: "data:image/png;base64,abc" });
-    vi.mocked(api.sendSmsCode).mockReset();
+    vi.mocked(api.sendEmailCode).mockReset();
+    vi.mocked(api.register).mockReset();
   });
   it("renders without loading a decorative logo image", () => {
     render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
@@ -63,12 +64,12 @@ describe("LoginDialog", () => {
   });
 
   it("renders the registration captcha at a readable fixed size", async () => {
-    vi.mocked(api.sendSmsCode).mockResolvedValue({ message: "sent" });
+    vi.mocked(api.sendEmailCode).mockResolvedValue({ message: "sent" });
     render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "立即注册" }));
 
-    fireEvent.change(await screen.findByLabelText("手机号"), { target: { value: "13800138000" } });
+    fireEvent.change(await screen.findByLabelText("邮箱"), { target: { value: "first@example.com" } });
     fireEvent.change(await screen.findByPlaceholderText("输入图中字符"), { target: { value: "ABCD" } });
     fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
 
@@ -76,31 +77,31 @@ describe("LoginDialog", () => {
     expect(captcha).toHaveStyle({ width: "160px", height: "64px" });
   });
 
-  it("locks the phone while sending and refreshes the consumed captcha after a phone change", async () => {
+  it("locks the email while sending and refreshes the consumed captcha after a email change", async () => {
     vi.mocked(api.getCaptcha)
       .mockReset()
-      .mockResolvedValueOnce({ captcha_id: "sms-1", image: "data:image/png;base64,sms1" })
+      .mockResolvedValueOnce({ captcha_id: "email-1", image: "data:image/png;base64,email1" })
       .mockResolvedValueOnce({ captcha_id: "reg-1", image: "data:image/png;base64,reg1" })
-      .mockResolvedValueOnce({ captcha_id: "sms-2", image: "data:image/png;base64,sms2" });
+      .mockResolvedValueOnce({ captcha_id: "email-2", image: "data:image/png;base64,email2" });
     let finishSending!: () => void;
-    vi.mocked(api.sendSmsCode).mockImplementation(() => new Promise((resolve) => {
-      finishSending = () => resolve({ message: "sent" });
+    vi.mocked(api.sendEmailCode).mockImplementation(() => new Promise((resolve) => {
+      finishSending = () => resolve({ message: "sent", expires_in: 300, resend_after: 60 });
     }));
     render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "立即注册" }));
 
-    const phone = screen.getByPlaceholderText("请输入手机号");
-    fireEvent.change(phone, { target: { value: "13800138000" } });
+    const email = screen.getByPlaceholderText("请输入邮箱");
+    fireEvent.change(email, { target: { value: "first@example.com" } });
     fireEvent.change(await screen.findByPlaceholderText("输入图中字符"), { target: { value: "ABCD" } });
     fireEvent.click(screen.getByRole("button", { name: "发送验证码" }));
-    expect(phone).toBeDisabled();
+    expect(email).toBeDisabled();
     finishSending();
     await waitFor(() => expect(screen.getByPlaceholderText("6位验证码")).toBeEnabled());
 
-    fireEvent.change(phone, { target: { value: "13900139000" } });
+    fireEvent.change(email, { target: { value: "second@example.com" } });
     expect(screen.getByPlaceholderText("6位验证码")).toBeDisabled();
     await waitFor(() => expect(api.getCaptcha).toHaveBeenCalledTimes(3));
-    expect(screen.getByAltText("验证码")).toHaveAttribute("src", "data:image/png;base64,sms2");
+    expect(screen.getByAltText("验证码")).toHaveAttribute("src", "data:image/png;base64,email2");
   });
 });
 it("shows a session-expired message when reopened after authentication expires", () => {

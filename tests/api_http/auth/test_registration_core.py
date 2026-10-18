@@ -272,57 +272,47 @@ def test_email_resend_rate_limit_is_enforced(
     assert second.status_code == 429, second.text
 
 
-def test_phone_registration_returns_guest_without_logging_in(
+def test_public_registration_rejects_phone_without_consuming_legacy_code(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
-    api_http_client_factory,
 ) -> None:
     phone = f"139{uuid.uuid4().int % 10**8:08d}"
-    registered = _register_phone(http_client, mysql_probe, phone)
-    payload = json_response(registered, 201)
-    assert isinstance(payload, dict)
-    assert "nlp_session" not in registered.headers.get("set-cookie", "")
-    assert payload["username"] == normalize_phone_number(phone).lstrip("+")
-    assert payload["roles"] == ["guest"]
-
-    login_client = api_http_client_factory(base_url=http_client.base_url, timeout=15)
-    login_response = login_client.post(
-        "/api/v1/auth/login",
-        headers={"Origin": str(http_client.base_url).rstrip("/")},
-        json={"username": phone, "password": "Phase4-register-password!"},
-    )
-    login_payload = json_response(login_response, 200)
-    assert isinstance(login_payload, dict)
-    assert login_payload["user_id"] == payload["user_id"]
-    assert login_payload["roles"] == ["guest"]
-    assert "classroom:join_request:submit" in login_payload["permissions"]
-    assert "learning:progress:read_self" not in login_payload["permissions"]
+    response = _register_phone(http_client, mysql_probe, phone)
+    problem_response(response, 422)
+    assert mysql_probe.scalar(
+        "SELECT COUNT(*) FROM nlp_users WHERE phone_number_normalized=:phone",
+        phone=normalize_phone_number(phone),
+    ) == 0
+    assert mysql_probe.scalar(
+        "SELECT COUNT(*) FROM nlp_auth_codes WHERE kind='sms' AND subject=:phone",
+        phone=normalize_phone_number(phone),
+    ) == 1
 
 
-def test_concurrent_duplicate_phone_registrations_return_one_conflict(
+def test_concurrent_email_registrations_cannot_reuse_one_code(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
     api_http_client_factory,
 ) -> None:
-    digits = f"137{uuid.uuid4().int % 10**8:08d}"
-    phone_variants = (digits, f"{digits[:3]}-{digits[3:7]}-{digits[7:]}")
+    email = _unique_email("concurrent")
+    email_variants = (email, email.upper())
     clients = [
         api_http_client_factory(base_url=http_client.base_url, timeout=15)
-        for _ in phone_variants
+        for _ in email_variants
     ]
     requests = []
-    for client, phone in zip(clients, phone_variants, strict=True):
+    for client, email_variant in zip(clients, email_variants, strict=True):
         captcha_id = _captcha(client, mysql_probe)
         set_test_auth_code(
             mysql_probe,
-            kind="sms",
-            subject=normalize_phone_number(phone),
-            code=SMS_CODE,
+            kind="email",
+            subject=normalize_email(email_variant),
+            code=EMAIL_CODE,
         )
         requests.append(
             {
-                "phone_number": phone,
-                "sms_code": SMS_CODE,
+                "email": email_variant,
+                "email_code": EMAIL_CODE,
                 "password": "Phase4-register-password!",
                 "captcha_id": captcha_id,
                 "captcha_code": CAPTCHA_CODE,
@@ -356,7 +346,7 @@ def test_email_provider_failure_has_explicit_gateway_error(
         },
     )
     payload = problem_response(response, 502)
-    assert payload["code"] == "sms_gateway_failed"
+    assert payload["code"] == "email_gateway_failed"
     assert isinstance(payload, dict)
     assert "Email gateway failed" in str(payload["detail"])
     assert (
@@ -367,3 +357,13 @@ def test_email_provider_failure_has_explicit_gateway_error(
         )
         == 0
     )
+
+    assert mysql_probe.scalar(
+        "SELECT COUNT(*) FROM nlp_email_send_audits WHERE email=:email AND outcome='failed'",
+        email=normalize_email(email),
+    ) == 1
+    # A failed delivery still consumes the CAPTCHA; it cannot be replayed.
+    replay = http_client.post("/api/v1/auth/email/send", json={
+        "email": email, "captcha_id": captcha_id, "captcha_code": CAPTCHA_CODE,
+    })
+    assert replay.status_code == 400

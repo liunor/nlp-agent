@@ -1,7 +1,5 @@
 """T07 review regressions on isolated MySQL and the real HTTP read path."""
 
-import hashlib
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -56,33 +54,17 @@ def test_mysql_rejects_old_worker_writes_and_http_replays_handover(
         repository.close()
 
 
-def test_sms_resend_accepts_new_code_and_preserves_history_over_http(http_client, mysql_probe):
+def test_disabled_sms_endpoint_does_not_consume_captcha_or_create_codes(http_client, mysql_probe):
     phone = f"+86139{uuid.uuid4().int % 10**8:08d}"
-    for index, code in enumerate(("111111", "222222")):
-        captcha_id = _captcha(http_client, mysql_probe)
-        sent = http_client.post("/api/v1/auth/sms/send", json={"phone_number": phone, "captcha_id": captcha_id, "captcha_code": CAPTCHA_CODE})
-        assert sent.status_code == 200, sent.text
-        mysql_probe.execute("UPDATE nlp_auth_codes SET code_hash=:hash WHERE subject=:phone AND kind='sms'", hash=hashlib.sha256(code.encode()).hexdigest(), phone=phone)
-        if index == 0:
-            mysql_probe.execute("UPDATE nlp_auth_codes SET created_at=UTC_TIMESTAMP(6)-INTERVAL 61 SECOND WHERE subject=:phone", phone=phone)
-    assert mysql_probe.scalar("SELECT COUNT(*) FROM nlp_auth_codes WHERE subject=:phone", phone=phone) == 2
-    assert mysql_probe.scalar("SELECT COUNT(*) FROM nlp_auth_codes WHERE subject=:phone AND kind='sms_history'", phone=phone) == 1
     captcha_id = _captcha(http_client, mysql_probe)
-    registered = http_client.post("/api/v1/auth/register", json={
-        "phone_number": phone, "sms_code": "222222", "password": "T07-register-password!",
-        "display_name": "T07 resend", "captcha_id": captcha_id, "captcha_code": CAPTCHA_CODE,
+    sent = http_client.post("/api/v1/auth/sms/send", json={
+        "phone_number": phone, "captcha_id": captcha_id, "captcha_code": CAPTCHA_CODE,
     })
-    assert registered.status_code == 201, registered.text
-    # Request-scoped dependency cleanup may commit just after the response is
-    # delivered. Observe durable state with a bounded wait, not a timing race.
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        history = mysql_probe.scalar("SELECT COUNT(*) FROM nlp_auth_codes WHERE subject=:phone AND kind='sms_history'", phone=phone)
-        if history == 2:
-            break
-        time.sleep(0.02)
-    assert history == 2
-    assert mysql_probe.scalar("SELECT COUNT(*) FROM nlp_auth_codes WHERE subject=:phone AND kind='sms'", phone=phone) == 0
+    assert sent.status_code == 410, sent.text
+    assert sent.headers["content-type"].startswith("application/problem+json")
+    assert sent.json()["code"] == "sms_registration_disabled"
+    assert mysql_probe.scalar("SELECT COUNT(*) FROM nlp_auth_codes WHERE subject=:phone", phone=phone) == 0
+    assert mysql_probe.scalar("SELECT COUNT(*) FROM nlp_auth_codes WHERE subject=:captcha AND kind='captcha'", captcha=captcha_id) == 1
 
 
 def test_long_event_stream_terminal_repair_is_concurrently_idempotent(authenticated_client, student_user, mysql_probe, api_http_environment):
