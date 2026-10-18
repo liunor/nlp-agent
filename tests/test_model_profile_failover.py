@@ -291,3 +291,13 @@ async def test_profile_open_circuit_uses_available_fallback(monkeypatch):
     result = await runtime.ainvoke([HumanMessage(content="isolated input")])
     assert result.content == "available"
     assert (primary.calls, fallback.calls) == (0, 1)
+
+
+@pytest.mark.parametrize("status,expected", [(400, "upstream_invalid_request"), (401, "upstream_auth_failed"), (403, "upstream_auth_failed"), (404, "upstream_model_unavailable")])
+def test_turn_terminal_classifies_permanent_provider_error(status, expected):
+    import httpx
+    from openai import APIStatusError
+    from gateway.turn_execution import _error_kind_for_turn
+
+    error = APIStatusError("isolated Provider error", response=httpx.Response(status, request=httpx.Request("POST", "http://127.0.0.1/isolated")), body=None)
+    assert _error_kind_for_turn(error) == expected
