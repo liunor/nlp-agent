@@ -143,6 +143,29 @@ class WebSocketHub:
         if targets:
             await asyncio.gather(*(item.close(code=code, reason=reason) for item in targets), return_exceptions=True)
 
+    async def revalidate_user(self, user_id: str) -> None:
+        """Fence stale sockets without closing a valid post-change reconnect.
+
+        Outbox/PubSub notifications can arrive late or more than once. The
+        database session and refreshed principal determine whether each socket
+        is still valid, rather than the delivery time of the notification.
+        """
+        async def check(connection: WebSocketConnection) -> None:
+            try:
+                async with asyncio.timeout(5):
+                    await connection.require_active_session(touch=False)
+                    await connection.refresh_authorization()
+            except (AuthenticationError, PermissionError):
+                await connection.close(code=4403, reason="authorization changed")
+            except Exception:
+                # A failed authoritative check must not retain a socket with
+                # potentially revoked access, or stop the PubSub listener.
+                await connection.close(code=1013, reason="authorization check unavailable")
+
+        targets = [item for item in tuple(self._connections) if item.principal.user_id == user_id]
+        if targets:
+            await asyncio.gather(*(check(item) for item in targets), return_exceptions=True)
+
     async def close(self) -> None:
         connections = list(self._connections)
         self._connections.clear()

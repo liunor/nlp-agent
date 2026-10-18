@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from typing import Any
 
 import httpx
@@ -392,6 +393,7 @@ def test_websocket_refreshes_guest_approval_and_reconnects_as_student(
     teacher_user,
     web_base_url: str,
     api_http_environment,
+    redis_probe,
 ) -> None:
     developer_client = authenticated_client_for(developer_user)
     guest = create_user(developer_client, role="guest", prefix="t06wsguest")
@@ -448,5 +450,21 @@ def test_websocket_refreshes_guest_approval_and_reconnects_as_student(
                 timeout_s=5,
             )
             assert frames[-1]["type"] == "pong"
+
+            # Simulate delayed/repeated delivery of the already committed
+            # approval notice. A new socket has the current DB authorization
+            # version and must survive; timing the relay should not log it out.
+            for index in range(3):
+                listeners = await asyncio.to_thread(
+                    redis_probe.client.publish, "nlp-agent:authorization",
+                    json.dumps({"user_id": guest.user_id, "reason": "classroom_membership_changed"}),
+                )
+                assert listeners > 0
+                await asyncio.sleep(0.15)
+                identifier = f"after-delayed-notice-{index}"
+                await resumed.send(command("ping", identifier, {"nonce": "still-student"}))
+                frames = await _receive_until(resumed, lambda frame: frame.get("request_id") == identifier, timeout_s=5)
+                assert frames[-1]["type"] == "pong"
+            assert (await asyncio.to_thread(guest_client.get, "/api/v1/auth/session")).status_code == 200
 
     asyncio.run(scenario())
