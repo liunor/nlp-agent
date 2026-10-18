@@ -276,7 +276,13 @@ async def _open_websocket(user: dict[str, Any], *, base_url: str, origin: str) -
     if client is None:
         return None, {"username": user["username"], "status": "not_connected", "reason": "login_failed"}
     started = time.monotonic()
-    ticket = await client.post("/api/v1/auth/ws-ticket", headers={"Origin": origin, "X-CSRF-Token": user["csrf"]})
+    try:
+        ticket = await client.post("/api/v1/auth/ws-ticket", headers={"Origin": origin, "X-CSRF-Token": user["csrf"]})
+    except httpx.TransportError as error:
+        # This occurs before a WebSocket is opened. Keep the failed sample and
+        # its stage, without serializing exception text, tickets or cookies.
+        return None, {"username": user["username"], "status": "error", "stage": "ws_ticket_http",
+                      "error": type(error).__name__, "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
     if ticket.status_code != 200:
         return None, {"username": user["username"], "status": ticket.status_code, "code": _problem_code(ticket)}
     cookie = client.cookies.get("nlp_session")
@@ -502,7 +508,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if websocket is not None:
                 websockets.append(websocket)
             else:
-                failures.append("WebSocket did not become ready")
+                failures.append("WebSocket ticket HTTP transport failed" if metrics.get("stage") == "ws_ticket_http"
+                                else "WebSocket did not become ready")
         phases["websocket"] = {
             "started_at": ws_started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),

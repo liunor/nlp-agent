@@ -253,3 +253,28 @@ def test_timeout_scenario_allows_the_turn_watchdog_but_still_requires_live_sessi
     assert provider_case_failures("timeout", result) == []
     result["session_after_provider_error_status"] = 401
     assert provider_case_failures("timeout", result) == ["timeout: browser auth session was lost"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_name", ["RemoteProtocolError", "ConnectTimeout", "ConnectError"])
+async def test_ticket_transport_failure_is_recorded_before_websocket_without_retry_or_secrets(monkeypatch, error_name):
+    from unittest.mock import AsyncMock
+    import httpx
+    from tests.load import t07_classroom_load as load
+
+    calls = []
+
+    def reply(request):
+        calls.append(request.url.path)
+        raise getattr(httpx, error_name)("do-not-record Cookie=private-cookie ticket=private-ticket")
+
+    connect = AsyncMock(side_effect=AssertionError("WebSocket must not start without a ticket"))
+    monkeypatch.setattr(load, "connect", connect)
+    async with httpx.AsyncClient(base_url="http://127.0.0.1", transport=httpx.MockTransport(reply)) as client:
+        connection, result = await load._open_websocket({"username": "synthetic", "client": client, "csrf": "private-csrf"},
+                                                       base_url="http://127.0.0.1", origin="http://127.0.0.1")
+    assert connection is None and result["status"] == "error"
+    assert result["stage"] == "ws_ticket_http" and result["error"] == error_name
+    assert calls == ["/api/v1/auth/ws-ticket"]
+    assert "private-" not in str(result)
+    connect.assert_not_called()
