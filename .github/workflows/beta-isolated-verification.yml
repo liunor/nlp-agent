@@ -12,6 +12,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  public-transport:
+    name: Independent test-site transport snapshot (9 health GETs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check fixed test endpoint with certificate verification
+        run: |
+          mkdir -p artifacts/transport
+          python tests/load/public_transport_snapshot.py > artifacts/transport/snapshot.json
+      - name: Upload transport snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: independent-test-transport-${{ github.run_id }}
+          path: artifacts/transport/snapshot.json
+          retention-days: 7
   classroom:
     name: Isolated 50 users (${{ matrix.replicas }} workers x ${{ matrix.concurrency }}, sync ${{ matrix.sync_pool_size }}+2)
     runs-on: ubuntu-latest
