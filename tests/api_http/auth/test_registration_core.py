@@ -163,6 +163,7 @@ def test_captcha_rejects_wrong_and_expired_answers(
     assert expired.status_code == 400
 
 
+@pytest.mark.api_smoke
 def test_email_code_lifecycle_and_registration_provision_resources(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
@@ -172,7 +173,9 @@ def test_email_code_lifecycle_and_registration_provision_resources(
 ) -> None:
     email = _unique_email()
     sent = _send_email(http_client, mysql_probe, email)
-    json_response(sent, 200)
+    sent_payload = json_response(sent, 200)
+    assert sent_payload["expires_in"] == 300
+    assert sent_payload["resend_after"] == 60
 
     registered = _register(http_client, mysql_probe, email=email)
     payload = json_response(registered, 201)
@@ -272,6 +275,7 @@ def test_email_resend_rate_limit_is_enforced(
     assert second.status_code == 429, second.text
 
 
+@pytest.mark.api_smoke
 def test_public_registration_rejects_phone_without_consuming_legacy_code(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
@@ -289,6 +293,7 @@ def test_public_registration_rejects_phone_without_consuming_legacy_code(
     ) == 1
 
 
+@pytest.mark.api_smoke
 def test_concurrent_email_registrations_cannot_reuse_one_code(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
@@ -330,6 +335,7 @@ def test_concurrent_email_registrations_cannot_reuse_one_code(
     assert sorted(response.status_code for response in responses) == [201, 400]
 
 
+@pytest.mark.api_smoke
 def test_email_provider_failure_has_explicit_gateway_error(
     http_client: httpx.Client,
     mysql_probe: MySqlProbe,
