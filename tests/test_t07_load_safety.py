@@ -156,3 +156,40 @@ def test_isolated_database_settings_match_the_report_profile(worker, monkeypatch
     assert runtime["sync_pool_size"] == profile[f"{sync_prefix}pool_size"]
     assert runtime["sync_max_overflow"] == profile[f"{sync_prefix}max_overflow"]
     assert runtime["pool_timeout_s"] == profile["database_pool_timeout_seconds"]
+
+
+def test_fake_provider_configuration_validates_real_model_contract(monkeypatch):
+    from copy import deepcopy
+    from configs.settings import settings
+    from core.model_runtime.factory import ModelFactory
+    from tests.load.model_configuration import configure_models
+
+    raw = deepcopy(settings._config)
+    assert raw["model_presets"]["worker-qwen-web"]["native_search"]["enabled"]
+    monkeypatch.setattr(settings, "_config", raw)
+    monkeypatch.setenv("NLP_AGENT_DEPLOYMENT_ENV", "test")
+    monkeypatch.setenv("NLP_AGENT_DATABASE_URL", "mysql+aiomysql://isolated:unused@127.0.0.1:33061/nlp_agent_api_http_isolated")
+    monkeypatch.setenv("T07_FAKE_PROVIDER_CONTROL_URL", "http://127.0.0.1:33221")
+    configure_models()
+    config = ModelFactory.config_from_raw(raw)
+    assert all(provider.base_url == "http://127.0.0.1:33221/v1" for provider in config.providers.values())
+    assert all(not preset.native_search.enabled for preset in config.model_presets.values())
+
+
+@pytest.mark.parametrize("database,endpoint", [
+    ("mysql+aiomysql://unused@mysql/nlp_agent", "http://127.0.0.1:33221"),
+    ("mysql+aiomysql://unused@127.0.0.1/nlp_agent", "http://127.0.0.1:33221"),
+    ("mysql+aiomysql://unused@127.0.0.1/nlp_agent_api_http_isolated", "https://api.example.test"),
+])
+def test_fake_provider_configuration_rejects_live_targets_without_mutation(monkeypatch, database, endpoint):
+    from copy import deepcopy
+    from configs.settings import settings
+    from tests.load.model_configuration import configure_models
+
+    before = deepcopy(settings._config)
+    monkeypatch.setenv("NLP_AGENT_DEPLOYMENT_ENV", "test")
+    monkeypatch.setenv("NLP_AGENT_DATABASE_URL", database)
+    monkeypatch.setenv("T07_FAKE_PROVIDER_CONTROL_URL", endpoint)
+    with pytest.raises(RuntimeError, match="disposable loopback"):
+        configure_models()
+    assert settings._config == before

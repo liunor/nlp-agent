@@ -1,7 +1,7 @@
 """Run the real Worker/model runtime against the isolated fake HTTP Provider."""
 
 import asyncio
-from tests.load.deployment_entrypoint import configure_models
+from tests.load.model_configuration import configure_models
 from server.worker.runtime import run_worker
 
 
