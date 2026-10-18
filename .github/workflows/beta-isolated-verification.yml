@@ -21,9 +21,7 @@ jobs:
       matrix:
         include:
           - replicas: 1
-            concurrency: 1
-          - replicas: 2
-            concurrency: 4
+            concurrency: 8
     env:
       PYTHONUNBUFFERED: '1'
       RUN_API_HTTP: '1'
