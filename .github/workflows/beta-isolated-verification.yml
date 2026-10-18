@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   classroom:
-    name: Isolated 50 users (${{ matrix.replicas }} workers x ${{ matrix.concurrency }})
+    name: Isolated 50 users (${{ matrix.replicas }} workers x ${{ matrix.concurrency }}, sync ${{ matrix.sync_pool_size }}+2)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -22,6 +22,7 @@ jobs:
         include:
           - replicas: 1
             concurrency: 8
+            sync_pool_size: 8
     env:
       PYTHONUNBUFFERED: '1'
       RUN_API_HTTP: '1'
@@ -60,12 +61,13 @@ jobs:
           --run-kind regression
           --replicas ${{ matrix.replicas }}
           --concurrency ${{ matrix.concurrency }}
-          --output artifacts/load-tests/t07/integrated-${{ matrix.replicas }}x${{ matrix.concurrency }}.json
+          --worker-sync-pool-size ${{ matrix.sync_pool_size }}
+          --output artifacts/load-tests/t07/integrated-${{ matrix.replicas }}x${{ matrix.concurrency }}-sync${{ matrix.sync_pool_size }}.json
       - name: Upload isolated results and redacted logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: isolated-beta-${{ matrix.replicas }}x${{ matrix.concurrency }}-${{ github.run_id }}
+          name: isolated-beta-${{ matrix.replicas }}x${{ matrix.concurrency }}-sync${{ matrix.sync_pool_size }}-${{ github.run_id }}
           if-no-files-found: warn
           retention-days: 7
           path: artifacts/load-tests/t07/
