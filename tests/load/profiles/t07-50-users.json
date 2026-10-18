@@ -1,7 +1,7 @@
 {
   "version": 1,
   "user_count": 50,
-  "username_format": "t07-student-{index:02d}",
+  "username_format": "t07student{index:02d}",
   "password_env": "T07_TEST_PASSWORD",
   "login_ramp_seconds": 10,
   "turn_count": 30,

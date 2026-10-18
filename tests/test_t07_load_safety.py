@@ -104,3 +104,55 @@ async def test_baseline_rejects_regression_target_even_from_frozen_checkout(tmp_
     args = Namespace(base_url="http://127.0.0.1:8765", output="artifacts/load-tests/t07/baseline.json", profile=str(profile), run_kind="baseline")
     with pytest.raises(LoadTestError, match="target.*commit"):
         await load.run(args)
+
+
+def test_classroom_fixture_and_load_login_use_the_same_50_valid_identities(monkeypatch):
+    import json
+    from tests.load.run_isolated import classroom_user_data, ROOT, TEST_PASSWORD
+    from tests.load.t07_classroom_load import _profile_users
+    from server.user.schemas import UserCreate
+
+    profile = json.loads((ROOT / "tests/load/profiles/t07-50-users.json").read_text(encoding="utf-8"))
+    monkeypatch.setenv(profile["password_env"], TEST_PASSWORD)
+    students = classroom_user_data(profile)
+    logins = _profile_users(profile)
+
+    assert len(students) == len({user.username for user in students}) == 50
+    assert all(isinstance(user, UserCreate) for user in students)
+    assert [user.username for user in students] == [login["username"] for login in logins]
+    assert all(user.password == login["password"] for user, login in zip(students, logins, strict=True))
+
+
+@pytest.mark.asyncio
+async def test_invalid_classroom_fixture_stops_before_database_access(monkeypatch):
+    from unittest.mock import Mock
+    from pydantic import ValidationError
+    from server.infrastructure.mysql import MySQLRuntime
+    from tests.load.run_isolated import seed_classroom
+
+    database = Mock(side_effect=AssertionError("invalid fixture must not open a database"))
+    monkeypatch.setattr(MySQLRuntime, "from_runtime", database)
+    with pytest.raises(ValidationError, match="alphanumeric"):
+        await seed_classroom(object(), {
+            "user_count": 50, "username_format": "t07-student-{index:02d}",
+        })
+    database.assert_not_called()
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_isolated_database_settings_match_the_report_profile(worker, monkeypatch):
+    import json
+    from configs.settings import Settings
+    from tests.load.run_isolated import database_environment, ROOT
+
+    profile = json.loads((ROOT / "tests/load/profiles/t07-50-users.json").read_text(encoding="utf-8"))
+    for key, value in database_environment(profile, worker=worker).items():
+        monkeypatch.setenv(key, value)
+    runtime = Settings(_env_file=None).database_runtime
+    prefix = "worker_" if worker else ""
+    sync_prefix = "worker_sync_" if worker else "database_sync_"
+    assert runtime["pool_size"] == profile[f"{prefix}database_pool_size"]
+    assert runtime["max_overflow"] == profile[f"{prefix}database_max_overflow"]
+    assert runtime["sync_pool_size"] == profile[f"{sync_prefix}pool_size"]
+    assert runtime["sync_max_overflow"] == profile[f"{sync_prefix}max_overflow"]
+    assert runtime["pool_timeout_s"] == profile["database_pool_timeout_seconds"]
