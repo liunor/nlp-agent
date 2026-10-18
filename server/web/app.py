@@ -561,7 +561,7 @@ def create_app(
                         user_id = str(payload["user_id"])
                     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                         continue
-                    await hub.close_user(user_id, reason="authorization changed")
+                    await hub.revalidate_user(user_id)
             except asyncio.CancelledError:
                 raise
             finally:
