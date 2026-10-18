@@ -160,11 +160,29 @@ class ModelFactory:
         thinking_enabled: bool | None = None,
     ) -> ResilientChatModel:
         preset_name = self.profile_preset(profile_name, role)
-        return self.build_preset(
-            preset_name,
-            model_profile=profile_name,
-            thinking_enabled=thinking_enabled,
-        )
+        primary = self.config.preset(preset_name)
+        entries = [(preset_name, primary)]
+        route = self.config.model_routes.get(role)
+        if route is not None and route.primary == preset_name:
+            # Profiles pin the Provider. Only reuse an explicitly configured
+            # route for the same primary; never import another profile's route
+            # or silently replace a specialized native-search preset.
+            provider = self.config.profile(profile_name).provider
+            entries.extend(
+                (name, preset)
+                for name, preset in self.config.route_presets(role)[1:]
+                if self.config.models[preset.model].provider == provider
+                and preset.native_search == primary.native_search
+            )
+        key = ("profile_role", profile_name, role, str(thinking_enabled), *(name for name, _ in entries))
+        if key not in self._cache:
+            self._cache[key] = ResilientChatModel(
+                [self._candidate(name, preset, thinking_enabled) for name, preset in entries],
+                model_profile=profile_name,
+                route=None,
+                reporter_slot=self.reporter_slot,
+            )
+        return self._cache[key]
 
     def build_override(
         self,

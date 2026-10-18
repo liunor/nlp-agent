@@ -66,6 +66,8 @@ Developer UI 的 Provider 页面可以选择 `deepseek`、`qwen`、`kimi`、`glm
 
 选择结果通过用户设置中的 `model_profile` 持久化，后续 `chat.send` 会携带该值。Gateway 将它作为当前 turn 的本地上下文传递给 Executor 和 LangGraph；Coordinator、Worker、Utility 分别解析档案绑定的 preset，不修改进程级默认模型，也不会影响其他会话。
 
+当角色 route 的主 preset 与档案绑定一致时，档案调用会保留该 route 已配置的同 Provider、相同原生搜索设置的 fallback。其他档案、主 preset 不一致的运行时覆盖、明确指定的单个 preset 不会继承默认 route；不会自动跨 Provider 切换。排查时需核对生效配置和实际候选链，不能仅根据默认 YAML 的 fallback 判断线上已经启用。
+
 ## 运行语义
 
 `ResilientChatModel` 保持 LangChain 的 `bind_tools()`、`with_structured_output()`、`ainvoke()` 和 `astream()` 调用形态。普通 `ainvoke()` 内部也使用统一流式路径，确保首 Token、流空闲和总超时具有相同语义。
