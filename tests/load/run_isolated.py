@@ -103,6 +103,10 @@ def main():
                 self.env = web_environment
 
     environment = None
+    previous_artifact_dir = os.environ.get("API_HTTP_ARTIFACT_DIR")
+    # start() cleans up on a boot failure before returning an environment.
+    # Select diagnostics now so that failure preserves the real Web error.
+    os.environ["API_HTTP_ARTIFACT_DIR"] = str(output.parent / (output.stem + "-logs"))
     try:
         environment = LoadEnvironment.start()
         for _index in range(1, args.replicas):
@@ -120,6 +124,10 @@ def main():
             # Logs are copied under the requested report directory with secrets redacted.
             os.environ["API_HTTP_ARTIFACT_DIR"] = str(output.parent / (output.stem + "-logs"))
             environment.close()
+        if previous_artifact_dir is None:
+            os.environ.pop("API_HTTP_ARTIFACT_DIR", None)
+        else:
+            os.environ["API_HTTP_ARTIFACT_DIR"] = previous_artifact_dir
         fake.shutdown()
         fake.server_close()
 
