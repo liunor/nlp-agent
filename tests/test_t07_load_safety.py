@@ -193,3 +193,47 @@ def test_fake_provider_configuration_rejects_live_targets_without_mutation(monke
     with pytest.raises(RuntimeError, match="disposable loopback"):
         configure_models()
     assert settings._config == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timestamp,expected_ms", [
+    ("2026-10-18T00:00:01", 1000),
+    ("2026-10-18T00:00:01Z", 1000),
+    ("2026-10-18T08:00:01+08:00", 1000),
+    ("invalid", None),
+])
+async def test_completed_turn_metrics_preserve_naive_utc_events(monkeypatch, timestamp, expected_ms):
+    from datetime import datetime, timezone
+    import httpx
+    from tests.load import t07_classroom_load as load
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 18, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(load, "datetime", FixedDateTime)
+    def reply(request):
+        if request.method == "POST":
+            return httpx.Response(202, json={"turn_id": "isolated-turn", "status": "accepted"})
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json={"items": [
+                {"sequence": 1, "type": "message.delta", "created_at": timestamp},
+                {"sequence": 2, "type": "turn.completed"},
+            ]})
+        return httpx.Response(200, json={"status": "completed", "final_text": "isolated response"})
+
+    async with httpx.AsyncClient(base_url="http://127.0.0.1", transport=httpx.MockTransport(reply)) as client:
+        result = await load._submit_and_wait({"client": client, "origin": "http://127.0.0.1", "csrf": "isolated", "session_id": "isolated-session", "username": "isolated", "index": 1},
+            run_id="isolated", timeout_s=1, ramp_seconds=0, index=0, total=1, start_at=0)
+    assert result["submit_status"] == 202 and result["state"] == "completed"
+    assert result["terminal_event_count"] == 1 and not result["event_sequence_gap"]
+    assert result["first_token_ms"] == expected_ms
+
+
+def test_timeout_scenario_allows_the_turn_watchdog_but_still_requires_live_session():
+    from tests.load.t07_classroom_load import provider_case_failures
+    result = {"submit_status": 202, "state": "failed", "error_kind": "TurnExecutionTimeoutError", "terminal_event_count": 1, "event_sequence_gap": False, "session_after_provider_error_status": 200}
+    assert provider_case_failures("timeout", result) == []
+    result["session_after_provider_error_status"] = 401
+    assert provider_case_failures("timeout", result) == ["timeout: browser auth session was lost"]

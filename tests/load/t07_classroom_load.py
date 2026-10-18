@@ -43,7 +43,12 @@ def provider_case_failures(mode: str, result: dict[str, Any]) -> list[str]:
         failures.append(f"{mode}: Turn submission was not HTTP 202")
     if result.get("state") != "failed":
         failures.append(f"{mode}: expected failed terminal, got {result.get('state')}")
-    if result.get("error_kind") != PROVIDER_ERROR_KINDS[mode]:
+    # The Provider and Turn first-token watchdogs share a deadline. Either may
+    # win a genuine no-response race; neither is a browser-session failure.
+    expected_kinds = {PROVIDER_ERROR_KINDS[mode]}
+    if mode == "timeout":
+        expected_kinds.add("TurnExecutionTimeoutError")
+    if result.get("error_kind") not in expected_kinds:
         failures.append(f"{mode}: incorrect Provider error classification: {result.get('error_kind')}")
     if result.get("terminal_event_count") != 1 or result.get("event_sequence_gap"):
         failures.append(f"{mode}: missing/duplicate terminal event or event sequence gap")
@@ -375,6 +380,11 @@ async def _submit_and_wait(
                 first_token_at = datetime.fromisoformat(
                     str(first_token["created_at"]).replace("Z", "+00:00")
                 )
+                if first_token_at.tzinfo is None:
+                    # MySQL event timestamps are naive UTC; the request clock
+                    # is aware UTC. Preserve the sample instead of throwing
+                    # away an already completed Turn due to datetime TypeError.
+                    first_token_at = first_token_at.replace(tzinfo=timezone.utc)
                 result["first_token_ms"] = round(
                     (first_token_at - started_wall).total_seconds() * 1000, 3
                 )
