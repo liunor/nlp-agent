@@ -94,8 +94,25 @@ class UserCreateWithRole(UserCreate):
     role_codes: list[str] = Field(default_factory=list, max_length=4)
 
 
+class EmailUserRegister(BaseModel):
+    """Public registration accepts only an email and its verification code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(..., min_length=5, max_length=254)
+    email_code: str = Field(..., min_length=4, max_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
+    display_name: Optional[str] = Field(None, min_length=1, max_length=128)
+    captcha_id: str = Field(..., min_length=1)
+    captcha_code: str = Field(..., min_length=1, max_length=10)
+
+
 class UserRegister(BaseModel):
-    """Phone or email self-service registration; exactly one verified identity is required."""
+    """Internal registration input; retains compatibility with legacy phone identities.
+
+    The public HTTP endpoint uses EmailUserRegister, so legacy SMS codes cannot
+    be used to create a phone account through that endpoint.
+    """
 
     phone_number: Optional[str] = Field(None, min_length=5, max_length=20, pattern=r"^\+?\d[\d\s-]*$")
     sms_code: Optional[str] = Field(None, min_length=4, max_length=8)
