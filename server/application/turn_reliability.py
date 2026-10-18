@@ -280,10 +280,16 @@ class TurnReliabilityService:
 
 
 class OutboxRelay:
-    """Publishes outbox rows without holding MySQL locks across Redis I/O."""
+    """Publish known topics without holding MySQL locks across Redis I/O.
+
+    Only encoded Turn tasks belong in ``stream``. Sandbox lease notifications
+    have their own bounded stream; lease state and Manager reconciliation in
+    MySQL remain authoritative, independently of notification delivery.
+    """
 
     def __init__(self, redis: Any, *, stream: str, relay_id: str, authorization_channel: str = "nlp-agent:authorization", lock_s: int = 30) -> None:
         self._redis, self._stream, self._relay_id, self._authorization_channel, self._lock_s = redis, stream, relay_id, authorization_channel, lock_s
+        self._sandbox_stream = f"{stream}:sandbox-events"
 
     async def _claim_batch(self, session: AsyncSession, *, limit: int) -> list["_ClaimedOutboxMessage"]:
         now = utc_now()
@@ -303,13 +309,22 @@ class OutboxRelay:
             task_payload = message.payload_json.get("task")
             if not isinstance(task_payload, str):
                 raise ValueError("turn.dispatch outbox payload requires an encoded task")
-            fields = {"payload": task_payload}
-        else:
+            return str(await self._redis.xadd(self._stream, {"payload": task_payload}))
+        if message.topic in {"sandbox.lease.released", "sandbox.lease.revoked"}:
+            # These are lifecycle notifications, not executable Turn tasks or
+            # user-wide authorization invalidations. Keep their source ID for
+            # correlation/deduplication after an at-least-once relay retry.
             fields = {
+                "outbox_id": message.id,
                 "topic": message.topic,
                 "payload": json.dumps(message.payload_json, ensure_ascii=False),
             }
-        return str(await self._redis.xadd(self._stream, fields))
+            return str(await self._redis.xadd(
+                self._sandbox_stream, fields, maxlen=10_000, approximate=True,
+            ))
+        # publish_batch retains the durable row as retry on failure. A new or
+        # misspelled topic must not silently become a malformed Worker task.
+        raise ValueError(f"unsupported outbox topic: {message.topic}")
 
     async def _finalize_batch(
         self,
