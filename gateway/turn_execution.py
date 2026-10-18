@@ -44,8 +44,13 @@ def _error_kind_for_turn(error: BaseException) -> str:
         StreamInterruptedError,
         classify_model_error,
     )
+    from openai import APIStatusError
     if isinstance(error, AdmissionLimitError):
         return error.code
+    if isinstance(error, APIStatusError):
+        # Permanent SDK failures propagate without the exhausted-retry wrapper.
+        # Keep a Provider 401 distinct from a browser authentication failure.
+        return classify_model_error(error).kind
     if isinstance(error, TimeoutError) and not isinstance(error, TurnExecutionTimeoutError):
         return classify_model_error(error).kind
     if isinstance(error, StreamInterruptedError):
