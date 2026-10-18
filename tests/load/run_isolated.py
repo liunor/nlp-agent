@@ -67,7 +67,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-kind", choices=("baseline", "regression"), required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--concurrency", type=int, choices=(1, 4), default=1)
+    parser.add_argument("--concurrency", type=int, choices=(1, 4, 8), default=1)
     parser.add_argument("--replicas", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
     if args.run_kind == "baseline" and (args.concurrency, args.replicas) != (1, 1):
