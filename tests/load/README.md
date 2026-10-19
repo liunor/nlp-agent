@@ -79,6 +79,14 @@ the workload SLO passed. Authentication, task completion, event integrity,
 Provider-error handling or topology failures still fail the job. This is a
 configuration comparison on hosted CI, not an accepted VPS or multi-class capacity.
 
+The separately flagged `--comparison-users 120` mode provisions three disposable
+40-student classrooms. It retains 30 fake-model tasks and the same latency SLOs;
+it represents 120 online users with 30 task submissions, not 120 simultaneous AI
+tasks. The load runner requires `--isolated-three-class-comparison`, an HTTP IPv4
+loopback target and regression mode for this size. The original 50-user release
+profile and frozen baseline gate remain fixed. The fake-Provider control and
+test/staging health checks still run before any login workload.
+
 To test Provider 401/429/503/timeout handling, the runner asks the fake server
 to switch modes and verifies the switch response. Each case must receive 202,
 reach `failed` with the matching `upstream_*` error kind, have exactly one terminal

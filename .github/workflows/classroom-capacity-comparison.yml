@@ -16,18 +16,20 @@ permissions:
 
 jobs:
   measurement:
-    name: Measure ${{ matrix.replicas }} workers x ${{ matrix.concurrency }} slots
+    name: Measure ${{ matrix.users }} users - ${{ matrix.replicas }} workers x ${{ matrix.concurrency }} slots
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        include:
-          - {replicas: 1, concurrency: 1}
-          - {replicas: 1, concurrency: 2}
-          - {replicas: 2, concurrency: 2}
-          - {replicas: 2, concurrency: 4}
+        # The four 50-user branch comparisons were already dispatched. Further
+        # branch pushes measure the newly requested three-class case; the PR and
+        # manual gate always run every topology against the exact reviewed HEAD.
+        include: >-
+          ${{ fromJSON(github.event_name == 'push'
+          && '[{"replicas":2,"concurrency":4,"users":120}]'
+          || '[{"replicas":1,"concurrency":1,"users":50},{"replicas":1,"concurrency":2,"users":50},{"replicas":2,"concurrency":2,"users":50},{"replicas":2,"concurrency":4,"users":50},{"replicas":2,"concurrency":4,"users":120}]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,7 +39,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen --group dev
-      - name: Measure 50 synthetic users and 30 fake-model tasks
+      - name: Measure synthetic users and 30 fake-model tasks
         id: load
         continue-on-error: true
         env:
@@ -47,10 +49,12 @@ jobs:
         run: >-
           uv run python -m tests.load.run_isolated --run-kind regression
           --replicas ${{ matrix.replicas }} --concurrency ${{ matrix.concurrency }}
-          --output artifacts/load-tests/t07/capacity-${{ matrix.replicas }}x${{ matrix.concurrency }}.json
+          --comparison-users ${{ matrix.users }}
+          --output artifacts/load-tests/t07/capacity-${{ matrix.replicas }}x${{ matrix.concurrency }}-u${{ matrix.users }}.json
       - name: Require complete measurements and preserve SLO failures
         env:
-          REPORT: artifacts/load-tests/t07/capacity-${{ matrix.replicas }}x${{ matrix.concurrency }}.json
+          REPORT: artifacts/load-tests/t07/capacity-${{ matrix.replicas }}x${{ matrix.concurrency }}-u${{ matrix.users }}.json
+          USERS: ${{ matrix.users }}
         run: |
           python - <<'PY'
           import json, os
@@ -59,8 +63,8 @@ jobs:
                        'Turn submission p99 exceeded the 5 second SLO',
                        'queue wait p95 exceeded the 120 second SLO'}
           assert set(report['failures']) <= permitted, report['failures']
-          assert report['phases']['auth_burst']['login_successes'] == 50
-          assert report['phases']['websocket']['connected'] == 50
+          assert report['phases']['auth_burst']['login_successes'] == int(os.environ['USERS'])
+          assert report['phases']['websocket']['connected'] == int(os.environ['USERS'])
           topology = report['isolated_worker_topology']
           expected = {'observed_replicas': report['deployment_profile']['worker_replicas'],
                       'concurrency_per_replica': report['deployment_profile']['worker_concurrency']}
@@ -77,6 +81,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: classroom-capacity-${{ matrix.replicas }}x${{ matrix.concurrency }}
+          name: classroom-capacity-${{ matrix.replicas }}x${{ matrix.concurrency }}-u${{ matrix.users }}
           path: artifacts/load-tests/t07/
           if-no-files-found: error

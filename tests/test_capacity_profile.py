@@ -12,17 +12,37 @@ from configs.settings import Settings
 from tests.load.run_isolated import WEB_POOLS, WORKER_POOLS, measured_profile
 
 
-def test_all_fifty_fixture_names_match_profile_and_real_user_schema():
+def test_all_bounded_fixture_names_match_profile_and_real_user_schema():
     from server.user.schemas import UserCreate
     from tests.load.run_isolated import student_username
     profile = json.loads((Path(__file__).parent / "load/profiles/t07-50-users.json").read_text())
     names = []
-    for index in range(1, 51):
+    for index in range(1, 121):
         name = student_username(index)
         assert profile["username_format"].format(index=index) == name
         assert UserCreate(username=name, display_name="Fixture", password="isolated-password-123").username == name
         names.append(name)
-    assert len(set(names)) == 50
+    assert len(set(names)) == 120
+
+
+@pytest.mark.parametrize("flag,origin,kind,users,classes,accepted", [
+    (False, "https://test.example", "regression", 50, 1, True),
+    (True, "http://127.0.0.1:8765", "regression", 120, 3, True),
+    (False, "http://127.0.0.1:8765", "regression", 120, 3, False),
+    (True, "https://test.lsnunlp.com", "regression", 120, 3, False),
+    (True, "http://127.0.0.1:8765", "baseline", 120, 3, False),
+    (True, "http://127.0.0.1:8765", "regression", 121, 3, False),
+    (True, "http://127.0.0.1:8765", "regression", 120, 1, False),
+])
+def test_three_class_mode_cannot_expand_the_live_or_frozen_release_gate(flag, origin, kind, users, classes, accepted):
+    from tests.load.t07_classroom_load import validate_workload_size, LoadTestError
+    args = SimpleNamespace(isolated_three_class_comparison=flag, run_kind=kind)
+    profile = {"user_count": users, "turn_count": 30, "classroom_count": classes}
+    if accepted:
+        validate_workload_size(profile, args, origin)
+    else:
+        with pytest.raises(LoadTestError, match="profile requires"):
+            validate_workload_size(profile, args, origin)
 
 
 def test_fake_model_configuration_validates_actual_catalog_without_native_search():

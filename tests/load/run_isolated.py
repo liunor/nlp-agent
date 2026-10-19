@@ -64,7 +64,7 @@ def verify_worker_topology(environment, replicas, concurrency):
         client.close()
 
 
-async def seed_classroom(environment):
+async def seed_classroom(environment, user_count=50):
     from sqlalchemy import select
     from server.infrastructure.mysql import MySQLRuntime
     from server.infrastructure.mysql.models import ClassroomMemberModel
@@ -77,13 +77,24 @@ async def seed_classroom(environment):
     try:
         async with runtime.session_factory.begin() as session:
             teacher = environment.users["teacher"]
-            classroom = await rbac_service.create_classroom(session, workspace_id=teacher.workspace_id, name="T07 50-student load classroom", actor_user_id=teacher.user_id)
+            if user_count not in {50, 120}:
+                raise ValueError("BOUNDED_ISOLATED_CLASS_SIZE_REQUIRED")
+            classrooms = [await rbac_service.create_classroom(
+                session, workspace_id=teacher.workspace_id,
+                name=f"T07 isolated classroom {group+1}", actor_user_id=teacher.user_id)
+                for group in range(3 if user_count == 120 else 1)]
             service = UserService(session)
-            for index in range(1, 51):
+            for index in range(1, user_count+1):
                 user = await service.create_user(UserCreate(username=student_username(index), display_name=f"T07 student {index}", password=TEST_PASSWORD), initial_role_code="student")
+                classroom = classrooms[(index-1)//40] if user_count == 120 else classrooms[0]
                 session.add(ClassroomMemberModel(classroom_id=classroom.id, user_id=user.id, member_role="student", status="active"))
             await session.flush()
-            assert len((await session.scalars(select(ClassroomMemberModel).where(ClassroomMemberModel.classroom_id == classroom.id, ClassroomMemberModel.member_role == "student"))).all()) == 50
+            members = (await session.scalars(select(ClassroomMemberModel).where(
+                ClassroomMemberModel.classroom_id.in_([group.id for group in classrooms]),
+                ClassroomMemberModel.member_role == "student"))).all()
+            assert len(members) == user_count
+            if user_count == 120:
+                assert all(sum(member.classroom_id == group.id for member in members) == 40 for group in classrooms)
     finally:
         await runtime.close()
 
@@ -94,8 +105,9 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--concurrency", type=int, choices=(1, 2, 4), default=1)
     parser.add_argument("--replicas", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--comparison-users", type=int, choices=(50, 120), default=50)
     args = parser.parse_args()
-    if args.run_kind == "baseline" and (args.concurrency, args.replicas) != (1, 1):
+    if args.run_kind == "baseline" and (args.concurrency, args.replicas, args.comparison_users) != (1, 1, 50):
         parser.error("frozen baseline must use its actual 1x1 execution topology")
     from tests.load.t07_classroom_load import validate_output_path, validate_run_kind, BASELINE_PRODUCT_COMMIT
     output = validate_output_path(args.output)
@@ -112,7 +124,7 @@ def main():
                     self.env.update(WEB_POOLS)
                 self.env.update(T07_LOAD_RUN_KIND=args.run_kind, T07_FAKE_PROVIDER_CONTROL_URL=f"http://127.0.0.1:{fake.server_port}", T07_FAKE_PROVIDER_API_KEY="isolated-test-key", NLP_AGENT_WORKER_CONCURRENCY=str(args.concurrency))
                 self.worker_module = "tests.load.worker_entrypoint"
-                asyncio.run(seed_classroom(self))
+                asyncio.run(seed_classroom(self, args.comparison_users))
                 module = "tests.load.deployment_entrypoint:app"
             super()._start_server(module=module, port=port, log_name=log_name)
 
@@ -145,11 +157,14 @@ def main():
         profile = json.loads((ROOT / "tests/load/profiles/t07-50-users.json").read_text(encoding="utf-8"))
         profile = measured_profile(profile, environment.env, environment.worker_env,
                                    replicas=args.replicas, concurrency=args.concurrency)
+        profile.update(user_count=args.comparison_users, classroom_count=3 if args.comparison_users == 120 else 1)
         profile_path = environment.log_dir / "load-profile.json"
         profile_path.write_text(json.dumps(profile), encoding="utf-8")
         command = [sys.executable, "-m", "tests.load.t07_classroom_load", "--base-url", environment.web_base_url, "--profile", str(profile_path), "--run-kind", args.run_kind, "--output", str(output)]
         if args.run_kind == "baseline":
             command.extend(["--baseline-ref", BASELINE_PRODUCT_COMMIT])
+        if args.comparison_users == 120:
+            command.append("--isolated-three-class-comparison")
         result = subprocess.run(command, cwd=ROOT, env={**os.environ, "T07_TEST_PASSWORD": TEST_PASSWORD, "T07_FAKE_PROVIDER_CONTROL_URL": f"http://127.0.0.1:{fake.server_port}", "T07_FAKE_PROVIDER_CONTROL_TOKEN": token}, timeout=1100)
         if args.run_kind == "regression" and output.is_file():
             after = verify_worker_topology(environment, args.replicas, args.concurrency)

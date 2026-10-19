@@ -210,8 +210,9 @@ async def _login_user(
     index: int,
     ramp_seconds: float,
     start_at: float,
+    total_users: int = 50,
 ) -> dict[str, Any]:
-    await asyncio.sleep(max(0.0, start_at + ramp_seconds * index / max(1, 50) - time.monotonic()))
+    await asyncio.sleep(max(0.0, start_at + ramp_seconds * index / max(1, total_users) - time.monotonic()))
     client = httpx.AsyncClient(base_url=base_url, timeout=20, follow_redirects=False)
     started = time.monotonic()
     try:
@@ -413,6 +414,19 @@ async def collect_terminal_events(client: httpx.AsyncClient, turn_id: str, *, ti
         await asyncio.sleep(0.1)
 
 
+def validate_workload_size(profile, args, base_url):
+    size = int(profile.get("user_count", 0)), int(profile.get("turn_count", 0))
+    comparison = getattr(args, "isolated_three_class_comparison", False)
+    if size == (50, 30) and not comparison:
+        return
+    target = urlsplit(base_url)
+    if (size == (120, 30) and comparison and profile.get("classroom_count") == 3
+            and getattr(args, "run_kind", "regression") == "regression"
+            and target.scheme == "http" and target.hostname == "127.0.0.1"):
+        return
+    raise LoadTestError("release profile requires 50 users/30 Turns; three-class comparison requires explicit isolated loopback mode")
+
+
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     base_url = validate_base_url(args.base_url)
     output = validate_output_path(args.output)
@@ -435,8 +449,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "profile requests scenarios not implemented by this runner: "
             + ", ".join(missing)
         )
-    if int(profile.get("user_count", 0)) != 50 or int(profile.get("turn_count", 0)) != 30:
-        raise LoadTestError("the release load profile must use 50 users and 30 Turns")
+    validate_workload_size(profile, args, base_url)
     users = _profile_users(profile)
     if len(users) < int(profile.get("turn_count", 0)):
         raise LoadTestError("turn_count cannot exceed the number of provisioned users")
@@ -458,7 +471,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         login_started_at = datetime.now(timezone.utc).isoformat()
         ramp = float(profile.get("login_ramp_seconds", 10))
         user_results = await asyncio.gather(*(
-            _login_user(base_url, origin, user, index, ramp, login_started)
+            _login_user(base_url, origin, user, index, ramp, login_started, len(users))
             for index, user in enumerate(users)
         ))
         phases["auth_burst"] = {
@@ -625,7 +638,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "target": {"origin": origin, "deployment_environment": health.get("deployment_environment"), "baseline_product_commit": health.get("baseline_product_commit")},
             "machine": {"platform": platform.platform(), "processor": platform.processor(), "python": sys.version.split()[0]},
             "source": {"git_commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=False).stdout.strip()},
-            "deployment_profile": {key: profile.get(key) for key in ("worker_replicas", "worker_concurrency", "database_pool_size", "database_max_overflow", "database_sync_pool_size", "database_sync_max_overflow", "worker_database_pool_size", "worker_database_max_overflow", "worker_async_engine_count", "worker_sync_pool_size", "worker_sync_max_overflow", "database_pool_timeout_seconds", "expected_fake_model_delay_seconds")},
+            "deployment_profile": {key: profile.get(key) for key in ("user_count", "classroom_count", "turn_count", "worker_replicas", "worker_concurrency", "database_pool_size", "database_max_overflow", "database_sync_pool_size", "database_sync_max_overflow", "worker_database_pool_size", "worker_database_max_overflow", "worker_async_engine_count", "worker_sync_pool_size", "worker_sync_max_overflow", "database_pool_timeout_seconds", "expected_fake_model_delay_seconds")},
             "scenario_coverage": requested_scenarios,
             "fake_provider": {"calls_before": fake_before.get("calls_total"), "calls_after": fake_after.get("calls_total"), "configured_delay_seconds": profile.get("expected_fake_model_delay_seconds")},
             "phases": phases,
@@ -649,6 +662,7 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--run-kind", choices=("baseline", "regression"), default="regression")
     parser.add_argument("--baseline-ref", help="exact old-version commit, required for baseline runs")
+    parser.add_argument("--isolated-three-class-comparison", action="store_true", help="bounded 120-user comparison on disposable loopback services only")
     args = parser.parse_args()
     try:
         report = asyncio.run(run(args))
