@@ -21,6 +21,10 @@ WORKER_POOLS = {"NLP_AGENT_DB_POOL_SIZE": "2", "NLP_AGENT_DB_MAX_OVERFLOW": "1",
                 "NLP_AGENT_DB_POOL_TIMEOUT_S": "5"}
 
 
+def student_username(index):
+    return f"t07student{index:02d}"
+
+
 def measured_profile(profile, web_env, worker_env, *, replicas, concurrency):
     """Describe the exact env supplied to the isolated child processes."""
     result = dict(profile, worker_replicas=replicas, worker_concurrency=concurrency,
@@ -76,7 +80,7 @@ async def seed_classroom(environment):
             classroom = await rbac_service.create_classroom(session, workspace_id=teacher.workspace_id, name="T07 50-student load classroom", actor_user_id=teacher.user_id)
             service = UserService(session)
             for index in range(1, 51):
-                user = await service.create_user(UserCreate(username=f"t07-student-{index:02d}", display_name=f"T07 student {index}", password=TEST_PASSWORD), initial_role_code="student")
+                user = await service.create_user(UserCreate(username=student_username(index), display_name=f"T07 student {index}", password=TEST_PASSWORD), initial_role_code="student")
                 session.add(ClassroomMemberModel(classroom_id=classroom.id, user_id=user.id, member_role="student", status="active"))
             await session.flush()
             assert len((await session.scalars(select(ClassroomMemberModel).where(ClassroomMemberModel.classroom_id == classroom.id, ClassroomMemberModel.member_role == "student"))).all()) == 50

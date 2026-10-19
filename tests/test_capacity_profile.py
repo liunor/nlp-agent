@@ -2,9 +2,23 @@
 import pytest
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
 from configs.settings import Settings
 from tests.load.run_isolated import WEB_POOLS, WORKER_POOLS, measured_profile
+
+
+def test_all_fifty_fixture_names_match_profile_and_real_user_schema():
+    from server.user.schemas import UserCreate
+    from tests.load.run_isolated import student_username
+    profile = json.loads((Path(__file__).parent / "load/profiles/t07-50-users.json").read_text())
+    names = []
+    for index in range(1, 51):
+        name = student_username(index)
+        assert profile["username_format"].format(index=index) == name
+        assert UserCreate(username=name, display_name="Fixture", password="isolated-password-123").username == name
+        names.append(name)
+    assert len(set(names)) == 50
 
 
 @pytest.mark.parametrize("replicas,concurrency", [(1, 1), (1, 2), (2, 2), (2, 4)])
