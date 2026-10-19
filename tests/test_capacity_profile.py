@@ -3,6 +3,10 @@ import pytest
 import json
 from types import SimpleNamespace
 from pathlib import Path
+from copy import deepcopy
+import os
+import subprocess
+import sys
 
 from configs.settings import Settings
 from tests.load.run_isolated import WEB_POOLS, WORKER_POOLS, measured_profile
@@ -19,6 +23,48 @@ def test_all_fifty_fixture_names_match_profile_and_real_user_schema():
         assert UserCreate(username=name, display_name="Fixture", password="isolated-password-123").username == name
         names.append(name)
     assert len(set(names)) == 50
+
+
+def test_fake_model_configuration_validates_actual_catalog_without_native_search():
+    # A fresh process avoids replacing the suite's process-global Settings/model
+    # runtime. Creating SQLAlchemy pools here is lazy and opens no DB connection.
+    code = '''
+from tests.load.model_configuration import configure_models
+from configs.settings import settings
+configure_models()
+assert all(v['adapter'] == 'openai_compatible' for v in settings._config['providers'].values())
+assert all(not v['native_search']['enabled'] for v in settings._config['model_presets'].values())
+print('FAKE_CATALOG_VALIDATED')
+'''
+    result = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).parents[1],
+                            env={**os.environ,
+                                 "NLP_AGENT_DATABASE_URL": "mysql+aiomysql://fixture:fixture@127.0.0.1:1/nlp_agent_api_http_only",
+                                 "NLP_AGENT_DEPLOYMENT_ENV": "test",
+                                 "T07_FAKE_PROVIDER_CONTROL_URL": "http://127.0.0.1:18767"},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert 'FAKE_CATALOG_VALIDATED' in result.stdout
+
+
+@pytest.mark.parametrize("variable,value", [
+    ("NLP_AGENT_DEPLOYMENT_ENV", "production"),
+    ("NLP_AGENT_DATABASE_URL", "mysql+aiomysql://u:p@mysql/nlp_agent_api_http_only"),
+    ("NLP_AGENT_DATABASE_URL", "mysql+aiomysql://u:p@127.0.0.1/nlp_agent"),
+    ("T07_FAKE_PROVIDER_CONTROL_URL", "http://provider.example"),
+    ("T07_FAKE_PROVIDER_CONTROL_URL", "http://u:p@127.0.0.1:8767"),
+    ("T07_FAKE_PROVIDER_CONTROL_URL", "http://127.0.0.1:8767/unapproved"),
+])
+def test_fake_configuration_rejects_foreign_targets_before_editing_settings(monkeypatch, variable, value):
+    from configs.settings import settings
+    from tests.load.model_configuration import configure_models
+    before = deepcopy(settings._config)
+    monkeypatch.setenv("NLP_AGENT_DATABASE_URL", "mysql+aiomysql://u:p@127.0.0.1/nlp_agent_api_http_only")
+    monkeypatch.setenv("NLP_AGENT_DEPLOYMENT_ENV", "test")
+    monkeypatch.setenv("T07_FAKE_PROVIDER_CONTROL_URL", "http://127.0.0.1:8767")
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(RuntimeError, match="disposable loopback"):
+        configure_models()
+    assert settings._config == before
 
 
 @pytest.mark.parametrize("replicas,concurrency", [(1, 1), (1, 2), (2, 2), (2, 4)])

@@ -133,6 +133,9 @@ def main():
             self.capacity_workers.append(process)
 
     environment = None
+    # Capture redacted startup diagnostics even if start() raises before returning.
+    os.environ["API_HTTP_ARTIFACT_DIR"] = str(output.parent / (output.stem + "-logs"))
+    os.environ["API_HTTP_PRINT_DIAGNOSTICS"] = "1"
     try:
         environment = LoadEnvironment.start()
         for _index in range(1, args.replicas):
