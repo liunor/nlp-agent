@@ -155,6 +155,9 @@ class DatabaseSessionAuth:
             item.rstrip("/").lower() for item in (allowed_origins or []) if item
         }
         self._hasher = PasswordHasherSingleton.get()
+        # Password hashing uses substantial CPU/memory. Keep those jobs outside
+        # DB transactions and bound them independently of database connections.
+        self._password_verifications = asyncio.Semaphore(2)
         self._username_rate_limiter = _RateLimiter(max_login_attempts, rate_window_s)
         self._client_rate_limiter = _RateLimiter(
             max_ip_login_attempts,
@@ -258,6 +261,26 @@ class DatabaseSessionAuth:
         except (VerifyMismatchError, VerificationError, ValueError, TypeError):
             return False
 
+    async def _verify_login_password(self, password_hash: str, password: str) -> bool:
+        await self._password_verifications.acquire()
+        try:
+            task = asyncio.create_task(asyncio.to_thread(
+                self._verify_password, password_hash, password, self._hasher
+            ))
+        except BaseException:
+            self._password_verifications.release()
+            raise
+
+        def finished(result: asyncio.Task[bool]) -> None:
+            # Cancelling an HTTP request cannot cancel a running hash thread.
+            # Hold its slot until the actual job finishes, including on errors.
+            self._password_verifications.release()
+            if not result.cancelled():
+                result.exception()
+
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
     async def login(
         self,
         factory: async_sessionmaker[AsyncSession],
@@ -273,24 +296,37 @@ class DatabaseSessionAuth:
         if retry_after_s:
             raise LoginRateLimitError(retry_after_s)
 
-        async with factory.begin() as session:
-            # Login accepts usernames, normalized email, and canonical phone
-            # identity; manually provisioned accounts keep username login.
-            identity_criteria = (
-                (UserModel.username_lower == normalized)
-                | (UserModel.email_normalized == normalized)
+        # Login accepts usernames, normalized email, and canonical phone
+        # identity; manually provisioned accounts keep username login.
+        identity_criteria = (
+            (UserModel.username_lower == normalized)
+            | (UserModel.email_normalized == normalized)
+        )
+        try:
+            phone_identity = normalize_phone_number(username)
+        except ValueError:
+            phone_identity = None
+        if phone_identity is not None:
+            identity_criteria = identity_criteria | (
+                UserModel.phone_number_normalized == phone_identity
             )
-            try:
-                phone_identity = normalize_phone_number(username)
-            except ValueError:
-                phone_identity = None
-            if phone_identity is not None:
-                identity_criteria = identity_criteria | (
-                    UserModel.phone_number_normalized == phone_identity
-                )
+        async with factory.begin() as session:
+            candidate = await session.scalar(
+                select(UserModel).where(identity_criteria, UserModel.deleted_at.is_(None))
+            )
+            snapshot = ((candidate.id, candidate.password_hash)
+                        if candidate is not None and candidate.status == "active" else None)
+
+        # No DB connection or row lock is held while hashing or waiting for CPU.
+        if snapshot is None or not await self._verify_login_password(snapshot[1], password):
+            await self._rate_failure(normalized, client_key)
+            raise AuthenticationError("invalid credentials")
+
+        async with factory.begin() as session:
             user = await session.scalar(
                 select(UserModel)
                 .where(
+                    UserModel.id == snapshot[0],
                     identity_criteria,
                     UserModel.deleted_at.is_(None),
                 )
@@ -299,9 +335,7 @@ class DatabaseSessionAuth:
             valid = (
                 user is not None
                 and user.status == "active"
-                and await asyncio.to_thread(
-                    self._verify_password, user.password_hash, password, self._hasher
-                )
+                and hmac.compare_digest(user.password_hash, snapshot[1])
             )
             if not valid:
                 await self._rate_failure(normalized, client_key)
