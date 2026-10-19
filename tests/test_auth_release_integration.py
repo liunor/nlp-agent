@@ -83,6 +83,11 @@ def test_proxy_plan_uses_exact_peer_gateway_and_immutable_files(release, planned
     assert overlay["networks"]["default"] == {"name": "nova-test_default", "external": True}
     assert "never-copy-this" not in json.dumps(metadata)
     assert all(item["read_only"] for item in overlay["services"]["nginx"]["volumes"])
+    config = planned.configs["nginx.conf"].decode()
+    assert "rate=120r/s;" in config and "zone=api_limit burst=240 nodelay;" in config
+    assert "zone=classroom_server_limit burst=240 nodelay;" in config
+    assert "limit_req_status 429;" in config
+    assert "limit_conn conn_limit 100;" in config
 
 
 def second_worker(first):
@@ -177,10 +182,40 @@ def test_production_plan_keeps_original_fixed_worker_behavior(release, planned, 
         networks = container["NetworkSettings"]["Networks"]
         networks["nova-prod_default"] = networks.pop("nova-test_default")
         container["Mounts"][0]["Name"] = "nova-prod_nova-data"
-    overlay, metadata, _ = release.plan(*args)
+    overlay, metadata, configs = release.plan(*args)
     assert metadata["schema"] == 1 and "worker_ids" not in metadata
     assert metadata["fixed_ips"]["nova-worker"] == "172.18.0.3"
     assert overlay["services"]["nova-worker"] == {"networks": {"default": {"ipv4_address": "172.18.0.3"}}}
+    assert configs["nginx.conf"].decode() == release.proxy_config(args[6])
+    assert "classroom_server_limit" not in configs["nginx.conf"].decode()
+
+
+def test_classroom_edge_transformation_is_idempotent_and_preserves_proxy_rules(release):
+    original = (ROOT / "nginx/nginx.conf").read_text(encoding="utf-8")
+    patched = release.classroom_proxy_config(original, "nova-test")
+    assert release.classroom_proxy_config(patched, "nova-test") == patched
+    assert release.classroom_proxy_config(original, "nova-prod") == original
+    for line in original.splitlines():
+        if any(key in line for key in ("real_ip", "proxy_set_header", "proxy_pass", "limit_conn")):
+            assert line in patched
+
+
+@pytest.mark.parametrize("change", ["rate", "burst", "header", "duplicate", "partial"])
+def test_unknown_or_partial_classroom_edge_configuration_stops(release, change):
+    original = (ROOT / "nginx/nginx.conf").read_text(encoding="utf-8")
+    value = release.classroom_proxy_config(original, "nova-test") if change in {"header", "partial"} else original
+    if change == "rate":
+        value = value.replace("rate=30r/s", "rate=999r/s")
+    elif change == "burst":
+        value = value.replace("burst=60", "burst=999")
+    elif change == "header":
+        value = value.replace("add_header Retry-After $nova_edge_retry_after always;", "")
+    elif change == "duplicate":
+        value += "\nlimit_req zone=api_limit burst=60 nodelay;"
+    else:
+        value = value.replace("limit_req_status 429;", "limit_req_status 503;")
+    with pytest.raises(ValueError, match="CLASSROOM_EDGE"):
+        release.classroom_proxy_config(value, "nova-test")
 
 
 def test_legacy_prepared_release_identity_remains_readable(release, planned):

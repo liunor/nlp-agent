@@ -147,6 +147,39 @@ def proxy_config(source):
         "proxy_set_header X-Forwarded-Proto $nova_forwarded_proto;")
 
 
+def classroom_proxy_config(source, project):
+    """Test-only NAT burst allowance, still bounded per IP and per server."""
+    if project != "nova-test":
+        return source
+    marker = "# nova-test classroom edge policy v1"
+    old_zone = "    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/s;"
+    old_limit = "limit_req zone=api_limit burst=60 nodelay;"
+    new_zone = "    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=120r/s;"
+    new_limit = "limit_req zone=api_limit burst=240 nodelay;"
+    global_zone = "    limit_req_zone $server_name zone=classroom_server_limit:10m rate=120r/s;"
+    global_limit = "limit_req zone=classroom_server_limit burst=240 nodelay;"
+    header = '        add_header Retry-After $nova_edge_retry_after always;'
+    if marker in source:
+        require(source.count(marker) == 1 and source.count(new_zone) == 1
+                and source.count(global_zone) == 1 and source.count(new_limit) == 2
+                and source.count(global_limit) == 2 and source.count(header) == 1
+                and source.count("limit_req_status 429;") == 1
+                and old_limit not in source and old_zone not in source,
+                "PARTIAL_CLASSROOM_EDGE_POLICY_REQUIRES_REVIEW")
+        return source
+    anchor = '        add_header Referrer-Policy "strict-origin-when-cross-origin" always;'
+    require(source.count(old_zone) == 1 and source.count(old_limit) == 2
+            and source.count(anchor) == 1 and "classroom_server_limit" not in source
+            and "nova_edge_retry_after" not in source and "limit_req_status" not in source,
+            "UNRECOGNIZED_CLASSROOM_EDGE_BASELINE")
+    policy = "\n".join(["    " + marker, new_zone, global_zone,
+                          "    limit_req_status 429;",
+                          "    map $limit_req_status $nova_edge_retry_after {",
+                          '        default "";', '        REJECTED "1";', "    }"])
+    return source.replace(old_zone, policy).replace(
+        old_limit, new_limit + "\n            " + global_limit).replace(anchor, anchor + "\n" + header)
+
+
 def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, extra_containers=None,
          worker_instances=None):
     require(project in PROJECTS, "PROJECT_OUT_OF_SCOPE")
@@ -185,7 +218,7 @@ def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, ext
         require(raw.isdigit() and 1 <= int(raw) <= 86400, "LOGIN_LIMIT_REQUIRES_REVIEW")
         limits[key] = raw
     limits["FORWARDED_ALLOW_IPS"] = "127.0.0.1,::1," + str(address)
-    config = proxy_config(nginx)
+    config = classroom_proxy_config(proxy_config(nginx), project)
     require("set_real_ip_from" not in config, "INLINE_PROXY_TRUST_REQUIRES_REVIEW")
     configs = {"nginx.conf": config.encode(),
                "trusted-edge-http.conf": f"set_real_ip_from 127.0.0.1;\nset_real_ip_from ::1;\nset_real_ip_from {gateway};\n".encode(),

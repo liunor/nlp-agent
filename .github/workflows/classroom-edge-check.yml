@@ -1,0 +1,39 @@
+name: Classroom Edge Regression
+
+on:
+  push:
+    branches: [fix/test-classroom-edge-burst-20261019]
+  pull_request:
+    branches: [develop]
+    paths:
+      - .github/scripts/prepare-auth-release.py
+      - scripts/rehearse_classroom_edge.py
+      - .github/workflows/classroom-edge-check.yml
+      - tests/test_auth_release_integration.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actual-nginx:
+    name: Shared-IP classroom burst and bounded global rate limit
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch official fixture runtimes
+        run: |
+          docker pull nginx:1.27-alpine
+          docker pull python:3.12-alpine
+      - name: Reproduce old 503 and verify classroom requests plus flood rejection
+        run: python3 scripts/rehearse_classroom_edge.py --report artifacts/classroom-edge.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: classroom-edge-regression
+          path: artifacts/classroom-edge.json
+          if-no-files-found: warn
