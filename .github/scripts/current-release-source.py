@@ -35,8 +35,15 @@ def main() -> None:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--attach-source-branch", action="store_true")
     args = parser.parse_args()
     current = current_source(args.branch, args.revision)
+    if current and args.attach_source_branch:
+        # checkout by SHA is detached; metadata-action's git context needs a
+        # branch ref. Attach only the already validated main/develop revision.
+        git("checkout", "-B", args.branch, args.revision)
+        if git("symbolic-ref", "HEAD") != f"refs/heads/{args.branch}" or git("rev-parse", "HEAD") != args.revision:
+            raise ValueError("RELEASE_SOURCE_BRANCH_ATTACHMENT_MISMATCH")
     value = "true" if current else "false"
     if not current:
         print("Queued source no longer matches the branch head; skipping release.", file=sys.stderr)

@@ -1,0 +1,75 @@
+name: Release Metadata Regression
+
+on:
+  push:
+    branches: [fix/test-release-detached-head-20261019]
+  pull_request:
+    branches: [develop]
+    paths:
+      - .github/scripts/current-release-source.py
+      - .github/workflows/publish-test-image.yml
+      - .github/workflows/release-metadata-check.yml
+      - tests/test_release_source_guard.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Actual metadata action on shallow detached ${{ matrix.branch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        branch: [develop, main]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: .guard
+      - name: Reproduce detached checkout and attach the validated fixture branch
+        id: source
+        env:
+          SOURCE_BRANCH: ${{ matrix.branch }}
+        run: |
+          set -euo pipefail
+          origin="$RUNNER_TEMP/metadata-origin.git"
+          seed="$RUNNER_TEMP/metadata-seed"
+          git init --bare "$origin"
+          git init --initial-branch "$SOURCE_BRANCH" "$seed"
+          git -C "$seed" config user.name Fixture
+          git -C "$seed" config user.email fixture@example.invalid
+          printf 'fixture\n' > "$seed/metadata-fixture.txt"
+          git -C "$seed" add metadata-fixture.txt
+          git -C "$seed" commit -m 'isolated metadata fixture'
+          git -C "$seed" remote add origin "$origin"
+          git -C "$seed" push origin "$SOURCE_BRANCH"
+          git init
+          git remote add origin "$origin"
+          git fetch --depth=1 origin "$SOURCE_BRANCH"
+          git checkout --detach FETCH_HEAD
+          revision="$(git rev-parse HEAD)"
+          test "$(git rev-parse --is-shallow-repository)" = true
+          test -z "$(git branch --show-current)"
+          python3 .guard/.github/scripts/current-release-source.py --branch "$SOURCE_BRANCH" \
+            --revision "$revision" --attach-source-branch --github-output "$GITHUB_OUTPUT"
+          test "$(git symbolic-ref HEAD)" = "refs/heads/$SOURCE_BRANCH"
+          test "$(git rev-parse HEAD)" = "$revision"
+      - uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          context: git
+          images: example.invalid/isolated-metadata-probe
+          tags: type=sha,prefix=probe-
+      - name: Verify actual metadata preserves the validated revision
+        env:
+          EXPECTED_SHA: ${{ steps.source.outputs.revision }}
+          METADATA_JSON: ${{ steps.metadata.outputs.json }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          value = json.loads(os.environ['METADATA_JSON'])
+          expected = os.environ['EXPECTED_SHA']
+          assert value['labels']['org.opencontainers.image.revision'] == expected
+          assert any(tag.endswith(':probe-'+expected[:7]) for tag in value['tags'])
+          print('Actual metadata action passed; no registry login, image publication or live deployment.')
+          PY

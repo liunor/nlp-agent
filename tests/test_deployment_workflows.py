@@ -28,9 +28,11 @@ def test_test_publish_queues_fallbacks_without_cancelling_live_deployments() -> 
     for step in steps[source+1:]:
         assert step["if"] == "steps.source.outputs.current == 'true'"
     assert "current-release-source.py" in steps[source]["run"]
+    assert "--attach-source-branch" in steps[source]["run"]
     assert "publish.outputs.current_source == 'true'" in workflow["jobs"]["deploy"]["if"]
     deploy = next(step for step in workflow["jobs"]["deploy"]["steps"] if "AUTH_DEPLOY_SOURCE_DIR" in step.get("env", {}))
     assert deploy["run"].index("current-release-source.py") < deploy["run"].index('if [ -z "$DEPLOY_DIR" ]')
+    assert "--attach-source-branch" not in deploy["run"]
     assert "NLP_AGENT_DEPLOYMENT_ENV=\\\"test\\\"" in deploy["run"]
     assert "NLP_AGENT_DEPLOYMENT_ENV" not in (ROOT / ".github/workflows/release-prod.yml").read_text(encoding="utf-8")
 

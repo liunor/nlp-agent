@@ -86,3 +86,41 @@ def test_actual_git_guard_skips_an_obsolete_checkout_and_does_not_move_it(tmp_pa
     assert result.stdout.strip() == "false"
     assert "current=false" in output.read_text(encoding="utf-8")
     assert run("rev-parse", "HEAD") == first
+
+
+@pytest.mark.parametrize("branch", ["develop", "main"])
+def test_shallow_detached_checkout_is_attached_only_after_current_source_check(tmp_path, branch):
+    remote, seed, checkout = tmp_path / "origin.git", tmp_path / "seed", tmp_path / "checkout"
+    seed.mkdir()
+
+    def run(*args, cwd=seed):
+        return subprocess.run(["git", "-c", "safe.directory="+cwd.as_posix(), "-c", "user.name=Fixture",
+                               "-c", "user.email=fixture@example.invalid", *args], cwd=cwd,
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    run("init", "--bare", str(remote))
+    run("init", "-b", branch)
+    (seed / "fixture.txt").write_text("first", encoding="utf-8")
+    run("add", "fixture.txt")
+    run("commit", "-m", "fixture")
+    first = run("rev-parse", "HEAD")
+    run("remote", "add", "origin", str(remote))
+    run("push", "origin", branch)
+    run("clone", "--depth", "1", "--branch", branch, remote.as_uri(), str(checkout))
+    run("checkout", "--detach", first, cwd=checkout)
+    assert run("rev-parse", "--is-shallow-repository", cwd=checkout) == "true"
+    assert run("branch", "--show-current", cwd=checkout) == ""
+    command = [sys.executable, str(ROOT / ".github/scripts/current-release-source.py"), "--branch", branch,
+               "--revision", first, "--attach-source-branch"]
+    assert subprocess.run(command, cwd=checkout, check=True, capture_output=True, text=True).stdout.strip() == "true"
+    assert run("symbolic-ref", "HEAD", cwd=checkout) == "refs/heads/"+branch
+    assert run("rev-parse", "HEAD", cwd=checkout) == first
+    # Once origin advances, the same request must leave the old checkout detached.
+    (seed / "fixture.txt").write_text("second", encoding="utf-8")
+    run("add", "fixture.txt")
+    run("commit", "-m", "new fixture")
+    run("push", "origin", branch)
+    run("checkout", "--detach", first, cwd=checkout)
+    assert subprocess.run(command, cwd=checkout, check=True, capture_output=True, text=True).stdout.strip() == "false"
+    assert run("branch", "--show-current", cwd=checkout) == ""
+    assert run("rev-parse", "HEAD", cwd=checkout) == first
