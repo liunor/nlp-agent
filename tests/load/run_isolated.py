@@ -180,6 +180,15 @@ def main():
             after = verify_worker_topology(environment, args.replicas, args.concurrency)
             report = json.loads(output.read_text(encoding="utf-8"))
             report["isolated_worker_topology"] = {"before": topology, "after": after}
+            diagnostic_lines = [line.split("T07_SUBMISSION_DIAGNOSTICS ", 1)[1]
+                                for line in (environment.log_dir / "web.log").read_text(encoding="utf-8").splitlines()
+                                if "T07_SUBMISSION_DIAGNOSTICS " in line]
+            if not diagnostic_lines:
+                raise RuntimeError("ISOLATED_SUBMISSION_DIAGNOSTICS_MISSING")
+            report["submission_diagnostics"] = {
+                "scope": "Gateway submission spans only; includes four Provider-fault submissions; nested timings overlap.",
+                "stages": json.loads(diagnostic_lines[-1]),
+            }
             report["scope_limit"] = "Disposable MySQL/Redis and fake model on the CI host; not VPS/provider capacity acceptance."
             output.write_text(json.dumps(report, indent=2), encoding="utf-8")
         return result.returncode

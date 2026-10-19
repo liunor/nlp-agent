@@ -70,11 +70,14 @@ jobs:
                       'concurrency_per_replica': report['deployment_profile']['worker_concurrency']}
           assert topology['before'] == topology['after'] == expected
           turns = report['phases']['turn_burst']
+          stages = report['submission_diagnostics']['stages']
+          assert stages['gateway_submit_total']['count'] >= 34
+          assert stages['repository_create_turn']['count'] >= 34
           assert turns['completed'] == 30 and turns['terminal_failures'] == 0
           assert turns['duplicate_terminal_events'] == turns['missing_terminal_events'] == turns['sequence_gaps'] == 0
           print(json.dumps({'measurement_complete': True, 'workload_result': report['result'],
                             'failures': report['failures'], 'profile': report['deployment_profile'],
-                            'turns': turns}, indent=2))
+                            'turns': turns, 'submission_diagnostics': report['submission_diagnostics']}, indent=2))
           if report['failures']:
               print('::warning::Measurement complete, workload SLO failed; this configuration is not accepted.')
           PY

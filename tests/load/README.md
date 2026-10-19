@@ -92,3 +92,13 @@ to switch modes and verifies the switch response. Each case must receive 202,
 reach `failed` with the matching `upstream_*` error kind, have exactly one terminal
 event, and preserve the browser session. A missing terminal event or a timeout
 fails the run even when `/auth/session` remains 200.
+
+Current-source isolated comparisons also record bounded Gateway submission
+timings, including conversation resolution/touch, repository admission and SQL
+named-lock/row-lock waits. This observer is imported only by the disposable
+regression Web entrypoint and independently refuses non-loopback/business DBs
+or baseline mode. It does not bypass or change transactions, quotas or locks.
+Only fixed stage names and numeric aggregates are logged; payloads, SQL text,
+parameters, identities and exception messages are not recorded. At most 4096
+durations per stage are kept. The final report includes the four Provider-fault
+submissions; nested stage times overlap and must not be added together.
