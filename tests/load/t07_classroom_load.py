@@ -260,6 +260,7 @@ async def _login_user(
             "session_ms": round(session_ms, 3),
             "conversation_status": 201,
             "conversation_ms": round((time.monotonic() - create_started) * 1000, 3),
+            "last_http_completed_at": time.monotonic(),
             "client": client,
         }
     except Exception:
@@ -274,8 +275,20 @@ async def _open_websocket(user: dict[str, Any], *, base_url: str, origin: str) -
     started = time.monotonic()
     stage, websocket, handed_off = "ticket_request", None, False
     metrics = {"username": user["username"]}
+    ticket_trace = []
+
+    async def observe_ticket(event, details):
+        # Fixed httpcore event names only; never retain URLs, headers or details.
+        if event in {"connection.connect_tcp.started", "connection.connect_tcp.complete",
+                     "connection.start_tls.started", "connection.start_tls.complete",
+                     "http11.send_request_headers.started", "http11.send_request_headers.complete",
+                     "http11.receive_response_headers.started", "http11.receive_response_headers.complete",
+                     "http11.receive_response_headers.failed"} and len(ticket_trace) < 20:
+            ticket_trace.append(event)
+
     try:
-        ticket = await client.post("/api/v1/auth/ws-ticket", headers={"Origin": origin, "X-CSRF-Token": user["csrf"]})
+        ticket = await client.post("/api/v1/auth/ws-ticket", headers={"Origin": origin, "X-CSRF-Token": user["csrf"]},
+                                   extensions={"trace": observe_ticket})
         stage = "ticket_response"
         if ticket.status_code != 200:
             metrics.update(status=ticket.status_code, stage=stage, code=_problem_code(ticket))
@@ -303,6 +316,10 @@ async def _open_websocket(user: dict[str, Any], *, base_url: str, origin: str) -
         # A ticket HTTP transport failure is not an upgraded WebSocket failure.
         # Keep the failure, classify its stage, and do not retry or log secrets.
         metrics.update(status="error", stage=stage, error=type(error).__name__)
+        if stage == "ticket_request":
+            metrics.update(ticket_trace=ticket_trace,
+                           ticket_connection_reused=bool(ticket_trace) and "connection.connect_tcp.started" not in ticket_trace,
+                           idle_before_ticket_ms=round((started - user.get("last_http_completed_at", started)) * 1000, 3))
         return None, metrics
     finally:
         if websocket is not None and not handed_off:

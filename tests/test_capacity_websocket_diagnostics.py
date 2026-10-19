@@ -1,5 +1,6 @@
 """Do not hide ticket transport failures or leak connections before ready."""
 import asyncio
+import time
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -42,3 +43,24 @@ def test_setup_reports_actual_stage_and_closes_only_failed_owned_socket(monkeypa
             assert "private-" not in str(metrics)
     assert client.post.await_count == 1  # No automatic retry conceals the failure.
     assert socket.close.await_count == int(phase in {"ready", "cancel"})
+
+
+def test_ticket_trace_retains_no_http_headers_or_exception_details(monkeypatch):
+    client = AsyncMock()
+    async def fail_ticket(*args, **kwargs):
+        observe = kwargs["extensions"]["trace"]
+        await observe("http11.receive_response_headers.failed", {"exception": "private-server-message"})
+        await observe("private-event", {"Cookie": "private-cookie"})
+        raise httpx.RemoteProtocolError("private-exception")
+    client.post.side_effect = fail_ticket
+    upgrade = AsyncMock()
+    monkeypatch.setattr(load, "connect", upgrade)
+    result, metrics = asyncio.run(load._open_websocket(
+        {"username": "fixture", "client": client, "csrf": "private-csrf",
+         "last_http_completed_at": time.monotonic() - 5.1},
+        base_url="http://127.0.0.1:1", origin="http://127.0.0.1:1"))
+    assert result is None and metrics["stage"] == "ticket_request"
+    assert metrics["ticket_trace"] == ["http11.receive_response_headers.failed"]
+    assert metrics["ticket_connection_reused"] and metrics["idle_before_ticket_ms"] >= 5100
+    assert "private-" not in str(metrics)
+    upgrade.assert_not_awaited()
