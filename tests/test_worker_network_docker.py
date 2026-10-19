@@ -77,6 +77,13 @@ def test_compose_worker_replica_update_and_rollback(tmp_path):
     try:
         network = inspect("network", net_name)
         subnet = ipaddress.ip_network(network["IPAM"]["Config"][0]["Subnet"])
+        # Let Docker choose an unused pool, then explicitly declare that same
+        # subnet. Automatic-pool networks reject user-specified static IPs.
+        assert network["Labels"].get(OWNER) == nonce and not network["Containers"]
+        gateway = network["IPAM"]["Config"][0]["Gateway"]
+        run(["docker", "network", "rm", net_name])
+        run(["docker", "network", "create", "--internal", "--subnet", str(subnet),
+             "--gateway", gateway, "--label", f"{OWNER}={nonce}", net_name])
         addresses = {name: str(subnet.network_address + index) for index, name in enumerate(
             ("nova-web", "nova-monitor", "nova-sandbox-manager", "nginx", "mysql", "redis", "nova-worker"), start=4)}
 
