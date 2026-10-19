@@ -2,7 +2,9 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -40,12 +42,17 @@ def planned(release, tmp_path, monkeypatch):
                 "Config": {"Labels": {"com.docker.compose.project": project},
                            "Env": ["NLP_AGENT_AUTH_RATE_WINDOW_S=900", "DEEPSEEK_API_KEY=never-copy-this"]},
                 "Mounts": [{"Destination": "/app/.data", "Name": project + "_nova-data", "RW": True}],
+                "HostConfig": {"PortBindings": {}},
                 "NetworkSettings": {"Networks": {net_name: {"IPAddress": address, "Gateway": "172.18.0.1"}}}}
     web, edge = container("web-before", "172.18.0.4"), container("nginx-before", "172.18.0.8")
     net = {"IPAM": {"Config": [{"Subnet": "172.18.0.0/16", "Gateway": "172.18.0.1"}]}}
     image = "ghcr.io/example/nlp-agent@sha256:" + "a" * 64
     nginx = (ROOT / "nginx/nginx.conf").read_text(encoding="utf-8")
-    args = [project, tmp_path, image, web, edge, net, nginx, host]
+    worker = container("worker-before", "172.18.0.3")
+    worker["Config"]["Labels"].update({"com.docker.compose.service": "nova-worker",
+                                       "com.docker.compose.container-number": "1"})
+    args = [project, tmp_path, image, web, edge, net, nginx, host,
+            {"nova-worker": worker}, [worker]]
     overlay, metadata, configs = release.plan(*args)
     return SimpleNamespace(args=args, overlay=overlay, metadata=metadata, configs=configs)
 
@@ -76,6 +83,169 @@ def test_proxy_plan_uses_exact_peer_gateway_and_immutable_files(release, planned
     assert overlay["networks"]["default"] == {"name": "nova-test_default", "external": True}
     assert "never-copy-this" not in json.dumps(metadata)
     assert all(item["read_only"] for item in overlay["services"]["nginx"]["volumes"])
+
+
+def second_worker(first):
+    second = copy.deepcopy(first)
+    second["Id"] = "worker-two"
+    second["Config"]["Labels"]["com.docker.compose.container-number"] = "2"
+    second["NetworkSettings"]["Networks"]["nova-test_default"]["IPAddress"] = "172.18.0.9"
+    return second
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_test_release_preserves_worker_count_without_pinning_replica_ip(release, planned, count):
+    args = copy.deepcopy(planned.args)
+    if count == 2:
+        args[9].append(second_worker(args[9][0]))
+    overlay, metadata, _ = release.plan(*args)
+    assert "nova-worker" not in metadata["fixed_ips"]
+    assert overlay["services"]["nova-worker"] == {
+        "networks": {"default": {}}, "deploy": {"replicas": count}}
+    assert len(metadata["worker_ids"]) == count
+    assert overlay["services"]["nginx"]["networks"]["default"]["ipv4_address"] == "172.18.0.8"
+    assert metadata["limits"]["FORWARDED_ALLOW_IPS"] == "127.0.0.1,::1,172.18.0.8"
+
+
+@pytest.mark.parametrize("change", ["stopped", "foreign", "network", "port", "duplicate_ip",
+                                   "duplicate_number", "missing_first", "too_many"])
+def test_ambiguous_worker_state_stops_plan_before_any_mutation(release, planned, change):
+    args = copy.deepcopy(planned.args)
+    first = args[9][0]
+    if change == "stopped":
+        first["State"]["Running"] = False
+    elif change == "foreign":
+        first["Config"]["Labels"]["com.docker.compose.project"] = "nova-prod"
+    elif change == "network":
+        first["NetworkSettings"]["Networks"]["extra"] = {}
+    elif change == "port":
+        first["HostConfig"]["PortBindings"] = {"8765/tcp": [{"HostPort": "12345"}]}
+    elif change == "missing_first":
+        first["Config"]["Labels"]["com.docker.compose.container-number"] = "2"
+    else:
+        second = second_worker(first)
+        args[9].append(second)
+        if change == "duplicate_ip":
+            second["NetworkSettings"]["Networks"]["nova-test_default"]["IPAddress"] = "172.18.0.4"
+        elif change == "duplicate_number":
+            second["Config"]["Labels"]["com.docker.compose.container-number"] = "1"
+        elif change == "too_many":
+            args[9].append(copy.deepcopy(second))
+    with pytest.raises(ValueError, match="WORKER_|OTHER_PROJECT_SERVICE"):
+        release.plan(*args)
+    assert not (planned.args[1] / "auth-releases").exists()
+
+
+@pytest.mark.parametrize("change", ["ip", "replicas", "container_name", "port", "network"])
+def test_resolved_compose_rejects_worker_scaling_regressions(release, planned, change):
+    config, frontend = resolved(planned)
+    worker = config["services"]["nova-worker"]
+    if change == "ip":
+        worker["networks"]["default"] = {"ipv4_address": "172.18.0.3"}
+    elif change == "replicas":
+        worker["deploy"]["replicas"] = 2
+    elif change == "container_name":
+        worker["container_name"] = "shared-worker"
+    elif change == "port":
+        worker["ports"] = [{"published": "8765"}]
+    else:
+        worker["networks"]["extra"] = {}
+    with pytest.raises(ValueError, match="WORKER_SCALING_CONFIGURATION"):
+        release.check_compose(config, planned.metadata, frontend)
+
+
+def test_production_plan_keeps_original_fixed_worker_behavior(release, planned, monkeypatch):
+    args = copy.deepcopy(planned.args)
+    args[0] = "nova-prod"
+    args[7] = b"proxy_pass http://127.0.0.1:8765;"
+    monkeypatch.setattr(release, "HOST_SHA", release.sha(args[7]))
+    for container in (args[3], args[4], args[8]["nova-worker"]):
+        container["Config"]["Labels"]["com.docker.compose.project"] = "nova-prod"
+        networks = container["NetworkSettings"]["Networks"]
+        networks["nova-prod_default"] = networks.pop("nova-test_default")
+        container["Mounts"][0]["Name"] = "nova-prod_nova-data"
+    overlay, metadata, _ = release.plan(*args)
+    assert metadata["schema"] == 1 and "worker_ids" not in metadata
+    assert metadata["fixed_ips"]["nova-worker"] == "172.18.0.3"
+    assert overlay["services"]["nova-worker"] == {"networks": {"default": {"ipv4_address": "172.18.0.3"}}}
+
+
+def test_legacy_prepared_release_identity_remains_readable(release, planned):
+    metadata = copy.deepcopy(planned.metadata)
+    metadata.pop("worker_ids")
+    metadata.pop("worker_subnet")
+    metadata["schema"] = 1
+    metadata["fixed_ips"]["nova-worker"] = "172.18.0.3"
+    old_identity = release.sha(json.dumps({
+        "project": metadata["project"], "image": metadata["image"], "limits": metadata["limits"],
+        "web_id": metadata["web_id"], "nginx_id": metadata["nginx_id"],
+        "fixed_ips": metadata["fixed_ips"], "files": metadata["config_hashes"]}, sort_keys=True).encode())
+    assert release.release_identity(metadata) == old_identity
+    parent = planned.args[1] / "auth-releases" / old_identity
+    metadata["release_dir"] = str(parent)
+    parent.mkdir(parents=True)
+    for name, data in planned.configs.items():
+        (parent / name).write_bytes(data)
+    (parent / "prepared.json").write_text(json.dumps(metadata))
+    path = parent / "compose.auth.json"
+    path.write_text("{}")
+    args = SimpleNamespace(override=str(path), deploy_dir=planned.args[1],
+                           project="nova-test", image=planned.args[2])
+    assert release.read_prepared(args)[1] == metadata
+
+
+@pytest.mark.parametrize("changed", ["recreated", "stopped"])
+def test_frontend_staging_stops_if_workers_changed_since_prepare(release, planned, monkeypatch, changed):
+    instances = copy.deepcopy(planned.args[9])
+    if changed == "recreated":
+        instances[0]["Id"] = "different-worker"
+    else:
+        instances[0]["State"]["Running"] = False
+    monkeypatch.setattr(release, "read_prepared", lambda _: (Path(planned.metadata["release_dir"]), planned.metadata))
+    monkeypatch.setattr(release, "inspect", lambda name: planned.args[3] if "nova-web" in name else planned.args[4])
+    monkeypatch.setattr(release, "workers", lambda _: instances)
+    commands = []
+    monkeypatch.setattr(release, "run", commands.append)
+    with pytest.raises(ValueError, match="WORKER_"):
+        release.stage(SimpleNamespace(project="nova-test"))
+    assert commands == []
+
+
+def test_worker_discovery_includes_stopped_replicas_and_exact_project(release, monkeypatch):
+    calls = []
+    def execute(command):
+        calls.append(command)
+        return b"one\ntwo\n"
+    monkeypatch.setattr(release, "run", execute)
+    monkeypatch.setattr(release, "inspect", lambda identifier: {"Id": identifier})
+    assert release.workers("nova-test") == [{"Id": "one"}, {"Id": "two"}]
+    assert calls[0][0:4] == ["docker", "ps", "-aq", "--no-trunc"]
+    assert "label=com.docker.compose.project=nova-test" in calls[0]
+    assert "label=com.docker.compose.service=nova-worker" in calls[0]
+
+
+@pytest.mark.skipif(os.environ.get("GITHUB_ACTIONS") != "true"
+                    or os.environ.get("RUN_WORKER_NETWORK_DOCKER") != "1",
+                    reason="real Compose rendering is part of the hosted networking probe")
+def test_real_compose_render_preserves_dynamic_workers_and_existing_release_guards(release, planned, tmp_path):
+    overlay = tmp_path / "overlay.json"
+    _, frontend = resolved(planned)
+    source = copy.deepcopy(planned.overlay)
+    source["services"]["nova-web"]["environment"]["NLP_AGENT_WEB_STATIC_DIR"] = frontend["static_dir"]
+    overlay.write_text(json.dumps(source))
+    env_file = tmp_path / "dummy.env"
+    env_file.write_text("NLP_AGENT_SANDBOX_NAMESPACE=test\nNLP_AGENT_MYSQL_PASSWORD=isolated-unused\n"
+                        "NLP_AGENT_MYSQL_ROOT_PASSWORD=isolated-unused\nNOVA_MONITOR_HOST_PORT=18766\n")
+    env = {**os.environ, "NOVA_ENV_FILE": str(env_file), "NOVA_IMAGE_REF": planned.metadata["image"],
+           "NOVA_WEB_BIND_ADDRESS": "127.0.0.1", "NOVA_WEB_HOST_PORT": "18765"}
+    result = subprocess.run(["docker", "compose", "--profile", "monitor", "-p", "nova-test",
+                             "--env-file", str(env_file), "-f", str(ROOT / "compose.yaml"),
+                             "-f", str(overlay), "config", "--format", "json"],
+                            env=env, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    config = json.loads(result.stdout)
+    release.check_compose(config, planned.metadata, frontend)
+    assert config["services"]["nova-worker"]["deploy"]["replicas"] == 1
 
 
 def test_release_files_survive_actions_checkout_cleanup(release, planned, monkeypatch):

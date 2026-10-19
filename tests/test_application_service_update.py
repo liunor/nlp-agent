@@ -68,11 +68,47 @@ def test_production_trigger_preflight_is_read_only(updater):
 def test_bootstrap_is_completed_before_application_recreation(updater):
     values, commands = services(), []
     updater.update(["compose"], "nova-test", execute=commands.append, read=values.__getitem__, prepare=lambda *_: None)
-    assert len(commands) == 2 and commands[0][-1] == "nova-migrate"
-    assert commands[1][-5:] == list(updater.APPLICATIONS)
+    assert len(commands) == 3 and commands[0][-1] == "nova-migrate"
+    assert commands[1][-4:] == [name for name in updater.APPLICATIONS if name != "nova-worker"]
+    assert commands[2][-1] == "nova-worker"
     assert all("--no-deps" in command for command in commands)
     assert all("--remove-orphans" not in command and "--renew-anon-volumes" not in command for command in commands)
     assert all("mysql" not in command and "redis" not in command for command in commands)
+
+
+def test_fixed_service_failure_never_recreates_workers(updater):
+    values, commands = services(), []
+    def execute(command):
+        commands.append(command)
+        if "nova-web" in command:
+            raise ValueError("injected_fixed_service_failure")
+    with pytest.raises(ValueError, match="injected_fixed_service_failure"):
+        updater.update(["compose"], "nova-test", execute=execute, read=values.__getitem__, prepare=lambda *_: None)
+    assert len(commands) == 2 and all("nova-worker" not in command for command in commands)
+
+
+def test_database_change_after_fixed_service_update_stops_workers(updater):
+    values, commands = services(), []
+    def execute(command):
+        commands.append(command)
+        if "nova-web" in command:
+            values["nova-test-mysql-1"]["Id"] = "changed"
+    with pytest.raises(ValueError, match="DATABASE_SERVICE_CHANGED_DURING_APPLICATION_UPDATE"):
+        updater.update(["compose"], "nova-test", execute=execute, read=values.__getitem__, prepare=lambda *_: None)
+    assert len(commands) == 2 and all("nova-worker" not in command for command in commands)
+
+
+def test_production_application_update_order_is_preserved(updater):
+    original = services()
+    values = {}
+    for name, value in original.items():
+        value["Config"]["Labels"]["com.docker.compose.project"] = "nova-prod"
+        for mount in value["Mounts"]:
+            mount["Name"] = mount["Name"].replace("nova-test_", "nova-prod_")
+        values[name.replace("nova-test-", "nova-prod-")] = value
+    commands = []
+    updater.update(["compose"], "nova-prod", execute=commands.append, read=values.__getitem__, prepare=lambda *_: None)
+    assert len(commands) == 2 and commands[1][-5:] == list(updater.APPLICATIONS)
 
 
 def test_failed_migration_keeps_existing_applications_running(updater):

@@ -1,0 +1,47 @@
+name: Isolated Worker network update and rollback
+
+on:
+  push:
+    branches: [fix/test-worker-network-20261019]
+  pull_request:
+    branches: [develop]
+    paths:
+      - .github/scripts/prepare-auth-release.py
+      - .github/scripts/update-application-services.py
+      - .github/workflows/worker-network-probe.yml
+      - tests/test_worker_network_docker.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-network-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUN_WORKER_NETWORK_DOCKER: '1'
+      NLP_AGENT_DATABASE_URL: mysql+aiomysql://isolated:unused@127.0.0.1:1/nlp_agent_api_http_guard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: uv sync --frozen --group dev
+      - name: Verify exact release guards and real Compose update/recovery
+        run: >-
+          uv run pytest tests/test_auth_release_integration.py
+          tests/test_application_service_update.py tests/test_worker_network_docker.py
+          -q -s --junitxml=worker-network-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worker-network-results-${{ github.run_id }}
+          path: worker-network-results.xml
+          retention-days: 7

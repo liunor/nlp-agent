@@ -55,7 +55,8 @@ def prepare_trigger_migrations(project, execute=run):
 
 
 def update(compose, project, *, execute=run, read=inspect, sleep=time.sleep, clock=time.monotonic,
-           allowed_projects=("nova-test", "nova-prod"), prepare=prepare_trigger_migrations):
+           allowed_projects=("nova-test", "nova-prod"), prepare=prepare_trigger_migrations,
+           worker_last=None):
     require(project in allowed_projects, "PROJECT_OUT_OF_SCOPE")
     original = protected(project, read)
     prepare(project, execute)
@@ -73,8 +74,16 @@ def update(compose, project, *, execute=run, read=inspect, sleep=time.sleep, clo
         require(clock() < deadline, "MIGRATION_TIMEOUT_APPLICATIONS_UNCHANGED")
         sleep(1)
     require(protected(project, read) == original, "DATABASE_SERVICE_CHANGED_DURING_BOOTSTRAP")
-    execute([*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", *APPLICATIONS])
-    require(protected(project, read) == original, "DATABASE_SERVICE_CHANGED_DURING_APPLICATION_UPDATE")
+    if worker_last is None:
+        worker_last = project == "nova-test"
+    groups = [APPLICATIONS]
+    if worker_last:
+        # Reserve all fixed application IPs before automatic Worker allocation.
+        # Otherwise a new replica can take an address just freed by recreation.
+        groups = [tuple(name for name in APPLICATIONS if name != "nova-worker"), ("nova-worker",)]
+    for group in groups:
+        execute([*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", *group])
+        require(protected(project, read) == original, "DATABASE_SERVICE_CHANGED_DURING_APPLICATION_UPDATE")
     return {"status": "APPLICATION_SERVICES_RECREATED_DATABASES_PRESERVED", "project": project,
             "migration_exit_code": 0, "mysql_recreated": False, "redis_recreated": False,
             "business_volumes_removed": False}

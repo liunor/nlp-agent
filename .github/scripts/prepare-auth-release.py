@@ -39,6 +39,54 @@ def inspect(name):
     return json.loads(run(["docker", "inspect", name]))[0]
 
 
+def workers(project):
+    identifiers = run(["docker", "ps", "-aq", "--no-trunc", "--filter",
+                       "label=com.docker.compose.project=" + project, "--filter",
+                       "label=com.docker.compose.service=nova-worker"]).decode().split()
+    require(1 <= len(identifiers) <= 2, "WORKER_REPLICA_COUNT_REQUIRES_REVIEW")
+    return [inspect(identifier) for identifier in identifiers]
+
+
+def worker_snapshot(project, instances, subnet, occupied):
+    """Audit all test replicas, including stopped containers; never silently scale down."""
+    require(project == "nova-test" and 1 <= len(instances) <= 2,
+            "WORKER_REPLICA_COUNT_REQUIRES_REVIEW")
+    identifiers, numbers, addresses = set(), set(), set(occupied)
+    for instance in instances:
+        labels = instance["Config"]["Labels"]
+        number = labels.get("com.docker.compose.container-number")
+        require(instance["State"]["Running"]
+                and labels.get("com.docker.compose.project") == project
+                and labels.get("com.docker.compose.service") == "nova-worker"
+                and labels.get("com.docker.compose.oneoff", "False").lower() == "false"
+                and number in ("1", "2") and number not in numbers
+                and instance["Id"] not in identifiers
+                and set(instance["NetworkSettings"]["Networks"]) == {project + "_default"}
+                and not instance["HostConfig"].get("PortBindings"),
+                "WORKER_INSTANCE_REQUIRES_REVIEW")
+        address = instance["NetworkSettings"]["Networks"][project + "_default"]["IPAddress"]
+        require(ipaddress.ip_address(address) in subnet and address not in addresses,
+                "WORKER_IP_REQUIRES_REVIEW")
+        identifiers.add(instance["Id"])
+        numbers.add(number)
+        addresses.add(address)
+    require(numbers == {str(index) for index in range(1, len(instances) + 1)},
+            "WORKER_INSTANCE_REQUIRES_REVIEW")
+    return sorted(identifiers)
+
+
+def release_identity(metadata):
+    identity = {"project": metadata["project"], "image": metadata["image"],
+                "limits": metadata["limits"], "web_id": metadata["web_id"],
+                "nginx_id": metadata["nginx_id"], "fixed_ips": metadata["fixed_ips"],
+                "files": metadata["config_hashes"]}
+    # Legacy prepared releases retain their exact identity and remain readable.
+    if "worker_ids" in metadata:
+        identity["worker_ids"] = metadata["worker_ids"]
+        identity["worker_subnet"] = metadata["worker_subnet"]
+    return sha(json.dumps(identity, sort_keys=True).encode())
+
+
 def sha(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -100,7 +148,8 @@ def proxy_config(source):
         "proxy_set_header X-Forwarded-Proto $nova_forwarded_proto;")
 
 
-def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, extra_containers=None):
+def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, extra_containers=None,
+         worker_instances=None):
     require(project in PROJECTS, "PROJECT_OUT_OF_SCOPE")
     require(re.fullmatch(r"ghcr\.io/[A-Za-z0-9_./-]+@sha256:[0-9a-f]{64}", image), "IMMUTABLE_IMAGE_REQUIRED")
     workspace = os.environ.get("GITHUB_WORKSPACE", "").strip()
@@ -145,6 +194,7 @@ def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, ext
     fixed_ips = {"nginx": str(address), "nova-web": web["NetworkSettings"]["Networks"][network_name]["IPAddress"]}
     require(ipaddress.ip_address(fixed_ips["nova-web"]) in ipaddress.ip_network(ipv4[0]["Subnet"])
             and fixed_ips["nova-web"] not in (str(address), str(gateway)), "WEB_IP_REQUIRES_REVIEW")
+    seen_addresses = {str(address), str(gateway), fixed_ips["nova-web"]}
     for service, container in (extra_containers or {}).items():
         require(service in ("nova-worker", "nova-monitor", "nova-sandbox-manager", "mysql", "redis")
                 and container["State"]["Running"]
@@ -153,14 +203,26 @@ def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, ext
                 "OTHER_PROJECT_SERVICE_REQUIRES_REVIEW")
         fixed = container["NetworkSettings"]["Networks"][network_name]["IPAddress"]
         require(ipaddress.ip_address(fixed) in ipaddress.ip_network(ipv4[0]["Subnet"])
-                and fixed not in (*fixed_ips.values(), str(gateway)), "SERVICE_IP_REQUIRES_REVIEW")
-        fixed_ips[service] = fixed
-    identity = sha(json.dumps({"project": project, "image": image, "limits": limits,
-                               "web_id": web["Id"], "nginx_id": edge["Id"],
-                               "fixed_ips": fixed_ips,
-                               "files": {key: sha(value) for key, value in configs.items()}},
-                              sort_keys=True).encode())
-    release = deploy_dir / "auth-releases" / identity
+                and fixed not in seen_addresses, "SERVICE_IP_REQUIRES_REVIEW")
+        seen_addresses.add(fixed)
+        if not (project == "nova-test" and service == "nova-worker"):
+            fixed_ips[service] = fixed
+    metadata = {"schema": 1, "project": project, "image": image, "volume": mounts[0]["Name"],
+                "web_id": web["Id"], "nginx_id": edge["Id"],
+                "nginx_ip": str(address), "gateway": str(gateway), "limits": limits,
+                "fixed_ips": fixed_ips,
+                "config_hashes": {key: sha(value) for key, value in configs.items()}}
+    if project == "nova-test":
+        metadata["schema"] = 2
+        metadata["worker_subnet"] = ipv4[0]["Subnet"]
+        metadata["worker_ids"] = worker_snapshot(
+            project, worker_instances or [], ipaddress.ip_network(ipv4[0]["Subnet"]),
+            [*fixed_ips.values(), str(gateway)])
+        require(extra_containers and extra_containers.get("nova-worker", {}).get("Id")
+                == next(instance["Id"] for instance in worker_instances
+                        if instance["Config"]["Labels"]["com.docker.compose.container-number"] == "1"),
+                "WORKER_SNAPSHOT_CHANGED_DURING_PREPARATION")
+    release = deploy_dir / "auth-releases" / release_identity(metadata)
     guard(release)
     override = {"services": {
         "nginx": {"volumes": [{"type": "bind", "source": str(release / name),
@@ -170,11 +232,10 @@ def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, ext
         "networks": {"default": {"name": network_name, "external": True}}}
     for service, fixed in fixed_ips.items():
         override["services"].setdefault(service, {})["networks"] = {"default": {"ipv4_address": fixed}}
-    metadata = {"schema": 1, "project": project, "image": image, "volume": mounts[0]["Name"],
-                "web_id": web["Id"], "nginx_id": edge["Id"], "release_dir": str(release),
-                "nginx_ip": str(address), "gateway": str(gateway), "limits": limits,
-                "fixed_ips": fixed_ips,
-                "config_hashes": {key: sha(value) for key, value in configs.items()}}
+    if "worker_ids" in metadata:
+        override["services"]["nova-worker"] = {
+            "networks": {"default": {}}, "deploy": {"replicas": len(metadata["worker_ids"])}}
+    metadata["release_dir"] = str(release)
     return override, metadata, configs
 
 
@@ -187,7 +248,8 @@ def prepare(args):
     extra = {service: inspect(project + "-" + service + "-1") for service in
              ("nova-worker", "nova-monitor", "nova-sandbox-manager", "mysql", "redis")}
     override, metadata, configs = plan(project, deploy_dir, image, web, edge,
-                                      inspect(project + "_default"), nginx, HOST_CONFIG.read_bytes(), extra)
+                                      inspect(project + "_default"), nginx, HOST_CONFIG.read_bytes(), extra,
+                                      workers(project) if project == "nova-test" else None)
     release = Path(metadata["release_dir"])
     if args.mode == "preview":
         print(json.dumps({"status": "READ_ONLY_AUTH_RELEASE_PREVIEW", **metadata,
@@ -220,12 +282,7 @@ def read_prepared(args):
     require(metadata["volume"] == args.project + "_nova-data"
             and set(metadata["config_hashes"]) == {"nginx.conf", "trusted-edge-http.conf", "trusted-edge-addresses.conf"},
             "PREPARED_RESOURCE_SCOPE_CHANGED")
-    identity = sha(json.dumps({"project": metadata["project"], "image": metadata["image"],
-                               "limits": metadata["limits"], "web_id": metadata["web_id"],
-                               "nginx_id": metadata["nginx_id"], "fixed_ips": metadata["fixed_ips"],
-                               "files": metadata["config_hashes"]},
-                              sort_keys=True).encode())
-    require(path.parent.name == identity, "PREPARED_METADATA_CHANGED")
+    require(path.parent.name == release_identity(metadata), "PREPARED_METADATA_CHANGED")
     for name, checksum in metadata["config_hashes"].items():
         require(sha((path.parent / name).read_bytes()) == checksum, "PREPARED_PROXY_FILE_CHANGED")
     return path, metadata
@@ -236,6 +293,12 @@ def stage(args):
     web = inspect(args.project + "-nova-web-1")
     require(web["Id"] == metadata["web_id"] and inspect(args.project + "-nginx-1")["Id"] == metadata["nginx_id"],
             "LIVE_CONTAINERS_CHANGED_DURING_PREPARATION")
+    if "worker_ids" in metadata:
+        current = worker_snapshot(args.project, workers(args.project),
+                                  ipaddress.ip_network(metadata["worker_subnet"]),
+                                  [*metadata["fixed_ips"].values(), metadata["gateway"]])
+        require(current == metadata["worker_ids"],
+                "WORKER_INSTANCES_CHANGED_DURING_PREPARATION")
     raw = run(["docker", "exec", args.project + "-nova-web-1", ".venv/bin/python", "-c",
                "import json; from configs.settings import Settings; print(json.dumps(Settings().web_runtime['static_dir']))"])
     previous = Path(json.loads(raw))
@@ -284,6 +347,14 @@ def check_compose(config, metadata, frontend):
     for service, address in metadata["fixed_ips"].items():
         require(services[service]["networks"]["default"]["ipv4_address"] == address,
                 "RESOLVED_SERVICE_IP_MISMATCH")
+    if "worker_ids" in metadata:
+        worker = services["nova-worker"]
+        require(metadata["project"] == "nova-test" and 1 <= len(metadata["worker_ids"]) <= 2
+                and set(worker.get("networks", {})) == {"default"}
+                and not worker["networks"]["default"]
+                and worker.get("deploy", {}).get("replicas") == len(metadata["worker_ids"])
+                and not worker.get("container_name") and not worker.get("ports"),
+                "RESOLVED_WORKER_SCALING_CONFIGURATION_MISMATCH")
     network = config["networks"]["default"]
     require(network["name"] == metadata["project"] + "_default" and network.get("external") is True,
             "RESOLVED_NETWORK_RECREATE_REFUSED")
@@ -324,6 +395,15 @@ def verify(args):
     web, edge = inspect(args.project + "-nova-web-1"), inspect(args.project + "-nginx-1")
     require(web["State"]["Running"] and edge["State"]["Running"], "DEPLOYED_SERVICES_NOT_RUNNING")
     require(web["Image"] == inspect(args.image)["Id"], "DEPLOYED_IMAGE_MISMATCH")
+    if "worker_ids" in metadata:
+        deployed_workers = workers(args.project)
+        worker_snapshot(args.project, deployed_workers, ipaddress.ip_network(metadata["worker_subnet"]),
+                        [*metadata["fixed_ips"].values(), metadata["gateway"]])
+        require(len(deployed_workers) == len(metadata["worker_ids"])
+                and all(item["State"]["Running"] and item["Image"] == web["Image"]
+                        and set(item["NetworkSettings"]["Networks"]) == {args.project + "_default"}
+                        and not item["HostConfig"].get("PortBindings") for item in deployed_workers),
+                "DEPLOYED_WORKER_REPLICAS_MISMATCH")
     env = dict(item.split("=", 1) for item in web["Config"]["Env"])
     require(all(env.get(key) == value for key, value in metadata["limits"].items())
             and env.get("NLP_AGENT_WEB_STATIC_DIR") == frontend["static_dir"], "DEPLOYED_AUTH_SETTINGS_MISMATCH")
