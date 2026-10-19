@@ -120,7 +120,9 @@ def test_compose_worker_replica_update_and_rollback(tmp_path):
             return release.workers(project)
 
         def app_ids():
-            return {name: read(project + "-" + name + "-1")["Id"] for name in updater.APPLICATIONS}
+            return {**{name: read(project + "-" + name + "-1")["Id"] for name in updater.APPLICATIONS
+                       if name != "nova-worker"},
+                    "nova-worker": sorted(item["Id"] for item in worker_instances())}
 
         def assert_fixed():
             for service, address in addresses.items():
@@ -174,7 +176,9 @@ def test_compose_worker_replica_update_and_rollback(tmp_path):
         restored = worker_instances()
         assert len(restored) == 1 and restored[0]["State"]["Running"]
         assert restored[0]["NetworkSettings"]["Networks"][net_name]["IPAddress"] == addresses["nova-worker"]
-        assert all("PROBE_REVISION=original" in read(project + "-" + name + "-1")["Config"]["Env"] for name in updater.APPLICATIONS)
+        assert all("PROBE_REVISION=original" in read(project + "-" + name + "-1")["Config"]["Env"]
+                   for name in updater.APPLICATIONS if name != "nova-worker")
+        assert "PROBE_REVISION=original" in restored[0]["Config"]["Env"]
         assert_fixed()
         assert updater.protected(project, read) == infrastructure
         assert run(["docker", "exec", project + "-mysql-1", "cat", "/probe-data/sentinel"]) == b"preserved"

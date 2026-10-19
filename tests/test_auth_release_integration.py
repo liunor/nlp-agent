@@ -108,7 +108,7 @@ def test_test_release_preserves_worker_count_without_pinning_replica_ip(release,
 
 
 @pytest.mark.parametrize("change", ["stopped", "foreign", "network", "port", "duplicate_ip",
-                                   "duplicate_number", "missing_first", "too_many"])
+                                   "duplicate_number", "invalid_number", "too_many"])
 def test_ambiguous_worker_state_stops_plan_before_any_mutation(release, planned, change):
     args = copy.deepcopy(planned.args)
     first = args[9][0]
@@ -120,8 +120,8 @@ def test_ambiguous_worker_state_stops_plan_before_any_mutation(release, planned,
         first["NetworkSettings"]["Networks"]["extra"] = {}
     elif change == "port":
         first["HostConfig"]["PortBindings"] = {"8765/tcp": [{"HostPort": "12345"}]}
-    elif change == "missing_first":
-        first["Config"]["Labels"]["com.docker.compose.container-number"] = "2"
+    elif change == "invalid_number":
+        first["Config"]["Labels"]["com.docker.compose.container-number"] = "0"
     else:
         second = second_worker(first)
         args[9].append(second)
@@ -134,6 +134,19 @@ def test_ambiguous_worker_state_stops_plan_before_any_mutation(release, planned,
     with pytest.raises(ValueError, match="WORKER_|OTHER_PROJECT_SERVICE"):
         release.plan(*args)
     assert not (planned.args[1] / "auth-releases").exists()
+
+
+@pytest.mark.parametrize("numbers", [("2",), ("2", "3")])
+def test_scaled_workers_need_not_include_container_number_one(release, planned, numbers):
+    args = copy.deepcopy(planned.args)
+    first = args[9][0]
+    if len(numbers) == 2:
+        args[9].append(second_worker(first))
+    for instance, number in zip(args[9], numbers, strict=True):
+        instance["Config"]["Labels"]["com.docker.compose.container-number"] = number
+    overlay, metadata, _ = release.plan(*args)
+    assert len(metadata["worker_ids"]) == len(numbers)
+    assert overlay["services"]["nova-worker"]["deploy"]["replicas"] == len(numbers)
 
 
 @pytest.mark.parametrize("change", ["ip", "replicas", "container_name", "port", "network"])

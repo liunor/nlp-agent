@@ -59,7 +59,8 @@ def worker_snapshot(project, instances, subnet, occupied):
                 and labels.get("com.docker.compose.project") == project
                 and labels.get("com.docker.compose.service") == "nova-worker"
                 and labels.get("com.docker.compose.oneoff", "False").lower() == "false"
-                and number in ("1", "2") and number not in numbers
+                and isinstance(number, str) and number.isascii() and number.isdigit()
+                and 1 <= int(number) <= 2147483647 and number not in numbers
                 and instance["Id"] not in identifiers
                 and set(instance["NetworkSettings"]["Networks"]) == {project + "_default"}
                 and not instance["HostConfig"].get("PortBindings"),
@@ -70,8 +71,6 @@ def worker_snapshot(project, instances, subnet, occupied):
         identifiers.add(instance["Id"])
         numbers.add(number)
         addresses.add(address)
-    require(numbers == {str(index) for index in range(1, len(instances) + 1)},
-            "WORKER_INSTANCE_REQUIRES_REVIEW")
     return sorted(identifiers)
 
 
@@ -218,9 +217,7 @@ def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, ext
         metadata["worker_ids"] = worker_snapshot(
             project, worker_instances or [], ipaddress.ip_network(ipv4[0]["Subnet"]),
             [*fixed_ips.values(), str(gateway)])
-        require(extra_containers and extra_containers.get("nova-worker", {}).get("Id")
-                == next(instance["Id"] for instance in worker_instances
-                        if instance["Config"]["Labels"]["com.docker.compose.container-number"] == "1"),
+        require(extra_containers and extra_containers.get("nova-worker", {}).get("Id") in metadata["worker_ids"],
                 "WORKER_SNAPSHOT_CHANGED_DURING_PREPARATION")
     release = deploy_dir / "auth-releases" / release_identity(metadata)
     guard(release)
@@ -245,11 +242,13 @@ def prepare(args):
     require(deploy_dir.is_dir(), "DEPLOY_DIRECTORY_MISSING")
     web, edge = inspect(project + "-nova-web-1"), inspect(project + "-nginx-1")
     nginx = run(["docker", "exec", project + "-nginx-1", "cat", "/etc/nginx/nginx.conf"]).decode()
+    worker_instances = workers(project) if project == "nova-test" else None
     extra = {service: inspect(project + "-" + service + "-1") for service in
-             ("nova-worker", "nova-monitor", "nova-sandbox-manager", "mysql", "redis")}
+             ("nova-monitor", "nova-sandbox-manager", "mysql", "redis")}
+    extra["nova-worker"] = worker_instances[0] if worker_instances else inspect(project + "-nova-worker-1")
     override, metadata, configs = plan(project, deploy_dir, image, web, edge,
                                       inspect(project + "_default"), nginx, HOST_CONFIG.read_bytes(), extra,
-                                      workers(project) if project == "nova-test" else None)
+                                      worker_instances)
     release = Path(metadata["release_dir"])
     if args.mode == "preview":
         print(json.dumps({"status": "READ_ONLY_AUTH_RELEASE_PREVIEW", **metadata,

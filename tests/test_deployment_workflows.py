@@ -17,6 +17,15 @@ WORKFLOW_PATHS = (
 RETRY_HELPER_PATH = ROOT / ".github" / "scripts" / "run-with-transient-registry-retry.sh"
 
 
+def test_test_worker_proxy_preflight_uses_all_running_ids_not_container_number_one() -> None:
+    workflow = (ROOT / ".github/workflows/publish-test-image.yml").read_text(encoding="utf-8")
+    assert "ps --status running -q nova-worker" in workflow
+    assert "for worker_id in $worker_ids; do" in workflow
+    assert 'if ! docker exec "$worker_id" .venv/bin/python -c' in workflow
+    assert 'if [ -z "$worker_ids" ]; then' in workflow
+    assert "exec -T nova-worker" not in workflow
+
+
 def test_deployment_workflows_update_and_check_worker() -> None:
     for workflow_path in WORKFLOW_PATHS:
         workflow = workflow_path.read_text(encoding="utf-8")

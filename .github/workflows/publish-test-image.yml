@@ -293,7 +293,13 @@ jobs:
             exit 1
           fi
           echo "Proxy connectivity preflight"
-          if ! docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" exec -T nova-worker .venv/bin/python -c '
+          worker_ids="$(docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" ps --status running -q nova-worker)" || exit 1
+          if [ -z "$worker_ids" ]; then
+            echo "::error::No running Worker container found for proxy preflight."
+            exit 1
+          fi
+          for worker_id in $worker_ids; do
+          if ! docker exec "$worker_id" .venv/bin/python -c '
           import os
           import socket
           import sys
@@ -322,6 +328,7 @@ jobs:
             echo "::error::Outbound proxy preflight failed. Ensure the proxy listens on the Docker-reachable host.docker.internal address, not only 127.0.0.1."
             exit 1
           fi
+          done
           for attempt in {1..12}; do
             if docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" exec -T nova-web .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready')" \
               && docker compose --profile monitor -p "$COMPOSE_PROJECT_NAME" --env-file "$DEPLOY_ENV_FILE" -f compose.yaml -f "$AUTH_PROXY_OVERRIDE" exec -T nova-monitor .venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health/ready')" \
