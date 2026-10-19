@@ -368,8 +368,6 @@ class DatabaseSessionAuth:
         if not token:
             raise AuthenticationError("authentication cookie is missing")
         digest = self.token_hash(token)
-        failure: AuthenticationError | None = None
-        claims: DatabaseSessionClaims | None = None
         async with factory.begin() as session:
             # Load the row even when it is already expired or revoked so the
             # client receives the stable reason (session expiry versus an
@@ -379,49 +377,57 @@ class DatabaseSessionAuth:
                 .options(joinedload(SessionModel.user))
                 .where(SessionModel.token_hash == digest)
             )
-            if row is None:
-                raise AuthenticationError("authentication cookie is invalid")
-            now = _utc_now()
-            if row.expires_at <= now:
-                failure = AuthenticationError("authentication cookie has expired")
-            elif row.revoked_at is not None:
-                if row.authorization_version != row.user.authorization_version:
-                    failure = AuthorizationChangedError("authorization changed")
-                else:
-                    failure = AuthenticationError("authentication cookie is invalid")
-            elif row.last_seen_at is not None and (
-                now - row.last_seen_at
-            ).total_seconds() > self.idle_timeout_s:
-                row.revoked_at = now
-                failure = AuthenticationError("authentication cookie has expired")
-            elif (
-                row.authorization_version != row.user.authorization_version
-            ):
-                row.revoked_at = now
-                failure = AuthorizationChangedError("authorization changed")
-            elif row.user.status != "active" or row.user.deleted_at is not None:
-                row.revoked_at = now
-                failure = AuthenticationError("authentication cookie has expired")
-            elif touch:
-                row.last_seen_at = now
-                # Limit sliding TTL: extend the absolute expiry up to a maximum of the original
-                # session TTL (8 hours), not indefinitely. This prevents sessions from lasting forever
-                # by sliding beyond the initial intended session lifetime.
-                max_absolute_expiry = row.issued_at + timedelta(seconds=self.ttl_s)
-                row.expires_at = min(now + timedelta(seconds=self.ttl_s), max_absolute_expiry)
-            if failure is not None:
-                await sandbox_lifecycle_service.release_auth_session_in_transaction(
-                    session,
-                    user_id=row.user_id,
-                    auth_session_id=row.id,
-                    reason="auth.session.expired",
-                )
-            if failure is None:
-                claims = self._claims(row)
+            claims, failure = await self._validate_session_row(
+                session, row, touch=touch, credential="cookie"
+            )
         if failure is not None:
             raise failure
         assert claims is not None
         return claims
+
+    async def _validate_session_row(
+        self, session: AsyncSession, row: SessionModel | None, *, touch: bool, credential: str
+    ) -> tuple[DatabaseSessionClaims | None, AuthenticationError | None]:
+        """Apply the same expiry policy; callers commit cleanup before raising."""
+        if row is None:
+            message = "authentication cookie is invalid" if credential == "cookie" else "authentication session is expired"
+            return None, AuthenticationError(message)
+        failure: AuthenticationError | None = None
+        now = _utc_now()
+        prefix = f"authentication {credential}"
+        if row.expires_at <= now:
+            failure = AuthenticationError(f"{prefix} has expired")
+        elif row.revoked_at is not None:
+            if row.authorization_version != row.user.authorization_version:
+                failure = AuthorizationChangedError("authorization changed")
+            else:
+                failure = AuthenticationError(f"{prefix} is invalid" if credential == "cookie" else f"{prefix} is revoked")
+        elif row.last_seen_at is not None and (
+            now - row.last_seen_at
+        ).total_seconds() > self.idle_timeout_s:
+            row.revoked_at = now
+            failure = AuthenticationError(f"{prefix} has expired")
+        elif row.authorization_version != row.user.authorization_version:
+            row.revoked_at = now
+            failure = AuthorizationChangedError("authorization changed")
+        elif row.user.status != "active" or row.user.deleted_at is not None:
+            row.revoked_at = now
+            failure = AuthenticationError(f"{prefix} has expired")
+        elif touch:
+            row.last_seen_at = now
+            if credential == "cookie":
+                # Preserve the HTTP sliding cap; WebSocket activity never extends expiry.
+                max_absolute_expiry = row.issued_at + timedelta(seconds=self.ttl_s)
+                row.expires_at = min(now + timedelta(seconds=self.ttl_s), max_absolute_expiry)
+        if failure is not None:
+            await sandbox_lifecycle_service.release_auth_session_in_transaction(
+                session,
+                user_id=row.user_id,
+                auth_session_id=row.id,
+                reason="auth.session.expired",
+            )
+            return None, failure
+        return self._claims(row), None
 
     async def _active_row(
         self, session: AsyncSession, token_hash: str
@@ -621,22 +627,13 @@ class DatabaseSessionAuth:
                 .options(joinedload(SessionModel.user))
                 .where(SessionModel.id == session_id)
             )
-            now = _utc_now()
-            if row is None:
-                raise AuthenticationError("authentication session is expired")
-            if row.expires_at <= now:
-                raise AuthenticationError("authentication session is expired")
-            if row.revoked_at is not None:
-                if row.authorization_version != row.user.authorization_version:
-                    raise AuthorizationChangedError("authorization changed")
-                raise AuthenticationError("authentication session is revoked")
-            if row.user.status != "active" or row.user.deleted_at is not None:
-                raise AuthenticationError("authentication session is expired")
-            if row.authorization_version != row.user.authorization_version:
-                raise AuthorizationChangedError("authorization changed")
-            if touch:
-                row.last_seen_at = now
-            return self._claims(row)
+            claims, failure = await self._validate_session_row(
+                session, row, touch=touch, credential="session"
+            )
+        if failure is not None:
+            raise failure
+        assert claims is not None
+        return claims
 
     def require_csrf(
         self, claims: DatabaseSessionClaims, supplied: str | None

@@ -119,14 +119,14 @@ function LoginForm({
     <form onSubmit={(event) => void submit(event)}>
       <Dialog.Title>登录 Nova</Dialog.Title>
       <label>
-        <span>邮箱</span>
+        <span>账号（邮箱或学号）</span>
         <input
           autoComplete="username"
           autoFocus
           value={username}
           onChange={(event) => setUsername(event.target.value)}
           disabled={submitting}
-          placeholder="请输入邮箱"
+          placeholder="请输入邮箱、账号或学号"
           maxLength={254}
           required
         />

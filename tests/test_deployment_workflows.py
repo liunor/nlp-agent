@@ -17,6 +17,24 @@ WORKFLOW_PATHS = (
 RETRY_HELPER_PATH = ROOT / ".github" / "scripts" / "run-with-transient-registry-retry.sh"
 
 
+def test_test_publish_queues_fallbacks_without_cancelling_live_deployments() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/publish-test-image.yml").read_text(encoding="utf-8"))
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    assert workflow["concurrency"]["queue"] == "max"
+    assert workflow["concurrency"]["group"] == "nova-test-release"
+    publish = workflow["jobs"]["publish"]
+    steps = publish["steps"]
+    source = next(i for i, step in enumerate(steps) if step.get("id") == "source")
+    for step in steps[source+1:]:
+        assert step["if"] == "steps.source.outputs.current == 'true'"
+    assert "current-release-source.py" in steps[source]["run"]
+    assert "publish.outputs.current_source == 'true'" in workflow["jobs"]["deploy"]["if"]
+    deploy = next(step for step in workflow["jobs"]["deploy"]["steps"] if "AUTH_DEPLOY_SOURCE_DIR" in step.get("env", {}))
+    assert deploy["run"].index("current-release-source.py") < deploy["run"].index('if [ -z "$DEPLOY_DIR" ]')
+    assert "NLP_AGENT_DEPLOYMENT_ENV=\\\"test\\\"" in deploy["run"]
+    assert "NLP_AGENT_DEPLOYMENT_ENV" not in (ROOT / ".github/workflows/release-prod.yml").read_text(encoding="utf-8")
+
+
 def test_test_worker_proxy_preflight_uses_all_running_ids_not_container_number_one() -> None:
     workflow = (ROOT / ".github/workflows/publish-test-image.yml").read_text(encoding="utf-8")
     assert "ps --status running -q nova-worker" in workflow

@@ -12,6 +12,7 @@ import pytest
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from ..support.chat import submit_turn
+from ..support.auth import session_id_for_client
 from ..support.resources import create_classroom, create_session, create_user, create_workspace
 from ..support.websocket import (
     authenticated_websocket,
@@ -21,6 +22,31 @@ from ..support.websocket import (
 
 
 pytestmark = pytest.mark.api_async_core
+
+
+def test_established_websocket_idle_expiry_revokes_session_before_http_check(
+    authenticated_client, mysql_probe, web_base_url, api_http_environment,
+) -> None:
+    session_id = session_id_for_client(authenticated_client, mysql_probe)
+
+    async def scenario() -> None:
+        async with authenticated_websocket(authenticated_client, base_url=web_base_url,
+                                          origin=api_http_environment.web_origin) as websocket:
+            assert decode(await websocket.recv())["type"] == "connection.ready"
+            mysql_probe.execute(
+                "UPDATE nlp_sessions SET last_seen_at=UTC_TIMESTAMP(6)-INTERVAL 1 DAY WHERE id=:session_id",
+                session_id=session_id,
+            )
+            with pytest.raises(ConnectionClosed) as closed:
+                await websocket.send(command("ping", "idle-ping", {}))
+                await asyncio.wait_for(websocket.recv(), timeout=10)
+            assert closed.value.rcvd is not None and closed.value.rcvd.code == 4401
+
+    asyncio.run(scenario())
+    # Check the committed state before an HTTP request can expire the row itself.
+    assert mysql_probe.scalar("SELECT revoked_at FROM nlp_sessions WHERE id=:session_id",
+                              session_id=session_id) is not None
+    assert authenticated_client.get("/api/v1/auth/session").status_code == 401
 
 
 async def _receive_until(

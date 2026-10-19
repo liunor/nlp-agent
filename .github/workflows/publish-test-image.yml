@@ -17,8 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ghcr-${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref_name }}
-  cancel-in-progress: true
+  group: nova-test-release
+  # A no-op merged-PR fallback must never cancel a real deployment. Queue
+  # all runs targeting nova-test, including main/develop, and reject obsolete
+  # sources before publish and before deploy.
+  queue: max
+  cancel-in-progress: false
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/nlp-agent
@@ -75,20 +79,35 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       runtime_digest: ${{ steps.build_runtime.outputs.digest }}
+      current_source: ${{ steps.source.outputs.current }}
+      revision: ${{ steps.source.outputs.revision }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha) || github.sha }}
+      - name: Skip obsolete queued source before publishing
+        id: source
+        env:
+          SOURCE_BRANCH: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref_name }}
+          SOURCE_REVISION: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha) || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/current-release-source.py --branch "$SOURCE_BRANCH" \
+            --revision "$SOURCE_REVISION" --github-output "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
+        if: steps.source.outputs.current == 'true'
       - uses: docker/login-action@v3
+        if: steps.source.outputs.current == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/metadata-action@v5
         id: meta
+        if: steps.source.outputs.current == 'true'
         with:
+          context: git
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=develop,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
@@ -96,6 +115,7 @@ jobs:
             type=raw,value=release-candidate-${{ github.sha }},enable=${{ github.ref_name == 'main' }}
       - uses: docker/build-push-action@v6
         id: build
+        if: steps.source.outputs.current == 'true'
         with:
           context: .
           push: true
@@ -105,7 +125,9 @@ jobs:
           cache-to: type=gha,mode=max
       - uses: docker/metadata-action@v5
         id: meta_runtime
+        if: steps.source.outputs.current == 'true'
         with:
+          context: git
           images: ${{ env.RUNTIME_IMAGE_NAME }}
           tags: |
             type=raw,value=develop,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
@@ -113,6 +135,7 @@ jobs:
             type=raw,value=release-candidate-${{ github.sha }},enable=${{ github.ref_name == 'main' }}
       - uses: docker/build-push-action@v6
         id: build_runtime
+        if: steps.source.outputs.current == 'true'
         with:
           context: sandbox-runtime
           push: true
@@ -123,7 +146,7 @@ jobs:
 
   deploy:
     name: Deploy Test Environment (${{ github.ref_name }})
-    if: always() && needs.publish.result == 'success'
+    if: always() && needs.publish.result == 'success' && needs.publish.outputs.current_source == 'true'
     needs: publish
     permissions:
       contents: read
@@ -149,7 +172,16 @@ jobs:
           NOVA_IMAGE_REF: ghcr.io/${{ github.repository_owner }}/nlp-agent@${{ needs.publish.outputs.digest }}
           SANDBOX_RUNTIME_REF: ghcr.io/${{ github.repository_owner }}/nova-sandbox-runtime@${{ needs.publish.outputs.runtime_digest }}
           NOVA_PULL_POLICY: always
+          SOURCE_BRANCH: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref_name }}
+          SOURCE_REVISION: ${{ needs.publish.outputs.revision }}
         run: |
+          set -euo pipefail
+          source_current="$(python3 .github/scripts/current-release-source.py \
+            --branch "$SOURCE_BRANCH" --revision "$SOURCE_REVISION")"
+          if [ "$source_current" != "true" ]; then
+            echo "Queued source is obsolete; leaving current test services unchanged."
+            exit 0
+          fi
           if [ -z "$DEPLOY_DIR" ]; then
             echo "::error::The deployment directory is not configured on the test environment. Set the DEPLOY_DIR environment variable."
             exit 1
@@ -166,7 +198,12 @@ jobs:
           COMPOSE_CONFIG_JSON=""
           trap 'rm -f "$DEPLOY_ENV_FILE"; test -z "$COMPOSE_CONFIG_JSON" || rm -f "$COMPOSE_CONFIG_JSON"' EXIT
           awk -v nova_image_ref="$NOVA_IMAGE_REF" -v sandbox_runtime_ref="$SANDBOX_RUNTIME_REF" '
-            BEGIN { nova_found = 0; sandbox_found = 0; monitor_bind_found = 0; web_port_found = 0; monitor_port_found = 0; namespace_found = 0; lock_dir_found = 0; host_lock_found = 0; host_max_found = 0 }
+            BEGIN { nova_found = 0; sandbox_found = 0; monitor_bind_found = 0; web_port_found = 0; monitor_port_found = 0; namespace_found = 0; lock_dir_found = 0; host_lock_found = 0; host_max_found = 0; deployment_env_found = 0 }
+            /^NLP_AGENT_DEPLOYMENT_ENV=/ {
+              print "NLP_AGENT_DEPLOYMENT_ENV=\"test\""
+              deployment_env_found = 1
+              next
+            }
             /^NOVA_IMAGE_REF=/ {
               print "NOVA_IMAGE_REF=\"" nova_image_ref "\""
               nova_found = 1
@@ -214,6 +251,7 @@ jobs:
             }
             { print }
             END {
+              if (!deployment_env_found) print "NLP_AGENT_DEPLOYMENT_ENV=\"test\""
               if (!nova_found) print "NOVA_IMAGE_REF=\"" nova_image_ref "\""
               if (!sandbox_found) print "NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST=\"" sandbox_runtime_ref "\""
               if (!monitor_bind_found) print "NOVA_MONITOR_BIND_ADDRESS=\"127.0.0.1\""
