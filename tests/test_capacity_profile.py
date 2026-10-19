@@ -54,6 +54,8 @@ from configs.settings import settings
 configure_models()
 assert all(v['adapter'] == 'openai_compatible' for v in settings._config['providers'].values())
 assert all(not v['native_search']['enabled'] for v in settings._config['model_presets'].values())
+timeout_preset = settings._config['model_profiles']['qwen']['coordinator']
+assert settings._config['model_presets'][timeout_preset]['timeouts']['total_s'] == 25
 print('FAKE_CATALOG_VALIDATED')
 '''
     result = subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).parents[1],
@@ -140,3 +142,37 @@ def test_topology_uses_live_matching_heartbeats_and_running_processes(monkeypatc
         with pytest.raises(RuntimeError, match="ISOLATED_"):
             runner.verify_worker_topology(environment, 2, 2)
     assert closed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", ["naive", "zulu", "utc", "china"])
+async def test_completed_turn_statistics_preserve_actual_http_results_for_all_timestamp_forms(offset):
+    from datetime import datetime, timedelta, timezone
+    import time
+    import httpx
+    from tests.load.t07_classroom_load import _submit_and_wait
+
+    instant = datetime.now(timezone.utc)
+    stamp = {"naive": instant.replace(tzinfo=None).isoformat(),
+             "zulu": instant.isoformat().replace("+00:00", "Z"),
+             "utc": instant.isoformat(),
+             "china": instant.astimezone(timezone(timedelta(hours=8))).isoformat()}[offset]
+
+    def response(request):
+        if request.method == "POST":
+            return httpx.Response(202, json={"turn_id": "fixture-turn", "status": "accepted"})
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json={"items": [
+                {"sequence": 1, "type": "message.delta", "created_at": stamp},
+                {"sequence": 2, "type": "turn.completed", "created_at": stamp}]})
+        return httpx.Response(200, json={"status": "completed", "final_text": "fixture"})
+
+    async with httpx.AsyncClient(base_url="http://127.0.0.1:8765", transport=httpx.MockTransport(response)) as client:
+        result = await _submit_and_wait(
+            {"client": client, "origin": "http://127.0.0.1:8765", "csrf": "fixture", "index": 1,
+             "username": "fixture", "session_id": "fixture-session"}, run_id="fixture",
+            timeout_s=1, ramp_seconds=0, index=0, total=1, start_at=time.monotonic())
+    assert result["submit_status"] == 202 and result["state"] == "completed"
+    assert result["terminal_event_count"] == 1 and not result["event_sequence_gap"]
+    assert isinstance(result["first_token_ms"], float)
+    assert abs(result["first_token_ms"]) < 1000

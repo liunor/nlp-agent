@@ -28,4 +28,11 @@ def configure_models() -> None:
         preset["retry"] = {"max_attempts": 1}
         preset["timeouts"] = {"connect_s": 5, "first_token_s": 30, "stream_idle_s": 30, "total_s": 40}
         preset["circuit_breaker"] = {"failure_threshold": 100, "cooldown_s": 1}
+    # The explicit Qwen profile pins a single candidate, so its Provider timeout
+    # can settle before the coordinator route's independent 30-second watchdog.
+    # This avoids a race that would test a workflow deadline instead of the
+    # intended upstream_timeout contract. Normal 20-second fake work still fits.
+    timeout_preset = raw["model_profiles"]["qwen"]["coordinator"]
+    raw["model_presets"][timeout_preset]["timeouts"] = {
+        "connect_s": 5, "first_token_s": 25, "stream_idle_s": 25, "total_s": 25}
     ModelFactory.config_from_raw(raw)

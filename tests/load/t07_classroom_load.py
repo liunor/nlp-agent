@@ -304,6 +304,7 @@ async def _submit_and_wait(
     index: int,
     total: int,
     start_at: float,
+    model_profile: str | None = None,
 ) -> dict[str, Any]:
     client: httpx.AsyncClient = user["client"]
     await asyncio.sleep(max(0.0, start_at + ramp_seconds * index / max(1, total) - time.monotonic()))
@@ -316,6 +317,7 @@ async def _submit_and_wait(
             "session_id": user["session_id"],
             "content": f"T07 load test {run_id} user {user['index']}",
             "idempotency_key": f"t07-{run_id}-{user['index']}",
+            **({"model_profile": model_profile} if model_profile else {}),
         },
     )
     accepted_ms = round((time.monotonic() - started) * 1000, 3)
@@ -376,6 +378,10 @@ async def _submit_and_wait(
                 first_token_at = datetime.fromisoformat(
                     str(first_token["created_at"]).replace("Z", "+00:00")
                 )
+                # Persistence timestamps are UTC; MySQL may serialize them
+                # without an offset. Preserve explicit offsets when present.
+                if first_token_at.tzinfo is None:
+                    first_token_at = first_token_at.replace(tzinfo=timezone.utc)
                 result["first_token_ms"] = round(
                     (first_token_at - started_wall).total_seconds() * 1000, 3
                 )
@@ -593,6 +599,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                             test_user, run_id=f"{run_id}-provider-{mode}",
                             timeout_s=max(timeout_s, 90), ramp_seconds=0,
                             index=0, total=1, start_at=time.monotonic(),
+                            model_profile="qwen" if mode == "timeout" else None,
                         )
                         session_response = await test_user["client"].get(
                             "/api/v1/auth/session", headers={"Origin": origin}

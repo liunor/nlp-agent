@@ -71,6 +71,8 @@ async def seed_classroom(environment, user_count=50):
     from server.rbac.service import rbac_service
     from server.user.schemas import UserCreate
     from server.user.service import UserService
+    from server.workspace.schemas import WorkspaceCreate
+    from server.workspace.service import WorkspaceService
 
     runtime = MySQLRuntime.from_runtime({"url": environment.env["NLP_AGENT_DATABASE_URL"], "pool_size": 2, "max_overflow": 0})
     await runtime.start()
@@ -79,14 +81,22 @@ async def seed_classroom(environment, user_count=50):
             teacher = environment.users["teacher"]
             if user_count not in {50, 120}:
                 raise ValueError("BOUNDED_ISOLATED_CLASS_SIZE_REQUIRED")
+            workspaces = WorkspaceService(session)
+            classroom_workspaces = [teacher.workspace_id]
+            if user_count == 120:
+                classroom_workspaces = [(await workspaces.create_workspace(
+                    WorkspaceCreate(name=f"T07 isolated class {group+1}", type="classroom"),
+                    created_by_user_id=teacher.user_id)).id for group in range(3)]
             classrooms = [await rbac_service.create_classroom(
-                session, workspace_id=teacher.workspace_id,
+                session, workspace_id=workspace_id,
                 name=f"T07 isolated classroom {group+1}", actor_user_id=teacher.user_id)
-                for group in range(3 if user_count == 120 else 1)]
+                for group, workspace_id in enumerate(classroom_workspaces)]
             service = UserService(session)
             for index in range(1, user_count+1):
                 user = await service.create_user(UserCreate(username=student_username(index), display_name=f"T07 student {index}", password=TEST_PASSWORD), initial_role_code="student")
                 classroom = classrooms[(index-1)//40] if user_count == 120 else classrooms[0]
+                if user_count == 120:
+                    await workspaces.add_member(classroom.workspace_id, user.id, member_type="member")
                 session.add(ClassroomMemberModel(classroom_id=classroom.id, user_id=user.id, member_role="student", status="active"))
             await session.flush()
             members = (await session.scalars(select(ClassroomMemberModel).where(
