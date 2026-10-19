@@ -272,27 +272,44 @@ async def _open_websocket(user: dict[str, Any], *, base_url: str, origin: str) -
     if client is None:
         return None, {"username": user["username"], "status": "not_connected", "reason": "login_failed"}
     started = time.monotonic()
-    ticket = await client.post("/api/v1/auth/ws-ticket", headers={"Origin": origin, "X-CSRF-Token": user["csrf"]})
-    if ticket.status_code != 200:
-        return None, {"username": user["username"], "status": ticket.status_code, "code": _problem_code(ticket)}
-    cookie = client.cookies.get("nlp_session")
-    if not cookie:
-        return None, {"username": user["username"], "status": "missing_cookie"}
-    scheme = "wss" if base_url.startswith("https://") else "ws"
-    ws_url = f"{scheme}://{urlsplit(base_url).netloc}/ws/v1?ticket={ticket.json()['ticket']}"
-    websocket = await connect(
-        ws_url,
-        origin=origin,
-        additional_headers={"Cookie": f"nlp_session={cookie}"},
-        proxy=None,
-        open_timeout=10,
-        close_timeout=5,
-    )
-    ready = json.loads(await asyncio.wait_for(websocket.recv(), timeout=10))
-    if ready.get("type") != "connection.ready":
-        await websocket.close()
-        return None, {"username": user["username"], "status": "not_ready", "frame_type": ready.get("type")}
-    return websocket, {"username": user["username"], "status": "ready", "latency_ms": round((time.monotonic() - started) * 1000, 3)}
+    stage, websocket, handed_off = "ticket_request", None, False
+    metrics = {"username": user["username"]}
+    try:
+        ticket = await client.post("/api/v1/auth/ws-ticket", headers={"Origin": origin, "X-CSRF-Token": user["csrf"]})
+        stage = "ticket_response"
+        if ticket.status_code != 200:
+            metrics.update(status=ticket.status_code, stage=stage, code=_problem_code(ticket))
+            return None, metrics
+        cookie = client.cookies.get("nlp_session")
+        if not cookie:
+            metrics.update(status="missing_cookie", stage=stage)
+            return None, metrics
+        scheme = "wss" if base_url.startswith("https://") else "ws"
+        ws_url = f"{scheme}://{urlsplit(base_url).netloc}/ws/v1?ticket={ticket.json()['ticket']}"
+        stage = "websocket_upgrade"
+        websocket = await connect(
+            ws_url, origin=origin, additional_headers={"Cookie": f"nlp_session={cookie}"},
+            proxy=None, open_timeout=10, close_timeout=5,
+        )
+        stage = "connection_ready"
+        ready = json.loads(await asyncio.wait_for(websocket.recv(), timeout=10))
+        if ready.get("type") != "connection.ready":
+            metrics.update(status="not_ready", stage=stage, frame_type=ready.get("type"))
+            return None, metrics
+        handed_off = True
+        metrics.update(status="ready", latency_ms=round((time.monotonic() - started) * 1000, 3))
+        return websocket, metrics
+    except Exception as error:
+        # A ticket HTTP transport failure is not an upgraded WebSocket failure.
+        # Keep the failure, classify its stage, and do not retry or log secrets.
+        metrics.update(status="error", stage=stage, error=type(error).__name__)
+        return None, metrics
+    finally:
+        if websocket is not None and not handed_off:
+            try:
+                await websocket.close()
+            except Exception:
+                metrics["cleanup_failed"] = True
 
 
 async def _submit_and_wait(

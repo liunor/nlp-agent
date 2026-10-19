@@ -102,3 +102,8 @@ Only fixed stage names and numeric aggregates are logged; payloads, SQL text,
 parameters, identities and exception messages are not recorded. At most 4096
 durations per stage are kept. The final report includes the four Provider-fault
 submissions; nested stage times overlap and must not be added together.
+
+WebSocket setup diagnostics distinguish the HTTP ticket request/response,
+protocol upgrade and application-ready stages. Failures remain failures and are
+not retried automatically. If upgrade succeeded but ready failed or was cancelled,
+the fixture closes that owned connection before returning or propagating cancellation.
