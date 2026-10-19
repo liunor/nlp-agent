@@ -60,10 +60,11 @@ def owned_remove(identifier, nonce):
     command(["docker", "rm", "-f", identifier])
 
 
-def exercise(directory, config, scenario, nonce):
+def exercise(directory, config, scenario, nonce, *, connection_fixture=False):
     # Static content exercises nginx's access phase; `return 200` would bypass
     # limit_req and would make the supposed regression test meaningless.
-    config = config.replace("proxy_pass http://nova_web;", "root /fixture;\n            try_files /ok.txt =404;")
+    if not connection_fixture:
+        config = config.replace("proxy_pass http://nova_web;", "root /fixture;\n            try_files /ok.txt =404;")
     (directory / "nginx.conf").write_text(config, encoding="utf-8")
     args = ["docker", "run", "-d", "--network", "none", "--label", LABEL+"="+nonce,
             "--add-host", "nova-web:127.0.0.1", "--add-host", "nova-monitor:127.0.0.1",
@@ -80,10 +81,13 @@ def exercise(directory, config, scenario, nonce):
         output = command(["docker", "run", "--rm", "--label", LABEL+"="+nonce,
                           "--network", "container:"+identifier,
                           "--mount", "type=bind,src="+str(directory)+",dst=/fixture,readonly",
-                          "python:3.12-alpine", "python", "/fixture/probe.py", scenario])
+                          "python:3.12-alpine", "python", "/fixture/" + (
+                              "connection-probe.py" if connection_fixture else "probe.py"), scenario])
         report = json.loads(output)
         log = subprocess.run(["docker", "logs", identifier], capture_output=True, text=True, timeout=20)
         report["server_wide_rejections_logged"] = len(re.findall('by zone "classroom_server_limit"', log.stdout+log.stderr))
+        report["per_ip_connection_rejections_logged"] = len(re.findall('limiting connections by zone "conn_limit"', log.stdout+log.stderr))
+        report["total_connection_rejections_logged"] = len(re.findall('limiting connections by zone "classroom_conn_total"', log.stdout+log.stderr))
         return report
     finally:
         owned_remove(identifier, nonce)
@@ -107,6 +111,7 @@ def main():
             (directory/name).write_bytes((ROOT/"nginx"/name).read_bytes())
         (directory/"ok.txt").write_text("fixture\n")
         (directory/"probe.py").write_text(PROBE)
+        (directory/"connection-probe.py").write_bytes((ROOT/"scripts/classroom_connection_probe.py").read_bytes())
         old = exercise(directory, original, "classroom", nonce)
         assert old["codes"].get("503", 0) > 0, "OLD_SHARED_IP_FAILURE_NOT_REPRODUCED"
         classroom = exercise(directory, fixed, "classroom", nonce)
@@ -115,11 +120,25 @@ def main():
         flood = exercise(directory, fixed, "global-flood", nonce)
         assert flood["codes"].get("429", 0) > 0 and set(flood["codes"]) == {"200", "429"}
         assert flood["all_rejections_have_retry_after"] and flood["server_wide_rejections_logged"] > 0
+        previous = helper._classroom_rate_policy(original, "nova-test")
+        old_tabs = exercise(directory, previous, "two-tabs", nonce, connection_fixture=True)
+        assert old_tabs["codes"].get("503", 0) > 0 and old_tabs["per_ip_connection_rejections_logged"] > 0
+        tabs = exercise(directory, fixed, "two-tabs", nonce, connection_fixture=True)
+        assert tabs["held_websockets"] == 82 and tabs["codes"] == {"200": 41}
+        assert tabs["successes_have_no_retry_after"]
+        ip_bound = exercise(directory, fixed, "per-ip-bound", nonce, connection_fixture=True)
+        total_bound = exercise(directory, fixed, "global-bound", nonce, connection_fixture=True)
+        for item in (ip_bound, total_bound):
+            assert item["codes"] == {"429": 1} and item["all_rejections_have_retry_after"]
+        assert ip_bound["per_ip_connection_rejections_logged"] == 1
+        assert total_bound["total_connection_rejections_logged"] == 1
     report = {"status": "ISOLATED_REAL_NGINX_CLASSROOM_EDGE_PASSED", "old": old, "classroom": classroom,
-              "rotating_address_flood": flood, "public_ports": False, "business_volumes_mounted": False,
+              "rotating_address_flood": flood, "previous_two_tabs": old_tabs, "fixed_two_tabs": tabs,
+              "per_ip_connection_guard": ip_bound, "global_connection_guard": total_bound,
+              "public_ports": False, "business_volumes_mounted": False,
               "live_services_changed": False, "production_configuration_unchanged": True,
               "model_calls": 0, "email_calls": 0, "only_owned_containers_removed": True,
-              "scope_limit": "Static nginx fixture; not VPS application capacity or live deployment acceptance."}
+              "scope_limit": "Networkless nginx static/proxy fixtures; not VPS application capacity or live deployment acceptance."}
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))

@@ -87,7 +87,9 @@ def test_proxy_plan_uses_exact_peer_gateway_and_immutable_files(release, planned
     assert "rate=120r/s;" in config and "zone=api_limit burst=240 nodelay;" in config
     assert "zone=classroom_server_limit burst=240 nodelay;" in config
     assert "limit_req_status 429;" in config
-    assert "limit_conn conn_limit 100;" in config
+    assert "limit_conn conn_limit 256;" in config
+    assert "limit_conn classroom_conn_total 320;" in config
+    assert "limit_conn_status 429;" in config
 
 
 def second_worker(first):
@@ -196,8 +198,32 @@ def test_classroom_edge_transformation_is_idempotent_and_preserves_proxy_rules(r
     assert release.classroom_proxy_config(patched, "nova-test") == patched
     assert release.classroom_proxy_config(original, "nova-prod") == original
     for line in original.splitlines():
-        if any(key in line for key in ("real_ip", "proxy_set_header", "proxy_pass", "limit_conn")):
+        if any(key in line for key in ("real_ip", "proxy_set_header", "proxy_pass", "limit_conn_zone $binary_remote_addr")):
             assert line in patched
+
+
+def test_existing_rate_only_release_upgrades_without_changing_request_budget(release):
+    original = (ROOT / "nginx/nginx.conf").read_text(encoding="utf-8")
+    previous = release._classroom_rate_policy(original, "nova-test")
+    assert "limit_conn conn_limit 100;" in previous
+    assert release.classroom_proxy_config(previous, "nova-test") == release.classroom_proxy_config(original, "nova-test")
+    assert release.classroom_proxy_config(previous, "nova-prod") == previous
+
+
+@pytest.mark.parametrize("change", ["per_ip", "total", "status", "retry_map", "missing_marker"])
+def test_partial_connection_policies_stop_instead_of_disabling_limits(release, change):
+    original = (ROOT / "nginx/nginx.conf").read_text(encoding="utf-8")
+    value = release.classroom_proxy_config(original, "nova-test")
+    edits = {
+        "per_ip": ("limit_conn conn_limit 256;", "limit_conn conn_limit 4096;"),
+        "total": ("limit_conn classroom_conn_total 320;", ""),
+        "status": ("limit_conn_status 429;", "limit_conn_status 503;"),
+        "retry_map": ('~(^|:)REJECTED(:|$) "1";', 'REJECTED "1";'),
+        "missing_marker": ("# nova-test classroom connection policy v1", ""),
+    }
+    value = value.replace(*edits[change])
+    with pytest.raises(ValueError, match="CLASSROOM_CONNECTION"):
+        release.classroom_proxy_config(value, "nova-test")
 
 
 @pytest.mark.parametrize("change", ["rate", "burst", "header", "duplicate", "partial"])

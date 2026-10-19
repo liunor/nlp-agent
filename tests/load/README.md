@@ -60,6 +60,25 @@ for the deployment under test; verify they match the isolated deployment before
 running. `/health/ready` currently verifies only that the target identifies as
 test/staging and is ready, not those topology values.
 
+### Current-source isolated capacity comparison
+
+`python -m tests.load.run_isolated --run-kind regression --replicas 2 --concurrency 2
+--output artifacts/load-tests/t07/capacity-2x2.json` provisions only disposable
+loopback services and synthetic accounts. Current-source regression runs explicitly
+set Web async/sync pools to 5+5, Worker async pools to 2+1 per engine, Worker sync
+pools to 4+2, and the pool wait timeout to 5 seconds. The profile is derived from
+the environment actually supplied to those processes. Live Redis heartbeats must
+show the requested Worker count and concurrency before and after the workload.
+No deployment, real roster, real model credentials or live Worker change is involved.
+
+The CI comparison measures 1x1, 1x2, 2x2 and 2x4 against the same 50-user,
+30-task, 20-second fake-model workload. Its measurement job permits only the
+existing latency-SLO failures to finish as measurements; those failures remain in
+each JSON report and emit a CI warning. A green measurement job does not mean
+the workload SLO passed. Authentication, task completion, event integrity,
+Provider-error handling or topology failures still fail the job. This is a
+configuration comparison on hosted CI, not an accepted VPS or multi-class capacity.
+
 To test Provider 401/429/503/timeout handling, the runner asks the fake server
 to switch modes and verifies the switch response. Each case must receive 202,
 reach `failed` with the matching `upstream_*` error kind, have exactly one terminal

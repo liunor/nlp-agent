@@ -147,7 +147,7 @@ def proxy_config(source):
         "proxy_set_header X-Forwarded-Proto $nova_forwarded_proto;")
 
 
-def classroom_proxy_config(source, project):
+def _classroom_rate_policy(source, project):
     """Test-only NAT burst allowance, still bounded per IP and per server."""
     if project != "nova-test":
         return source
@@ -178,6 +178,37 @@ def classroom_proxy_config(source, project):
                           '        default "";', '        REJECTED "1";', "    }"])
     return source.replace(old_zone, policy).replace(
         old_limit, new_limit + "\n            " + global_limit).replace(anchor, anchor + "\n" + header)
+
+
+def classroom_proxy_config(source, project):
+    """Bound TEST NAT connections as well as request rate; leave PROD unchanged."""
+    source = _classroom_rate_policy(source, project)
+    if project != "nova-test":
+        return source
+    marker = "# nova-test classroom connection policy v1"
+    old_limit = "        limit_conn conn_limit 100;"
+    new_limit = "        limit_conn conn_limit 256;"
+    total_zone = "    limit_conn_zone $server_name zone=classroom_conn_total:10m;"
+    total_limit = "        limit_conn classroom_conn_total 320;"
+    status = "        limit_conn_status 429;"
+    old_map = '\n'.join(["    map $limit_req_status $nova_edge_retry_after {",
+                         '        default "";', '        REJECTED "1";', "    }"])
+    new_map = '\n'.join(['    map "$limit_req_status:$limit_conn_status" $nova_edge_retry_after {',
+                         '        default "";', '        ~(^|:)REJECTED(:|$) "1";', "    }"])
+    if marker in source:
+        require(source.count(marker) == 1 and source.count(new_limit) == 1
+                and source.count(total_zone) == 1 and source.count(total_limit) == 1
+                and source.count(status) == 1 and source.count(new_map) == 1
+                and old_limit not in source and old_map not in source,
+                "PARTIAL_CLASSROOM_CONNECTION_POLICY_REQUIRES_REVIEW")
+        return source
+    zone_anchor = "    limit_conn_zone $binary_remote_addr zone=conn_limit:10m;"
+    require(source.count(old_limit) == 1 and source.count(zone_anchor) == 1
+            and source.count(old_map) == 1 and "classroom_conn_total" not in source
+            and "limit_conn_status" not in source,
+            "UNRECOGNIZED_CLASSROOM_CONNECTION_BASELINE")
+    return source.replace(zone_anchor, zone_anchor + "\n    " + marker + "\n" + total_zone).replace(
+        old_limit, "\n".join([new_limit, total_limit, status])).replace(old_map, new_map)
 
 
 def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, extra_containers=None,

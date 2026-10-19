@@ -2,12 +2,13 @@ name: Classroom Edge Regression
 
 on:
   push:
-    branches: [fix/test-classroom-edge-burst-20261019]
+    branches: [fix/test-classroom-edge-burst-20261019, fix/test-classroom-capacity-batch-20261019]
   pull_request:
     branches: [develop]
     paths:
       - .github/scripts/prepare-auth-release.py
       - scripts/rehearse_classroom_edge.py
+      - scripts/classroom_connection_probe.py
       - .github/workflows/classroom-edge-check.yml
       - tests/test_auth_release_integration.py
   workflow_dispatch:
@@ -17,7 +18,7 @@ permissions:
 
 jobs:
   actual-nginx:
-    name: Shared-IP classroom burst and bounded global rate limit
+    name: Shared-IP classroom burst, two tabs and bounded connection limits
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
