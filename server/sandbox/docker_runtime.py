@@ -165,7 +165,10 @@ class DockerRuntimeAdapter:
         return tuple(command)
 
     async def image_cached(self) -> bool:
-        process = await asyncio.create_subprocess_exec("docker", "image", "inspect", self.config.image)
+        process = await asyncio.create_subprocess_exec(
+            "docker", "image", "inspect", self.config.image,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
         await _wait(process)
         return process.returncode == 0
 

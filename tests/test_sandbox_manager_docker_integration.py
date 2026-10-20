@@ -420,7 +420,10 @@ def test_measured_profile_real_http_rpc_runsc_lifecycle(monkeypatch) -> None:
                 deadline = time.monotonic() + (60 if wait else 0)
                 while True:
                     response = write(role, "/api/v1/sandbox/lease")
-                    assert response.status_code == 200, f"claim HTTP status {response.status_code}"
+                    assert response.status_code == 200, (
+                        f"claim HTTP status {response.status_code}: "
+                        + _redact_diagnostics(response.text)[:1000]
+                    )
                     payload = response.json()
                     if payload["runtime_available"]:
                         return payload["runtime"]

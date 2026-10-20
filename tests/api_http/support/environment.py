@@ -797,6 +797,7 @@ def _safe_child_environment(
             "NLP_AGENT_API_HTTP_SKILLS_ROOT": str(uploads_root.parent / ".data" / "skills"),
             "NLP_AGENT_API_HTTP_MCP_STUB": "1",
             "NLP_AGENT_API_HTTP_REAL_SANDBOX": "0",
+            "PYTHONUNBUFFERED": "1",
             "NLP_AGENT_API_HTTP_EMAIL_PROVIDER": "stub",
             # The deterministic stub fails delivery for any address that starts
             # with this prefix, so the gateway-error path can be exercised
