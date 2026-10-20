@@ -332,7 +332,7 @@ async def test_concurrent_lease_claims_create_one_environment(mysql_session_fact
     assert len(environments) == 1
 
 
-async def _two_owners_with_sandbox_leases(factory) -> list[SandboxScope]:
+async def _two_owners_with_sandbox_leases(factory, *, create_leases=True) -> list[SandboxScope]:
     from server.web.database_auth import DatabaseSessionAuth
 
     async with factory.begin() as session:
@@ -353,9 +353,35 @@ async def _two_owners_with_sandbox_leases(factory) -> list[SandboxScope]:
         async with factory.begin() as session:
             principal = await rbac_service.principal_for_user_id(session, user.id)
             scope = SandboxScope.from_authenticated_request(principal, claims)
-            await sandbox_lifecycle_service.ensure_current_lease(session, scope)
+            if create_leases:
+                await sandbox_lifecycle_service.ensure_current_lease(session, scope)
             scopes.append(scope)
     return scopes
+
+
+@pytest.mark.asyncio
+async def test_first_leases_for_two_new_owners_do_not_gap_lock_each_other(mysql_session_factory, monkeypatch):
+    """Both owners must be able to insert after finding no existing lease."""
+    scopes = await _two_owners_with_sandbox_leases(mysql_session_factory, create_leases=False)
+    original = sandbox_lifecycle_service.revoke_expired_leases
+    both_cleaned = asyncio.Event()
+    owners = set()
+
+    async def synchronized_cleanup(session, *, owner_user_id, now=None):
+        await original(session, owner_user_id=owner_user_id, now=now)
+        owners.add(owner_user_id)
+        if len(owners) == 2:
+            both_cleaned.set()
+        await asyncio.wait_for(both_cleaned.wait(), timeout=5)
+
+    monkeypatch.setattr(sandbox_lifecycle_service, "revoke_expired_leases", synchronized_cleanup)
+
+    async def first_claim(scope):
+        async with mysql_session_factory.begin() as session:
+            return await sandbox_lifecycle_service.ensure_current_lease(session, scope)
+
+    results = await asyncio.wait_for(asyncio.gather(*(first_claim(scope) for scope in scopes)), timeout=10)
+    assert len({result["lease"]["id"] for result in results}) == 2
 
 
 @pytest.mark.asyncio

@@ -78,6 +78,29 @@ from .sandbox import DeterministicSandboxManager
 
 
 _sandbox_manager = DeterministicSandboxManager()
+if os.environ.get("NLP_AGENT_API_HTTP_REAL_SANDBOX") == "1":
+    import json
+    import re
+
+    import server.infrastructure.mysql.errors as _database_errors
+
+    _database_problem = _database_errors.database_problem
+
+    def _classify_real_sandbox_database_error(error):
+        statement = str(getattr(error, "statement", "") or "")
+        arguments = getattr(getattr(error, "orig", None), "args", ())
+        print(json.dumps({
+            "event": "isolated_http_database_error",
+            "error_type": type(error).__name__,
+            "mysql_number": arguments[0] if arguments and isinstance(arguments[0], int) else None,
+            "statement_verb": statement.split()[0] if statement.split() else None,
+            "tables": sorted(set(re.findall(r"\bnlp_[a-z_]+\b", statement))),
+            "parameters_emitted": False,
+        }), flush=True)
+        return _database_problem(error)
+
+    _database_errors.database_problem = _classify_real_sandbox_database_error
+
 if (
     os.environ.get("NLP_AGENT_SANDBOX_RUNTIME_MODE", "").strip().lower() == "docker"
     and os.environ.get("NLP_AGENT_API_HTTP_REAL_SANDBOX") != "1"

@@ -153,7 +153,13 @@ class RedisSandboxManagerRpcClient:
                     if parsed.get("request_id") != request_id:
                         continue
                     if parsed.get("ok") != "1":
-                        raise RuntimeError(parsed.get("error", "Sandbox Manager RPC failed"))
+                        message = parsed.get("error", "Sandbox Manager RPC failed")
+                        # Preserve the one denial class understood by the Web
+                        # gateway. Otherwise a stale nonce/session becomes an
+                        # infrastructure 500/503 after crossing Redis RPC.
+                        if message.startswith("PermissionError:"):
+                            raise PermissionError("Sandbox runtime permission denied")
+                        raise RuntimeError(message)
                     try:
                         result = json.loads(parsed.get("payload", "{}"))
                     except json.JSONDecodeError as error:

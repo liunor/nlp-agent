@@ -73,6 +73,29 @@ def test_manager_rpc_scratch_timeout_requires_response_budget() -> None:
     assert asyncio.run(exercise()) == {}
 
 
+@pytest.mark.parametrize("remote_error,expected", [
+    ("PermissionError: sandbox nonce was already consumed", PermissionError),
+    ("RuntimeError: PermissionError: untrusted detail", RuntimeError),
+    ("UnknownError: problem", RuntimeError),
+])
+def test_rpc_preserves_denial_without_instantiating_arbitrary_remote_types(remote_error, expected):
+    from server.sandbox.manager_rpc import RedisSandboxManagerRpcClient
+
+    class Redis:
+        async def xadd(self, stream, fields, **kwargs):
+            self.response = fields["response_stream"]
+
+        async def xread(self, streams, **kwargs):
+            return [(self.response, [("1-0", {"request_id": self.response.rsplit(":", 1)[-1],
+                                              "ok": "0", "error": remote_error})])]
+
+    async def exercise():
+        with pytest.raises(expected):
+            await RedisSandboxManagerRpcClient(Redis(), secret="fixture")._request("claim", {})
+
+    asyncio.run(exercise())
+
+
 def test_manager_rpc_server_dispatches_claim_without_docker_in_web_process() -> None:
     from datetime import UTC, datetime, timedelta
     from server.sandbox.contracts import SandboxScope

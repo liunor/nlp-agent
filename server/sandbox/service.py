@@ -118,8 +118,12 @@ class SandboxLifecycleService:
                 SandboxLeaseModel.environment_id == environment.id,
                 SandboxLeaseModel.auth_session_id == scope.auth_session_id,
             )
-            .with_for_update()
         )
+        # The owner row already serializes this owner's first creation. An
+        # absent-row FOR UPDATE takes a gap lock on MySQL and can conflict
+        # with a different owner's first INSERT into that same index gap.
+        if lease is not None:
+            lease = await session.get(SandboxLeaseModel, lease.id, with_for_update=True)
         if lease is None:
             lease = SandboxLeaseModel(
                 id=str(uuid4()),
@@ -255,9 +259,20 @@ class SandboxLifecycleService:
         if owner is None:
             return
         current_time = now or _utc_now()
+        expired_ids = list((await session.scalars(
+            select(SandboxLeaseModel.id).where(
+                SandboxLeaseModel.user_id == owner_user_id,
+                *self._expired_lease_conditions(current_time),
+            )
+        )).all())
+        if not expired_ids:
+            return
+        # Lock only existing primary keys. An UPDATE over an empty owner range
+        # would gap-lock unrelated new owners despite its user_id predicate.
         await session.execute(
             update(SandboxLeaseModel)
             .where(
+                SandboxLeaseModel.id.in_(expired_ids),
                 SandboxLeaseModel.user_id == owner_user_id,
                 *self._expired_lease_conditions(current_time),
             )

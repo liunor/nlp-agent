@@ -64,6 +64,39 @@ def test_public_registration_schema_requires_email_and_does_not_advertise_phone(
     assert registration["additionalProperties"] is False
 
 
+def test_captcha_transaction_finishes_before_response_bytes(registration_client, monkeypatch):
+    """A second browser request must be able to consume a returned CAPTCHA immediately."""
+    import asyncio
+
+    import httpx
+
+    committed = False
+
+    async def transaction():
+        nonlocal committed
+        yield object()
+        committed = True
+
+    registration_client.app.dependency_overrides[get_db_session] = transaction
+    monkeypatch.setattr(web, "generate_captcha_image", lambda: ("fixture", "data:image/png;base64,fixture", "ABCD"))
+    monkeypatch.setattr(code_store, "purge_expired", AsyncMock())
+    monkeypatch.setattr(code_store, "put_code", AsyncMock())
+
+    async def observed_app(scope, receive, send):
+        async def observed_send(message):
+            if message["type"] == "http.response.start":
+                assert committed, "response started before the auth transaction committed"
+            await send(message)
+        await registration_client.app(scope, receive, observed_send)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=observed_app), base_url="http://testserver") as client:
+            response = await client.get("/api/v1/auth/captcha")
+            assert response.status_code == 200
+
+    asyncio.run(exercise())
+
+
 def test_email_registration_returns_guest_without_a_login_cookie(registration_client, monkeypatch):
     register = AsyncMock(return_value=SimpleNamespace(
         id="fixture-user", username="userfixture", display_name="同学",

@@ -201,7 +201,10 @@ from server.user.email_provider import (
 )
 from server.user.email import InvalidEmailError, normalize_email
 
-DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+# CAPTCHA, email-code and registration responses must follow their commit.
+# Request-scope teardown can run after bytes have reached the browser, allowing
+# an immediate follow-up request to miss the just-created code/audit/user.
+DbSession = Annotated[AsyncSession, Depends(get_db_session, scope="function")]
 
 
 GatewayFactory = Callable[[], BackendGateway]
