@@ -21,6 +21,15 @@ DOCKER_COMMAND_TIMEOUT_SECONDS = 15
 PROCESS_REAP_TIMEOUT_SECONDS = 2
 
 
+def docker_memory_mb(value: str) -> int:
+    """Round an explicit Docker memory cap up to whole MiB for capacity guards."""
+    match = re.fullmatch(r"([1-9][0-9]*)([bBkKmMgG]?)", value)
+    if match is None:
+        raise ValueError("sandbox memory must be a positive whole byte/k/m/g quantity")
+    multiplier = {"": 1, "b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}[match[2].lower()]
+    return (int(match[1]) * multiplier + 1024**2 - 1) // 1024**2
+
+
 def _available_memory_mb() -> float | None:
     """Return Linux host available memory when the platform exposes it.
 
@@ -95,6 +104,7 @@ class DockerRuntimeConfig:
     namespace: str = "local"
 
     def __post_init__(self) -> None:
+        docker_memory_mb(self.memory)
         local_image_id = re.fullmatch(r"sha256:[0-9a-fA-F]{64}", self.image) is not None
         if "@sha256:" not in self.image and not (local_image_id and self.allow_local_image_id):
             raise ValueError("sandbox runtime image must be pinned by immutable digest")
@@ -115,6 +125,10 @@ class DockerRuntimeAdapter:
     def image_digest(self) -> str:
         """Expose immutable image identity without leaking backend config."""
         return self.config.image
+
+    @property
+    def memory_limit_mb(self) -> int:
+        return docker_memory_mb(self.config.memory)
 
     def host_resources(self) -> dict[str, float | None]:
         """Expose only coarse host headroom needed by the Manager guard."""

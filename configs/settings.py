@@ -92,6 +92,8 @@ class Settings(BaseSettings):
     NLP_AGENT_SANDBOX_RUNTIME_MODE: str = "disabled"
     NLP_AGENT_SANDBOX_RUNTIME_BACKEND: str = "runsc"
     NLP_AGENT_SANDBOX_DOCKER_IMAGE_DIGEST: str = ""
+    NLP_AGENT_SANDBOX_DOCKER_MEMORY_MB: int = Field(default=768, ge=256)
+    NLP_AGENT_SANDBOX_DOCKER_CPUS: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     NLP_AGENT_SANDBOX_NAMESPACE: str = "local"
     NLP_AGENT_SANDBOX_HOST_LOCK_FILE: str = ""
     NLP_AGENT_SANDBOX_KUBERNETES_CLIENT_FACTORY: str = ""
