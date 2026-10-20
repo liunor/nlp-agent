@@ -32,7 +32,7 @@ class SandboxLifecycleService:
     """
 
     async def describe(self, session: AsyncSession, scope: SandboxScope) -> dict:
-        await self.revoke_expired_leases(session)
+        await self.revoke_expired_leases(session, owner_user_id=scope.owner_user_id)
         environment = await session.scalar(
             select(SandboxEnvironmentModel).where(
                 SandboxEnvironmentModel.owner_user_id == scope.owner_user_id
@@ -61,10 +61,8 @@ class SandboxLifecycleService:
         The owner uniqueness constraint is the concurrency authority, so a
         nested transaction absorbs the loser of two first-creation requests.
         """
-        # Serialize first-creation and lease renewal for one owner.  Without
-        # this stable row lock, concurrent MySQL transactions can deadlock in
-        # the broad auth-expiry update before the owner uniqueness constraint
-        # gets a chance to resolve the race.
+        # Serialize first-creation and lease renewal for one owner. Expiry
+        # cleanup takes this same row first before touching the owner's leases.
         await session.get(UserModel, scope.owner_user_id, with_for_update=True)
         # Avoid an absent-row gap lock; MySQL can deadlock two first creators.
         environment = await session.scalar(
@@ -105,9 +103,10 @@ class SandboxLifecycleService:
 
     async def ensure_current_lease(self, session: AsyncSession, scope: SandboxScope) -> dict:
         environment = await self.ensure_environment(session, scope)
-        # The owner row is locked by ensure_environment, so this expiry pass
-        # now has a deterministic lock order across concurrent claims.
-        await self.revoke_expired_leases(session)
+        # Never sweep another owner's leases while holding this owner's row.
+        # A global UPDATE reads other users through its auth EXISTS clause;
+        # two owners claiming concurrently can therefore deadlock each other.
+        await self.revoke_expired_leases(session, owner_user_id=scope.owner_user_id)
         now = _utc_now()
         environment.generation = max(environment.generation, scope.generation)
         environment.last_active_at = now
@@ -220,19 +219,8 @@ class SandboxLifecycleService:
                 )
             )
 
-    async def revoke_expired_leases(
-        self,
-        session: AsyncSession,
-        *,
-        now: datetime | None = None,
-    ) -> None:
-        """Mark expired session leases before any request observes their state.
-
-        The Phase 2 Manager also invokes this method from its periodic
-        reconciler.  Correctness comes from the database state, not from a
-        best-effort browser disconnect notification.
-        """
-        current_time = now or _utc_now()
+    @staticmethod
+    def _expired_lease_conditions(current_time: datetime):
         invalid_auth_session = select(SessionModel.id).join(
             UserModel, UserModel.id == SessionModel.user_id
         ).where(
@@ -245,11 +233,33 @@ class SandboxLifecycleService:
                 UserModel.deleted_at.is_not(None),
             ),
         ).exists()
+        return (
+            SandboxLeaseModel.state == "active",
+            or_(SandboxLeaseModel.expires_at <= current_time, invalid_auth_session),
+        )
+
+    async def revoke_expired_leases(
+        self,
+        session: AsyncSession,
+        *,
+        owner_user_id: str,
+        now: datetime | None = None,
+    ) -> None:
+        """Expire one owner's leases with the same user-first lock as claims.
+
+        The indexed owner predicate also bounds the auth-session subquery.
+        Background cleanup uses this operation in separate transactions, so
+        neither a request nor a sweep holds locks for multiple owners.
+        """
+        owner = await session.get(UserModel, owner_user_id, with_for_update=True)
+        if owner is None:
+            return
+        current_time = now or _utc_now()
         await session.execute(
             update(SandboxLeaseModel)
             .where(
-                SandboxLeaseModel.state == "active",
-                or_(SandboxLeaseModel.expires_at <= current_time, invalid_auth_session),
+                SandboxLeaseModel.user_id == owner_user_id,
+                *self._expired_lease_conditions(current_time),
             )
             .values(state="expired", released_at=current_time, reason="auth.session.expired")
         )
@@ -257,9 +267,20 @@ class SandboxLifecycleService:
     async def reconcile_expired_leases(
         self, factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Run the durable expiry pass independently of browser activity."""
-        async with factory.begin() as session:
-            await self.revoke_expired_leases(session)
+        """Discover expired owners without locks, then recheck each separately."""
+        async with factory() as session:
+            owner_ids = list(
+                (await session.scalars(
+                    select(SandboxLeaseModel.user_id)
+                    .where(*self._expired_lease_conditions(_utc_now()))
+                    .distinct()
+                )).all()
+            )
+        for owner_user_id in sorted(owner_ids):
+            async with factory.begin() as session:
+                # Reevaluate expiry after taking the owner lock: an earlier
+                # candidate can have renewed its lease in the meantime.
+                await self.revoke_expired_leases(session, owner_user_id=owner_user_id)
 
     @staticmethod
     def _payload(

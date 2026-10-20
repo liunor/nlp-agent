@@ -14,6 +14,7 @@ from server.infrastructure.mysql.models import (
     SandboxEnvironmentModel,
     SandboxLeaseModel,
     SessionModel,
+    UserModel,
     WorkspaceMemberModel,
 )
 from server.rbac.service import rbac_service
@@ -329,6 +330,97 @@ async def test_concurrent_lease_claims_create_one_environment(mysql_session_fact
     async with mysql_session_factory() as session:
         environments = list((await session.scalars(select(SandboxEnvironmentModel).where(SandboxEnvironmentModel.owner_user_id == user.id))).all())
     assert len(environments) == 1
+
+
+async def _two_owners_with_sandbox_leases(factory) -> list[SandboxScope]:
+    from server.web.database_auth import DatabaseSessionAuth
+
+    async with factory.begin() as session:
+        service = UserService(session)
+        users = [
+            await service.create_user(data=UserCreate(
+                username=f"leaseowner{uuid4().hex[:10]}",
+                display_name="Lease regression", password="InitialPw0rd1",
+            ))
+            for _ in range(2)
+        ]
+    auth = DatabaseSessionAuth(allowed_origins=["http://testserver"])
+    scopes = []
+    for user in users:
+        _, claims = await auth.login(
+            factory, user.username, "InitialPw0rd1", client_key=f"lease-{user.id}"
+        )
+        async with factory.begin() as session:
+            principal = await rbac_service.principal_for_user_id(session, user.id)
+            scope = SandboxScope.from_authenticated_request(principal, claims)
+            await sandbox_lifecycle_service.ensure_current_lease(session, scope)
+            scopes.append(scope)
+    return scopes
+
+
+@pytest.mark.asyncio
+async def test_different_owners_can_renew_leases_while_both_user_rows_are_locked(
+    mysql_session_factory, monkeypatch,
+) -> None:
+    """Force the interleaving that deadlocked the live two-user claim wave."""
+    scopes = await _two_owners_with_sandbox_leases(mysql_session_factory)
+    original = sandbox_lifecycle_service.ensure_environment
+    both_locked = asyncio.Event()
+    locked_owners: set[str] = set()
+
+    async def synchronized_environment(session, scope):
+        environment = await original(session, scope)
+        locked_owners.add(scope.owner_user_id)
+        if len(locked_owners) == 2:
+            both_locked.set()
+        await asyncio.wait_for(both_locked.wait(), timeout=5)
+        return environment
+
+    monkeypatch.setattr(sandbox_lifecycle_service, "ensure_environment", synchronized_environment)
+
+    async def renew(scope):
+        async with mysql_session_factory.begin() as session:
+            return await sandbox_lifecycle_service.ensure_current_lease(session, scope)
+
+    results = await asyncio.wait_for(
+        asyncio.gather(*(renew(scope) for scope in scopes)), timeout=10
+    )
+    assert len({result["lease"]["id"] for result in results}) == 2
+    assert all(result["lease"]["state"] == "active" for result in results)
+
+
+@pytest.mark.asyncio
+async def test_describe_does_not_lock_or_expire_another_owner_and_sweep_still_expires(
+    mysql_session_factory,
+) -> None:
+    scopes = await _two_owners_with_sandbox_leases(mysql_session_factory)
+    async with mysql_session_factory.begin() as session:
+        other_lease = await session.scalar(select(SandboxLeaseModel).where(
+            SandboxLeaseModel.auth_session_id == scopes[1].auth_session_id
+        ))
+        other_lease.expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+        other_lease_id = other_lease.id
+
+    async def describe_first_owner():
+        async with mysql_session_factory.begin() as session:
+            return await sandbox_lifecycle_service.describe(session, scopes[0])
+
+    # A request for A must finish while another transaction owns B's user row.
+    # The old global expiry UPDATE waited on B and made unrelated users contend.
+    async with mysql_session_factory.begin() as held:
+        await held.get(UserModel, scopes[1].owner_user_id, with_for_update=True)
+        result = await asyncio.wait_for(describe_first_owner(), timeout=3)
+        assert result["lease"]["state"] == "active"
+        async with mysql_session_factory() as read:
+            assert (await read.get(SandboxLeaseModel, other_lease_id)).state == "active"
+
+    await sandbox_lifecycle_service.reconcile_expired_leases(mysql_session_factory)
+    async with mysql_session_factory() as read:
+        assert (await read.get(SandboxLeaseModel, other_lease_id)).state == "expired"
+        first_lease = await read.scalar(select(SandboxLeaseModel).where(
+            SandboxLeaseModel.auth_session_id == scopes[0].auth_session_id
+        ))
+        assert first_lease.state == "active"
 
 
 @pytest.mark.asyncio
