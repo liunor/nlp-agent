@@ -240,7 +240,8 @@ jobs:
               next
             }
             /^NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX=/ {
-              print "NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX=\"4\""
+              # Keep an operator-reviewed budget across later TEST releases.
+              print
               host_max_found = 1
               next
             }

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import math
 import time
 from uuid import uuid4
 
@@ -479,6 +480,12 @@ class WarmPoolManager:
             return None
 
     async def _host_allows_create(self, *, total_count: int, reserved_count: int = 0) -> bool:
+        runtime_memory_mb = getattr(self._docker, "memory_limit_mb", DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb)
+        if isinstance(runtime_memory_mb, bool) or not isinstance(runtime_memory_mb, (int, float)) or not math.isfinite(runtime_memory_mb) or runtime_memory_mb <= 0:
+            raise ValueError("sandbox runtime memory budget must be finite and positive")
+        # Rows reserved earlier in this refill have not reached Docker yet;
+        # their memory is not reflected in MemAvailable. Budget all of them.
+        required_new_memory_mb = runtime_memory_mb * (max(0, reserved_count) + 1)
         host_runtime_count = await self._host_runtime_count()
         host_total_max = max(0, int(settings.NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX))
         effective_total_count = total_count
@@ -498,13 +505,13 @@ class WarmPoolManager:
                 total_max=host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX,
                 available_memory_mb=float(available_memory),
                 memory_reserve_mb=settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB,
-                runtime_memory_mb=DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb,
+                runtime_memory_mb=required_new_memory_mb,
                 disk_free_gb=float(disk_free),
                 disk_reserve_gb=settings.NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB,
             )
         if disk_free is not None and float(disk_free) < settings.NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB:
             return False
-        if available_memory is not None and float(available_memory) < settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB + DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb:
+        if available_memory is not None and float(available_memory) < settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB + required_new_memory_mb:
             return False
         total_max = host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX
         return effective_total_count < total_max
