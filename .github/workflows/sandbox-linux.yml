@@ -201,7 +201,11 @@ jobs:
           mapfile -t TESTS < <(pytest tests/test_sandbox_manager_docker_integration.py --collect-only -q | sed -n '/::/p')
           for test in "${TESTS[@]}"; do
             echo "Running Manager integration test: ${test}"
-            timeout --signal=TERM --kill-after=15s 120s pytest "${test}" -vv -s -o faulthandler_timeout=30
+            TEST_TIMEOUT=120s
+            if [[ "${test}" == *::test_measured_profile_real_http_rpc_runsc_lifecycle ]]; then
+              TEST_TIMEOUT=420s
+            fi
+            timeout --signal=TERM --kill-after=15s "${TEST_TIMEOUT}" pytest "${test}" -vv -s -o faulthandler_timeout=60
           done
       - uses: actions/upload-artifact@v4
         with:

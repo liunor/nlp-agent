@@ -26,6 +26,7 @@ def create_runtime_adapter(
     namespace: str = "local",
     memory_mb: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb,
     cpu_cores: float = DEFAULT_SANDBOX_RUNTIME_LIMITS.cpu_cores,
+    allow_local_image_id: bool = False,
 ) -> SandboxRuntimeAdapter:
     if type(memory_mb) is not int or memory_mb < 256:
         raise ValueError("sandbox memory_mb must be an integer of at least 256 MiB")
@@ -33,7 +34,7 @@ def create_runtime_adapter(
         raise ValueError("sandbox cpu_cores must be finite and positive")
     selected = backend.strip().lower()
     if selected in {"runsc", "gvisor", "docker"}:
-        return DockerRuntimeAdapter(DockerRuntimeConfig(image=image, namespace=namespace, memory=f"{memory_mb}m", cpus=str(float(cpu_cores))))
+        return DockerRuntimeAdapter(DockerRuntimeConfig(image=image, namespace=namespace, memory=f"{memory_mb}m", cpus=str(float(cpu_cores)), allow_local_image_id=allow_local_image_id))
     if selected in {"kata", "kata-qemu"}:
         return KataRuntimeAdapter(KataRuntimeConfig(image=image, namespace=namespace, memory=f"{memory_mb}m", cpus=str(float(cpu_cores))))
     if memory_mb != DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb or cpu_cores != DEFAULT_SANDBOX_RUNTIME_LIMITS.cpu_cores:

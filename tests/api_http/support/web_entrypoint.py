@@ -78,7 +78,10 @@ from .sandbox import DeterministicSandboxManager
 
 
 _sandbox_manager = DeterministicSandboxManager()
-if os.environ.get("NLP_AGENT_SANDBOX_RUNTIME_MODE", "").strip().lower() == "docker":
+if (
+    os.environ.get("NLP_AGENT_SANDBOX_RUNTIME_MODE", "").strip().lower() == "docker"
+    and os.environ.get("NLP_AGENT_API_HTTP_REAL_SANDBOX") != "1"
+):
     from server.sandbox import manager_rpc
 
     def _create_test_sandbox_manager():

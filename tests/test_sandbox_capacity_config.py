@@ -71,6 +71,17 @@ def test_factory_applies_candidate_without_weakening_isolation():
                                memory_mb=512)
 
 
+def test_local_built_image_requires_explicit_factory_opt_in():
+    from server.sandbox.runtime_factory import create_runtime_adapter
+
+    image = "sha256:" + "c" * 64
+    with pytest.raises(ValueError, match="immutable digest"):
+        create_runtime_adapter(backend="runsc", image=image)
+    adapter = create_runtime_adapter(backend="runsc", image=image, allow_local_image_id=True)
+    assert adapter.config.image == image
+    assert adapter.config.runtime == "runsc"
+
+
 @pytest.mark.parametrize("disk", [20.0, None])
 def test_manager_budgets_actual_profile_and_all_not_yet_created_reservations(monkeypatch, disk):
     from configs.settings import settings
