@@ -125,19 +125,35 @@ class SandboxLifecycleService:
         if lease is not None:
             lease = await session.get(SandboxLeaseModel, lease.id, with_for_update=True)
         if lease is None:
-            lease = SandboxLeaseModel(
-                id=str(uuid4()),
-                environment_id=environment.id,
-                user_id=scope.owner_user_id,
-                auth_session_id=scope.auth_session_id,
-                workspace_id=scope.workspace_id,
-                generation=environment.generation,
-                actor_type="browser",
-                state="active",
-                expires_at=scope.lease_expires_at,
-            )
-            session.add(lease)
-        else:
+            try:
+                async with session.begin_nested():
+                    lease = SandboxLeaseModel(
+                        id=str(uuid4()),
+                        environment_id=environment.id,
+                        user_id=scope.owner_user_id,
+                        auth_session_id=scope.auth_session_id,
+                        workspace_id=scope.workspace_id,
+                        generation=environment.generation,
+                        actor_type="browser",
+                        state="active",
+                        expires_at=scope.lease_expires_at,
+                    )
+                    session.add(lease)
+                    await session.flush()
+            except IntegrityError:
+                # A caller can enter with an older REPEATABLE READ snapshot
+                # before waiting on the owner lock. A current locking read
+                # resolves the unique-key winner after rolling back only the
+                # attempted insert, without discarding the outer transaction.
+                lease = await session.scalar(
+                    select(SandboxLeaseModel).where(
+                        SandboxLeaseModel.environment_id == environment.id,
+                        SandboxLeaseModel.auth_session_id == scope.auth_session_id,
+                    ).with_for_update()
+                )
+                if lease is None:
+                    raise
+        if lease is not None:
             lease.state = "active"
             # Lease generation is the Environment fencing generation.  The
             # authenticated authorization version remains in ``scope`` and is

@@ -908,10 +908,12 @@ class WarmPoolManager:
                 now=_utc_now(),
             ):
                 raise PermissionError("sandbox authentication lifecycle is no longer active")
-            if runtime.claim_nonce_hash is not None:
-                if nonce is None or not warm_pool_service.validate_nonce(runtime.claim_nonce_hash, nonce):
+            if nonce is not None:
+                if runtime.claim_nonce_hash is None or not warm_pool_service.validate_nonce(runtime.claim_nonce_hash, nonce):
                     raise PermissionError("sandbox command lease, generation, or nonce is invalid")
                 runtime.claim_nonce_hash = None
+            elif runtime.claim_nonce_hash is not None:
+                raise PermissionError("sandbox command lease, generation, or nonce is invalid")
             external_id = runtime.external_runtime_id
         if not external_id:
             raise RuntimeError("claimed runtime has no container id")
