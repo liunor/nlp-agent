@@ -1,9 +1,10 @@
-import { ArrowRight, BadgeInfo, BookOpenCheck, ChevronDown, ChevronRight, CircleHelp, Clock3, Coins, Database, Gauge, Github, Globe2, Info, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, X } from "lucide-react";
+import { ArrowRight, BadgeInfo, BookOpenCheck, ChevronDown, ChevronRight, CircleHelp, Clock3, Coins, Database, Gauge, Github, Globe2, Info, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import { QuotaUsagePage } from "@/modules/quota/QuotaUsagePage";
 import { JoinNovaDialog } from "@/modules/student/components/JoinNovaDialog";
+import { ClassroomSettingsSection } from "@/modules/student/components/ClassroomSettingsSection";
 import { api } from "@/platform/http/api";
 import type { FeedbackCategory, FeedbackThread, LearningContext, ReleaseNoteEntry, UserSettings } from "@/shared/types";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
@@ -11,13 +12,14 @@ import { supportedLocales } from "@/shared/i18n/config";
 import { saveFeedback } from "@/shared/utils/feedback";
 import { APP_NAME } from "@/shared/version";
 
-type SettingsSection = "general" | "appearance" | "chat" | "learning" | "data" | "quota" | "feedback" | "updates" | "about";
+type SettingsSection = "general" | "appearance" | "chat" | "learning" | "classrooms" | "data" | "quota" | "feedback" | "updates" | "about";
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof Settings2 }> = [
   { id: "general", label: "通用", icon: Settings2 },
   { id: "appearance", label: "外观", icon: Sun },
   { id: "chat", label: "对话与流式", icon: Gauge },
   { id: "learning", label: "学习体验", icon: BookOpenCheck },
+  { id: "classrooms", label: "我的班级", icon: Users },
   { id: "data", label: "数据与隐私", icon: Database },
   { id: "quota", label: "额度与用量", icon: Coins },
   { id: "feedback", label: "意见反馈", icon: MessageSquarePlus },
@@ -109,7 +111,12 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   const canViewQuota = hasExplicitPermissions
     ? permissions?.includes("quota:usage:read_self") ?? false
     : roles.some((role) => ["guest", "student", "teacher", "developer"].includes(role));
-  const visibleSections = canViewQuota ? sections : sections.filter((item) => item.id !== "quota");
+  const canSubmitClassroomJoin = hasExplicitPermissions
+    ? permissions?.includes("classroom:join_request:submit") ?? false
+    : roles.some((role) => ["guest", "student", "teacher", "developer", "admin"].includes(role));
+  const visibleSections = sections.filter((item) =>
+    (item.id !== "quota" || canViewQuota) && (item.id !== "classrooms" || canSubmitClassroomJoin),
+  );
   // Server-side permissions win when present (custom RBAC roles); legacy guest
   // sessions only carry roles, so fall back to the built-in role packages.
   const canSubmitFeedback = hasExplicitPermissions
@@ -182,11 +189,11 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
           <p><CircleHelp size={14} />额度只读展示，分配和策略调整由开发者统一管理。</p>
         </aside>
         <div className="settings-content">
-          <header><div><strong>{visibleSections.find((item) => item.id === section)?.label}</strong><p>{section === "data" ? "数据、隐私与开发者配置集中在此管理。" : section === "quota" ? "查看当前额度与 Token 用量。" : section === "about" ? "了解 Nova 以及项目背后的团队。" : "修改会立即保存，并在下次打开时恢复。"}</p></div><button className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><X size={19} /></button></header>
+          <header><div><strong>{visibleSections.find((item) => item.id === section)?.label}</strong><p>{section === "data" ? "数据、隐私与开发者配置集中在此管理。" : section === "quota" ? "查看当前额度与 Token 用量。" : section === "classrooms" ? "提交班级申请并查看审核进度。" : section === "about" ? "了解 Nova 以及项目背后的团队。" : "修改会立即保存，并在下次打开时恢复。"}</p></div><button className="icon-button" type="button" aria-label="关闭设置" onClick={onClose}><X size={19} /></button></header>
           <div className="settings-scroll">
             {section === "general" && <>
               <SettingGroup title="界面语言" description="语言偏好会同步保存到本地后端，并立即切换学生模式的界面语言。"><label className="settings-field"><span><Globe2 size={15} />阅读语言</span><select value={settings.locale} onChange={(event) => onChange({ locale: event.target.value })}>{supportedLocales.map((locale) => <option key={locale.code} value={locale.code}>{locale.nativeLabel} · {locale.label}</option>)}</select></label></SettingGroup>
-              <SettingGroup title="学习空间" description="当前为单一同域学习空间；课程、班级和学生账号将在后续接入。"><div className="settings-note">默认工作空间：<b>{settings.default_workspace_id ?? "default"}</b></div>{canTeach && <button className="settings-link-button" type="button" onClick={onOpenTeacher}>进入教师模式 <ChevronRight size={15} /></button>}</SettingGroup>
+              <SettingGroup title="学习空间" description="查看当前学习空间；有入班权限的账号可在“我的班级”提交申请。"><div className="settings-note">默认工作空间：<b>{settings.default_workspace_id ?? "default"}</b></div>{canTeach && <button className="settings-link-button" type="button" onClick={onOpenTeacher}>进入教师模式 <ChevronRight size={15} /></button>}</SettingGroup>
             <SettingGroup
   title="偏好管理"
   description="将界面和学习偏好恢复为初始状态，不会删除对话或学习记录。"
@@ -236,6 +243,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   </SettingGroup>
 </>}            {section === "chat" && <><SettingGroup title="回答呈现" description="控制模型是否进行额外思考，以及实时回答的呈现方式。"><ToggleRow title="启用思考过程" detail="开启后模型会进行更充分推理并显示推理流；关闭后从下一条消息起直接生成教学回答，响应更快。" checked={settings.show_reasoning} onChange={(checked) => onChange({ show_reasoning: checked })} /><label className="settings-field"><span>流式渲染节奏<small>较快更实时，较慢更稳定</small></span><select value={settings.stream_render_interval_ms} onChange={(event) => onChange({ stream_render_interval_ms: Number(event.target.value) })}><option value={0}>即时</option><option value={30}>平衡（30 ms）</option><option value={80}>平滑（80 ms）</option></select></label></SettingGroup><SettingGroup title="快捷操作" description="发送消息后，可以在学习记录中生成练习、标记待复习概念，或导出 Markdown 学习报告。"><div className="settings-note">对话发送：Enter；换行：Shift + Enter</div></SettingGroup></>}
             {section === "learning" && <><SettingGroup title="默认学习上下文" description="主题请在聊天顶部从教师启用的目录中选择；难度和教学方式可在此设置。"><div className="settings-note">当前主题：{learningContext.topic_name || "未选择"}</div><div className="settings-two-fields"><label className="settings-field"><span>难度</span><select value={learningContext.level} onChange={(event) => updateLearning({ level: event.target.value as LearningContext["level"] })}>{Object.entries(levelLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="settings-field"><span>教学方式</span><select value={learningContext.mode} onChange={(event) => updateLearning({ mode: event.target.value as LearningContext["mode"] })}>{Object.entries(modeLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div></SettingGroup><SettingGroup title="学习记录" description="会话标题、概念、待复习标记和摘要仅存储在此浏览器；聊天内容由后端会话持久化。"><div className="settings-note">打开右侧“学习记录”可查看进度并导出报告。</div></SettingGroup></>}
+            {section === "classrooms" && <SettingGroup title="申请加入班级" description="输入教师提供的班级码提交申请，审核通过后加入班级。"><ClassroomSettingsSection key={userId} canSubmit={canSubmitClassroomJoin} /></SettingGroup>}
 {section === "data" && (
   <>
     <SettingGroup

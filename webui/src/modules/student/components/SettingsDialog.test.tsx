@@ -4,8 +4,11 @@ import { SettingsDialog } from "./SettingsDialog";
 import { loadFeedback } from "@/shared/utils/feedback";
 import type { UserSettings } from "@/shared/types";
 
-const { getFeedbackDailyStateMock, getOwnFeedbackMock, getQuotaMock, getUsageMock, listPublishedReleaseNotesMock, markOwnFeedbackReadMock, submitFeedbackMock } = vi.hoisted(() => ({ getFeedbackDailyStateMock: vi.fn(), getOwnFeedbackMock: vi.fn(), getQuotaMock: vi.fn(), getUsageMock: vi.fn(), listPublishedReleaseNotesMock: vi.fn(), markOwnFeedbackReadMock: vi.fn(), submitFeedbackMock: vi.fn() }));
-vi.mock("@/platform/http/api", () => ({ api: { getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock, getQuota: getQuotaMock, getUsage: getUsageMock, listPublishedReleaseNotes: listPublishedReleaseNotesMock, markOwnFeedbackRead: markOwnFeedbackReadMock, submitFeedback: submitFeedbackMock } }));
+const { getFeedbackDailyStateMock, getOwnFeedbackMock, getQuotaMock, getUsageMock, listPublishedReleaseNotesMock, markOwnFeedbackReadMock, submitFeedbackMock, listMyJoinRequestsMock, submitClassroomJoinRequestMock } = vi.hoisted(() => ({ getFeedbackDailyStateMock: vi.fn(), getOwnFeedbackMock: vi.fn(), getQuotaMock: vi.fn(), getUsageMock: vi.fn(), listPublishedReleaseNotesMock: vi.fn(), markOwnFeedbackReadMock: vi.fn(), submitFeedbackMock: vi.fn(), listMyJoinRequestsMock: vi.fn(), submitClassroomJoinRequestMock: vi.fn() }));
+vi.mock("@/platform/http/api", () => ({
+  ApiError: class MockApiError extends Error {},
+  api: { getFeedbackDailyState: getFeedbackDailyStateMock, getOwnFeedback: getOwnFeedbackMock, getQuota: getQuotaMock, getUsage: getUsageMock, listPublishedReleaseNotes: listPublishedReleaseNotesMock, markOwnFeedbackRead: markOwnFeedbackReadMock, submitFeedback: submitFeedbackMock, listMyJoinRequests: listMyJoinRequestsMock, submitClassroomJoinRequest: submitClassroomJoinRequestMock },
+}));
 vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() {} close() {} } }));
 
 const settings: UserSettings = {
@@ -49,6 +52,60 @@ describe("SettingsDialog", () => {
     getQuotaMock.mockResolvedValue({ quota: { user_id: "user-1", workspace_id: "workspace-a", buckets: [] }, policy: null });
     getUsageMock.mockReset();
     getUsageMock.mockResolvedValue({ events: 0, priced_credits_micro: 0, unpriced_events: 0, credits_complete: true, tokens: {}, breakdown: [] });
+    listMyJoinRequestsMock.mockReset().mockResolvedValue({ items: [], total: 0 });
+    submitClassroomJoinRequestMock.mockReset().mockResolvedValue({ status: "pending" });
+  });
+
+  it.each(["student", "guest"])("opens the join-code form from settings for a %s", async (role) => {
+    render(<SettingsDialog {...baseProps} roles={[role]} permissions={["classroom:join_request:submit"]} />);
+    expect(listMyJoinRequestsMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "我的班级" }));
+    expect(await screen.findByText("暂无入班申请。")).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: "班级码" }), { target: { value: " abcd2345 " } });
+    fireEvent.click(screen.getByRole("button", { name: "申请入班" }));
+
+    await waitFor(() => expect(submitClassroomJoinRequestMock).toHaveBeenCalledWith({ join_code: "ABCD2345" }));
+    expect(await screen.findByText("申请已提交，请等待教师审核")).toBeVisible();
+    expect(listMyJoinRequestsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows classroom requests for a custom role granted the permission", async () => {
+    render(<SettingsDialog {...baseProps} roles={["custom"]} permissions={["classroom:join_request:submit"]} />);
+    fireEvent.click(screen.getByRole("button", { name: "我的班级" }));
+    expect(await screen.findByRole("textbox", { name: "班级码" })).toBeVisible();
+  });
+
+  it("does not expose classroom requests when server permissions exclude them", () => {
+    render(<SettingsDialog {...baseProps} permissions={["identity:profile:read_self"]} />);
+    expect(screen.queryByRole("button", { name: "我的班级" })).not.toBeInTheDocument();
+    expect(listMyJoinRequestsMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the join entry available for compatibility student sessions", async () => {
+    render(<SettingsDialog {...baseProps} permissions={[]} />);
+    fireEvent.click(screen.getByRole("button", { name: "我的班级" }));
+    expect(await screen.findByRole("textbox", { name: "班级码" })).toBeVisible();
+  });
+
+  it("does not load classroom requests for an anonymous preview", () => {
+    render(<SettingsDialog {...baseProps} roles={[]} permissions={[]} />);
+    expect(screen.queryByRole("button", { name: "我的班级" })).not.toBeInTheDocument();
+    expect(listMyJoinRequestsMock).not.toHaveBeenCalled();
+  });
+
+  it("clears the previous account's join requests when the signed-in user changes", async () => {
+    listMyJoinRequestsMock.mockResolvedValueOnce({ items: [{
+      id: "request-old", class_name: "上个账号的班级", status: "pending", requested_at: "2026-10-20T00:00:00Z",
+    }], total: 1 });
+    const { rerender } = render(<SettingsDialog {...baseProps} userId="student-a" />);
+    fireEvent.click(screen.getByRole("button", { name: "我的班级" }));
+    expect(await screen.findByText("上个账号的班级")).toBeVisible();
+
+    rerender(<SettingsDialog {...baseProps} userId="student-b" />);
+    expect(screen.queryByText("上个账号的班级")).not.toBeInTheDocument();
+    expect(await screen.findByText("暂无入班申请。")).toBeVisible();
+    expect(listMyJoinRequestsMock).toHaveBeenCalledTimes(2);
   });
 
   it("shows the About page and opens and closes the Join Nova dialog", () => {
