@@ -70,12 +70,33 @@ sink; tests that inspect telemetry install their own isolated repository. SQL
 tests compile MySQL statements against captured connections. Ruff and diff checks
 passed. These are not real MySQL, runsc or production-load results.
 
-PR creation and deployment are deferred at the user's request. A branch push can
-run CI without creating a PR or deploying TEST. A new CI-only MySQL test checks
-bulk upsert last-value semantics, whole-batch rollback and reset-lock release on
-an isolated temporary table. Real MySQL integration and deployed load acceptance
-remain required. After a consolidated review and TEST
+The user has requested one combined PR to develop for these database changes and
+the file-send modal fix below. The database commit `9cbe2f7` passed CI run
+`39613088460`: 2043 backend tests passed, 159 skipped, with frontend checks and
+Docker build passing. The new isolated real-MySQL test verifies bulk upsert
+last-value semantics, whole-batch rollback and reset-lock release. It checks the
+deliberate CHECK-constraint violation by MySQL code 3819 rather than assuming a
+driver-specific exception subclass. No TEST or production deployment has been
+performed from this branch. The combined head still requires its own CI and
+deployed load acceptance. After a consolidated review and TEST
 release, first recheck the original two-by-four configuration; then compare higher
 concurrency with an explicit per-process pool/total connection budget in the same
 bounded staged run. No higher-capacity configuration or 20 second result is accepted
 yet. Do not repeat the old trial marker to launch more load.
+
+## File-send modal stacking fix in the same PR
+
+The file-send overlay was nested inside `.tool-dock`, whose desktop stacking
+context has z-index 34. The learning-topic menu has z-index 45, so it could cover
+the confirmation button despite the nested overlay's z-index 110.
+
+Render the existing overlay through a React portal into `document.body`. Its
+unchanged fixed-position overlay now participates in the page stacking context
+at z-index 110. The dialog remains centered; recipient lookup, preflight,
+confirmation eligibility and file-transfer requests are unchanged.
+
+The existing FilesPanel and LearningContextBar suites pass (23 tests), as do
+component ESLint and frontend TypeScript checks. This is local regression
+evidence, not a deployed-browser acceptance result. After TEST deployment, verify
+that clicking confirmation reaches the send action and does not open the
+background learning-topic menu.
