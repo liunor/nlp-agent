@@ -237,7 +237,9 @@ class RedisWorkerRuntime:
                 raise
         self._group_ready = True
 
-    async def run_once(self, *, block_ms: int | None = None) -> int:
+    async def run_once(
+        self, *, block_ms: int | None = None, wait_for_completion: bool = True
+    ) -> int:
         if self._closed:
             return 0
         await self._ensure_group()
@@ -270,6 +272,11 @@ class RedisWorkerRuntime:
             for _stream, stream_messages in batches
             for message_id, fields in stream_messages
         ][:available_slots]
+        # close() may finish its drain while XREADGROUP is blocked. Leave any
+        # newly delivered messages pending for the next owner instead of
+        # starting work after the shutdown drain has already finished.
+        if self._closed:
+            return 0
         processors: list[asyncio.Task[int]] = []
         for message_id, fields in messages:
             task = asyncio.create_task(
@@ -279,6 +286,15 @@ class RedisWorkerRuntime:
             self._processing.add(task)
             task.add_done_callback(self._processing.discard)
             processors.append(task)
+        if not wait_for_completion:
+            # COUNT is a maximum, not a request to wait for a full batch.
+            # Keep receiving later arrivals while slots are still available;
+            # the next iteration waits for completion only when we are full.
+            await asyncio.sleep(0)
+            return sum(
+                task.result() for task in processors
+                if task.done() and not task.cancelled() and task.exception() is None
+            )
         if not self._processing:
             await asyncio.sleep(0)
             return 0
@@ -517,7 +533,7 @@ class RedisWorkerRuntime:
         try:
             while not self._closed:
                 try:
-                    await self.run_once()
+                    await self.run_once(wait_for_completion=False)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

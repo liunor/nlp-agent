@@ -644,6 +644,122 @@ async def test_worker_runs_only_available_slots_concurrently_without_overfetch()
     assert len(redis.acks) == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [2, 4])
+async def test_worker_forever_fills_free_slots_before_first_turn_finishes(monkeypatch, concurrency):
+    """Stream COUNT is a maximum: later arrivals must use the remaining slots."""
+    redis = FakeRedis()
+    config = RedisTransportConfig(
+        task_stream="turns", task_group="workers", worker_concurrency=concurrency,
+        poll_block_ms=1,
+    )
+    tasks = [TurnTask(
+        context=SessionContext(session_id=f"incremental-session-{index}"),
+        turn_id=f"incremental-turn-{index}", content="hello",
+        learning_context=None, learning_progress=None, exercise_state=None,
+        teaching_materials=TeachingMaterials(), guided_session_id=None, exercise_session_id=None,
+    ) for index in range(concurrency + 1)]
+    started = []
+    first_started, full, replacement_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    releases = {task.turn_id: asyncio.Event() for task in tasks}
+    live, peak = 0, 0
+
+    async def execute(task):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        started.append(task.turn_id)
+        if len(started) == 1:
+            first_started.set()
+        if len(started) == concurrency:
+            full.set()
+        if task.turn_id == tasks[-1].turn_id:
+            replacement_started.set()
+        try:
+            await releases[task.turn_id].wait()
+        finally:
+            live -= 1
+
+    async def parked():
+        await asyncio.Event().wait()
+
+    # Model Redis's empty blocking reads without a CPU-spinning fake.
+    original_read = redis.xreadgroup
+    async def read(*args, **kwargs):
+        if not redis.reads:
+            await asyncio.sleep(0.001)
+        return await original_read(*args, **kwargs)
+
+    monkeypatch.setattr(redis, "xreadgroup", read)
+    worker = RedisWorkerRuntime(redis, config, execute, consumer_name="incremental-worker")
+    monkeypatch.setattr(worker, "_listen_control", parked)
+    redis.reads.append([("turns", [("1-0", {"payload": TurnTaskCodec.dumps(tasks[0])})])])
+    running = asyncio.create_task(worker.run_forever())
+    try:
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        # Several empty polls must not make an idle slot wait for this turn.
+        await asyncio.sleep(0.01)
+        for index, task in enumerate(tasks[1:], start=2):
+            redis.reads.append([("turns", [(f"{index}-0", {"payload": TurnTaskCodec.dumps(task)})])])
+        await asyncio.wait_for(full.wait(), timeout=0.5)
+        assert len(started) == concurrency
+        assert not releases[tasks[0].turn_id].is_set()
+        assert redis.acks == []
+        assert not replacement_started.is_set()
+        assert peak == concurrency
+
+        releases[tasks[0].turn_id].set()
+        await asyncio.wait_for(replacement_started.wait(), timeout=0.5)
+        assert peak == concurrency
+        assert tasks[-1].turn_id in started
+    finally:
+        for release in releases.values():
+            release.set()
+        await worker.close(grace_s=1)
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+    assert len(redis.acks) == len(tasks)
+    assert len(set(redis.acks)) == len(tasks)
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_does_not_start_delivery_from_pending_read(monkeypatch):
+    redis = FakeRedis()
+    reading, deliver = asyncio.Event(), asyncio.Event()
+    task = TurnTask(
+        context=SessionContext(session_id="shutdown-session"), turn_id="shutdown-turn",
+        content="hello", learning_context=None, learning_progress=None, exercise_state=None,
+        teaching_materials=TeachingMaterials(), guided_session_id=None, exercise_session_id=None,
+    )
+
+    async def blocked_read(*args, **kwargs):
+        reading.set()
+        await deliver.wait()
+        return [("turns", [("1-0", {"payload": TurnTaskCodec.dumps(task)})])]
+
+    monkeypatch.setattr(redis, "xreadgroup", blocked_read)
+    executed = []
+    worker = RedisWorkerRuntime(
+        redis, RedisTransportConfig(task_stream="turns", task_group="workers"),
+        executed.append, consumer_name="shutdown-worker",
+    )
+    read = asyncio.create_task(worker.run_once(wait_for_completion=False))
+    try:
+        await asyncio.wait_for(reading.wait(), timeout=1)
+        await worker.close(grace_s=0)
+        deliver.set()
+        assert await asyncio.wait_for(read, timeout=1) == 0
+        assert executed == []
+        assert redis.acks == []
+        assert worker.active_count == 0
+    finally:
+        deliver.set()
+        read.cancel()
+        await asyncio.gather(read, return_exceptions=True)
+        await worker.close(grace_s=0)
+
+
 async def test_worker_failure_does_not_cancel_sibling_or_ack_failed_turn():
     redis = FakeRedis()
     config = RedisTransportConfig(task_stream="turns", task_group="workers", worker_concurrency=2)
@@ -680,7 +796,10 @@ async def test_worker_failure_does_not_cancel_sibling_or_ack_failed_turn():
     await asyncio.wait_for(sibling_started.wait(), timeout=1)
     release_sibling.set()
 
-    assert await run == 1
+    # FIRST_COMPLETED can observe the failed delivery before its sibling
+    # commits. Drain the sibling rather than depending on scheduler order.
+    assert await run in (0, 1)
+    await worker.close(grace_s=1)
     assert redis.acks == [("turns", "workers", "2-0")]
 
 
