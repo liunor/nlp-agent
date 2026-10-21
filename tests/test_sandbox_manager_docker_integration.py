@@ -70,6 +70,62 @@ def _remove_container(name: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.getenv("NLP_AGENT_DOCKER_RUNTIME") != "runsc", reason="requires the real runsc runtime image")
+async def test_real_scratch_obeys_host_guard_and_survives_concurrent_reconcile(monkeypatch, tmp_path) -> None:
+    """Use actual MySQL, runsc, cancellation-safe flock and Docker --rm."""
+    from unittest.mock import AsyncMock
+
+    from configs.settings import settings
+    from server.infrastructure.mysql import DatabaseConfig, create_engine, create_session_factory
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+    from server.sandbox.manager import WarmPoolManager
+
+    namespace = "scratch-admission-" + uuid4().hex[:12]
+    inspected = _run_docker(["image", "inspect", TEST_IMAGE, "--format", "{{.Id}}"], timeout=30)
+    assert inspected.returncode == 0
+    adapter = DockerRuntimeAdapter(DockerRuntimeConfig(
+        image=inspected.stdout.strip(), allow_local_image_id=True, namespace=namespace, memory="512m",
+    ))
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_LOCK_FILE", str(tmp_path / "host.lock"))
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB", 256)
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB", 1)
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX", 16)
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX", 4)
+    engine = create_engine(DatabaseConfig(os.environ["NLP_AGENT_DATABASE_URL"], pool_size=2, max_overflow=0))
+    manager = WarmPoolManager(session_factory=create_session_factory(engine), docker=adapter,
+                              resource_profile_id=namespace, ready_target=0, require_host_lock=True)
+    tasks = []
+    try:
+        scratch = asyncio.create_task(manager.run_scratch(source="import time\ntime.sleep(2)\nprint('SCRATCH_OK')"))
+        tasks.append(scratch)
+        deadline = asyncio.get_running_loop().time() + 12
+        while not await adapter.managed_runtime_ids():
+            assert not scratch.done(), "scratch must reach a real, live container"
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.05)
+        reconciliation = asyncio.create_task(manager.reconcile())
+        tasks.append(reconciliation)
+        await asyncio.sleep(0.1)
+        assert not reconciliation.done(), "reconcile must wait for the scratch host reservation"
+        result, actions = await asyncio.gather(scratch, reconciliation)
+        assert result["status"] == "completed" and result["stdout"].strip() == "SCRATCH_OK"
+        assert not actions.destroy_orphans, "a live scratch must never be selected as an orphan"
+        assert not await adapter.managed_runtime_ids(), "--rm must release the slot"
+        monkeypatch.setattr(manager, "_host_allows_create", AsyncMock(return_value=False))
+        with pytest.raises(RuntimeError, match="resource reserve"):
+            await manager.run_scratch(source="print('must not start')")
+        assert not await adapter.managed_runtime_ids()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for identifier in await adapter.managed_runtime_ids():
+            _remove_container(identifier)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_manager_destroys_unregistered_managed_container() -> None:
     from server.infrastructure.mysql import DatabaseConfig, create_engine, create_session_factory
     from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig

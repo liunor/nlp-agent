@@ -34,10 +34,18 @@ async def host_budget_lock(path: str) -> AsyncIterator[None]:
         os.makedirs(parent, exist_ok=True)
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o660)
     try:
-        await asyncio.to_thread(fcntl.flock, descriptor, fcntl.LOCK_EX)
+        # A blocking worker can acquire the lock after its awaiter was
+        # cancelled and closed this descriptor. Poll without a worker so
+        # cancellation never leaves a future, unowned lock acquisition.
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(0.05)
         try:
             yield
         finally:
-            await asyncio.to_thread(fcntl.flock, descriptor, fcntl.LOCK_UN)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)

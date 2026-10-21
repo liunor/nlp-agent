@@ -286,8 +286,7 @@ class DockerRuntimeAdapter:
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds + 3)
         except TimeoutError as error:
-            process.kill()
-            await process.communicate()
+            await _kill_and_reap(process)
             await self.interrupt(external_runtime_id)
             raise TimeoutError("sandbox execution timed out") from error
         if process.returncode != 0:
@@ -333,9 +332,8 @@ class DockerRuntimeAdapter:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(input=payload), timeout=timeout_seconds + 3
             )
-        except TimeoutError as error:
-            process.kill()
-            await process.communicate()
+        except (TimeoutError, asyncio.CancelledError) as error:
+            await _kill_and_reap(process)
             # Killing the local Docker CLI does not imply the detached daemon
             # stopped the container. Force removal is therefore mandatory on
             # the known, Manager-generated name.
@@ -350,6 +348,8 @@ class DockerRuntimeAdapter:
                 # The original timeout remains authoritative; reconciliation
                 # will also find any managed container that survived cleanup.
                 pass
+            if isinstance(error, asyncio.CancelledError):
+                raise
             raise TimeoutError("sandbox scratch execution timed out") from error
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
