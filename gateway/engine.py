@@ -30,6 +30,7 @@ from server.agent.compression.internal_context import (
     sanitize_public_output,
 )
 from gateway.contracts import GatewayEventType
+from gateway.delta_batcher import DeltaBatcher
 
 
 EngineEventSink = Callable[
@@ -167,6 +168,10 @@ class LangGraphAgentEngine:
             if telemetry is not None
             else nullcontext()
         )
+        async def persist_event(event_type: GatewayEventType, payload: dict) -> None:
+            await self._emit(turn_id, context.session_id, event_type, payload)
+
+        deltas = DeltaBatcher(persist_event)
         with telemetry_binding:
             event_stream = self._app.astream_events(
                 {"messages": messages}, config=config, version="v2"
@@ -176,9 +181,11 @@ class LangGraphAgentEngine:
                 node = metadata.get("langgraph_node")
                 event_name = event.get("event")
                 if event_name == "on_chat_model_start" and node == "coordinator":
+                    await deltas.flush()
                     anonymous_suppressed_model_stream = False
                     continue
                 if event_name == "on_chat_model_end" and node == "coordinator":
+                    await deltas.flush()
                     anonymous_suppressed_model_stream = False
                     continue
                 if event_name == "on_chat_model_stream" and node == "coordinator":
@@ -210,22 +217,19 @@ class LangGraphAgentEngine:
                                 chunk.content
                             )
                         global_telemetry.mark_ttft(telemetry)
-                        await self._emit(
-                            turn_id,
-                            context.session_id,
+                        await deltas.emit(
                             GatewayEventType.MESSAGE_DELTA,
                             {"delta": chunk.content, "background": background},
                         )
                     reasoning = chunk.additional_kwargs.get("reasoning_content")
                     if reasoning and not looks_like_internal_output(reasoning):
                         global_telemetry.mark_ttft(telemetry)
-                        await self._emit(
-                            turn_id,
-                            context.session_id,
+                        await deltas.emit(
                             GatewayEventType.MESSAGE_DELTA,
                             {"delta": reasoning, "channel": "reasoning", "background": background},
                         )
                 elif event_name == "on_chain_start" and node == "tools" and not active_tool_node:
+                    await deltas.flush()
                     active_tool_node = True
                     observed_tool_events = False
                 elif event_name == "on_tool_start":
@@ -233,9 +237,7 @@ class LangGraphAgentEngine:
                     tool_id = str(event.get("run_id") or event.get("name") or uuid.uuid4())
                     tool_name = str(event.get("name") or "工具")
                     active_tools[tool_id] = tool_name
-                    await self._emit(
-                        turn_id,
-                        context.session_id,
+                    await deltas.emit(
                         GatewayEventType.TOOL_STARTED,
                         {"name": tool_name},
                     )
@@ -243,9 +245,7 @@ class LangGraphAgentEngine:
                     observed_tool_events = True
                     tool_id = str(event.get("run_id") or event.get("name") or "")
                     tool_name = active_tools.pop(tool_id, str(event.get("name") or "工具"))
-                    await self._emit(
-                        turn_id,
-                        context.session_id,
+                    await deltas.emit(
                         GatewayEventType.TOOL_COMPLETED,
                         {"name": tool_name},
                     )
@@ -253,18 +253,14 @@ class LangGraphAgentEngine:
                     observed_tool_events = True
                     tool_id = str(event.get("run_id") or event.get("name") or "")
                     tool_name = active_tools.pop(tool_id, str(event.get("name") or "工具"))
-                    await self._emit(
-                        turn_id,
-                        context.session_id,
+                    await deltas.emit(
                         GatewayEventType.TOOL_FAILED,
                         {"name": tool_name},
                     )
                 elif event_name == "on_chain_end" and node == "tools" and active_tool_node:
                     active_tool_node = False
                     if not observed_tool_events:
-                        await self._emit(
-                            turn_id,
-                            context.session_id,
+                        await deltas.emit(
                             GatewayEventType.TOOL_COMPLETED,
                             {"name": "tool"},
                         )
@@ -275,6 +271,7 @@ class LangGraphAgentEngine:
                             "Unable to apply pending transcript snips",
                             exc_info=True,
                         )
+            await deltas.flush()
 
     async def run_turn(
         self,

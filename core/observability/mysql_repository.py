@@ -54,23 +54,46 @@ class MySQLTelemetryRepository:
         )
 
     def write_batch(self, envelopes: Iterable[TelemetryEnvelope]) -> None:
+        # Redaction and JSON conversion do not need the global reset fence.
+        # Prepare them before holding a DB connection or blocking Turn writers.
+        rows = []
+        for envelope in envelopes:
+            payload = envelope.model_dump(mode="json")
+            item = dict(payload.get("payload") or {})
+            if envelope.kind in {"trace", "span"}:
+                item["error_message"] = None
+                if isinstance(item.get("attributes"), dict):
+                    item["attributes"] = redact_telemetry_mapping(item["attributes"])
+            elif isinstance(item.get("payload"), dict):
+                item["payload"] = redact_telemetry_mapping(item["payload"])
+            payload["payload"] = item
+            key = _record_key(envelope.kind, item)
+            rows.append(dict(
+                id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"nlp-agent-observability:{envelope.kind}:{key}")),
+                kind=envelope.kind, record_key=key, trace_id=item.get("trace_id"),
+                session_id=item.get("session_id"), turn_id=item.get("turn_id"),
+                status=item.get("status"), payload_json=payload,
+            ))
+        if not rows:
+            return
+        batches, batch, batch_bytes = [], [], 0
+        for row in rows:
+            size = len(json.dumps(row, ensure_ascii=False).encode("utf-8"))
+            if batch and (len(batch) >= 16 or batch_bytes + size > 256 * 1024):
+                batches.append(batch)
+                batch, batch_bytes = [], 0
+            batch.append(row)
+            batch_bytes += size
+        batches.append(batch)
+        # Keep the whole batch atomic under the existing reset fence, but use
+        # bounded multi-row upserts instead of one round trip per envelope.
         with self._runtime_begin() as connection:
-            for envelope in envelopes:
-                payload = envelope.model_dump(mode="json")
-                item = dict(payload.get("payload") or {})
-                if envelope.kind in {"trace", "span"}:
-                    item["error_message"] = None
-                    if isinstance(item.get("attributes"), dict):
-                        item["attributes"] = redact_telemetry_mapping(item["attributes"])
-                elif isinstance(item.get("payload"), dict):
-                    item["payload"] = redact_telemetry_mapping(item["payload"])
-                payload["payload"] = item
-                key = _record_key(envelope.kind, item)
-                statement = insert(ObservabilityRecordModel).values(
-                    id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"nlp-agent-observability:{envelope.kind}:{key}")), kind=envelope.kind, record_key=key,
-                    trace_id=item.get("trace_id"), session_id=item.get("session_id"),
-                    turn_id=item.get("turn_id"), status=item.get("status"), payload_json=payload,
-                ).on_duplicate_key_update(payload_json=payload, status=item.get("status"))
+            for batch in batches:
+                statement = insert(ObservabilityRecordModel).values(batch)
+                statement = statement.on_duplicate_key_update(
+                    payload_json=statement.inserted.payload_json,
+                    status=statement.inserted.status,
+                )
                 connection.execute(statement)
 
     def clear(self, *, _lock_held: bool = False) -> dict[str, int]:
