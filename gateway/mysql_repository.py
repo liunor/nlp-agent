@@ -527,6 +527,7 @@ class MySQLGatewayRepository:
         return str(value) if value else None
 
     def append_event(self, *, turn_id: str, session_id: str, event_type: GatewayEventType, payload=None, expected_claim_generation: int | None = None, _connection: Connection | None = None) -> GatewayEvent:
+        payload_json = json.dumps(payload or {}, ensure_ascii=False)
         with (self._runtime_begin() if _connection is None else nullcontext(_connection)) as c:
             terminal_event = event_type in {GatewayEventType.TURN_COMPLETED, GatewayEventType.MESSAGE_COMPLETED, GatewayEventType.TURN_FAILED, GatewayEventType.TURN_CANCELLED}
             fence = self._lock_turn_for_write(c, turn_id, terminal_event=terminal_event)
@@ -546,7 +547,6 @@ class MySQLGatewayRepository:
                 text("SELECT user_id FROM nlp_turns WHERE id=:id FOR UPDATE"),
                 {"id": turn_id},
             ).scalar_one()
-            payload_json = json.dumps(payload or {}, ensure_ascii=False)
             storage = SyncStorageQuota(c, owner_user_id=str(current_user_id))
             storage_reservation = storage.reserve(
                 StorageBucket.CORE,
@@ -561,7 +561,15 @@ class MySQLGatewayRepository:
             if fence is not None and inserted.rowcount != 1:
                 fence.revoke()
                 raise LostTurnClaimError(turn_id)
-            storage.finalize(storage_reservation, reconcile=True)
+            # Only this immutable event was added. Settle its measured MySQL
+            # JSON bytes instead of rescanning the user's entire history under
+            # the global reset fence for every streamed fragment. reserve()
+            # still reconciles an uninitialized ledger before the insertion.
+            actual_bytes = int(c.execute(
+                text("SELECT OCTET_LENGTH(CAST(payload_json AS CHAR)) FROM nlp_turn_events WHERE id=:id"),
+                {"id": event_id},
+            ).scalar_one())
+            storage.finalize(storage_reservation, actual_bytes=actual_bytes, reconcile=False)
         return GatewayEvent(event_id=event_id, turn_id=turn_id, session_id=session_id, sequence=sequence, type=event_type, payload=payload or {})
 
     def events_after(self, turn_id: str, *, after_sequence: int = 0, limit: int = 500) -> list[GatewayEvent]:

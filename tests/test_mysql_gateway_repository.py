@@ -295,6 +295,30 @@ def test_append_event_rejects_a_stale_claim_generation() -> None:
     assert connection.execute.call_count == 1
 
 
+def test_append_event_settles_the_database_measured_size() -> None:
+    repository = object.__new__(MySQLGatewayRepository)
+    transaction = MagicMock()
+    connection = transaction.__enter__.return_value
+    generation, owner, sequence, inserted, measured_size = (MagicMock() for _ in range(5))
+    generation.scalar_one_or_none.return_value = 1
+    owner.scalar_one.return_value = "user-1"
+    sequence.scalar_one.return_value = 7
+    inserted.rowcount = 1
+    measured_size.scalar_one.return_value = 91
+    connection.execute.side_effect = [generation, owner, sequence, inserted, measured_size]
+    repository._runtime_begin = MagicMock(return_value=transaction)
+    with patch("gateway.mysql_repository.SyncStorageQuota") as quota_type:
+        quota = quota_type.return_value
+        quota.reserve.return_value = sentinel.reservation
+        event = repository.append_event(
+            turn_id="turn-1", session_id="session-1", event_type=GatewayEventType.MESSAGE_DELTA,
+            payload={"delta": "fragment"}, expected_claim_generation=1,
+        )
+    quota.finalize.assert_called_once_with(sentinel.reservation, actual_bytes=91, reconcile=False)
+    assert event.sequence == 7
+    assert event.payload == {"delta": "fragment"}
+
+
 def test_create_turn_retries_the_complete_mysql_transaction_after_deadlock() -> None:
     class Transaction:
         def __init__(self, attempt: int, connections: list[MagicMock]) -> None:

@@ -61,6 +61,26 @@ increases contention and cannot by itself establish the 20 second target.
 The reset lock is not removed or made optional. Worker concurrency, pool sizes,
 quota/pricing rules, accounts and deployment files are not changed by this patch.
 
+### Incremental streamed-event storage settlement
+
+Further inspection found that every `append_event` called storage finalization
+with a full reconciliation. That reads twelve core-history aggregates and one
+file aggregate, plus uploaded-image filesystem bytes, while holding the shared
+runtime fence and storage-pool row lock.
+
+An event is an immutable insertion, so it now measures the inserted MySQL JSON
+payload's `OCTET_LENGTH(CAST(payload_json AS CHAR))` and settles that exact delta
+in the same transaction. Initial ledger reconciliation, role/override limits,
+global capacity validation, the reservation lifecycle and stale-worker fences
+remain. JSON preparation also runs before acquiring the runtime fence. This
+replaces thirteen history aggregates per initialized event with one lookup of
+the inserted row; it does not claim an end-to-end server speedup by itself.
+
+Real-MySQL regression coverage checks Unicode/nested JSON byte accounting against
+full reconciliation, atomic rollback after deliberately underestimated final
+usage, and rejected writes from an old worker. These tests run only in isolated
+CI, not against a user's configured business database.
+
 ## Verification and remaining gates
 
 28 local regressions passed: streaming content/order/first text, cancellation,
@@ -70,8 +90,8 @@ sink; tests that inspect telemetry install their own isolated repository. SQL
 tests compile MySQL statements against captured connections. Ruff and diff checks
 passed. These are not real MySQL, runsc or production-load results.
 
-The user has requested one combined PR to develop for these database changes and
-the file-send modal fix below. The database commit `9cbe2f7` passed CI run
+The changes are consolidated on one branch. The user's latest instruction is to
+continue optimizing but defer PR submission. The database commit `9cbe2f7` passed CI run
 `39613088460`: 2043 backend tests passed, 159 skipped, with frontend checks and
 Docker build passing. The new isolated real-MySQL test verifies bulk upsert
 last-value semantics, whole-batch rollback and reset-lock release. It checks the
