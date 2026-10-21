@@ -160,3 +160,30 @@ apply only the new admission lookup to TEST Web, and retain a candidate only
 when its functional/resource checks pass and its twenty-second count and P95
 are both no worse, with at least one improving. This does not change accounts,
 quota/pricing rules, sandbox behavior or production services.
+
+
+## Batched synchronous full storage measurement
+
+The bbedb75 Web admission trial completed all 41 chats and improved the count
+within twenty seconds from 25 to 32. Its first-text P95 rose from 25.016 to
+26.937 seconds, so the strict comparison reverted this Web candidate. Workers
+remain at 2x16 with the original four-file optimization; the twenty-second
+target is still unmet. These are single short-chat comparisons, not proof of
+sustained throughput.
+
+Full synchronous storage reconciliation still sends twelve core-history sums
+and one file sum as thirteen sequential database queries inside the existing
+runtime/storage locks. It now sends the same fixed, owner-filtered expressions
+as scalar subqueries in one SELECT, retaining the MySQL JSON casts, NULL
+definitions, file status filters and separate uploaded-image byte scan. No
+usage source, initial reconciliation, reservation, final quota validation,
+transaction rollback or reset fence is removed. This reduces round trips; it
+does not reduce the amount of history scanned or establish a server speedup.
+
+Regression checks compare all thirteen populated sources against the frozen
+old implementation in isolated CI MySQL, including Unicode/JSON NULL/binary
+values, two-owner isolation, empty data, trashed/deleted files, uploaded images
+and a deliberately underestimated write that must roll back on final quota
+validation. One database statement per measurement is checked explicitly.
+Async reconciliation is unchanged. Runtime candidate validation remains separate
+from these correctness checks. No PR is submitted.
