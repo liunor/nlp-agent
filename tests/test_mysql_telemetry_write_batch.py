@@ -76,7 +76,7 @@ def test_empty_or_invalid_input_does_not_take_a_connection_or_partially_write():
 @pytest.mark.skipif(os.environ.get('GITHUB_ACTIONS') != 'true', reason='Requires the isolated CI MySQL service')
 def test_real_mysql_bulk_upsert_last_value_and_atomic_rollback(monkeypatch):
     from sqlalchemy import CheckConstraint, MetaData, create_engine, func, select, text
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.exc import DBAPIError
     import core.observability.mysql_repository as module
 
     url = os.environ['NLP_AGENT_DATABASE_URL'].replace('mysql+aiomysql://', 'mysql+pymysql://')
@@ -100,8 +100,9 @@ def test_real_mysql_bulk_upsert_last_value_and_atomic_rollback(monkeypatch):
             assert row['status'] == 'ok' and row['payload_json']['payload']['payload']['label'] == 'updated'
         invalid = SimpleNamespace(kind='event', model_dump=lambda **kwargs: {
             'kind': 'event', 'payload': {'event_id': 'invalid-last-record', 'status': 'disallowed'}})
-        with pytest.raises(IntegrityError):
+        with pytest.raises(DBAPIError) as rejected:
             repository.write_batch([*(envelope(1000+i, state) for i in range(32)), invalid])
+        assert rejected.value.orig.args[0] == 3819, 'expected the deliberate CHECK constraint violation'
         with engine.connect() as connection:
             assert connection.scalar(select(func.count()).select_from(table)) == 32
             assert connection.scalar(text("SELECT IS_FREE_LOCK('nlp_agent_monitor_runtime_reset')")) == 1
