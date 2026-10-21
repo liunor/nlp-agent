@@ -120,3 +120,43 @@ component ESLint and frontend TypeScript checks. This is local regression
 evidence, not a deployed-browser acceptance result. After TEST deployment, verify
 that clicking confirmation reaches the send action and does not open the
 background learning-topic menu.
+
+## Admission: skip empty teaching-session cleanup writes
+
+Every submitted message checks expiry of guided and exercise sessions, including
+new ordinary conversations with no teaching rows. Those two no-op UPDATEs used
+to acquire the shared runtime write/reset fence. A bounded nonlocking lookup now
+returns immediately when no active row is older than the unchanged cutoff.
+
+When a candidate exists, the read connection closes before acquiring a writer.
+The original fenced transaction rechecks the same conversation, active status
+and cutoff predicate. A concurrently refreshed, completed or deleted row is not
+expired based on the earlier hint. This is opportunistic expiry cleanup; a row
+committed after an empty lookup is reconsidered by a later cleanup call. The
+cutoff, minimum idle period, final status and changed-row count are preserved.
+The two table names are an internal allowlist, and user values remain bound.
+
+Seven regressions cover the no-write path, releasing the reader before entering
+the writer, a refreshed candidate producing zero changes, changed-row counts,
+minimum cutoff and the table allowlist. The local repository suite passes 21
+tests. These are correctness checks; deployed response-time improvement still
+requires a bounded comparison.
+
+### Latest server evidence before this admission change
+
+The existing four-file optimization was tested with two Workers at sixteen
+slots each, then also applied to TEST Web using the cached candidate image.
+All 41 short-chat tasks completed in both runs. Worker-only first-text P95 was
+26.390 seconds (29/41 within twenty seconds); optimized Web plus Workers measured
+25.016 seconds (25/41 within twenty seconds). Existing-session checks had no
+failures, and sampled resource/error checks passed. The twenty-second target
+has **not** passed. Tail P95 and the within-twenty-second count must both be
+reported; a smaller P95 alone does not establish an overall improvement.
+
+These runtime candidates have not been consolidated into a release, and their
+parameters are not saved in deployment configuration. The user continues to
+defer PR creation. The next comparison should keep Worker settings unchanged,
+apply only the new admission lookup to TEST Web, and retain a candidate only
+when its functional/resource checks pass and its twenty-second count and P95
+are both no worse, with at least one improving. This does not change accounts,
+quota/pricing rules, sandbox behavior or production services.

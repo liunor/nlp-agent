@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch, sentinel
 
 import pytest
@@ -10,6 +11,76 @@ from gateway.contracts import GatewayEventType, TurnStatus
 from gateway.contracts import TurnClaimMismatchError
 from gateway.contracts import TurnConflictError
 from gateway.mysql_repository import MySQLGatewayRepository
+
+
+@pytest.mark.parametrize("method,table", [
+    ("expire_guided_sessions", "nlp_guided_sessions"),
+    ("expire_exercise_sessions", "nlp_exercise_sessions"),
+])
+def test_empty_teaching_cleanup_does_not_acquire_a_write_connection(method, table):
+    repository = object.__new__(MySQLGatewayRepository)
+    repository._engine = MagicMock()
+    reader = repository._engine.connect.return_value.__enter__.return_value
+    reader.execute.return_value.first.return_value = None
+    with patch.object(repository, "_runtime_begin") as writer:
+        assert getattr(repository, method)(session_id="ordinary-new-conversation") == 0
+    writer.assert_not_called()
+    statement, parameters = reader.execute.call_args.args
+    assert f"SELECT 1 FROM {table}" in str(statement)
+    assert "LIMIT 1" in str(statement) and "FOR UPDATE" not in str(statement)
+    assert parameters["s"] == "ordinary-new-conversation"
+
+
+@pytest.mark.parametrize("method", ["expire_guided_sessions", "expire_exercise_sessions"])
+def test_real_teaching_cleanup_rechecks_same_predicate_after_releasing_reader(method):
+    repository = object.__new__(MySQLGatewayRepository)
+    repository._engine = MagicMock()
+    reader_context = repository._engine.connect.return_value
+    reader = reader_context.__enter__.return_value
+    reader.execute.return_value.first.return_value = (1,)
+    writer_context = MagicMock()
+    writer = writer_context.__enter__.return_value
+    # A different writer may refresh/complete/delete the candidate in between.
+    # The UPDATE must safely report no change rather than using the stale hint.
+    writer.execute.return_value.rowcount = 0
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+
+    def acquire_writer():
+        reader_context.__exit__.assert_called_once()
+        return writer_context
+
+    with patch.object(repository, "_runtime_begin", side_effect=acquire_writer), \
+            patch("gateway.mysql_repository._now", return_value=now):
+        assert getattr(repository, method)(session_id="teaching", idle_minutes=30) == 0
+    read_statement, read_parameters = reader.execute.call_args.args
+    write_statement, write_parameters = writer.execute.call_args.args
+    assert write_parameters == read_parameters == {"s": "teaching", "cutoff": now - timedelta(minutes=30)}
+    predicate = "conversation_id=:s AND status='active' AND updated_at < :cutoff"
+    assert predicate in str(read_statement) and predicate in str(write_statement)
+    assert str(write_statement).startswith("UPDATE ")
+
+
+@pytest.mark.parametrize("method", ["expire_guided_sessions", "expire_exercise_sessions"])
+def test_teaching_cleanup_preserves_changed_count_and_minimum_idle_time(method):
+    repository = object.__new__(MySQLGatewayRepository)
+    repository._engine = MagicMock()
+    repository._engine.connect.return_value.__enter__.return_value.execute.return_value.first.return_value = (1,)
+    writer_context = MagicMock()
+    writer = writer_context.__enter__.return_value
+    writer.execute.return_value.rowcount = 2
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    with patch.object(repository, "_runtime_begin", return_value=writer_context), \
+            patch("gateway.mysql_repository._now", return_value=now):
+        assert getattr(repository, method)(session_id="teaching", idle_minutes=0) == 2
+    assert writer.execute.call_args.args[1]["cutoff"] == now - timedelta(minutes=1)
+
+
+def test_teaching_cleanup_rejects_an_unexpected_table_before_any_query():
+    repository = object.__new__(MySQLGatewayRepository)
+    repository._engine = MagicMock()
+    with pytest.raises(ValueError, match="unsupported learning session table"):
+        repository._expire_idle_sessions("nlp_users", "session", 30)
+    repository._engine.connect.assert_not_called()
 
 
 def test_record_parses_json_state_columns_returned_as_text() -> None:

@@ -896,8 +896,29 @@ class MySQLGatewayRepository:
         with self._runtime_begin() as c:
             return c.execute(text("UPDATE nlp_guided_sessions SET status=:status,completed_at=UTC_TIMESTAMP(6) WHERE conversation_id=:s AND status='active'"), {"s": session_id, "status": status}).rowcount
     def expire_guided_sessions(self, *, session_id: str, idle_minutes: int = 30) -> int:
-        with self._runtime_begin() as c:
-            return c.execute(text("UPDATE nlp_guided_sessions SET status='expired',completed_at=UTC_TIMESTAMP(6) WHERE conversation_id=:s AND status='active' AND updated_at < :cutoff"), {"s": session_id, "cutoff": _now() - timedelta(minutes=max(1, idle_minutes))}).rowcount
+        return self._expire_idle_sessions("nlp_guided_sessions", session_id, idle_minutes)
+
+    def _expire_idle_sessions(self, table: str, session_id: str, idle_minutes: int) -> int:
+        if table not in {"nlp_guided_sessions", "nlp_exercise_sessions"}:
+            raise ValueError("unsupported learning session table")
+        parameters = {"s": session_id, "cutoff": _now() - timedelta(minutes=max(1, idle_minutes))}
+        predicate = "conversation_id=:s AND status='active' AND updated_at < :cutoff"
+        # Ordinary chat, especially a new conversation, usually has no idle
+        # teaching rows. Do not queue behind the global write/reset fence for
+        # a no-op UPDATE. Release this read connection before acquiring a writer.
+        with self._engine.connect() as connection:
+            if connection.execute(
+                text(f"SELECT 1 FROM {table} WHERE {predicate} LIMIT 1"), parameters
+            ).first() is None:
+                return 0
+        # The read is only a hint. Recheck the exact predicate inside the
+        # existing fenced transaction, so a refreshed/completed/deleted row
+        # cannot be expired on the basis of an earlier read.
+        with self._runtime_begin() as connection:
+            return connection.execute(
+                text(f"UPDATE {table} SET status='expired',completed_at=UTC_TIMESTAMP(6) WHERE {predicate}"),
+                parameters,
+            ).rowcount
 
     def _exercise(self, row: Any) -> dict[str, Any]:
         return {"id": row["id"], "session_id": row["conversation_id"], "workspace_id": row["workspace_id"], "user_id": row["user_id"], "topic_id": row["topic_id"], "mode": row["mode"], "status": row["status"], "blueprint_snapshot": self._json(row["blueprint_snapshot_json"]), "created_at": row["created_at"], "updated_at": row["updated_at"], "completed_at": row["completed_at"]}
@@ -929,7 +950,7 @@ class MySQLGatewayRepository:
         with self._runtime_begin() as c: return c.execute(text("UPDATE nlp_exercise_sessions SET status=:status,completed_at=UTC_TIMESTAMP(6) WHERE conversation_id=:s AND status='active'"), {"s": session_id, "status": status}).rowcount
 
     def expire_exercise_sessions(self, *, session_id: str, idle_minutes: int = 30) -> int:
-        with self._runtime_begin() as c: return c.execute(text("UPDATE nlp_exercise_sessions SET status='expired',completed_at=UTC_TIMESTAMP(6) WHERE conversation_id=:s AND status='active' AND updated_at < :cutoff"), {"s": session_id, "cutoff": _now() - timedelta(minutes=max(1, idle_minutes))}).rowcount
+        return self._expire_idle_sessions("nlp_exercise_sessions", session_id, idle_minutes)
 
     def exercise_questions(self, exercise_session_id: str) -> list[dict[str, Any]]:
         with self._engine.connect() as c: rows = c.execute(text("SELECT * FROM nlp_exercise_questions WHERE exercise_session_id=:id ORDER BY sequence"), {"id": exercise_session_id}).mappings().all()
