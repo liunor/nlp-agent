@@ -92,7 +92,7 @@ def usage_scope(monkeypatch, tmp_path):
 def seed_history(connection, workspace, owner, image_root, payload):
     conversation, turn = str(uuid4()), str(uuid4())
     connection.execute(insert(models.ConversationModel).values(
-        id=conversation, owner_user_id=owner, workspace_id=workspace, title="中文🌍"+payload))
+        id=conversation, owner_user_id=owner, workspace_id=workspace, title=("中文🌍"+payload)[:255]))
     connection.execute(insert(models.TurnModel).values(
         id=turn, conversation_id=conversation, user_id=owner, workspace_id=workspace,
         input_text=payload, result_text="回复🌍", error_message=None,
