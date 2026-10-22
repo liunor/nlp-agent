@@ -22,6 +22,14 @@ HOST_SHA = "46398d92118a55d1fc58eb70bed12f7d3d049760130d3839483caf424c53140f"
 PROJECTS = {"nova-test": 18765, "nova-prod": 8765}
 LIMIT_DEFAULTS = {"NLP_AGENT_AUTH_MAX_LOGIN_ATTEMPTS": 5, "NLP_AGENT_AUTH_MAX_IP_LOGIN_ATTEMPTS": 100,
                   "NLP_AGENT_AUTH_RATE_WINDOW_S": 900, "NLP_AGENT_AUTH_IP_RATE_WINDOW_S": 900}
+# TEST-only release profile selected by the bounded 41-user server comparison.
+# Generic Compose and production keep their existing defaults.
+TEST_WORKER_PROFILE = {"replicas": 2, "environment": {
+    "NLP_AGENT_WORKER_CONCURRENCY": "16",
+    "NLP_AGENT_DB_POOL_SIZE": "8", "NLP_AGENT_DB_MAX_OVERFLOW": "2",
+    "NLP_AGENT_DB_SYNC_POOL_SIZE": "16", "NLP_AGENT_DB_SYNC_MAX_OVERFLOW": "2",
+    "NLP_AGENT_DB_POOL_TIMEOUT_S": "5",
+}}
 
 
 def require(condition, code):
@@ -83,6 +91,8 @@ def release_identity(metadata):
     if "worker_ids" in metadata:
         identity["worker_ids"] = metadata["worker_ids"]
         identity["worker_subnet"] = metadata["worker_subnet"]
+    if "worker_profile" in metadata:
+        identity["worker_profile"] = metadata["worker_profile"]
     return sha(json.dumps(identity, sort_keys=True).encode())
 
 
@@ -276,7 +286,8 @@ def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, ext
                 "fixed_ips": fixed_ips,
                 "config_hashes": {key: sha(value) for key, value in configs.items()}}
     if project == "nova-test":
-        metadata["schema"] = 2
+        metadata["schema"] = 3
+        metadata["worker_profile"] = json.loads(json.dumps(TEST_WORKER_PROFILE))
         metadata["worker_subnet"] = ipv4[0]["Subnet"]
         metadata["worker_ids"] = worker_snapshot(
             project, worker_instances or [], ipaddress.ip_network(ipv4[0]["Subnet"]),
@@ -295,7 +306,9 @@ def plan(project, deploy_dir, image, web, edge, network, nginx, host_config, ext
         override["services"].setdefault(service, {})["networks"] = {"default": {"ipv4_address": fixed}}
     if "worker_ids" in metadata:
         override["services"]["nova-worker"] = {
-            "networks": {"default": {}}, "deploy": {"replicas": len(metadata["worker_ids"])}}
+            "networks": {"default": {}},
+            "deploy": {"replicas": metadata["worker_profile"]["replicas"]},
+            "environment": dict(metadata["worker_profile"]["environment"])}
     metadata["release_dir"] = str(release)
     return override, metadata, configs
 
@@ -412,12 +425,19 @@ def check_compose(config, metadata, frontend):
                 "RESOLVED_SERVICE_IP_MISMATCH")
     if "worker_ids" in metadata:
         worker = services["nova-worker"]
+        profile = metadata.get("worker_profile")
+        replicas = profile["replicas"] if profile else len(metadata["worker_ids"])
         require(metadata["project"] == "nova-test" and 1 <= len(metadata["worker_ids"]) <= 2
                 and set(worker.get("networks", {})) == {"default"}
                 and not worker["networks"]["default"]
-                and worker.get("deploy", {}).get("replicas") == len(metadata["worker_ids"])
+                and worker.get("deploy", {}).get("replicas") == replicas
                 and not worker.get("container_name") and not worker.get("ports"),
                 "RESOLVED_WORKER_SCALING_CONFIGURATION_MISMATCH")
+        if profile:
+            require(profile == TEST_WORKER_PROFILE
+                    and all(str(worker.get("environment", {}).get(key)) == value
+                            for key, value in profile["environment"].items()),
+                    "RESOLVED_WORKER_CAPACITY_PROFILE_MISMATCH")
     network = config["networks"]["default"]
     require(network["name"] == metadata["project"] + "_default" and network.get("external") is True,
             "RESOLVED_NETWORK_RECREATE_REFUSED")
@@ -447,6 +467,18 @@ def check_compose(config, metadata, frontend):
                 "RESOLVED_SHARED_OR_WRITABLE_PROXY_CONFIGURATION")
 
 
+def check_deployed_worker_profile(instances, metadata):
+    profile = metadata.get("worker_profile")
+    if not profile:
+        return
+    require(metadata["project"] == "nova-test" and profile == TEST_WORKER_PROFILE
+            and len(instances) == profile["replicas"], "DEPLOYED_WORKER_CAPACITY_PROFILE_MISMATCH")
+    for instance in instances:
+        env = dict(item.split("=", 1) for item in instance["Config"]["Env"])
+        require(all(env.get(key) == value for key, value in profile["environment"].items()),
+                "DEPLOYED_WORKER_CAPACITY_PROFILE_MISMATCH")
+
+
 def verify(args):
     path, metadata = read_prepared(args)
     frontend = json.loads((path.parent / "frontend.json").read_bytes())
@@ -462,11 +494,19 @@ def verify(args):
         deployed_workers = workers(args.project)
         worker_snapshot(args.project, deployed_workers, ipaddress.ip_network(metadata["worker_subnet"]),
                         [*metadata["fixed_ips"].values(), metadata["gateway"]])
-        require(len(deployed_workers) == len(metadata["worker_ids"])
+        profile = metadata.get("worker_profile")
+        replicas = profile["replicas"] if profile else len(metadata["worker_ids"])
+        require(len(deployed_workers) == replicas
                 and all(item["State"]["Running"] and item["Image"] == web["Image"]
                         and set(item["NetworkSettings"]["Networks"]) == {args.project + "_default"}
                         and not item["HostConfig"].get("PortBindings") for item in deployed_workers),
                 "DEPLOYED_WORKER_REPLICAS_MISMATCH")
+        check_deployed_worker_profile(deployed_workers, metadata)
+        if profile:
+            hosts = [item["Config"]["Hostname"] for item in deployed_workers]
+            run(["docker", "exec", args.project + "-nova-web-1", ".venv/bin/python", "-B",
+                 "scripts/verify_worker_capacity.py", "--hostnames", json.dumps(hosts),
+                 "--concurrency", profile["environment"]["NLP_AGENT_WORKER_CONCURRENCY"]])
     env = dict(item.split("=", 1) for item in web["Config"]["Env"])
     require(all(env.get(key) == value for key, value in metadata["limits"].items())
             and env.get("NLP_AGENT_WEB_STATIC_DIR") == frontend["static_dir"], "DEPLOYED_AUTH_SETTINGS_MISMATCH")
@@ -483,7 +523,10 @@ def verify(args):
         require(response.status == 200 and sha(response.read()) == frontend["index_sha256"],
                 "DEPLOYED_FRONTEND_HASH_MISMATCH")
     print(json.dumps({"status": "AUTH_RELEASE_LIVE_CONFIGURATION_PASSED", "project": args.project,
-                      "index_sha256": frontend["index_sha256"]}))
+                      "index_sha256": frontend["index_sha256"],
+                      **({"worker_replicas": profile["replicas"],
+                          "concurrency_per_worker": int(profile["environment"]["NLP_AGENT_WORKER_CONCURRENCY"]),
+                          "actual_worker_heartbeats_verified": True} if metadata.get("worker_profile") else {})}))
 
 
 def main():

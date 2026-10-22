@@ -10,6 +10,8 @@ on:
       - .github/scripts/update-application-services.py
       - .github/workflows/worker-network-probe.yml
       - tests/test_worker_network_docker.py
+      - scripts/verify_worker_capacity.py
+      - tests/test_verify_worker_capacity.py
 
 permissions:
   contents: read
@@ -38,6 +40,7 @@ jobs:
         run: >-
           uv run pytest tests/test_auth_release_integration.py
           tests/test_application_service_update.py tests/test_worker_network_docker.py
+          tests/test_verify_worker_capacity.py
           -q -s --junitxml=worker-network-results.xml
       - uses: actions/upload-artifact@v4
         if: always()

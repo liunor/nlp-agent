@@ -121,72 +121,47 @@ evidence, not a deployed-browser acceptance result. After TEST deployment, verif
 that clicking confirmation reaches the send action and does not open the
 background learning-topic menu.
 
-## Admission: skip empty teaching-session cleanup writes
+## Selected TEST release and server evidence
 
-Every submitted message checks expiry of guided and exercise sessions, including
-new ordinary conversations with no teaching rows. Those two no-op UPDATEs used
-to acquire the shared runtime write/reset fence. A bounded nonlocking lookup now
-returns immediately when no active row is older than the unchanged cutoff.
+PR #268 selects two TEST Workers with sixteen slots each. The TEST-only release
+overlay explicitly overrides stale server environment/Compose values:
 
-When a candidate exists, the read connection closes before acquiring a writer.
-The original fenced transaction rechecks the same conversation, active status
-and cutoff predicate. A concurrently refreshed, completed or deleted row is not
-expired based on the earlier hint. This is opportunistic expiry cleanup; a row
-committed after an empty lookup is reconsidered by a later cleanup call. The
-cutoff, minimum idle period, final status and changed-row count are preserved.
-The two table names are an internal allowlist, and user values remain bound.
+| Setting per Worker | Selected value |
+| --- | --- |
+| Worker concurrency | 16 |
+| Async pool / overflow per engine | 8 / 2 |
+| Shared synchronous pool / overflow | 16 / 2 |
+| Pool timeout | 5 seconds |
 
-Seven regressions cover the no-write path, releasing the reader before entering
-the writer, a refreshed candidate producing zero changes, changed-row counts,
-minimum cutoff and the table allowlist. The local repository suite passes 21
-tests. These are correctness checks; deployed response-time improvement still
-requires a bounded comparison.
+The generic Compose defaults and production release behavior are unchanged.
+New TEST releases use two replicas even if the preceding deployment has one;
+the existing guard still refuses ambiguous, stopped or foreign instances before
+recreation. The selected profile is included in immutable release identity.
+Resolved Compose and deployed container checks reject the wrong count, pools
+or concurrency. A read-only Redis check waits for TTL-backed heartbeats from
+both actual deployed container hostnames reporting sixteen slots each. Container
+state alone is insufficient to pass release verification. Earlier prepared
+release schemas remain readable for recovery.
 
-### Latest server evidence before this admission change
+The release retains the original four-file backend optimization from 43b58b7
+and the file-send portal fix. A configuration validation fix permits higher-slot
+experiments, but does not select a higher deployment profile. Two Web admission
+experiments were tested and reverted on the server, and are excluded from this
+release. Their history remains in earlier commits and private aggregate reports:
 
-The existing four-file optimization was tested with two Workers at sixteen
-slots each, then also applied to TEST Web using the cached candidate image.
-All 41 short-chat tasks completed in both runs. Worker-only first-text P95 was
-26.390 seconds (29/41 within twenty seconds); optimized Web plus Workers measured
-25.016 seconds (25/41 within twenty seconds). Existing-session checks had no
-failures, and sampled resource/error checks passed. The twenty-second target
-has **not** passed. Tail P95 and the within-twenty-second count must both be
-reported; a smaller P95 alone does not establish an overall improvement.
+| 41-user short-chat comparison | Completed | Within 20 seconds | First-text P95 | Maximum |
+| --- | --- | --- | --- | --- |
+| Selected four-file Web + Worker optimization, 2x16 | 41/41 | 25/41 | 25.016 s | 25.906 s |
+| Empty-expiry lookup experiment (not retained) | 41/41 | 32/41 | 26.937 s | 27.187 s |
+| Lookup + single-query storage experiment (not retained) | 41/41 | 32/41 | 26.250 s | 27.390 s |
 
-These runtime candidates have not been consolidated into a release, and their
-parameters are not saved in deployment configuration. The user continues to
-defer PR creation. The next comparison should keep Worker settings unchanged,
-apply only the new admission lookup to TEST Web, and retain a candidate only
-when its functional/resource checks pass and its twenty-second count and P95
-are both no worse, with at least one improving. This does not change accounts,
-quota/pricing rules, sandbox behavior or production services.
-
-
-## Batched synchronous full storage measurement
-
-The bbedb75 Web admission trial completed all 41 chats and improved the count
-within twenty seconds from 25 to 32. Its first-text P95 rose from 25.016 to
-26.937 seconds, so the strict comparison reverted this Web candidate. Workers
-remain at 2x16 with the original four-file optimization; the twenty-second
-target is still unmet. These are single short-chat comparisons, not proof of
-sustained throughput.
-
-Full synchronous storage reconciliation still sends twelve core-history sums
-and one file sum as thirteen sequential database queries inside the existing
-runtime/storage locks. It now sends the same fixed, owner-filtered expressions
-as scalar subqueries in one SELECT, retaining the MySQL JSON casts, NULL
-definitions, file status filters and separate uploaded-image byte scan. No
-usage source, initial reconciliation, reservation, final quota validation,
-transaction rollback or reset fence is removed. This reduces round trips; it
-does not reduce the amount of history scanned or establish a server speedup.
-
-Regression checks compare all thirteen populated sources against the frozen
-old implementation in isolated CI MySQL, including Unicode/JSON NULL/binary
-values, two-owner isolation, empty data, trashed/deleted files, uploaded images
-and a deliberately underestimated write that must roll back on final quota
-validation. One database statement per measurement is checked explicitly.
-Async reconciliation is unchanged. Runtime candidate validation remains separate
-from these correctness checks. No PR is submitted.
+Existing-session observations and sampled resource/error checks passed for the
+selected run. These are individual bounded real-server short-chat measurements,
+not guaranteed response times or sustained/tool-heavy acceptance. The original
+target of most first replies within twenty seconds has **not** passed the
+chosen strict gate. A post-merge TEST run must confirm the final deployed image,
+actual 2x16 heartbeats and end-to-end visible response times. Do not label the
+release accepted solely because deployment or local/CI tests succeed.
 
 
 ## Worker configuration validation before a larger slot trial

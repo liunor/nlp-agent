@@ -102,6 +102,7 @@ def test_compose_worker_replica_update_and_rollback(tmp_path):
             services["nova-worker"]["deploy"] = {"replicas": replicas}
             if dynamic:
                 services["nova-worker"]["networks"] = {"default": {}}
+                services["nova-worker"]["environment"].update(release.TEST_WORKER_PROFILE["environment"])
             services["nova-migrate"] = {"image": image, "command": ["sh", "-c", f"exit {migration_exit}"],
                                         "labels": labels, "network_mode": "none"}
             config = {"services": services,
@@ -155,6 +156,8 @@ def test_compose_worker_replica_update_and_rollback(tmp_path):
         worker_ips = {item["NetworkSettings"]["Networks"][net_name]["IPAddress"] for item in instances}
         assert len(worker_ips) == 2 and not worker_ips.intersection(
             address for name, address in addresses.items() if name != "nova-worker")
+        release.check_deployed_worker_profile(instances, {
+            "project": "nova-test", "worker_profile": release.TEST_WORKER_PROFILE})
         assert_fixed()
         assert updater.protected(project, read) == infrastructure
 
@@ -163,6 +166,8 @@ def test_compose_worker_replica_update_and_rollback(tmp_path):
         update()
         assert len(worker_instances()) == 2
         assert all("PROBE_REVISION=second-release" in item["Config"]["Env"] for item in worker_instances())
+        release.check_deployed_worker_profile(worker_instances(), {
+            "project": "nova-test", "worker_profile": release.TEST_WORKER_PROFILE})
         assert_fixed()
 
         write("broken", dynamic=True, replicas=2, migration_exit=7)
