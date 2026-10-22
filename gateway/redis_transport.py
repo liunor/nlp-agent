@@ -20,6 +20,9 @@ from server.application.turn_reliability import TurnCancellationRequested
 
 logger = logging.getLogger(__name__)
 
+# A configuration ceiling, not a promise of throughput on any given host.
+MAX_WORKER_CONCURRENCY = 32
+
 
 @dataclass(frozen=True, slots=True)
 class RedisTransportConfig:
@@ -42,8 +45,10 @@ class RedisTransportConfig:
     worker_heartbeat_ttl_s: int = 15
 
     def __post_init__(self) -> None:
-        if not 1 <= self.worker_concurrency <= 16:
-            raise ValueError("worker_concurrency must be between 1 and 16")
+        if not 1 <= self.worker_concurrency <= MAX_WORKER_CONCURRENCY:
+            raise ValueError(
+                f"worker_concurrency must be between 1 and {MAX_WORKER_CONCURRENCY}"
+            )
         if self.shutdown_grace_s < 0:
             raise ValueError("shutdown_grace_s must not be negative")
         if self.worker_heartbeat_interval_s <= 0:

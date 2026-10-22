@@ -187,3 +187,25 @@ and a deliberately underestimated write that must roll back on final quota
 validation. One database statement per measurement is checked explicitly.
 Async reconciliation is unchanged. Runtime candidate validation remains separate
 from these correctness checks. No PR is submitted.
+
+
+## Worker configuration validation before a larger slot trial
+
+The first runtime-only 2x24 attempt stopped while starting Workers, before any
+new chat task was sent. Both Workers were restored to the verified 2x16
+configuration. This is not a 2x24 throughput result.
+
+Inspection found a deterministic startup blocker: RedisTransportConfig rejects
+worker_concurrency above sixteen. The preceding operational rehearsal only
+started sleeping Python probes, so it did not exercise that application
+configuration validation. That omission is corrected by requiring the actual
+candidate image to instantiate the same RedisTransportConfig with the proposed
+value before either live Worker is replaced.
+
+The configuration ceiling is now thirty-two, and the default remains four.
+This permits the bounded twenty-four-slot comparison; it does not select
+twenty-four or thirty-two for deployment, resize database pools, or establish
+that this host can sustain them. Bounds/default regressions and the existing
+worker occupancy test cover twenty-four and thirty-two, including refusing
+extra work until a slot is released. Resource, queue and existing-session
+acceptance still need the real TEST comparison.

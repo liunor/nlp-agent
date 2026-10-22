@@ -152,6 +152,21 @@ def test_redis_transport_accepts_maximum_safe_poll_block_ms():
     assert RedisTransportConfig(poll_block_ms=4_000).poll_block_ms == 4_000
 
 
+@pytest.mark.parametrize("concurrency", [1, 4, 16, 24, 32])
+def test_worker_concurrency_accepts_bounded_tuning_values(concurrency):
+    assert RedisTransportConfig(worker_concurrency=concurrency).worker_concurrency == concurrency
+
+
+@pytest.mark.parametrize("concurrency", [-1, 0, 33])
+def test_worker_concurrency_rejects_values_outside_the_bound(concurrency):
+    with pytest.raises(ValueError, match="worker_concurrency must be between 1 and 32"):
+        RedisTransportConfig(worker_concurrency=concurrency)
+
+
+def test_worker_concurrency_default_is_still_four():
+    assert RedisTransportConfig().worker_concurrency == 4
+
+
 def test_turn_task_codec_rejects_unknown_protocol_version():
     with pytest.raises(ValueError, match="unsupported turn task version"):
         TurnTaskCodec.loads('{"version":2}')
@@ -645,7 +660,7 @@ async def test_worker_runs_only_available_slots_concurrently_without_overfetch()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("concurrency", [2, 4])
+@pytest.mark.parametrize("concurrency", [2, 4, 24, 32])
 async def test_worker_forever_fills_free_slots_before_first_turn_finishes(monkeypatch, concurrency):
     """Stream COUNT is a maximum: later arrivals must use the remaining slots."""
     redis = FakeRedis()
