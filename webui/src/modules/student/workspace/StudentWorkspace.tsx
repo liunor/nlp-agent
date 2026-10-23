@@ -1,5 +1,21 @@
-import { Maximize2, Minimize2, Moon, PanelRightClose, PanelRightOpen, Sun, Wifi, WifiOff } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Maximize2,
+  Minimize2,
+  Moon,
+  PanelRightClose,
+  PanelRightOpen,
+  Sun,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { api } from "@/platform/http/api";
 
 import { Composer } from "@/modules/student/components/Composer";
@@ -15,17 +31,40 @@ import { SettingsDialog } from "@/modules/student/components/SettingsDialog";
 import { FileTransferNotifier } from "@/modules/student/components/FileTransferNotifier";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { Sidebar, SidebarToggle } from "@/modules/student/components/Sidebar";
-import { ToolDock, type SandboxSourceRequest, type ToolDockTabDropPosition, type ToolDockTool } from "@/modules/student/components/ToolDock";
+import {
+  ToolDock,
+  type SandboxSourceRequest,
+  type ToolDockTabDropPosition,
+  type ToolDockTool,
+} from "@/modules/student/components/ToolDock";
 import type { FilesPanelPreviewRequest } from "@/modules/student/components/FilesPanel";
 import { LearningConfigNotice } from "@/modules/student/workspace/LearningConfigNotice";
 import { getUnavailableLearningModes } from "@/modules/student/workspace/learning-config";
 import { useStudentWorkspace } from "@/modules/student/workspace/public";
 import { useSessionScrollRestoration } from "@/modules/student/workspace/hooks/useSessionScrollRestoration";
-import type { CourseTopic, KnowledgeBookContext, LearningBookFile, TeacherCatalog, WhiteboardLibraryItem } from "@/shared/types";
+import type {
+  CourseTopic,
+  KnowledgeBookContext,
+  LearningBookFile,
+  TeacherCatalog,
+  WhiteboardLibraryItem,
+} from "@/shared/types";
 
-const WhiteboardPanel = lazy(() => import("@/modules/student/components/whiteboard/WhiteboardPanel").then(({ WhiteboardPanel: panel }) => ({ default: panel })));
+import { ScrollToBottom } from "@/shared/ui/ScrollToBottom";
 
-export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigateTo?: (path: string) => void; onOpenInSandbox?: (code: string, language: string) => void } = {}) {
+const WhiteboardPanel = lazy(() =>
+  import("@/modules/student/components/whiteboard/WhiteboardPanel").then(
+    ({ WhiteboardPanel: panel }) => ({ default: panel }),
+  ),
+);
+
+export function StudentWorkspace({
+  onNavigateTo,
+  onOpenInSandbox,
+}: {
+  onNavigateTo?: (path: string) => void;
+  onOpenInSandbox?: (code: string, language: string) => void;
+} = {}) {
   const workspace = useStudentWorkspace();
   const sendWorkspace = workspace.send;
   const learningContext = workspace.preferences.context;
@@ -33,28 +72,57 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Student mode starts focused on the learning canvas after every page load.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
-  const [toolDockOpen, setToolDockOpen] = useState(() => typeof window !== "undefined" && readKnowledgeBookUrl(window.location.search).tool === "knowledge-book");
+  const [toolDockOpen, setToolDockOpen] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      readKnowledgeBookUrl(window.location.search).tool === "knowledge-book",
+  );
   const [toolDockExpanded, setToolDockExpanded] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  const [openTools, setOpenTools] = useState<ToolDockTool[]>(() => typeof window !== "undefined" && readKnowledgeBookUrl(window.location.search).tool === "knowledge-book" ? ["book"] : []);
-  const [activeTool, setActiveTool] = useState<ToolDockTool | null>(() => typeof window !== "undefined" && readKnowledgeBookUrl(window.location.search).tool === "knowledge-book" ? "book" : null);
-  const [sandboxSource, setSandboxSource] = useState<SandboxSourceRequest | null>(null);
-  const [filesPreview, setFilesPreview] = useState<FilesPanelPreviewRequest | null>(null);
-  const [filesPreviewWorkspaceId, setFilesPreviewWorkspaceId] = useState(workspace.workspaceId);
-  const [filesPreviewUserId, setFilesPreviewUserId] = useState<string | null>(workspace.authSession?.user_id ?? null);
-  const [whiteboardPresentRequest, setWhiteboardPresentRequest] = useState<{ requestId: string; assetId: string; elements: unknown[]; name: string } | null>(null);
+  const [openTools, setOpenTools] = useState<ToolDockTool[]>(() =>
+    typeof window !== "undefined" &&
+    readKnowledgeBookUrl(window.location.search).tool === "knowledge-book"
+      ? ["book"]
+      : [],
+  );
+  const [activeTool, setActiveTool] = useState<ToolDockTool | null>(() =>
+    typeof window !== "undefined" &&
+    readKnowledgeBookUrl(window.location.search).tool === "knowledge-book"
+      ? "book"
+      : null,
+  );
+  const [sandboxSource, setSandboxSource] =
+    useState<SandboxSourceRequest | null>(null);
+  const [filesPreview, setFilesPreview] =
+    useState<FilesPanelPreviewRequest | null>(null);
+  const [filesPreviewWorkspaceId, setFilesPreviewWorkspaceId] = useState(
+    workspace.workspaceId,
+  );
+  const [filesPreviewUserId, setFilesPreviewUserId] = useState<string | null>(
+    workspace.authSession?.user_id ?? null,
+  );
+  const [whiteboardPresentRequest, setWhiteboardPresentRequest] = useState<{
+    requestId: string;
+    assetId: string;
+    elements: unknown[];
+    name: string;
+  } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [courseTopics, setCourseTopics] = useState<CourseTopic[]>([]);
-  const [learningCatalog, setLearningCatalog] = useState<TeacherCatalog | null>(null);
-  const [modeNotice, setModeNotice] = useState<"practice" | "review" | null>(null);
+  const [learningCatalog, setLearningCatalog] = useState<TeacherCatalog | null>(
+    null,
+  );
+  const [modeNotice, setModeNotice] = useState<"practice" | "review" | null>(
+    null,
+  );
   const [deleteTarget, setDeleteTarget] = useState<{
-  kind: "session" | "category";
-  id: string;
-  label: string;
-  onDeleted?: () => void;
-} | null>(null);
+    kind: "session" | "category";
+    id: string;
+    label: string;
+    onDeleted?: () => void;
+  } | null>(null);
   const refreshCourseTopics = useCallback(async () => {
     try {
       const { catalog } = await api.getLearningCatalog(workspace.workspaceId);
@@ -62,7 +130,10 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
       setCourseTopics(topics);
       setLearningCatalog(catalog);
       const context = learningContext;
-      if (context.topic_id && !topics.some((topic) => topic.id === context.topic_id)) {
+      if (
+        context.topic_id &&
+        !topics.some((topic) => topic.id === context.topic_id)
+      ) {
         setLearningContext({ ...context, topic_id: null, topic_name: "" });
       }
     } catch {
@@ -71,64 +142,157 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   }, [learningContext, setLearningContext, workspace.workspaceId]);
   useEffect(() => {
     if (workspace.bootStatus !== "ready") return;
-    const initialRefresh = window.setTimeout(() => void refreshCourseTopics(), 0);
+    const initialRefresh = window.setTimeout(
+      () => void refreshCourseTopics(),
+      0,
+    );
     window.addEventListener("focus", refreshCourseTopics);
     return () => {
       window.clearTimeout(initialRefresh);
       window.removeEventListener("focus", refreshCourseTopics);
     };
   }, [refreshCourseTopics, workspace.bootStatus]);
-  const activeSession = workspace.sessions.find((session) => session.session_id === workspace.activeSessionId);
+  const activeSession = workspace.sessions.find(
+    (session) => session.session_id === workspace.activeSessionId,
+  );
   const activeTitle = activeSession?.title || "新的学习对话";
-  const statusText = { connected: "已连接", connecting: "正在连接", reconnecting: "正在恢复连接", offline: "离线" }[workspace.socketStatus];
+  const statusText = {
+    connected: "已连接",
+    connecting: "正在连接",
+    reconnecting: "正在恢复连接",
+    offline: "离线",
+  }[workspace.socketStatus];
   const statusOnline = workspace.socketStatus === "connected";
-  const hasMessages = workspace.loadingMessages || workspace.messages.length > 0;
-  const archived = useMemo(() => workspace.sessions.filter((session) => workspace.preferences.sessions[session.session_id]?.archived), [workspace.preferences.sessions, workspace.sessions]);
-  const { scrollRef, onScroll } = useSessionScrollRestoration(workspace.activeSessionId, workspace.messages, workspace.loadingMessages);
-  const setCollapsed = (collapsed: boolean) => { setSidebarCollapsed(collapsed); };
+  const hasMessages =
+    workspace.loadingMessages || workspace.messages.length > 0;
+  const archived = useMemo(
+    () =>
+      workspace.sessions.filter(
+        (session) =>
+          workspace.preferences.sessions[session.session_id]?.archived,
+      ),
+    [workspace.preferences.sessions, workspace.sessions],
+  );
+  const { scrollRef, onScroll } = useSessionScrollRestoration(
+    workspace.activeSessionId,
+    workspace.messages,
+    workspace.loadingMessages,
+  );
+
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const handleScrollWithBtn = () => {
+    onScroll();
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    setShowScrollBtn(scrollHeight - scrollTop - clientHeight > 100);
+  };
+  const scrollToBottom = () => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    }
+  };
+  useEffect(() => {
+    if (!workspace.isRunning && scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      setShowScrollBtn(scrollHeight - scrollTop - clientHeight > 150);
+    }
+  }, [workspace.isRunning, scrollRef]);
+
+  const setCollapsed = (collapsed: boolean) => {
+    setSidebarCollapsed(collapsed);
+  };
   const openTool = useCallback((tool: ToolDockTool) => {
     setToolDockOpen(true);
-    setOpenTools((current) => current.includes(tool) ? current : [...current, tool]);
+    setOpenTools((current) =>
+      current.includes(tool) ? current : [...current, tool],
+    );
     setActiveTool(tool);
   }, []);
-  const reorderTools = (draggedTool: ToolDockTool, targetTool: ToolDockTool, position: ToolDockTabDropPosition) => {
+  const reorderTools = (
+    draggedTool: ToolDockTool,
+    targetTool: ToolDockTool,
+    position: ToolDockTabDropPosition,
+  ) => {
     setOpenTools((current) => {
       const draggedIndex = current.indexOf(draggedTool);
       const targetIndex = current.indexOf(targetTool);
-      if (draggedIndex < 0 || targetIndex < 0 || draggedTool === targetTool) return current;
+      if (draggedIndex < 0 || targetIndex < 0 || draggedTool === targetTool)
+        return current;
       const next = current.filter((tool) => tool !== draggedTool);
-      next.splice(next.indexOf(targetTool) + (position === "after" ? 1 : 0), 0, draggedTool);
+      next.splice(
+        next.indexOf(targetTool) + (position === "after" ? 1 : 0),
+        0,
+        draggedTool,
+      );
       return next;
     });
   };
-  const openCodeInSandbox = useCallback((code: string, language: string) => {
-    if (!statusOnline || workspace.isRunning || !/^(?:python|pytorch|py)$/i.test(language)) return;
-    onOpenInSandbox?.(code, language);
-    setSandboxSource((current) => ({ source: code, requestId: (current?.requestId ?? 0) + 1 }));
-    setToolDockOpen(true);
-    setToolMenuOpen(false);
-    setOpenTools((current) => current.includes("sandbox") ? current : [...current, "sandbox"]);
-    setActiveTool("sandbox");
-  }, [onOpenInSandbox, statusOnline, workspace.isRunning]);
-  const openWhiteboardAsset = useCallback((item: WhiteboardLibraryItem) => {
-    setWhiteboardPresentRequest({ requestId: `${item.id}:${Date.now()}`, assetId: item.id, elements: item.elements, name: item.name || "白板图画" });
-    openTool("whiteboard");
-  }, [openTool]);
-  const askNovaFromBook = useCallback((prompt: string, context: KnowledgeBookContext) => {
-    setToolDockExpanded(false);
-    setToolMenuOpen(false);
-    void sendWorkspace(prompt, undefined, context);
-  }, [sendWorkspace]);
-  const openKnowledgeBookFile = useCallback((file: LearningBookFile) => {
-    setFilesPreview({ id: file.id, name: file.display_name, url: file.preview_url, mediaType: file.media_type, bytes: file.size_bytes });
-    setFilesPreviewWorkspaceId(workspace.workspaceId);
-    setFilesPreviewUserId(workspace.authSession?.user_id ?? null);
-    setToolDockOpen(true);
-    setToolDockExpanded(false);
-    setToolMenuOpen(false);
-    setOpenTools((current) => current.includes("files") ? current : [...current, "files"]);
-    setActiveTool("files");
-  }, [workspace.authSession?.user_id, workspace.workspaceId]);
+  const openCodeInSandbox = useCallback(
+    (code: string, language: string) => {
+      if (
+        !statusOnline ||
+        workspace.isRunning ||
+        !/^(?:python|pytorch|py)$/i.test(language)
+      )
+        return;
+      onOpenInSandbox?.(code, language);
+      setSandboxSource((current) => ({
+        source: code,
+        requestId: (current?.requestId ?? 0) + 1,
+      }));
+      setToolDockOpen(true);
+      setToolMenuOpen(false);
+      setOpenTools((current) =>
+        current.includes("sandbox") ? current : [...current, "sandbox"],
+      );
+      setActiveTool("sandbox");
+    },
+    [onOpenInSandbox, statusOnline, workspace.isRunning],
+  );
+  const openWhiteboardAsset = useCallback(
+    (item: WhiteboardLibraryItem) => {
+      setWhiteboardPresentRequest({
+        requestId: `${item.id}:${Date.now()}`,
+        assetId: item.id,
+        elements: item.elements,
+        name: item.name || "白板图画",
+      });
+      openTool("whiteboard");
+    },
+    [openTool],
+  );
+  const askNovaFromBook = useCallback(
+    (prompt: string, context: KnowledgeBookContext) => {
+      setToolDockExpanded(false);
+      setToolMenuOpen(false);
+      void sendWorkspace(prompt, undefined, context);
+    },
+    [sendWorkspace],
+  );
+  const openKnowledgeBookFile = useCallback(
+    (file: LearningBookFile) => {
+      setFilesPreview({
+        id: file.id,
+        name: file.display_name,
+        url: file.preview_url,
+        mediaType: file.media_type,
+        bytes: file.size_bytes,
+      });
+      setFilesPreviewWorkspaceId(workspace.workspaceId);
+      setFilesPreviewUserId(workspace.authSession?.user_id ?? null);
+      setToolDockOpen(true);
+      setToolDockExpanded(false);
+      setToolMenuOpen(false);
+      setOpenTools((current) =>
+        current.includes("files") ? current : [...current, "files"],
+      );
+      setActiveTool("files");
+    },
+    [workspace.authSession?.user_id, workspace.workspaceId],
+  );
   const closeTool = (tool: ToolDockTool) => {
     const next = openTools.filter((item) => item !== tool);
     setOpenTools(next);
@@ -144,135 +308,466 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
     });
   };
 
-  if (workspace.bootStatus === "loading") return <div className="boot-screen"><span className="boot-orbit" /><strong>正在进入 NLP 学习空间</strong><p>连接教学 Agent 与学习记录……</p></div>;
-  if (workspace.bootStatus === "error") return <div className="boot-screen error"><WifiOff size={28} /><strong>暂时无法连接后端</strong><p>{workspace.error}</p><button type="button" onClick={() => location.reload()}>重新连接</button></div>;
-  if (workspace.bootStatus === "unauthenticated") return <div className="app-shell unauthenticated-app-shell">
-    <Sidebar sessions={[]} preferences={workspace.preferences} activeId={null} open={sidebarOpen} collapsed={sidebarCollapsed} connected={false} onClose={() => setSidebarOpen(false)} onCollapse={() => setCollapsed(true)} onExpand={() => setCollapsed(false)} onSelect={() => setLoginOpen(true)} onCreate={() => setLoginOpen(true)} onRename={() => undefined} onMeta={() => undefined} onAddCategory={() => { setLoginOpen(true); return ""; }} onRenameCategory={() => undefined} onDeleteCategory={() => undefined} onDelete={() => undefined} onAccount={() => setLoginOpen(true)} onSettings={() => setLoginOpen(true)} />
-    <main className="thread-shell unauthenticated-student-shell">
-      <header className="thread-header">
-        <SidebarToggle onClick={() => setCollapsed(false)} />
-        <div className="thread-title" />
-        <div className="thread-header-actions" />
-      </header>
-      <section className="empty-thread-home">
-        <div>
-          <h1>《自然语言处理》智能体 欢迎您！</h1>
-          <p>登录后可开始新的学习对话，并安全保存学习记录。</p>
-          <Composer centered disabled={false} running={false} onSend={() => setLoginOpen(true)} onCancel={() => undefined} />
-        </div>
-      </section>
-    </main>
-    <LoginDialog
-      open={loginOpen}
-      onClose={() => setLoginOpen(false)}
-      onAuthenticate={async (username, password) => {
-        await workspace.authenticate(username, password);
-        workspace.retryAuthentication();
-      }}
-    />  </div>;
+  if (workspace.bootStatus === "loading")
+    return (
+      <div className="boot-screen">
+        <span className="boot-orbit" />
+        <strong>正在进入 NLP 学习空间</strong>
+        <p>连接教学 Agent 与学习记录……</p>
+      </div>
+    );
+  if (workspace.bootStatus === "error")
+    return (
+      <div className="boot-screen error">
+        <WifiOff size={28} />
+        <strong>暂时无法连接后端</strong>
+        <p>{workspace.error}</p>
+        <button type="button" onClick={() => location.reload()}>
+          重新连接
+        </button>
+      </div>
+    );
+  if (workspace.bootStatus === "unauthenticated")
+    return (
+      <div className="app-shell unauthenticated-app-shell">
+        <Sidebar
+          sessions={[]}
+          preferences={workspace.preferences}
+          activeId={null}
+          open={sidebarOpen}
+          collapsed={sidebarCollapsed}
+          connected={false}
+          onClose={() => setSidebarOpen(false)}
+          onCollapse={() => setCollapsed(true)}
+          onExpand={() => setCollapsed(false)}
+          onSelect={() => setLoginOpen(true)}
+          onCreate={() => setLoginOpen(true)}
+          onRename={() => undefined}
+          onMeta={() => undefined}
+          onAddCategory={() => {
+            setLoginOpen(true);
+            return "";
+          }}
+          onRenameCategory={() => undefined}
+          onDeleteCategory={() => undefined}
+          onDelete={() => undefined}
+          onAccount={() => setLoginOpen(true)}
+          onSettings={() => setLoginOpen(true)}
+        />
+        <main className="thread-shell unauthenticated-student-shell">
+          <header className="thread-header">
+            <SidebarToggle onClick={() => setCollapsed(false)} />
+            <div className="thread-title" />
+            <div className="thread-header-actions" />
+          </header>
+          <section className="empty-thread-home">
+            <div>
+              <h1>《自然语言处理》智能体 欢迎您！</h1>
+              <p>登录后可开始新的学习对话，并安全保存学习记录。</p>
+              <Composer
+                centered
+                disabled={false}
+                running={false}
+                onSend={() => setLoginOpen(true)}
+                onCancel={() => undefined}
+              />
+            </div>
+          </section>
+        </main>
+        <LoginDialog
+          open={loginOpen}
+          onClose={() => setLoginOpen(false)}
+          onAuthenticate={async (username, password) => {
+            await workspace.authenticate(username, password);
+            workspace.retryAuthentication();
+          }}
+        />{" "}
+      </div>
+    );
 
   const updateContext = (context: typeof workspace.preferences.context) => {
-    if (learningCatalog && (context.mode === "practice" || context.mode === "review") && getUnavailableLearningModes(learningCatalog, context).includes(context.mode)) {
-        setModeNotice(context.mode);
-        return;
-    }
-    workspace.setLearningContext(context);
-    if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, { topic: context.topic_name });
-  };
-  const unavailableModes = getUnavailableLearningModes(learningCatalog, learningContext);
-  const roles = workspace.authSession?.roles ?? [];
-  const canManageTeaching = ["teacher", "developer", "admin"].some((role) => roles.includes(role));
-  const composer = (centered = false) => <Composer key={workspace.composerRevision} sessionId={workspace.activeSessionId} centered={centered} disabled={!statusOnline} running={workspace.isRunning} cancelling={workspace.isCancelling} onSend={(text, attachments) => void workspace.send(text, attachments)} onCancel={workspace.cancel} onEnsureSession={workspace.ensureSession} contextControl={<LearningContextBar value={learningContext} onChange={updateContext} topics={courseTopics} unavailableModes={unavailableModes} onUnavailableMode={setModeNotice} modelProfiles={workspace.modelProfiles} modelProfile={workspace.settings.model_profile} onModelProfileChange={(modelProfile) => void workspace.patchSettings({ model_profile: modelProfile })} modelSelectionDisabled={!statusOnline || workspace.isRunning} />} />;
-
-  return <div className={["app-shell", "student-app-shell", sidebarCollapsed ? "sidebar-is-collapsed" : "sidebar-is-expanded", toolDockOpen && toolDockExpanded && "tool-dock-expanded"].filter(Boolean).join(" ")}>
-    {workspace.settingsError && <div className="error-card settings-save-error" role="alert">{workspace.settingsError}</div>}
-    <LearningConfigNotice
-      requestError={workspace.requestError}
-      modeNotice={modeNotice}
-      canManageTeaching={canManageTeaching}
-      onNavigate={(path) => { if (onNavigateTo) onNavigateTo(path); else location.href = path; }}
-      onClose={() => { setModeNotice(null); workspace.clearRequestError(); }}
-    />
-    <Sidebar sessions={workspace.sessions} preferences={workspace.preferences} activeId={workspace.activeSessionId} open={sidebarOpen} collapsed={sidebarCollapsed} connected={statusOnline} onClose={() => setSidebarOpen(false)} onCollapse={() => setCollapsed(true)} onExpand={() => setCollapsed(false)} onSelect={workspace.selectSession} onCreate={() => void workspace.startNewChat()} onRename={workspace.renameSessionTitle} onMeta={workspace.updateSessionMeta} onAddCategory={workspace.addCategory} onRenameCategory={workspace.renameCategory} onDeleteCategory={(id, name) => setDeleteTarget({ kind: "category", id, label: name })} onDelete={(id, title, onDeleted) =>
-  setDeleteTarget({
-    kind: "session",
-    id,
-    label: title,
-    onDeleted,
-  })
-} onAccount={() => setAccountOpen(true)} onSettings={() => setSettingsOpen(true)} />
-    <main className="thread-shell">
-      <header className="thread-header">
-        <SidebarToggle onClick={() => { setCollapsed(false); setSidebarOpen(true); }} />
-        {hasMessages ? <div className="thread-title"><strong>{activeTitle}</strong><span className={statusOnline ? "online" : ""}>{statusOnline ? <Wifi size={12} /> : <WifiOff size={12} />}{statusText}</span></div> : <div className="thread-title" />}
-        <div className="thread-header-actions">
-          {toolDockOpen && <button className="icon-button tool-dock-expand-toggle" type="button" aria-label={toolDockExpanded ? "还原工具面板" : "展开工具面板"} aria-pressed={toolDockExpanded} onClick={() => setToolDockExpanded((value) => !value)}>{toolDockExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>}
-          <button className="icon-button thread-tool-toggle" type="button" aria-label={toolDockOpen ? "关闭工具侧栏" : "打开工具侧栏"} aria-pressed={toolDockOpen} onClick={toggleToolDock}>{toolDockOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button>
-          <button className="icon-button theme-toggle" type="button" aria-label="切换主题" onClick={() => void workspace.patchSettings({ theme: workspace.settings.theme === "dark" ? "light" : "dark" })}>{workspace.settings.theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button>
-        </div>
-      </header>
-      {hasMessages ? <><div className="thread-scroll" ref={scrollRef} onScroll={onScroll}><MessageList messages={workspace.messages} loading={workspace.loadingMessages} showReasoning={workspace.settings.show_reasoning} streamRenderIntervalMs={workspace.settings.stream_render_interval_ms} onFollowUp={(text) => void workspace.send(text)} /></div>{composer()}</> : <div className="empty-thread-home"><div><h1>《自然语言处理》智能体 欢迎您！</h1><p>从一个 NLP 概念、模型原理或练习问题开始。</p>{composer(true)}</div></div>}
-    </main>
-      <ToolDock
-      open={toolDockOpen}
-      expanded={toolDockExpanded}
-      openTools={openTools}
-      activeTool={activeTool}
-      toolMenuOpen={toolMenuOpen}
-      onToolMenuOpenChange={setToolMenuOpen}
-      onOpenTool={openTool}
-      onReorderTools={reorderTools}
-      onCloseTool={closeTool}
-      onActiveToolChange={setActiveTool}
-      onExplainCode={(source) => {
-        setToolDockOpen(false);
-        setToolDockExpanded(false);
-        setToolMenuOpen(false);
-        void workspace.send("请解释以下 Python 代码：\n\n```python\n" + source + "\n```");
-      }}
-      learningPanel={<LearningPanel open onClose={() => closeTool("learning")} title={activeTitle} context={workspace.preferences.context} meta={workspace.activeMeta} messages={workspace.messages} catalog={learningCatalog} onPrompt={(content) => { setToolDockOpen(false); setToolDockExpanded(false); setToolMenuOpen(false); void workspace.send(content); }} onMeta={(patch) => { if (workspace.activeSessionId) workspace.updateSessionMeta(workspace.activeSessionId, patch); }} />}
-      knowledgeBookPanel={<KnowledgeBookPanel workspaceId={workspace.workspaceId} onAskNova={statusOnline && !workspace.isRunning ? askNovaFromBook : undefined} onOpenInSandbox={statusOnline && !workspace.isRunning ? openCodeInSandbox : undefined} onOpenFilePreview={openKnowledgeBookFile} onViewWhiteboard={openWhiteboardAsset} />}
-      whiteboardPanel={<Suspense fallback={<div className="whiteboard-loading" role="status">正在加载白板…</div>}><WhiteboardPanel userId={workspace.authSession?.user_id ?? null} canManageLibrary={workspace.authSession?.roles?.some((role) => role === "teacher" || role === "developer" || role === "admin") ?? false} presentRequest={whiteboardPresentRequest} /></Suspense>}
-      sandboxSource={sandboxSource}
-      sandboxExecutionDisabled={workspace.isRunning}
-      filesUserId={workspace.authSession?.user_id ?? null}
-      filesWorkspaceId={workspace.workspaceId}
-      filesPreview={filesPreviewWorkspaceId === workspace.workspaceId && filesPreviewUserId === (workspace.authSession?.user_id ?? null) ? filesPreview : null}
-    />
-    <div className="student-school-logo"><SchoolLogo /></div>
-    {workspace.authSession?.user_id && <FileTransferNotifier userId={workspace.authSession.user_id} onOpenMessages={() => { openTool("files"); window.setTimeout(() => window.dispatchEvent(new Event("file-transfers:open")), 0); }} />}
-    <SettingsDialog open={settingsOpen} settings={workspace.settings} learningContext={workspace.preferences.context} roles={workspace.authSession?.roles} permissions={workspace.authSession?.permissions} userId={workspace.authSession?.user_id} workspaceIds={workspace.authSession?.workspace_ids} onClose={() => setSettingsOpen(false)} onChange={(patch) => void workspace.patchSettings(patch)} onReset={workspace.resetSettings} onLearningContextChange={workspace.setLearningContext} onOpenDeveloper={() => { if (onNavigateTo) onNavigateTo("/developer"); else location.href = "/developer"; }} onOpenTeacher={() => { if (onNavigateTo) onNavigateTo("/teacher"); else location.href = "/teacher"; }} />
-    <AccountDialog open={accountOpen} session={workspace.authSession} onClose={() => setAccountOpen(false)} onLogout={async () => { await workspace.logout(); setFilesPreview(null); setFilesPreviewUserId(null); setFilesPreviewWorkspaceId(""); setAccountOpen(false); }} />
-    <ConfirmDialog
-  open={!!deleteTarget}
-  title={
-    deleteTarget?.kind === "session"
-      ? `删除“${deleteTarget.label}”对话？`
-      : `删除“${deleteTarget?.label ?? ""}”分类？`
-  }
-  description={
-    deleteTarget?.kind === "session"
-      ? "删除后将同时清除后端对话记录，此操作无法撤销。"
-      : "分类中的对话会保留，并移回“未分类”。"
-  }
-  onClose={() => setDeleteTarget(null)}
-  onConfirm={() => {
-    if (!deleteTarget) return;
-
-    const target = deleteTarget;
-    setDeleteTarget(null);
-
-    if (target.kind === "session") {
-      void workspace.deleteSession(target.id).then(() => {
-        target.onDeleted?.();
-      });
+    if (
+      learningCatalog &&
+      (context.mode === "practice" || context.mode === "review") &&
+      getUnavailableLearningModes(learningCatalog, context).includes(
+        context.mode,
+      )
+    ) {
+      setModeNotice(context.mode);
       return;
     }
-
-    workspace.deleteCategory(target.id);
-  }}
+    workspace.setLearningContext(context);
+    if (workspace.activeSessionId)
+      workspace.updateSessionMeta(workspace.activeSessionId, {
+        topic: context.topic_name,
+      });
+  };
+  const unavailableModes = getUnavailableLearningModes(
+    learningCatalog,
+    learningContext,
+  );
+  const roles = workspace.authSession?.roles ?? [];
+  const canManageTeaching = ["teacher", "developer", "admin"].some((role) =>
+    roles.includes(role),
+  );
+  const composer = (centered = false) => (
+    <Composer
+      key={workspace.composerRevision}
+      sessionId={workspace.activeSessionId}
+      centered={centered}
+      disabled={!statusOnline}
+      running={workspace.isRunning}
+      cancelling={workspace.isCancelling}
+      onSend={(text, attachments) => void workspace.send(text, attachments)}
+      onCancel={workspace.cancel}
+      onEnsureSession={workspace.ensureSession}
+      contextControl={
+        <LearningContextBar
+          value={learningContext}
+          onChange={updateContext}
+          topics={courseTopics}
+          unavailableModes={unavailableModes}
+          onUnavailableMode={setModeNotice}
+          modelProfiles={workspace.modelProfiles}
+          modelProfile={workspace.settings.model_profile}
+          onModelProfileChange={(modelProfile) =>
+            void workspace.patchSettings({ model_profile: modelProfile })
+          }
+          modelSelectionDisabled={!statusOnline || workspace.isRunning}
+        />
+      }
     />
+  );
 
-{archived.length > 0 && <span className="sr-only">已归档 {archived.length} 个学习对话</span>}
-  </div>;
+  return (
+    <div
+      className={[
+        "app-shell",
+        "student-app-shell",
+        sidebarCollapsed ? "sidebar-is-collapsed" : "sidebar-is-expanded",
+        toolDockOpen && toolDockExpanded && "tool-dock-expanded",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      {workspace.settingsError && (
+        <div className="error-card settings-save-error" role="alert">
+          {workspace.settingsError}
+        </div>
+      )}
+      <LearningConfigNotice
+        requestError={workspace.requestError}
+        modeNotice={modeNotice}
+        canManageTeaching={canManageTeaching}
+        onNavigate={(path) => {
+          if (onNavigateTo) onNavigateTo(path);
+          else location.href = path;
+        }}
+        onClose={() => {
+          setModeNotice(null);
+          workspace.clearRequestError();
+        }}
+      />
+      <Sidebar
+        sessions={workspace.sessions}
+        preferences={workspace.preferences}
+        activeId={workspace.activeSessionId}
+        open={sidebarOpen}
+        collapsed={sidebarCollapsed}
+        connected={statusOnline}
+        onClose={() => setSidebarOpen(false)}
+        onCollapse={() => setCollapsed(true)}
+        onExpand={() => setCollapsed(false)}
+        onSelect={workspace.selectSession}
+        onCreate={() => void workspace.startNewChat()}
+        onRename={workspace.renameSessionTitle}
+        onMeta={workspace.updateSessionMeta}
+        onAddCategory={workspace.addCategory}
+        onRenameCategory={workspace.renameCategory}
+        onDeleteCategory={(id, name) =>
+          setDeleteTarget({ kind: "category", id, label: name })
+        }
+        onDelete={(id, title, onDeleted) =>
+          setDeleteTarget({
+            kind: "session",
+            id,
+            label: title,
+            onDeleted,
+          })
+        }
+        onAccount={() => setAccountOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
+      />
+      <main className="thread-shell">
+        <header className="thread-header">
+          <SidebarToggle
+            onClick={() => {
+              setCollapsed(false);
+              setSidebarOpen(true);
+            }}
+          />
+          {hasMessages ? (
+            <div className="thread-title">
+              <strong>{activeTitle}</strong>
+              <span className={statusOnline ? "online" : ""}>
+                {statusOnline ? <Wifi size={12} /> : <WifiOff size={12} />}
+                {statusText}
+              </span>
+            </div>
+          ) : (
+            <div className="thread-title" />
+          )}
+          <div className="thread-header-actions">
+            {toolDockOpen && (
+              <button
+                className="icon-button tool-dock-expand-toggle"
+                type="button"
+                aria-label={toolDockExpanded ? "还原工具面板" : "展开工具面板"}
+                aria-pressed={toolDockExpanded}
+                onClick={() => setToolDockExpanded((value) => !value)}
+              >
+                {toolDockExpanded ? (
+                  <Minimize2 size={17} />
+                ) : (
+                  <Maximize2 size={17} />
+                )}
+              </button>
+            )}
+            <button
+              className="icon-button thread-tool-toggle"
+              type="button"
+              aria-label={toolDockOpen ? "关闭工具侧栏" : "打开工具侧栏"}
+              aria-pressed={toolDockOpen}
+              onClick={toggleToolDock}
+            >
+              {toolDockOpen ? (
+                <PanelRightClose size={18} />
+              ) : (
+                <PanelRightOpen size={18} />
+              )}
+            </button>
+            <button
+              className="icon-button theme-toggle"
+              type="button"
+              aria-label="切换主题"
+              onClick={() =>
+                void workspace.patchSettings({
+                  theme: workspace.settings.theme === "dark" ? "light" : "dark",
+                })
+              }
+            >
+              {workspace.settings.theme === "dark" ? (
+                <Sun size={17} />
+              ) : (
+                <Moon size={17} />
+              )}
+            </button>
+          </div>
+        </header>
+        {hasMessages ? (
+          <>
+            <div
+              className="thread-scroll"
+              ref={scrollRef}
+              onScroll={handleScrollWithBtn}
+            >
+              <MessageList
+                messages={workspace.messages}
+                loading={workspace.loadingMessages}
+                showReasoning={workspace.settings.show_reasoning}
+                streamRenderIntervalMs={
+                  workspace.settings.stream_render_interval_ms
+                }
+                onFollowUp={(text) => void workspace.send(text)}
+              />
+            </div>
+            <ScrollToBottom
+              isLoading={workspace.isRunning}
+              isVisible={showScrollBtn || workspace.isRunning}
+              onClick={scrollToBottom}
+            />
+
+            {composer()}
+          </>
+        ) : (
+          <div className="empty-thread-home">
+            <div>
+              <h1>《自然语言处理》智能体 欢迎您！</h1>
+              <p>从一个 NLP 概念、模型原理或练习问题开始。</p>
+              {composer(true)}
+            </div>
+          </div>
+        )}
+      </main>
+      <ToolDock
+        open={toolDockOpen}
+        expanded={toolDockExpanded}
+        openTools={openTools}
+        activeTool={activeTool}
+        toolMenuOpen={toolMenuOpen}
+        onToolMenuOpenChange={setToolMenuOpen}
+        onOpenTool={openTool}
+        onReorderTools={reorderTools}
+        onCloseTool={closeTool}
+        onActiveToolChange={setActiveTool}
+        onExplainCode={(source) => {
+          setToolDockOpen(false);
+          setToolDockExpanded(false);
+          setToolMenuOpen(false);
+          void workspace.send(
+            "请解释以下 Python 代码：\n\n```python\n" + source + "\n```",
+          );
+        }}
+        learningPanel={
+          <LearningPanel
+            open
+            onClose={() => closeTool("learning")}
+            title={activeTitle}
+            context={workspace.preferences.context}
+            meta={workspace.activeMeta}
+            messages={workspace.messages}
+            catalog={learningCatalog}
+            onPrompt={(content) => {
+              setToolDockOpen(false);
+              setToolDockExpanded(false);
+              setToolMenuOpen(false);
+              void workspace.send(content);
+            }}
+            onMeta={(patch) => {
+              if (workspace.activeSessionId)
+                workspace.updateSessionMeta(workspace.activeSessionId, patch);
+            }}
+          />
+        }
+        knowledgeBookPanel={
+          <KnowledgeBookPanel
+            workspaceId={workspace.workspaceId}
+            onAskNova={
+              statusOnline && !workspace.isRunning ? askNovaFromBook : undefined
+            }
+            onOpenInSandbox={
+              statusOnline && !workspace.isRunning
+                ? openCodeInSandbox
+                : undefined
+            }
+            onOpenFilePreview={openKnowledgeBookFile}
+            onViewWhiteboard={openWhiteboardAsset}
+          />
+        }
+        whiteboardPanel={
+          <Suspense
+            fallback={
+              <div className="whiteboard-loading" role="status">
+                正在加载白板…
+              </div>
+            }
+          >
+            <WhiteboardPanel
+              userId={workspace.authSession?.user_id ?? null}
+              canManageLibrary={
+                workspace.authSession?.roles?.some(
+                  (role) =>
+                    role === "teacher" ||
+                    role === "developer" ||
+                    role === "admin",
+                ) ?? false
+              }
+              presentRequest={whiteboardPresentRequest}
+            />
+          </Suspense>
+        }
+        sandboxSource={sandboxSource}
+        sandboxExecutionDisabled={workspace.isRunning}
+        filesUserId={workspace.authSession?.user_id ?? null}
+        filesWorkspaceId={workspace.workspaceId}
+        filesPreview={
+          filesPreviewWorkspaceId === workspace.workspaceId &&
+          filesPreviewUserId === (workspace.authSession?.user_id ?? null)
+            ? filesPreview
+            : null
+        }
+      />
+      <div className="student-school-logo">
+        <SchoolLogo />
+      </div>
+      {workspace.authSession?.user_id && (
+        <FileTransferNotifier
+          userId={workspace.authSession.user_id}
+          onOpenMessages={() => {
+            openTool("files");
+            window.setTimeout(
+              () => window.dispatchEvent(new Event("file-transfers:open")),
+              0,
+            );
+          }}
+        />
+      )}
+      <SettingsDialog
+        open={settingsOpen}
+        settings={workspace.settings}
+        learningContext={workspace.preferences.context}
+        roles={workspace.authSession?.roles}
+        permissions={workspace.authSession?.permissions}
+        userId={workspace.authSession?.user_id}
+        workspaceIds={workspace.authSession?.workspace_ids}
+        onClose={() => setSettingsOpen(false)}
+        onChange={(patch) => void workspace.patchSettings(patch)}
+        onReset={workspace.resetSettings}
+        onLearningContextChange={workspace.setLearningContext}
+        onOpenDeveloper={() => {
+          if (onNavigateTo) onNavigateTo("/developer");
+          else location.href = "/developer";
+        }}
+        onOpenTeacher={() => {
+          if (onNavigateTo) onNavigateTo("/teacher");
+          else location.href = "/teacher";
+        }}
+      />
+      <AccountDialog
+        open={accountOpen}
+        session={workspace.authSession}
+        onClose={() => setAccountOpen(false)}
+        onLogout={async () => {
+          await workspace.logout();
+          setFilesPreview(null);
+          setFilesPreviewUserId(null);
+          setFilesPreviewWorkspaceId("");
+          setAccountOpen(false);
+        }}
+      />
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title={
+          deleteTarget?.kind === "session"
+            ? `删除“${deleteTarget.label}”对话？`
+            : `删除“${deleteTarget?.label ?? ""}”分类？`
+        }
+        description={
+          deleteTarget?.kind === "session"
+            ? "删除后将同时清除后端对话记录，此操作无法撤销。"
+            : "分类中的对话会保留，并移回“未分类”。"
+        }
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+
+          const target = deleteTarget;
+          setDeleteTarget(null);
+
+          if (target.kind === "session") {
+            void workspace.deleteSession(target.id).then(() => {
+              target.onDeleted?.();
+            });
+            return;
+          }
+
+          workspace.deleteCategory(target.id);
+        }}
+      />
+
+      {archived.length > 0 && (
+        <span className="sr-only">已归档 {archived.length} 个学习对话</span>
+      )}
+    </div>
+  );
 }
