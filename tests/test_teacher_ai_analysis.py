@@ -2,6 +2,7 @@ import json
 
 import pytest
 from langchain_core.messages import AIMessage
+from core.identity import AuthenticatedPrincipal
 
 from server.teacher.ai_analysis import (
     LearningAnalysisAICache,
@@ -261,14 +262,19 @@ async def test_service_caches_completed_report_and_force_refresh_bypasses_cache(
         end_date="2026-08-31",
     )
 
-    first = await service.ai_analysis(object(), object(), "default", body)
-    second = await service.ai_analysis(object(), object(), "default", body)
-    refreshed = await service.ai_analysis(object(), object(), "default", body.model_copy(update={"force_refresh": True}))
+    principal = AuthenticatedPrincipal(user_id="teacher-one", roles=frozenset({"teacher"}))
+    first = await service.ai_analysis(principal, object(), "default", body)
+    second = await service.ai_analysis(principal, object(), "default", body)
+    refreshed = await service.ai_analysis(principal, object(), "default", body.model_copy(update={"force_refresh": True}))
 
     assert calls == 2
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
     assert refreshed["cache_hit"] is False
+    another_teacher = AuthenticatedPrincipal(user_id="teacher-two", roles=frozenset({"teacher"}))
+    other = await service.ai_analysis(another_teacher, object(), "default", body)
+    assert other["cache_hit"] is False
+    assert calls == 3
 
 
 @pytest.mark.asyncio
@@ -295,7 +301,7 @@ async def test_service_ai_analysis_uses_the_selected_period_days(monkeypatch):
     learning_analysis_ai_cache.clear()
 
     await service.ai_analysis(
-        object(),
+        AuthenticatedPrincipal(user_id="teacher-one", roles=frozenset({"teacher"})),
         object(),
         "default",
         TeacherAIAnalysisRequest(workspace_id="default", course_id="all", content_scope="all", period_days=60),

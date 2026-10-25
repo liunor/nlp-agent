@@ -42,6 +42,29 @@ describe("TeacherWorkspace catalog CRUD", () => {
     getSettingsMock.mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } });
   });
 
+  it("explains the developer's all-student statistics scope", async () => {
+    const original = await getTeacherOverviewMock();
+    ensureAuthMock.mockResolvedValue({ roles: ["developer"], workspace_ids: ["default"] });
+    getTeacherOverviewMock.mockResolvedValueOnce({ ...original, data_scope: { mode: "all_students", label: "全站学生", student_count: 44, classroom_count: null, update_policy: "on_refresh", message: "" } });
+    history.replaceState({}, "", "/teacher/questions");
+    render(<TeacherWorkspace />);
+    const scope = await screen.findByRole("region", { name: "学生统计范围" });
+    expect(scope).toHaveTextContent("统计范围：全站学生");
+    expect(scope).toHaveTextContent("44 名有效学生");
+    expect(scope).toHaveTextContent("刷新页面时更新");
+  });
+
+  it("explains why a teacher with no class has no student statistics", async () => {
+    const original = await getTeacherOverviewMock();
+    getTeacherOverviewMock.mockResolvedValueOnce({ ...original, summary: { ...original.summary, questions: 0, students: 0 }, data_scope: { mode: "classroom_students", label: "我所任教班级的学生", student_count: 0, classroom_count: 0, update_policy: "on_refresh", message: "你还没有关联任教班级。请先在班级管理中建班或加入任教班级。" } });
+    history.replaceState({}, "", "/teacher/questions");
+    render(<TeacherWorkspace />);
+    const scope = await screen.findByRole("region", { name: "学生统计范围" });
+    expect(scope).toHaveTextContent("还没有关联任教班级");
+    fireEvent.click(within(scope).getByRole("button", { name: "前往班级管理" }));
+    expect((await screen.findAllByRole("heading", { name: "班级管理" }))[0]).toBeVisible();
+  });
+
   it("loads and saves the teacher catalog in the authorized default workspace", async () => {
     ensureAuthMock.mockResolvedValue({ roles: ["teacher"], workspace_ids: ["default", "research"] });
     getSettingsMock.mockResolvedValue({ preferences: { settings: { default_workspace_id: "research" } }, runtime: { default_model_profile: "deepseek", model_profiles: {} } });

@@ -1,5 +1,5 @@
 import { BookOpenCheck, BookOpenText, Code2, Contrast, Copy, Cpu, Download, FileText, MemoryStick, MessageSquareText, Moon, Pencil, Play, Plus, RotateCcw, Sun, Terminal, Timer, Trash2, X, ZoomIn, ZoomOut } from "lucide-react";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { api, type SandboxRuntimeProfile, type SandboxRuntimeUsage } from "@/platform/http/api";
 import { FilesPanel, type FilesPanelPreviewRequest } from "./FilesPanel";
@@ -88,10 +88,17 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
   // without its mandatory ticket replaces this optimistic display with
   // “warming” before any privileged execution is attempted.
   const [leaseStatus, setLeaseStatus] = useState<"creating" | "ready" | "error">("ready");
+  const [leaseNotice, setLeaseNotice] = useState("");
+  const [leaseAttempt, setLeaseAttempt] = useState(0);
   const [source, setSource] = useState(() => sourceRequest?.source ?? "# 在这里运行 Python 代码\n");
   const [result, setResult] = useState("");
   const [running, setRunning] = useState(false);
   const [runtimeTicket, setRuntimeTicket] = useState<string | null>(null);
+  const runtimeTicketRef = useRef<string | null>(null);
+  const updateRuntimeTicket = useCallback((ticket: string | null) => {
+    runtimeTicketRef.current = ticket;
+    setRuntimeTicket(ticket);
+  }, []);
   const [runtimeAllowsNullTicket, setRuntimeAllowsNullTicket] = useState(true);
   const [runtimeProfile, setRuntimeProfile] = useState<SandboxRuntimeProfile>(FALLBACK_SANDBOX_RUNTIME_PROFILE);
   const [runtimeUsage, setRuntimeUsage] = useState<SandboxRuntimeUsage | null>(null);
@@ -134,10 +141,32 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
   useEffect(() => {
     let active = true;
     let retryTimer: number | undefined;
+    let stopped = false;
+    const startedAt = Date.now();
+    let attempts = 0;
+    let consecutiveErrors = 0;
+    const stopWaiting = (message: string) => {
+      if (!active || stopped) return;
+      stopped = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+      if (deadlineTimer !== undefined) window.clearTimeout(deadlineTimer);
+      updateRuntimeTicket(null);
+      setRuntimeAllowsNullTicket(false);
+      setLeaseStatus("error");
+      setLeaseNotice(message);
+      setTimeline([{ id: Date.now(), label: "自动申请已停止", detail: message }]);
+    };
     const acquireLease = () => {
+      if (!active || stopped) return;
+      if (attempts > 0 && Date.now() - startedAt >= 60_000) {
+        stopWaiting("暂时没有可用的代码环境，已停止自动等待。请稍后重试。");
+        return;
+      }
+      attempts += 1;
       void api.ensureSandboxLease()
         .then((value) => {
-          if (!active) return;
+          if (!active || stopped) return;
+          consecutiveErrors = 0;
           const ticket = value.runtime?.ticket ?? null;
           if (value.runtime_profile) setRuntimeProfile(value.runtime_profile);
           setRuntimeUsage(null);
@@ -147,22 +176,40 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
           const ready = Boolean(value.runtime_available && (
             ticket || isInMemory || value.runtime === undefined
           ));
-          setRuntimeTicket(ticket);
+          if (ready && deadlineTimer !== undefined) window.clearTimeout(deadlineTimer);
+          updateRuntimeTicket(ticket);
           setRuntimeAllowsNullTicket(isInMemory || value.runtime === undefined);
           setLeaseStatus(ready ? "ready" : "creating");
-          setTimeline([{ id: Date.now(), label: ready ? "运行环境已就绪" : "正在预热运行环境", detail: ready ? "已绑定当前会话。" : "预热池正在补充干净实例。" }]);
+          setLeaseNotice(ready ? "" : "正在等待可用的代码环境；等待超过一分钟会停止自动申请。");
+          setTimeline([{ id: Date.now(), label: ready ? "运行环境已就绪" : "等待可用的运行环境", detail: ready ? "已绑定当前会话。" : "环境正在准备或服务器暂时繁忙。" }]);
           if (!ready) retryTimer = window.setTimeout(acquireLease, 1_000);
         })
-        .catch(() => {
-          if (!active) return;
-          setLeaseStatus("error");
-          setTimeline([{ id: Date.now(), label: "无法建立运行环境", detail: "正在重试连接。" }]);
-          retryTimer = window.setTimeout(acquireLease, 2_000);
+        .catch((error: unknown) => {
+          if (!active || stopped) return;
+          const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
+          if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+            stopWaiting(status === 401 ? "登录已失效，请重新登录后再打开代码沙箱。"
+              : status === 403 ? "请求未获允许，请重新登录或联系管理员检查代码环境权限。"
+                : "暂时无法申请代码环境，请稍后重试或联系管理员。");
+            return;
+          }
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= 4) {
+            stopWaiting("连接暂时不可用，已停止自动重试。请稍后重试。");
+            return;
+          }
+          const retryAfter = error && typeof error === "object" && "retryAfterSeconds" in error ? Number(error.retryAfterSeconds) : 0;
+          const delay = status === 429 && Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.max(2_000, retryAfter * 1_000) : Math.min(10_000, 2_000 * 2 ** (consecutiveErrors - 1));
+          setLeaseStatus("creating");
+          setLeaseNotice("连接暂时不可用，正在间隔重试。");
+          retryTimer = window.setTimeout(acquireLease, Math.min(delay, Math.max(1, 60_000 - (Date.now() - startedAt))));
         });
     };
+    const deadlineTimer = window.setTimeout(() => stopWaiting("暂时没有可用的代码环境，已停止自动等待。请稍后重试。"), 60_000);
     acquireLease();
-    return () => { active = false; if (retryTimer !== undefined) window.clearTimeout(retryTimer); };
-  }, []);
+    return () => { active = false; if (retryTimer !== undefined) window.clearTimeout(retryTimer); if (deadlineTimer !== undefined) window.clearTimeout(deadlineTimer); };
+  }, [leaseAttempt, updateRuntimeTicket]);
 
   useEffect(() => {
     if (!runtimeTicket || leaseStatus !== "ready") {
@@ -170,16 +217,42 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
     }
     let active = true;
     let timer: number | undefined;
+    let stopped = false;
+    let failures = 0;
     const poll = () => {
-      void api.getSandboxUsage(runtimeTicket)
+      let delay = 2_000;
+      const requestedTicket = runtimeTicketRef.current;
+      void api.getSandboxUsage(requestedTicket)
         .then((value) => {
-          if (active) setRuntimeUsage(value);
+          if (!active) return;
+          failures = 0;
+          setRuntimeUsage(value);
+          // Renewal must not restart polling immediately or overwrite a new
+          // execution ticket with a late response for the old nonce.
+          if (value.ticket && runtimeTicketRef.current === requestedTicket) runtimeTicketRef.current = value.ticket;
         })
-        .catch(() => {
-          if (active) setRuntimeUsage(null);
+        .catch((error: unknown) => {
+          if (!active) return;
+          setRuntimeUsage(null);
+          const status = error && typeof error === "object" && "status" in error ? Number(error.status) : 0;
+          failures += 1;
+          if (status === 401 || status === 403) {
+            stopped = true;
+            updateRuntimeTicket(null);
+            setRuntimeAllowsNullTicket(false);
+            setLeaseStatus("error");
+            setLeaseNotice("代码环境的连接凭据已失效。请重试连接；重新登录后需再次打开代码环境。");
+          } else if ((status >= 400 && status < 500 && status !== 408 && status !== 429) || failures >= 4) {
+            stopped = true;
+            setLeaseNotice("暂时无法读取环境资源状态，已停止自动查询。");
+          } else {
+            const retryAfter = error && typeof error === "object" && "retryAfterSeconds" in error ? Number(error.retryAfterSeconds) : 0;
+            delay = status === 429 && Number.isFinite(retryAfter) && retryAfter > 0
+              ? Math.max(2_000, retryAfter * 1_000) : Math.min(10_000, 2_000 * 2 ** (failures - 1));
+          }
         })
         .finally(() => {
-          if (active) timer = window.setTimeout(poll, 2_000);
+          if (active && !stopped) timer = window.setTimeout(poll, delay);
         });
     };
     poll();
@@ -187,7 +260,7 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [leaseStatus, runtimeTicket]);
+  }, [leaseStatus, runtimeTicket, updateRuntimeTicket]);
 
   const visibleRuntimeUsage = runtimeTicket && leaseStatus === "ready" ? runtimeUsage : null;
 
@@ -237,8 +310,8 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
           return;
         }
         setRunning(true); setTimeline((current) => [...current, { id: Date.now(), label: "开始执行", detail: "正在向隔离 Kernel 发送代码。" }]);
-        void api.executeSandbox(source, runtimeTicket)
-          .then(async (value) => { if (value.ticket) setRuntimeTicket(value.ticket); if (value.execution_metrics) setRecentExecutionMetrics(value.execution_metrics); setResult(value.stdout || value.stderr || "运行完成。"); if (value.artifacts) setArtifactUrls((await Promise.all(value.artifacts.map((artifact) => api.getSandboxArtifactUrl(artifact.id).then((access) => access.url).catch(() => null)))).filter((url): url is string => Boolean(url))); if (value.execution_id) { const replay = await api.replaySandboxEvents(value.execution_id); setTimeline(replay.events.map((event) => ({ id: event.event_id, label: event.type === "execution.output" ? "运行输出" : event.type === "execution.completed" ? "执行完成" : "开始执行", detail: event.payload.text ?? "运行状态已恢复。" }))); } else setTimeline((current) => [...current, { id: Date.now(), label: "执行完成", detail: value.stderr ? "运行返回错误输出。" : "已收到 Kernel 输出。" }]); })
+        void api.executeSandbox(source, runtimeTicketRef.current)
+          .then(async (value) => { if (value.ticket) updateRuntimeTicket(value.ticket); if (value.execution_metrics) setRecentExecutionMetrics(value.execution_metrics); setResult(value.stdout || value.stderr || "运行完成。"); if (value.artifacts) setArtifactUrls((await Promise.all(value.artifacts.map((artifact) => api.getSandboxArtifactUrl(artifact.id).then((access) => access.url).catch(() => null)))).filter((url): url is string => Boolean(url))); if (value.execution_id) { const replay = await api.replaySandboxEvents(value.execution_id); setTimeline(replay.events.map((event) => ({ id: event.event_id, label: event.type === "execution.output" ? "运行输出" : event.type === "execution.completed" ? "执行完成" : "开始执行", detail: event.payload.text ?? "运行状态已恢复。" }))); } else setTimeline((current) => [...current, { id: Date.now(), label: "执行完成", detail: value.stderr ? "运行返回错误输出。" : "已收到 Kernel 输出。" }]); })
           .catch(() => { setResult("当前运行环境不可用。"); setTimeline((current) => [...current, { id: Date.now(), label: "执行失败", detail: "请重新打开或重置运行环境。" }]); })
           .finally(() => setRunning(false));
   };
@@ -352,8 +425,9 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
         <button type="button" aria-label="清空代码" title="清空代码" onClick={() => updateSourceAndSelection("", 0)}><Trash2 size={16} /></button>
       </div>
     </header>
+    {leaseNotice && <div className="sandbox-lease-notice" role="status"><span>{leaseNotice}</span>{leaseStatus === "error" && <button type="button" onClick={() => { setLeaseStatus("creating"); setLeaseNotice("正在重新申请运行环境。"); setLeaseAttempt((current) => current + 1); }}>重试连接</button>}</div>}
     <div className="sandbox-environment-bar" aria-label="运行环境版本">
-      <div className={`sandbox-runtime-status ${leaseStatus}`}><i />{leaseStatus === "creating" ? "正在预热…" : leaseStatus === "ready" ? "Kernel 已就绪" : "运行环境不可用"}</div>
+      <div className={`sandbox-runtime-status ${leaseStatus}`}><i />{leaseStatus === "creating" ? "等待可用环境…" : leaseStatus === "ready" ? "Kernel 已就绪" : "运行环境不可用"}</div>
       <div className="sandbox-environment-core">
         <span>当前会话使用隔离运行环境</span><span>Python {runtimeProfile.python_version}</span><span>IPython Kernel {runtimeProfile.kernel_version}</span><span>PyTorch {runtimeProfile.pytorch_version} {runtimeProfile.pytorch_device}</span><span>{runtimeProfile.isolation}</span>
       </div>
@@ -383,7 +457,7 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
         <div className="sandbox-phase-zero-actions">
           <button type="button" disabled={executionDisabled || running || leaseStatus !== "ready"} onClick={runCode}><Play size={14} />{executionDisabled ? "主对话生成中" : running ? "运行中…" : "运行代码"}</button>
           <button type="button" className="secondary" disabled={executionDisabled || running} onClick={() => {
-            void api.restartSandbox(runtimeTicket).then(() => { setRuntimeTicket(null); setResult("运行环境已重置，请重新打开沙箱。"); setTimeline((current) => [...current, { id: Date.now(), label: "运行环境已重置", detail: "Kernel 内存状态已清空。" }]); }).catch(() => setResult("当前运行环境不可用。"));
+            void api.restartSandbox(runtimeTicketRef.current).then(() => { updateRuntimeTicket(null); setResult("运行环境已重置，请重新打开沙箱。"); setTimeline((current) => [...current, { id: Date.now(), label: "运行环境已重置", detail: "Kernel 内存状态已清空。" }]); }).catch(() => setResult("当前运行环境不可用。"));
           }}><RotateCcw size={14} />重置</button>
         </div>
       </header>

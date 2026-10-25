@@ -115,6 +115,10 @@ class SandboxGateway:
             "cpu_percent": usage.get("cpu_percent"),
             "memory_percent": usage.get("memory_percent"),
             "sampled_at": datetime.now(UTC).isoformat(),
+            # Only renew after the Manager has rechecked this session's lease
+            # and runtime. Preserve the execution nonce; polling must never
+            # claim a new runtime or make a consumed command reusable.
+            "ticket": self._ticket_signer.issue(claims),
         }
 
     async def restart(self, scope: SandboxScope, *, ticket: str | None) -> dict[str, object]:

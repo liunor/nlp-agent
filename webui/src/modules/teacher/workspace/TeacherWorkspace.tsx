@@ -156,7 +156,7 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
   };
   const saveProps = { saving, saveMessage, onSave: () => void save() };
   const updateDraft = (nextCatalog: TeacherCatalog) => { setCatalog(nextCatalog); setSaveMessage(""); };
-  const content = page === "classrooms"
+  const pageContent = page === "classrooms"
     ? <ClassroomManagementPage workspaceId={workspaceId} />
     : page === "book"
     ? <TeacherBookEditor key={bookEditorGeneration} workspaceId={workspaceId} catalog={catalog ?? undefined} onCatalogChange={(nextCatalog) => { setCatalog(nextCatalog); setSavedCatalogSnapshot(JSON.stringify(nextCatalog)); }} onDirtyChange={setBookDirty} />
@@ -168,5 +168,15 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
               : page === "questions" ? <StudentQuestionsPage data={data!} />
               : page === "reports" ? <LearningAnalysisPage data={data!} workspaceId={workspaceId} onPeriodChange={changeAnalyticsPeriod} />
               : <Overview data={data!} />;
+  const content = <>
+    {needsOverview && data?.data_scope && <section className="teacher-data-scope" aria-label="学生统计范围">
+      <strong>统计范围：{data.data_scope.label}</strong>
+      <span>{data.data_scope.student_count} 名有效学生 · 打开或刷新页面时更新</span>
+      {data.data_scope.message && <p>{data.data_scope.message}</p>}
+      {data.data_scope.mode === "classroom_students" && data.data_scope.classroom_count === 0 && <button type="button" onClick={() => navigate("classrooms")}>前往班级管理</button>}
+      {page === "reports" && data.summary.exercises === 0 && <p>尚无已评分练习，知识点掌握程度暂不能判断；提问数量仍会正常统计。</p>}
+    </section>}
+    {pageContent}
+  </>;
   return <div className={`teacher-shell ${navCollapsed ? "teacher-shell-nav-collapsed" : ""}`}><aside className={`teacher-nav ${navCollapsed ? "collapsed" : ""}`}><div className="teacher-brand"><button className="teacher-brand-mark" type="button" aria-label={navCollapsed ? "展开教师侧栏" : "NLP 教师空间"} onClick={navCollapsed ? () => setNavCollapsed(false) : undefined}><GraduationCap /></button>{!navCollapsed && <span><strong>NLP 教师空间</strong></span>}<button className="teacher-nav-refresh" type="button" aria-label="刷新" title={navCollapsed ? "刷新" : undefined} onClick={requestReload} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />{!navCollapsed && "刷新"}</button>{!navCollapsed && <button className="teacher-nav-collapse" type="button" aria-label="折叠教师侧栏" title="折叠教师侧栏" onClick={() => setNavCollapsed(true)}><Menu size={16} /></button>}</div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} aria-label={label} title={navCollapsed ? label : undefined} onClick={() => navigate(itemPage)}><Icon size={17} />{!navCollapsed && <span>{label}</span>}</button>)}</nav><a href="/" onClick={(event) => { if (!dirty) return; event.preventDefault(); setPendingAction({ kind: "exit" }); }}><ChevronLeft size={16} />{!navCollapsed && <span>返回学生模式</span>}</a></aside><main className={['teacher-main', page === "book" && "teacher-book-main", isCatalogEditor && "teacher-catalog-main", page === "questions" && "teacher-questions-main", page === "reports" && "teacher-analysis-main", page === "overview" && "teacher-overview-main"].filter(Boolean).join(" ")}><header className="teacher-topbar"><div><h1>{PAGE_LABELS[page]}</h1><span>{workspaceId} workspace · 目录修改需保存后生效</span></div><div className="teacher-topbar-actions"><SchoolLogo /></div></header><div className={`teacher-content ${page === "book" ? "teacher-content-book" : isCatalogEditor ? "teacher-content-catalog" : ""} ${page === "questions" ? "teacher-content-questions" : ""} ${page === "reports" ? "teacher-content-analysis" : ""} ${page === "overview" ? "teacher-content-overview" : ""}`}>{loading ? <div className="teacher-state"><RefreshCw className="spin" />正在加载教学目录…</div> : error ? <div className="teacher-state error"><AlertCircle /><strong>无法进入教师模式</strong><p>{error}</p></div> : content}</div></main>{pendingAction && <ConfirmDialog open title="有未保存的修改" description="当前页面存在未保存的内容，继续操作会丢弃这些修改。" confirmLabel="继续离开" cancelLabel="留在当前页面" onClose={() => setPendingAction(null)} onConfirm={confirmPendingAction} />}</div>;
 }

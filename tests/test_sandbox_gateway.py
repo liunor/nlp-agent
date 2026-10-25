@@ -4,6 +4,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 
 def test_docker_open_commits_lease_before_manager_claim() -> None:
     from server.sandbox.contracts import SandboxScope
@@ -157,3 +159,57 @@ def test_inmemory_runtime_usage_is_explicitly_unavailable_without_fake_limits() 
     result = asyncio.run(gateway.runtime_usage(scope, ticket=None))
 
     assert result == {"cpu_percent": None, "memory_percent": None, "sampled_at": None}
+
+
+@pytest.mark.parametrize("nonce", [None, "one-shot-claim"])
+def test_usage_renews_valid_ticket_after_authorization_without_rotating_nonce(nonce) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from server.sandbox.contracts import SandboxScope
+    from server.sandbox.gateway import SandboxGateway
+    from server.sandbox.ticket import SandboxTicketClaims, SandboxTicketSigner
+
+    signer = SandboxTicketSigner("usage-renewal-secret")
+    claims = SandboxTicketClaims("user", "session", "lease", "runtime", 3, nonce)
+    scope = SandboxScope("user", "session", "workspace", 3, datetime.now(UTC) + timedelta(minutes=30))
+    manager = SimpleNamespace(runtime_usage=AsyncMock(return_value={"cpu_percent": 12.0, "memory_percent": 24.0}))
+    gateway = SandboxGateway(mode="docker", session_factory=object(), ticket_signer=signer, manager=manager)
+    with patch("server.sandbox.ticket.time.time", return_value=1000):
+        original = signer.issue(claims)
+    with patch("server.sandbox.ticket.time.time", return_value=1290):
+        result = asyncio.run(gateway.runtime_usage(scope, ticket=original))
+    manager.runtime_usage.assert_awaited_once_with(scope, lease_id="lease", runtime_id="runtime", generation=3)
+    with patch("server.sandbox.ticket.time.time", return_value=1301):
+        with pytest.raises(PermissionError, match="expired"):
+            signer.verify(original, user_id="user", auth_session_id="session")
+        assert signer.verify(result["ticket"], user_id="user", auth_session_id="session") == claims
+    assert result["cpu_percent"] == 12.0
+    assert result["memory_percent"] == 24.0
+
+
+@pytest.mark.parametrize("failure", ["expired", "other-session", "revoked"])
+def test_usage_never_renews_expired_cross_session_or_revoked_access(failure) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from server.sandbox.contracts import SandboxScope
+    from server.sandbox.gateway import SandboxGateway
+    from server.sandbox.ticket import SandboxTicketClaims, SandboxTicketSigner
+
+    signer = SandboxTicketSigner("usage-rejection-secret")
+    claims = SandboxTicketClaims("user", "session", "lease", "runtime", 3, None)
+    scope = SandboxScope("user", "session", "workspace", 3, datetime.now(UTC) + timedelta(minutes=30))
+    with patch("server.sandbox.ticket.time.time", return_value=1000):
+        ticket = signer.issue(claims)
+    signer.issue = Mock(wraps=signer.issue)
+    manager = SimpleNamespace(runtime_usage=AsyncMock(side_effect=PermissionError("revoked")))
+    gateway = SandboxGateway(mode="docker", session_factory=object(), ticket_signer=signer, manager=manager)
+    if failure == "other-session":
+        scope = SandboxScope("user", "different-session", "workspace", 3, datetime.now(UTC) + timedelta(minutes=30))
+    with patch("server.sandbox.ticket.time.time", return_value=1301 if failure == "expired" else 1100):
+        with pytest.raises(PermissionError):
+            asyncio.run(gateway.runtime_usage(scope, ticket=ticket))
+    signer.issue.assert_not_called()
+    if failure == "revoked":
+        manager.runtime_usage.assert_awaited_once()
+    else:
+        manager.runtime_usage.assert_not_awaited()

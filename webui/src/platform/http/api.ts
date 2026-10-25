@@ -255,6 +255,7 @@ export interface SandboxRuntimeProfile {
 }
 
 export interface SandboxRuntimeUsage {
+  ticket?: string;
   cpu_percent: number | null;
   memory_percent: number | null;
   sampled_at: string | null;

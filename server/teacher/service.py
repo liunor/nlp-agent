@@ -865,13 +865,33 @@ class TeacherService:
         monthly_since = datetime.combine(analytics_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         since = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         catalog = (await asyncio.to_thread(gateway.repository.get_teaching_catalog, workspace_id))["catalog"]
-        student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
-        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, workspace_id=workspace_id, since=monthly_since, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE)
+        scope_reader = getattr(gateway.repository, "teacher_analytics_scope", None)
+        if callable(scope_reader):
+            if principal.is_admin:
+                student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
+                data_scope = {"mode": "all_students", "label": "全站学生", "classroom_count": None}
+                scope_message = "" if student_user_ids else "当前没有有效学生账号。"
+            else:
+                selected = await asyncio.to_thread(scope_reader, principal.user_id)
+                student_user_ids = set(selected["student_user_ids"])
+                classrooms = int(selected["classroom_count"])
+                data_scope = {"mode": "classroom_students", "label": "我所任教班级的学生", "classroom_count": classrooms}
+                scope_message = ("你还没有关联任教班级。请先在班级管理中建班或加入任教班级。" if classrooms == 0
+                                 else "任教班级还没有有效学生成员，审核学生入班后再刷新统计。" if not student_user_ids else "")
+            read_scope = {"workspace_id": None, "analytics_student_ids": student_user_ids}
+        else:
+            # The local SQLite preview retains its explicit workspace boundary.
+            student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
+            data_scope = {"mode": "workspace", "label": "当前学习空间", "classroom_count": None}
+            scope_message = ""
+            read_scope = {"workspace_id": workspace_id}
+        data_scope.update(student_count=len(student_user_ids), update_policy="on_refresh", message=scope_message)
+        monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, **read_scope, since=monthly_since, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE)
         question_rows = [
             row for row in monthly_question_rows
             if row.get("day") and period_start.isoformat() <= str(row["day"])[:10] <= period_end.isoformat()
         ]
-        guided_rows = await asyncio.to_thread(gateway.repository.guided_session_stats, workspace_id=workspace_id, since=since)
+        guided_rows = await asyncio.to_thread(gateway.repository.guided_session_stats, **read_scope, since=since)
         analysis_until = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
         # One broad evidence/criterion fetch feeds both the overview (sliced to
         # the period just below) and the learning-analysis diagnostics (which
@@ -880,13 +900,13 @@ class TeacherService:
         # so a silently dropped tail of old rows can be surfaced.
         analysis_evidence_rows, evidence_truncated = await asyncio.to_thread(
             gateway.repository.exercise_evidence_stats,
-            workspace_id=workspace_id,
+            **read_scope,
             since=monthly_since,
             until=analysis_until,
         )
         analysis_criterion_rows, criterion_truncated = await asyncio.to_thread(
             gateway.repository.exercise_criterion_stats,
-            workspace_id=workspace_id,
+            **read_scope,
             since=monthly_since,
             until=analysis_until,
         )
@@ -917,6 +937,7 @@ class TeacherService:
         return {
             "workspace_id": workspace_id,
             "period_days": period_days,
+            "data_scope": data_scope,
             "monthly_statistics": monthly_statistics,
             "learning_analysis": learning_analysis,
             "truncated": evidence_truncated or criterion_truncated,
@@ -966,6 +987,8 @@ class TeacherService:
         ).hexdigest()[:16]
         cache_key = ":".join(
             [
+                principal.user_id,
+                str(overview.get("data_scope", {}).get("mode", "workspace")),
                 workspace_id,
                 body.course_id,
                 body.content_scope,

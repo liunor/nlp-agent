@@ -403,6 +403,14 @@ export interface TeacherAIAnalysisResult {
 }
 
 export interface TeacherOverview {
+  data_scope?: {
+    mode: "all_students" | "classroom_students" | "workspace";
+    label: string;
+    classroom_count: number | null;
+    student_count: number;
+    update_policy: "on_refresh";
+    message: string;
+  };
   workspace_id: string;
   period_days: number;
   goals: TeachingGoals;

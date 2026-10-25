@@ -3465,3 +3465,9 @@ button { color: inherit; }
   .settings-about-action .settings-primary-button,.settings-about-action .settings-link-button { width: 100%; }
   .join-nova-qq-number { align-items: flex-start; flex-direction: column; gap: 5px; }
 }
+
+.sandbox-lease-notice { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border-bottom:1px solid var(--sandbox-border); color:var(--sandbox-text); font:12px/1.5 Inter,"Noto Sans SC",system-ui,sans-serif; }
+.sandbox-lease-notice button { flex-shrink:0; padding:5px 9px; border:1px solid var(--sandbox-border); border-radius:6px; background:var(--sandbox-surface); color:var(--sandbox-text); cursor:pointer; }
+.teacher-data-scope { display:grid; gap:7px; padding:14px 16px; border:1px solid var(--border); border-radius:10px; color:var(--fg); font-size:13px; }
+.teacher-data-scope > span,.teacher-data-scope p { margin:0; color:var(--muted); line-height:1.6; }
+.teacher-data-scope button { justify-self:start; border:1px solid var(--border); border-radius:7px; padding:6px 10px; background:var(--soft-bg); color:var(--fg); cursor:pointer; }

@@ -638,7 +638,46 @@ class MySQLGatewayRepository:
             )
         return result
 
-    def list_question_turns(self, *, workspace_id: str, since: str, timezone_name: str = "UTC") -> list[dict[str, Any]]:
+    @staticmethod
+    def _analytics_statement(sql: str, *, workspace_id: str | None,
+                             analytics_student_ids: set[str] | None,
+                             workspace_column: str, user_column: str):
+        """Scope aggregation before reading rows, including before LIMITs."""
+        if workspace_id is None and analytics_student_ids is None:
+            raise ValueError("analytics requires an explicit workspace or student scope")
+        scope = f"{workspace_column}=:w" if workspace_id is not None else "1=1"
+        if analytics_student_ids is not None:
+            scope += f" AND {user_column} IN :analytics_student_ids"
+        statement = text(sql.replace("__analytics_scope__", scope))
+        if analytics_student_ids is not None:
+            statement = statement.bindparams(bindparam(
+                "analytics_student_ids", sorted(analytics_student_ids), expanding=True
+            ))
+        return statement
+
+    def teacher_analytics_scope(self, teacher_user_id: str) -> dict[str, Any]:
+        """Read active class assignments rather than trusting a client roster."""
+        with self._engine.connect() as connection:
+            classrooms = set(connection.execute(text(
+                "SELECT c.id FROM nlp_classrooms c JOIN nlp_classroom_members m ON m.classroom_id=c.id "
+                "WHERE c.status='active' AND m.user_id=:teacher AND m.member_role='teacher' AND m.status='active'"
+            ), {"teacher": teacher_user_id}).scalars())
+            students: set[str] = set()
+            if classrooms:
+                rows = connection.execute(text(
+                    "SELECT DISTINCT u.id FROM nlp_classroom_members m "
+                    "JOIN nlp_users u ON u.id=m.user_id "
+                    "JOIN nlp_user_roles ur ON ur.user_id=u.id "
+                    "JOIN nlp_roles r ON r.id=ur.role_id "
+                    "WHERE m.classroom_id IN :classrooms AND m.member_role='student' AND m.status='active' "
+                    "AND u.status='active' AND u.deleted_at IS NULL AND r.code='student' AND r.status='active' "
+                    "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())"
+                ).bindparams(bindparam("classrooms", expanding=True)), {"classrooms": sorted(classrooms)}).scalars()
+                students = {str(value) for value in rows}
+        return {"student_user_ids": students, "classroom_count": len(classrooms)}
+
+    def list_question_turns(self, *, workspace_id: str | None, since: str, timezone_name: str = "UTC",
+                            analytics_student_ids: set[str] | None = None) -> list[dict[str, Any]]:
         """Teacher read model: structured question rows for analytics.
 
         Deliberately omits ``input_text`` so teacher analytics can only report
@@ -647,10 +686,12 @@ class MySQLGatewayRepository:
         """
         with self._engine.connect() as c:
             rows = c.execute(
-                text(
+                self._analytics_statement(
                     "SELECT conversation_id,user_id,error_kind,created_at,learning_state_json "
-                    "FROM nlp_turns WHERE workspace_id=:w AND created_at>=:since "
-                    "ORDER BY created_at"
+                    "FROM nlp_turns WHERE __analytics_scope__ AND created_at>=:since "
+                    "ORDER BY created_at",
+                    workspace_id=workspace_id, analytics_student_ids=analytics_student_ids,
+                    workspace_column="workspace_id", user_column="user_id",
                 ),
                 {"w": workspace_id, "since": since},
             ).mappings().all()
@@ -721,7 +762,8 @@ class MySQLGatewayRepository:
             ).all()
         return {str(row[0]) for row in rows}
 
-    def exercise_evidence_stats(self, *, workspace_id: str, since: str, until: str | None = None, limit: int = 10_000) -> tuple[list[dict[str, Any]], bool]:
+    def exercise_evidence_stats(self, *, workspace_id: str | None, since: str, until: str | None = None,
+                                limit: int = 10_000, analytics_student_ids: set[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
         """Teacher read model: one row per graded exercise item with topic/knowledge-point refs.
 
         Returns ``(rows, truncated)``; ``truncated`` is True when more than
@@ -730,18 +772,20 @@ class MySQLGatewayRepository:
         cap = min(max(1, limit), 10_000)
         with self._engine.connect() as c:
             rows = c.execute(
-                text(
+                self._analytics_statement(
                     "SELECT e.normalized_score,e.passed,e.blueprint_snapshot_json,q.id AS question_id,q.question,s.user_id,s.topic_id,s.mode,s.completed_at "
                     "FROM nlp_learning_evidence e "
                     "JOIN nlp_exercise_questions q ON q.id=e.exercise_question_id "
                     "JOIN nlp_exercise_sessions s ON s.id=e.exercise_session_id "
                     "JOIN nlp_users u ON u.id=s.user_id AND u.status='active' AND u.deleted_at IS NULL "
-                    "WHERE s.workspace_id=:w AND s.completed_at>=:since AND (:until IS NULL OR s.completed_at<:until) "
+                    "WHERE __analytics_scope__ AND s.completed_at>=:since AND (:until IS NULL OR s.completed_at<:until) "
                     "AND EXISTS (SELECT 1 FROM nlp_user_roles ur "
                     "JOIN nlp_roles r ON r.id=ur.role_id "
                     "WHERE ur.user_id=s.user_id AND r.code='student' AND r.status='active' "
                     "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())) "
-                    "ORDER BY s.completed_at DESC LIMIT :limit"
+                    "ORDER BY s.completed_at DESC LIMIT :limit",
+                    workspace_id=workspace_id, analytics_student_ids=analytics_student_ids,
+                    workspace_column="s.workspace_id", user_column="s.user_id",
                 ),
                 {"w": workspace_id, "since": since, "until": until, "limit": cap + 1},
             ).mappings().all()
@@ -765,7 +809,8 @@ class MySQLGatewayRepository:
             )
         return result, truncated
 
-    def exercise_criterion_stats(self, *, workspace_id: str, since: str, until: str | None = None, limit: int = 20_000) -> tuple[list[dict[str, Any]], bool]:
+    def exercise_criterion_stats(self, *, workspace_id: str | None, since: str, until: str | None = None,
+                                 limit: int = 20_000, analytics_student_ids: set[str] | None = None) -> tuple[list[dict[str, Any]], bool]:
         """Teacher read model: per-attempt rubric matches for criterion hit-rate aggregation.
 
         Returns ``(rows, truncated)``; ``truncated`` is True when more than
@@ -774,18 +819,20 @@ class MySQLGatewayRepository:
         cap = min(max(1, limit), 50_000)
         with self._engine.connect() as c:
             rows = c.execute(
-                text(
+                self._analytics_statement(
                     "SELECT a.rubric_matches_json,s.user_id,s.topic_id,s.blueprint_snapshot_json,s.completed_at "
                     "FROM nlp_exercise_attempts a "
                     "JOIN nlp_exercise_questions q ON q.id=a.exercise_question_id "
                     "JOIN nlp_exercise_sessions s ON s.id=q.exercise_session_id "
                     "JOIN nlp_users u ON u.id=s.user_id AND u.status='active' AND u.deleted_at IS NULL "
-                    "WHERE s.workspace_id=:w AND s.completed_at>=:since AND (:until IS NULL OR s.completed_at<:until) "
+                    "WHERE __analytics_scope__ AND s.completed_at>=:since AND (:until IS NULL OR s.completed_at<:until) "
                     "AND EXISTS (SELECT 1 FROM nlp_user_roles ur "
                     "JOIN nlp_roles r ON r.id=ur.role_id "
                     "WHERE ur.user_id=s.user_id AND r.code='student' AND r.status='active' "
                     "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())) "
-                    "ORDER BY s.completed_at DESC LIMIT :limit"
+                    "ORDER BY s.completed_at DESC LIMIT :limit",
+                    workspace_id=workspace_id, analytics_student_ids=analytics_student_ids,
+                    workspace_column="s.workspace_id", user_column="s.user_id",
                 ),
                 {"w": workspace_id, "since": since, "until": until, "limit": cap + 1},
             ).mappings().all()
@@ -806,19 +853,22 @@ class MySQLGatewayRepository:
             )
         return result, truncated
 
-    def guided_session_stats(self, *, workspace_id: str, since: str, limit: int = 10_000) -> list[dict[str, Any]]:
+    def guided_session_stats(self, *, workspace_id: str | None, since: str, limit: int = 10_000,
+                             analytics_student_ids: set[str] | None = None) -> list[dict[str, Any]]:
         """Teacher read model: misconception counts per guided session (active + recent completed)."""
         with self._engine.connect() as c:
             rows = c.execute(
-                text(
+                self._analytics_statement(
                     "SELECT user_id,topic_id,state_json FROM nlp_guided_sessions s "
                     "JOIN nlp_users u ON u.id=s.user_id AND u.status='active' AND u.deleted_at IS NULL "
-                    "WHERE workspace_id=:w AND (completed_at>=:since OR completed_at IS NULL) "
+                    "WHERE __analytics_scope__ AND (completed_at>=:since OR completed_at IS NULL) "
                     "AND EXISTS (SELECT 1 FROM nlp_user_roles ur "
                     "JOIN nlp_roles r ON r.id=ur.role_id "
                     "WHERE ur.user_id=s.user_id AND r.code='student' AND r.status='active' "
                     "AND (ur.expires_at IS NULL OR ur.expires_at>UTC_TIMESTAMP())) "
-                    "ORDER BY s.created_at DESC LIMIT :limit"
+                    "ORDER BY s.created_at DESC LIMIT :limit",
+                    workspace_id=workspace_id, analytics_student_ids=analytics_student_ids,
+                    workspace_column="workspace_id", user_column="s.user_id",
                 ),
                 {"w": workspace_id, "since": since, "limit": min(max(1, limit), 10_000)},
             ).mappings().all()
