@@ -244,6 +244,7 @@ export function ProfileDialog({
                   <dl className="profile-info-list">
                     <div><dt>账号</dt><dd>{user.username}</dd></div>
                     <div><dt>名称</dt><dd>{user.display_name}</dd></div>
+                    {user.identity_id && <div><dt>身份 ID</dt><dd>{user.identity_id}</dd></div>}
                     <div><dt>角色</dt><dd><ShieldCheck size={14} />{roles.map(r => roleLabels[r] || r).join("、") || "游客"}</dd></div>
                     <div><dt>注册时间</dt><dd>{new Date(user.created_at).toLocaleString("zh-CN")}</dd></div>
                     <div><dt>上次更新</dt><dd>{new Date(user.updated_at).toLocaleString("zh-CN")}</dd></div>

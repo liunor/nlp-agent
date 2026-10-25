@@ -14,6 +14,7 @@ from core.rbac import Permission
 from server.rbac.service import rbac_service
 from server.user import controller
 from server.user.schemas import PasswordReset, UserAdminUpdate, UserCreateWithRole, UserResponse
+from server.user.service import IdentityIdAlreadyExistsError, UserService
 from server.auth.dependencies import get_current_principal, get_db_session, get_write_access
 
 
@@ -62,6 +63,11 @@ class _FakeService:
 
     async def get_roles_for_users(self, _user_ids):
         return {self.user.id: ["student"]}
+
+    async def update_user_identity_id(self, _user_id: str, identity_id: str):
+        previous = self.user.identity_id
+        self.user.identity_id = identity_id
+        return self.user, previous
 
 
 def _test_app() -> FastAPI:
@@ -286,3 +292,78 @@ async def test_restore_user_response_includes_real_roles(monkeypatch):
     # Counter-example proving this guard is meaningful: the bare model_validate
     # path (the reviewed defect) does yield roles=[] for the same user object.
     assert UserResponse.model_validate(service.user).roles == []
+
+
+@pytest.mark.asyncio
+async def test_admin_can_update_user_identity_id_and_audit(monkeypatch):
+    service = _FakeService(None)
+    monkeypatch.setattr(controller, "UserService", lambda session: service)
+    audit = AsyncMock()
+    monkeypatch.setattr(rbac_service, "audit", audit)
+
+    result = await controller.update_user(
+        service.user.id,
+        UserAdminUpdate(identity_id="  teacher-01  "),
+        db=SimpleNamespace(flush=AsyncMock()),
+        _write=object(),
+        principal=_principal(),
+    )
+
+    assert service.user.identity_id == "TEACHER-01"
+    assert result.identity_id == "TEACHER-01"
+    audit.assert_awaited_once()
+    assert audit.await_args.kwargs["reason_code"] == "user_identity_id_updated"
+    assert audit.await_args.kwargs["detail"] == {
+        "before": "NV2TARGETUSER001",
+        "after": "TEACHER-01",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_update_user_identity_id_returns_409_on_duplicate(monkeypatch):
+    service = _FakeService(None)
+
+    async def _raise_conflict(_user_id: str, _identity_id: str):
+        raise IdentityIdAlreadyExistsError("该身份 ID 已被其他账号占用")
+
+    service.update_user_identity_id = _raise_conflict
+    monkeypatch.setattr(controller, "UserService", lambda session: service)
+    monkeypatch.setattr(rbac_service, "audit", AsyncMock())
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_test_app()), base_url="http://testserver"
+    ) as client:
+        response = await client.patch(
+            f"/api/v1/users/{service.user.id}",
+            json={"identity_id": "TEACHER01"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该身份 ID 已被其他账号占用"
+
+
+@pytest.mark.asyncio
+async def test_user_service_update_identity_id_checks_uniqueness_and_preserves_id():
+    target_user = _user(user_id="teacher-uuid-1", display_name="张老师")
+    session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[target_user, None]),
+        flush=AsyncMock(),
+    )
+    service = UserService(session)
+
+    updated, previous = await service.update_user_identity_id(
+        "teacher-uuid-1", "  teacher01 "
+    )
+
+    assert previous == "NV2TARGETUSER001"
+    assert updated.id == "teacher-uuid-1"
+    assert updated.identity_id == "TEACHER01"
+    session.flush.assert_awaited_once()
+
+    duplicate_session = SimpleNamespace(
+        scalar=AsyncMock(side_effect=[target_user, "other-user-uuid"]),
+        flush=AsyncMock(),
+    )
+    duplicate_service = UserService(duplicate_session)
+    with pytest.raises(IdentityIdAlreadyExistsError, match="该身份 ID 已被其他账号占用"):
+        await duplicate_service.update_user_identity_id("teacher-uuid-1", "USED001")

@@ -52,10 +52,13 @@ export function LegalDocumentModal({ document, onClose }: LegalDocumentModalProp
   useEffect(() => {
     if (!document) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      event.preventDefault();
+      onClose();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [document, onClose]);
 
   if (!document) return null;
@@ -79,6 +82,11 @@ export function LegalDocumentModal({ document, onClose }: LegalDocumentModalProp
         aria-modal="true"
         aria-labelledby="legal-document-title"
         onMouseDown={(event) => event.stopPropagation()}
+        onWheel={(event) => event.stopPropagation()}
+        onTouchStart={(event) => event.stopPropagation()}
+        onTouchMove={(event) => event.stopPropagation()}
+        onFocus={(event) => event.stopPropagation()}
+        onBlur={(event) => event.stopPropagation()}
       >
         <header className="legal-document-header">
           <div>
@@ -89,7 +97,7 @@ export function LegalDocumentModal({ document, onClose }: LegalDocumentModalProp
             ×
           </button>
         </header>
-        <div className="legal-document-body">
+        <div className="legal-document-body" tabIndex={0}>
           <p className="legal-document-intro">{content.intro}</p>
           {content.sections.map((section) => (
             <section key={section.heading} className="legal-document-section">

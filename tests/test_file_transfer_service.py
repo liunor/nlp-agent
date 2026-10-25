@@ -220,3 +220,18 @@ async def test_concurrent_duplicate_idempotency_key_returns_the_committed_reques
     retry_lookup = db.scalar.await_args_list[2].args[0]
     retry_sql = str(retry_lookup.compile(dialect=mysql.dialect())).upper()
     assert "FOR UPDATE" in retry_sql
+
+
+@pytest.mark.asyncio
+async def test_lookup_recipient_finds_account_by_updated_custom_identity_id() -> None:
+    teacher = SimpleNamespace(
+        id="teacher-user-1",
+        identity_id="TEACHER-01",
+        display_name="张老师",
+    )
+    db = SimpleNamespace(scalar=AsyncMock(return_value=teacher))
+    service = _service(db)
+
+    found = await service.lookup_recipient("  teacher-01 ")
+
+    assert found == {"identity_id": "TEACHER-01", "display_name": "张老师"}

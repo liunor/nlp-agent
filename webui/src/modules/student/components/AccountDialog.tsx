@@ -22,7 +22,7 @@ export function AccountDialog({
   const roles = session?.roles?.join("、") || "student";
   const [fetchedIdentity, setFetchedIdentity] = useState<{ userId: string; identityId: string } | null>(null);
   const fetchedIdentityId = fetchedIdentity && fetchedIdentity.userId === session?.user_id ? fetchedIdentity.identityId : "";
-  const identityId = session?.identity_id ?? fetchedIdentityId;
+  const identityId = fetchedIdentityId || session?.identity_id || "";
   const [copied, setCopied] = useState(false);
   // Profile settings open as an in-platform overlay instead of navigating to a
   // separate page, so the user never leaves the current workspace.
@@ -30,13 +30,13 @@ export function AccountDialog({
   useEffect(() => {
     if (!open) return;
     const userId = session?.user_id;
-    if (session?.identity_id || !userId) return;
+    if (!userId) return;
     let active = true;
     void api.getCurrentUser().then((profile) => {
-      if (active) setFetchedIdentity({ userId, identityId: profile.identity_id });
+      if (active && profile.identity_id) setFetchedIdentity({ userId, identityId: profile.identity_id });
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [open, session?.identity_id, session?.user_id]);
+  }, [open, session?.user_id]);
 
   const copyIdentityId = async () => {
     if (!identityId) return;

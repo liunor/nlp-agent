@@ -53,14 +53,37 @@ describe("LoginDialog", () => {
   });
 
   it("opens legal documents without leaving the login dialog", () => {
-    render(<LoginDialog open onClose={vi.fn()} onAuthenticate={vi.fn()} />);
+    const close = vi.fn();
+    render(<LoginDialog open onClose={close} onAuthenticate={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "《隐私政策》" }));
-    expect(screen.getByRole("dialog", { name: "隐私政策" })).toBeVisible();
+    const legalDialog = screen.getByRole("dialog", { name: "隐私政策" });
+    expect(legalDialog).toBeVisible();
     expect(screen.getByText(/处理目的/)).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "我已阅读" }));
+    const body = legalDialog.querySelector(".legal-document-body");
+    expect(body).not.toBeNull();
+    const wheelEvent = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 120 });
+    body!.dispatchEvent(wheelEvent);
+    expect(wheelEvent.defaultPrevented).toBe(false);
+
+    const touchMoveEvent = new Event("touchmove", { bubbles: true, cancelable: true });
+    body!.dispatchEvent(touchMoveEvent);
+    expect(touchMoveEvent.defaultPrevented).toBe(false);
+
+    fireEvent.keyDown(legalDialog, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "隐私政策" })).not.toBeInTheDocument();
+    expect(close).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "《用户协议》" }));
+    const termsDialog = screen.getByRole("dialog", { name: "用户协议" });
+    const termsBody = termsDialog.querySelector(".legal-document-body");
+    const termsWheelEvent = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 120 });
+    termsBody!.dispatchEvent(termsWheelEvent);
+    expect(termsWheelEvent.defaultPrevented).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "我已阅读" }));
+    expect(screen.queryByRole("dialog", { name: "用户协议" })).not.toBeInTheDocument();
   });
 
   it("renders the registration captcha at a readable fixed size", async () => {

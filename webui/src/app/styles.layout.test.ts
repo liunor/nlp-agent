@@ -364,4 +364,28 @@ describe("sandbox titlebar layout", () => {
     expect(dialogActionButtonRule).toContain("padding: 0 12px");
     expect(stylesheet).not.toMatch(/\.file-transfer-dialog button\s*\{/);
   });
+
+  it("keeps legal document modals interactive and scrollable above the Radix login dialog", () => {
+    const overlayRule = stylesheet.match(/\.legal-document-overlay\s*\{([^}]*)\}/)?.[1] ?? "";
+    const modalRule = stylesheet.match(/\.legal-document-modal\s*\{([^}]*)\}/)?.[1] ?? "";
+    const bodyRule = stylesheet.match(/\.legal-document-body\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(overlayRule).toContain("pointer-events: auto");
+    expect(modalRule).toContain("pointer-events: auto");
+    expect(bodyRule).toContain("min-height: 0");
+    expect(bodyRule).toContain("flex: 1 1 auto");
+    expect(bodyRule).toContain("overflow-y: auto");
+    expect(bodyRule).toContain("overscroll-behavior: contain");
+  });
+
+  it("separates the classroom join form from the request history with aligned grid fields", () => {
+    const sectionRule = stylesheet.match(/\.classroom-settings-section\s*\{([^}]*)\}/)?.[1] ?? "";
+    const gridRule = stylesheet.match(/\.classroom-fields-grid\s*\{([^}]*)\}/)?.[1] ?? "";
+    const listRule = stylesheet.match(/\.classroom-request-list\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(sectionRule).toContain("gap: 28px");
+    expect(gridRule).toContain("grid-template-columns: repeat(2, minmax(0, 1fr))");
+    expect(listRule).toContain("padding-top: 24px");
+    expect(listRule).toContain("border-top: 1px solid var(--border)");
+  });
 });

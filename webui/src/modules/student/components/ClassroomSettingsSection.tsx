@@ -77,40 +77,62 @@ export function ClassroomSettingsSection({ canSubmit }: { canSubmit: boolean }) 
 
   return (
     <div className="classroom-settings-section">
-      <div className="settings-note">输入教师提供的班级码申请加入，不需要填写班级 UUID。</div>
-      <label className="settings-field">
-        <span>班级码</span>
-        <input
-          value={joinCode}
-          onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
-          placeholder="例如 ABCD2345"
-          maxLength={12}
-          autoComplete="off"
-        />
-      </label>
-      <label className="settings-field">
-        <span>学号 <small>选填</small></span>
-        <input
-          value={studentNumber}
-          onChange={(event) => setStudentNumber(event.target.value)}
-          placeholder="可不填写"
-          maxLength={32}
-        />
-      </label>
-      <button className="settings-primary-button" type="button" disabled={!joinCode.trim() || submitting} onClick={() => void submit()}>
-        {submitting ? "提交中…" : "申请入班"}
-      </button>
-      {success && <p className="feedback-success" role="status">{success}</p>}
-      {error && <p className="error-card" role="alert">{error}</p>}
+      <div className="classroom-join-form">
+        <div className="classroom-fields-grid">
+          <label className="settings-field">
+            <span>班级码</span>
+            <input
+              value={joinCode}
+              onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
+              placeholder="例如 ABCD2345"
+              maxLength={12}
+              autoComplete="off"
+            />
+          </label>
+          <label className="settings-field">
+            <span>学号 <small>选填</small></span>
+            <input
+              value={studentNumber}
+              onChange={(event) => setStudentNumber(event.target.value)}
+              placeholder="可不填写"
+              maxLength={32}
+            />
+          </label>
+        </div>
+        <div className="classroom-form-footer">
+          <span className="classroom-form-hint">输入教师提供的班级码即可申请，不需要填写班级 UUID。</span>
+          <button className="settings-primary-button" type="button" disabled={!joinCode.trim() || submitting} onClick={() => void submit()}>
+            {submitting ? "提交中…" : "申请入班"}
+          </button>
+        </div>
+        {success && <p className="feedback-success" role="status">{success}</p>}
+        {error && <p className="error-card" role="alert">{error}</p>}
+      </div>
 
       <div className="classroom-request-list">
-        <strong>我的申请</strong>
-        {loading ? <p className="settings-note">正在加载…</p> : requests.length === 0 ? <p className="settings-note">暂无入班申请。</p> : requests.map((request) => (
-          <article key={request.id} className="classroom-request-item">
-            <div><b>{request.class_name || "班级"}</b><span>{statusLabel[request.status] ?? request.status}</span></div>
-            <small>{new Date(request.requested_at).toLocaleString("zh-CN")}</small>
-          </article>
-        ))}
+        <div className="classroom-request-header">
+          <strong>我的申请</strong>
+          <span>查看已提交的入班申请与教师审核结果。</span>
+        </div>
+        {loading ? (
+          <p className="settings-note classroom-request-empty">正在加载…</p>
+        ) : requests.length === 0 ? (
+          <p className="settings-note classroom-request-empty">暂无入班申请。</p>
+        ) : (
+          <div className="classroom-request-items">
+            {requests.map((request) => (
+              <article key={request.id} className="classroom-request-item">
+                <div>
+                  <b>{request.class_name || "班级"}</b>
+                  <small>{new Date(request.requested_at).toLocaleString("zh-CN")}</small>
+                </div>
+                <span className={`classroom-request-status status-${request.status}`}>
+                  {statusLabel[request.status] ?? request.status}
+                </span>
+              </article>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .identity import validate_public_identity_id
 from .phone import normalize_phone_number
 
 
@@ -40,7 +41,15 @@ class UserAdminUpdate(BaseModel):
     """Schema for admin user updates."""
 
     display_name: Optional[str] = Field(None, min_length=1, max_length=128)
+    identity_id: Optional[str] = Field(None, min_length=1, max_length=32)
     status: Optional[str] = Field(None, pattern="^(active|disabled|locked)$")
+
+    @field_validator("identity_id")
+    @classmethod
+    def validate_identity_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return validate_public_identity_id(value)
 
 
 class UserResponse(BaseModel):

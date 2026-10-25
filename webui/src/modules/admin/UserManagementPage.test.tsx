@@ -8,12 +8,14 @@ const {
   getUserRolesMock,
   listRolesMock,
   listUsersMock,
+  updateUserMock,
 } = vi.hoisted(() => ({
   createUserMock: vi.fn(),
   hardDeleteUserMock: vi.fn(),
   getUserRolesMock: vi.fn(),
   listRolesMock: vi.fn(),
   listUsersMock: vi.fn(),
+  updateUserMock: vi.fn(),
 }));
 
 vi.mock("@/platform/http/api", () => ({
@@ -23,11 +25,13 @@ vi.mock("@/platform/http/api", () => ({
     getUserRoles: getUserRolesMock,
     listRoles: listRolesMock,
     listUsers: listUsersMock,
+    updateUser: updateUserMock,
   },
 }));
 
 const alice = {
   id: "user-alice",
+  identity_id: "NV2ALICE000001",
   username: "alice",
   display_name: "Alice",
   status: "active" as const,
@@ -61,6 +65,7 @@ describe("UserManagementPage", () => {
     vi.stubGlobal("confirm", vi.fn(() => true));
     createUserMock.mockReset();
     hardDeleteUserMock.mockReset();
+    updateUserMock.mockReset();
     getUserRolesMock.mockReset().mockResolvedValue({ user_id: alice.id, role_codes: ["student"] });
     listRolesMock.mockReset().mockResolvedValue({ items: [
       { code: "student", name: "学生", description: "学习者", status: "active", is_builtin: true },
@@ -130,5 +135,36 @@ describe("UserManagementPage", () => {
 
     await waitFor(() => expect(listUsersMock).toHaveBeenCalledWith(0, 10, undefined, "alice", false), { timeout: 2_000 });
     expect(screen.getByRole("region", { name: "用户列表" })).toBeVisible();
+  });
+
+  it("lets developers update an account's public identity ID and surfaces duplicate errors", async () => {
+    updateUserMock.mockResolvedValueOnce({ ...alice, identity_id: "TEACHER01" });
+    render(<UserManagementPage />);
+
+    await screen.findByText("alice");
+    expect(screen.getByText("身份 ID: NV2ALICE000001")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "alice 操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "修改身份 ID" }));
+
+    const dialog = screen.getByRole("dialog", { name: "修改身份 ID" });
+    const input = within(dialog).getByLabelText("身份 ID");
+    expect(input).toHaveValue("NV2ALICE000001");
+
+    fireEvent.change(input, { target: { value: " teacher01 " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(updateUserMock).toHaveBeenCalledWith("user-alice", { identity_id: "TEACHER01" }));
+    expect(await screen.findByText("身份 ID 已更新")).toBeVisible();
+    expect(screen.getByText("身份 ID: TEACHER01")).toBeVisible();
+
+    updateUserMock.mockRejectedValueOnce(new Error("该身份 ID 已被其他账号占用"));
+    fireEvent.click(screen.getByRole("button", { name: "alice 操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "修改身份 ID" }));
+    const retryDialog = screen.getByRole("dialog", { name: "修改身份 ID" });
+    fireEvent.change(within(retryDialog).getByLabelText("身份 ID"), { target: { value: "USED001" } });
+    fireEvent.click(within(retryDialog).getByRole("button", { name: "保存修改" }));
+
+    expect(await screen.findByText("该身份 ID 已被其他账号占用")).toBeVisible();
   });
 });

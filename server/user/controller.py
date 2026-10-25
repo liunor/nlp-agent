@@ -350,6 +350,25 @@ async def update_user(
                         "after": data.display_name,
                     },
                 )
+        if data.identity_id is not None:
+            user, previous_identity_id = await service.update_user_identity_id(
+                user_id, data.identity_id
+            )
+            if user.identity_id != previous_identity_id:
+                await rbac_service.audit(
+                    db,
+                    actor_user_id=principal.user_id,
+                    target_user_id=user_id,
+                    decision="allow",
+                    reason_code="user_identity_id_updated",
+                    permission_code="system:user:manage",
+                    resource_type="user",
+                    resource_id=user_id,
+                    detail={
+                        "before": previous_identity_id,
+                        "after": user.identity_id,
+                    },
+                )
         previous_status = user.status
         if data.status is not None:
             await service.update_user_status(
@@ -378,6 +397,8 @@ async def update_user(
         return await _user_response_with_roles(service, user)
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
+    except UserAlreadyExistsError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except LastDeveloperForbiddenError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 

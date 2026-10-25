@@ -27,7 +27,7 @@ from server.infrastructure.mysql.models import (
     OutboxMessageModel,
 )
 from server.auth import code_store
-from .identity import generate_public_identity_id
+from .identity import generate_public_identity_id, validate_public_identity_id
 
 from .schemas import UserCreate, UserRegister, UserUpdate
 from .email import normalize_email
@@ -44,6 +44,10 @@ class UserNotFoundError(UserServiceError):
 
 class UserAlreadyExistsError(UserServiceError):
     """Raised when attempting to create a duplicate user."""
+
+
+class IdentityIdAlreadyExistsError(UserAlreadyExistsError):
+    """Raised when a public identity ID is already assigned to another user."""
 
 
 class EmailAlreadyUsedError(UserServiceError):
@@ -271,6 +275,7 @@ class UserService:
             like_filter = or_(
                 UserModel.username.ilike(pattern, escape="\\"),
                 UserModel.display_name.ilike(pattern, escape="\\"),
+                UserModel.identity_id.ilike(pattern, escape="\\"),
             )
             query = query.where(like_filter)
             count_query = count_query.where(like_filter)
@@ -317,6 +322,35 @@ class UserService:
         user.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self.session.flush()
         return user
+
+    async def update_user_identity_id(
+        self,
+        user_id: str,
+        identity_id: str,
+    ) -> tuple[UserModel, str]:
+        """Update a user's public identity ID after checking uniqueness."""
+        normalized = validate_public_identity_id(identity_id)
+        user = await self.get_user(user_id)
+        previous_identity_id = user.identity_id
+        if normalized == previous_identity_id:
+            return user, previous_identity_id
+
+        duplicate = await self.session.scalar(
+            select(UserModel.id).where(
+                UserModel.identity_id == normalized,
+                UserModel.id != user_id,
+            )
+        )
+        if duplicate is not None:
+            raise IdentityIdAlreadyExistsError("该身份 ID 已被其他账号占用")
+
+        user.identity_id = normalized
+        user.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            raise IdentityIdAlreadyExistsError("该身份 ID 已被其他账号占用") from exc
+        return user, previous_identity_id
 
     async def _revoke_user_sessions(self, user_id: str) -> None:
         """Revoke all active database sessions for a user."""
