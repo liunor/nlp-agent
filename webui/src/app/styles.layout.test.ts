@@ -351,4 +351,17 @@ describe("sandbox titlebar layout", () => {
     expect(scrollRule).toContain("flex: 1 1 auto");
     expect(scrollRule).toContain("overflow-y: auto");
   });
+
+  it("keeps the file-transfer dialog close icon centered without action-button padding", () => {
+    const closeRule = stylesheet.match(/\.file-transfer-close\s*\{([^}]*)\}/)?.[1] ?? "";
+    const dialogActionButtonRule = stylesheet.match(/\.file-transfer-dialog button:not\(\.file-transfer-close\)\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    expect(closeRule).toContain("width: 28px");
+    expect(closeRule).toContain("height: 28px");
+    expect(closeRule).toContain("padding: 0");
+    expect(closeRule).toContain("place-items: center");
+    expect(closeRule).toContain("border: 0");
+    expect(dialogActionButtonRule).toContain("padding: 0 12px");
+    expect(stylesheet).not.toMatch(/\.file-transfer-dialog button\s*\{/);
+  });
 });
