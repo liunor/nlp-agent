@@ -145,6 +145,7 @@ class ManagedHttpEnvironment:
             _verify_redis(redis_port, redis_db, run_id)
             _run_migrations(environment.env)
             environment.users = _seed_users(environment.env)
+            _seed_quota_policy(environment.env, environment.users)
             if real_sandbox_image is not None:
                 environment._start_sandbox_manager()
             environment._start_server(
@@ -737,6 +738,38 @@ def _seed_users(environment: dict[str, str]) -> dict[str, SeededUser]:
             await runtime.close()
 
     return asyncio.run(seed())
+
+
+def _seed_quota_policy(environment: dict[str, str], users: dict[str, SeededUser]) -> None:
+    """Provision finite quota in the isolated HTTP database via the public management service."""
+    from datetime import datetime, timedelta, timezone
+
+    from server.quota.management import QuotaManagementService
+
+    now = datetime.now(timezone.utc) - timedelta(minutes=1)
+    manager = QuotaManagementService(environment["NLP_AGENT_DATABASE_URL"])
+    try:
+        policy = manager.create_policy(
+            code="api-http-chat",
+            version="1",
+            name="Isolated HTTP test chat",
+            request_limit_micro=8_000_000,
+            daily_limit_micro=100_000_000_000,
+            weekly_limit_micro=500_000_000_000,
+            concurrency_limit=100,
+            allowed_model_profiles=(),
+            effective_from=now,
+            created_by=users["developer"].user_id,
+            status="active",
+        )
+        manager.bind_policy(
+            subject_type="default",
+            subject_id="*",
+            policy_id=policy["policy_id"],
+            effective_from=now,
+        )
+    finally:
+        manager.close()
 
 
 def _safe_child_environment(
