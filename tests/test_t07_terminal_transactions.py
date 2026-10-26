@@ -30,7 +30,7 @@ def repository(monkeypatch):
         ), parameters
 
     with engine.begin() as c:
-        c.execute(sa.text("CREATE TABLE nlp_turns(id TEXT PRIMARY KEY, conversation_id TEXT, workspace_id TEXT, user_id TEXT, status TEXT, input_text TEXT, claim_generation INTEGER, created_at TEXT, completed_at TEXT, result_text TEXT, error_message TEXT, error_kind TEXT, quota_reservation_id TEXT, started_at TEXT)"))
+        c.execute(sa.text("CREATE TABLE nlp_turns(id TEXT PRIMARY KEY, conversation_id TEXT, workspace_id TEXT, user_id TEXT, status TEXT, input_text TEXT, claim_generation INTEGER, created_at TEXT, completed_at TEXT, result_text TEXT, error_message TEXT, error_kind TEXT, quota_reservation_id TEXT, learning_state_json TEXT, started_at TEXT)"))
         c.execute(sa.text("CREATE TABLE nlp_turn_events(id TEXT PRIMARY KEY, turn_id TEXT, sequence INTEGER, claim_generation INTEGER, event_type TEXT, payload_json TEXT, created_at TEXT DEFAULT '2026-10-17 00:00:00', UNIQUE(turn_id,sequence))"))
         c.execute(sa.text("CREATE TABLE nlp_turn_cancellations(turn_id TEXT PRIMARY KEY, requested_by TEXT, reason TEXT)"))
         c.execute(sa.text("INSERT INTO nlp_turns(id,conversation_id,workspace_id,user_id,status,input_text,claim_generation,created_at) VALUES('turn','session','workspace','user','accepted','question',0,'2026-10-17 00:00:00')"))

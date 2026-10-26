@@ -254,7 +254,7 @@ class InProcessTurnExecutor:
             await self._engine.cancel_turn(task.context, task.turn_id)
             # Interruption of a fenced owner is recoverable, not a user cancel.
             cancellation_reader = getattr(self._repository, "cancellation_requested", None)
-            user_cancel = bool(await asyncio.to_thread(cancellation_reader, task.turn_id)) if callable(cancellation_reader) else False
+            user_cancel = (await asyncio.to_thread(cancellation_reader, task.turn_id)) is True if callable(cancellation_reader) else False
             if (current_turn_write_fence() is not None or execution_context is not None) and not user_cancel:
                 raise
             updated = await asyncio.to_thread(
