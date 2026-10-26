@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react
 import { api } from "@/platform/http/api";
 
 import { Composer } from "@/modules/student/components/Composer";
+import { ThinkingLevelControl } from "@/modules/student/components/ThinkingLevelControl";
 import { AccountDialog } from "@/modules/student/components/AccountDialog";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { LearningContextBar } from "@/modules/student/components/LearningContextBar";
@@ -158,7 +159,8 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
         <div>
           <h1>《自然语言处理》智能体 欢迎您！</h1>
           <p>登录后可开始新的学习对话，并安全保存学习记录。</p>
-          <Composer centered disabled={false} running={false} onSend={() => setLoginOpen(true)} onCancel={() => undefined} />
+          <Composer centered disabled={false} running={false} onSend={() => setLoginOpen(true)} onCancel={() => undefined}
+            thinkingControl={<ThinkingLevelControl value="light" supportedLevels={[]} onChange={() => undefined} onRequireLogin={() => setLoginOpen(true)} />} />
         </div>
       </section>
     </main>
@@ -182,7 +184,15 @@ export function StudentWorkspace({ onNavigateTo, onOpenInSandbox }: { onNavigate
   const unavailableModes = getUnavailableLearningModes(learningCatalog, learningContext);
   const roles = workspace.authSession?.roles ?? [];
   const canManageTeaching = ["teacher", "developer", "admin"].some((role) => roles.includes(role));
-  const composer = (centered = false) => <Composer key={workspace.composerRevision} sessionId={workspace.activeSessionId} centered={centered} disabled={!statusOnline} running={workspace.isRunning} cancelling={workspace.isCancelling} onSend={(text, attachments) => void workspace.send(text, attachments)} onCancel={workspace.cancel} onEnsureSession={workspace.ensureSession} contextControl={<LearningContextBar value={learningContext} onChange={updateContext} topics={courseTopics} unavailableModes={unavailableModes} onUnavailableMode={setModeNotice} modelProfiles={workspace.modelProfiles} modelProfile={workspace.settings.model_profile} onModelProfileChange={(modelProfile) => void workspace.patchSettings({ model_profile: modelProfile })} modelSelectionDisabled={!statusOnline || workspace.isRunning} />} />;
+  const selectedProfile = workspace.modelProfiles[workspace.settings.model_profile];
+  const supportedThinkingLevels = selectedProfile?.supported_levels ?? [];
+  const thinkingSelectionAvailable = supportedThinkingLevels.length === 0 || supportedThinkingLevels.includes(workspace.settings.thinking_level);
+  const thinkingControl = <ThinkingLevelControl
+    value={workspace.settings.thinking_level} supportedLevels={supportedThinkingLevels}
+    disabled={!statusOnline || workspace.isRunning || workspace.selectionSaving}
+    onPreviewChange={workspace.setSelectionPreview}
+    onChange={(thinking_level) => void workspace.patchSettings({ thinking_level })} />;
+  const composer = (centered = false) => <Composer key={workspace.composerRevision} sessionId={workspace.activeSessionId} centered={centered} disabled={!statusOnline} sendDisabled={workspace.selectionPending || !thinkingSelectionAvailable} thinkingControl={thinkingControl} running={workspace.isRunning} cancelling={workspace.isCancelling} onSend={(text, attachments) => void workspace.send(text, attachments)} onCancel={workspace.cancel} onEnsureSession={workspace.ensureSession} contextControl={<LearningContextBar value={learningContext} onChange={updateContext} topics={courseTopics} unavailableModes={unavailableModes} onUnavailableMode={setModeNotice} modelProfiles={workspace.modelProfiles} modelProfile={workspace.settings.model_profile} onModelProfileChange={(modelProfile) => void workspace.patchSettings({ model_profile: modelProfile })} modelSelectionDisabled={!statusOnline || workspace.isRunning || workspace.selectionPending} />} />;
 
   return <div className={["app-shell", "student-app-shell", sidebarCollapsed ? "sidebar-is-collapsed" : "sidebar-is-expanded", toolDockOpen && toolDockExpanded && "tool-dock-expanded"].filter(Boolean).join(" ")}>
     {workspace.settingsError && <div className="error-card settings-save-error" role="alert">{workspace.settingsError}</div>}

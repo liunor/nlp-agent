@@ -107,8 +107,12 @@ async function request<T>(
     headers,
     credentials: "include",
   });
+  // A completed fetch may race with an account change. In particular, an old
+  // settings 401 must not dispatch an authentication reset into the new account.
+  init.signal?.throwIfAborted();
   if (!response.ok) {
     const problem = await response.json().catch(() => ({})) as { detail?: unknown; title?: string; code?: string };
+    init.signal?.throwIfAborted();
     const nestedDetail = typeof problem.detail === "object" && problem.detail !== null
       ? problem.detail as { code?: string; detail?: string; message?: string }
       : null;
@@ -396,11 +400,15 @@ export const api = {
     request<{ items: TurnRecord[] }>(`/sessions/${encodeURIComponent(sessionId)}/turns?limit=500`),
   cancelTurn: (turnId: string) =>
     request<TurnRecord>(`/chat/turns/${encodeURIComponent(turnId)}/cancel`, { method: "POST" }),
-  getSettings: () => request<{ preferences: { settings?: Partial<UserSettings> }; runtime: SettingsRuntime }>("/settings"),
-  updateSettings: (settings: Partial<UserSettings>) =>
+  getSettings: (signal?: AbortSignal, expectedUserId?: string) => request<{ preferences: { settings?: Partial<UserSettings> }; runtime: SettingsRuntime }>("/settings", {
+    signal, headers: expectedUserId ? { "X-Settings-Account": expectedUserId } : undefined,
+  }),
+  updateSettings: (settings: Partial<UserSettings>, signal?: AbortSignal, expectedUserId?: string) =>
     request<{ settings: Partial<UserSettings> }>("/settings", {
       method: "PATCH",
       body: JSON.stringify(settings),
+      signal,
+      headers: expectedUserId ? { "X-Settings-Account": expectedUserId } : undefined,
     }),
   submitFeedback: (body: string, category?: FeedbackCategory) => request<{ thread_id: string; remaining: number; daily_limit: number }>("/feedback", { method: "POST", body: JSON.stringify({ body, category }) }),
   getFeedbackDailyState: () => request<FeedbackDailyState>("/feedback/daily-state"),
@@ -437,6 +445,7 @@ export const api = {
   replyFeedback: (threadId: string, body: string) => request<{ thread_id: string; message: FeedbackThread["messages"][number] }>(`/developer/feedback/${encodeURIComponent(threadId)}/reply`, { method: "POST", body: JSON.stringify({ body }) }),
   deleteFeedback: (threadId: string) => request<void>(`/developer/feedback/${encodeURIComponent(threadId)}`, { method: "DELETE" }),
   deleteFeedbackThreads: (threadIds: string[]) => request<{ ok: boolean; deleted: number }>("/developer/feedback/bulk-delete", { method: "POST", body: JSON.stringify({ thread_ids: threadIds }) }),
+  getUserQuota: (userId: string) => request<{ quota: QuotaSnapshot; policy: QuotaPolicyExplanation | null }>(`/developer/quota/users/${encodeURIComponent(userId)}`),
   getDeveloperSnapshot: () => request<DeveloperSnapshot>("/developer/snapshot"),
   getDeveloperHealth: () => request<DeveloperRuntimeHealth>("/developer/health"),
   listQuotaPolicies: (code?: string) => request<{ items: QuotaPolicy[] }>(`/developer/quota/policies${code ? `?code=${encodeURIComponent(code)}` : ""}`),

@@ -20,6 +20,7 @@ from sqlalchemy.exc import DBAPIError
 
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
 from core.observability.reset_lock import runtime_reset_lock, runtime_write_transaction
+from core.user_settings import migrate_thinking_settings
 from gateway.analytics_time import localize_turn_time
 from gateway.contracts import (
     GatewayEvent,
@@ -35,6 +36,8 @@ from gateway.contracts import (
 from server.storage.policy import StorageBucket
 from server.storage.quota import SyncStorageQuota
 from server.quota.contracts import AdmitTurn
+from server.quota.fixed_turn import FixedTurnQuota
+from server.quota.turns import finish_turn, task_from_state
 from server.quota.service import QuotaService, retry_mysql_transaction
 from server.infrastructure.mysql.config import DatabaseConfig
 from server.infrastructure.mysql.sync_engine import create_engine, release_engine
@@ -46,6 +49,7 @@ def _now() -> datetime:
 
 
 class MySQLGatewayRepository:
+    fixed_turn_billing = True
     def __init__(
         self,
         url: str,
@@ -65,7 +69,7 @@ class MySQLGatewayRepository:
                 "init_command": f"SET SESSION max_execution_time = {config.statement_timeout_s * 1000}"})
         self._runtime_lock_enabled = True
         self.knowledge_point_prompt_budget = max(1, knowledge_point_prompt_budget)
-        self.quota_service = QuotaService(self._engine) if quota_enforcement else None
+        self.quota_service = FixedTurnQuota(self._engine)
         deployment_env = settings.NLP_AGENT_DEPLOYMENT_ENV.strip().lower()
         self._test_model_quota_tokens = (
             settings.NLP_AGENT_TEST_MODEL_QUOTA_TOKENS
@@ -289,6 +293,7 @@ class MySQLGatewayRepository:
         learning_progress=None,
         exercise_state=None,
         dispatch_payload: str | None = None,
+        persisted_task: str | None = None,
         quota_reservation_id: str | None = None,
         reserved_tokens: int = 0,
         model_profile: str | None = None,
@@ -342,6 +347,7 @@ class MySQLGatewayRepository:
                     user_id=user_id, workspace_id=workspace_id, reserved_tokens=reserved_tokens,
                     model_profile=model_profile, default_quota_tokens=getattr(self, "_test_model_quota_tokens", None))
                 state = {"context": learning_context.model_dump(mode="json") if learning_context else None, "progress": learning_progress.model_dump(mode="json") if learning_progress else None, "exercise": exercise_state.model_dump(mode="json") if exercise_state else None}
+                state["dispatch_task"] = persisted_task or dispatch_payload
                 state_json = json.dumps(state, ensure_ascii=False)
                 storage = SyncStorageQuota(c, owner_user_id=user_id)
                 storage_reservation = storage.reserve(
@@ -394,7 +400,7 @@ class MySQLGatewayRepository:
         with self._runtime_begin() as c:
             fence = self._lock_turn_for_write(c, turn_id)
             current = c.execute(
-                text("SELECT user_id,result_text,error_message,status,error_kind,claim_generation FROM nlp_turns WHERE id=:id FOR UPDATE"),
+                text("SELECT user_id,result_text,error_message,status,error_kind,claim_generation,learning_state_json FROM nlp_turns WHERE id=:id FOR UPDATE"),
                 {"id": turn_id},
             ).mappings().first()
             if current is None:
@@ -411,7 +417,6 @@ class MySQLGatewayRepository:
             )
             if (
                 current["status"] in {"completed", "failed", "cancelled", "interrupted"}
-                and current["status"] != status.value
                 and not retrying_dispatch_failure
             ):
                 preserve_terminal = True
@@ -444,10 +449,17 @@ class MySQLGatewayRepository:
                     fence.revoke()
                     raise LostTurnClaimError(turn_id)
             if not preserve_terminal and dispatch_payload is not None:
+                state = self._json(current["learning_state_json"] or {})
+                state["dispatch_task"] = dispatch_payload
+                c.execute(text("UPDATE nlp_turns SET learning_state_json=:state WHERE id=:id"),
+                          {"state": json.dumps(state, ensure_ascii=False), "id": turn_id})
+            if not preserve_terminal and dispatch_payload is not None:
                 c.execute(text("INSERT INTO nlp_outbox_messages(id,topic,payload_json,status) VALUES(UUID(),'turn.dispatch',:payload,'pending')"), {"payload": json.dumps({"turn_id": turn_id, "task": dispatch_payload})})
             if storage is not None:
                 storage.finalize(storage_reservation, reconcile=True)
             if terminal and not preserve_terminal:
+                finish_turn(c, turn_id=turn_id, status=status.value, final_text=final_text,
+                            state=self._json(current["learning_state_json"] or {}))
                 if status == TurnStatus.COMPLETED:
                     self.ensure_event(turn_id=turn_id, session_id="", event_type=GatewayEventType.MESSAGE_COMPLETED,
                         payload={"content": final_text or ""}, expected_claim_generation=expected_claim_generation, _connection=c)
@@ -466,11 +478,22 @@ class MySQLGatewayRepository:
             raise KeyError(turn_id)
         return self._record(row)
 
+    def get_turn_task(self, turn_id: str) -> str | None:
+        row = self._row(turn_id)
+        return self._json(row.get("learning_state_json") or {}).get("dispatch_task") if row else None
+
     def get_turn(self, turn_id: str) -> TurnRecord | None:
         row = self._row(turn_id)
         return self._record(row) if row else None
 
-    def request_turn_cancellation(
+    def cancellation_requested(self, turn_id: str) -> bool:
+        with self._engine.connect() as c:
+            return c.execute(text("SELECT turn_id FROM nlp_turn_cancellations WHERE turn_id=:id"), {"id": turn_id}).first() is not None
+
+    def request_turn_cancellation(self, **kwargs):
+        return retry_mysql_transaction(lambda: self._request_turn_cancellation_once(**kwargs))
+
+    def _request_turn_cancellation_once(
         self, *, turn_id: str, requested_by: str, reason: str = "user_requested"
     ) -> TurnRecord | None:
         """Record cancellation in MySQL before any transport-level signal."""
@@ -498,6 +521,7 @@ class MySQLGatewayRepository:
                 },
             )
             if row["status"] in {"accepted", "running"}:
+                finish_turn(c, turn_id=turn_id, status="cancelled", final_text=row.get("result_text"), state=row.get("learning_state_json"))
                 c.execute(
                     text(
                         "UPDATE nlp_turns SET status='cancelled', "
@@ -1039,14 +1063,31 @@ class MySQLGatewayRepository:
             self._lock_turn_for_write(c)
         return self.exercise_state(exercise_session_id)
 
+    def _user_settings_transaction(self, user_id: str, changes: dict[str, Any]):
+        # Establish and lock this user's row before reading/merging. Both lazy
+        # migration and concurrent PATCH requests must preserve unrelated fields.
+        with self._engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO nlp_user_preferences(user_id,preferences_json,revision) "
+                "VALUES(:id,'{}',0) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)"
+            ), {"id": user_id})
+            query = text("SELECT revision,preferences_json,updated_at FROM nlp_user_preferences WHERE user_id=:id FOR UPDATE")
+            row = c.execute(query, {"id": user_id}).mappings().one()
+            original = self._json(row["preferences_json"])
+            merged = migrate_thinking_settings({**migrate_thinking_settings(original), **changes})
+            if merged != original:
+                c.execute(text(
+                    "UPDATE nlp_user_preferences SET preferences_json=:settings,"
+                    "revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE user_id=:id"
+                ), {"id": user_id, "settings": json.dumps(merged, ensure_ascii=False)})
+                row = c.execute(query, {"id": user_id}).mappings().one()
+            return {"revision": int(row["revision"]), "settings": merged, "updated_at": row["updated_at"]}
+
     def get_user_settings(self, user_id: str):
-        with self._engine.connect() as c: row = c.execute(text("SELECT revision,preferences_json,updated_at FROM nlp_user_preferences WHERE user_id=:id"), {"id": user_id}).mappings().first()
-        return {"revision": int(row["revision"]), "settings": self._json(row["preferences_json"]), "updated_at": row["updated_at"]} if row else {"revision": 0, "settings": {}, "updated_at": None}
+        return self._user_settings_transaction(user_id, {})
 
     def update_user_settings(self, user_id: str, changes: dict[str, Any]):
-        current = self.get_user_settings(user_id); settings = {**current["settings"], **changes}; revision = current["revision"] + 1
-        with self._runtime_begin() as c: c.execute(text("INSERT INTO nlp_user_preferences(user_id,preferences_json,revision) VALUES(:id,:settings,:revision) ON DUPLICATE KEY UPDATE preferences_json=VALUES(preferences_json),revision=VALUES(revision)"), {"id": user_id, "settings": json.dumps(settings, ensure_ascii=False), "revision": revision})
-        return self.get_user_settings(user_id)
+        return self._user_settings_transaction(user_id, changes)
 
     def list_whiteboard_library(self) -> list[dict[str, Any]]:
         with self._engine.connect() as connection:
@@ -1222,11 +1263,10 @@ class MySQLGatewayRepository:
     def latest_event_sequence(self, turn_id: str) -> int:
         with self._engine.connect() as c: return int(c.execute(text("SELECT COALESCE(MAX(sequence),0) FROM nlp_turn_events WHERE turn_id=:id"), {"id": turn_id}).scalar_one())
     def recover_interrupted(self):
-        with self._runtime_begin() as c:
-            rows = c.execute(text("SELECT id FROM nlp_turns WHERE status IN ('accepted','running')")).scalars().all()
-            for turn_id in rows:
-                c.execute(text("UPDATE nlp_turns SET status='interrupted',error_kind='gateway_restart',error_message='Gateway restarted before the turn completed.',completed_at=UTC_TIMESTAMP(6) WHERE id=:id"), {"id": turn_id})
-        return [self.get_turn(turn_id) for turn_id in rows if self.get_turn(turn_id) is not None]
+        with self._engine.connect() as connection:
+            ids = connection.execute(text("SELECT id FROM nlp_turns WHERE status IN ('accepted','running')")).scalars().all()
+        return [self.update_turn(turn_id, TurnStatus.INTERRUPTED, error_kind="gateway_restart",
+                                 error_message="Gateway restarted before the turn completed.") for turn_id in ids]
     def prune_events(self, *, retention_days: int, max_events_per_session: int, now: datetime | None = None):
         cutoff = (now or _now()) - timedelta(days=max(1, retention_days))
         with self._runtime_begin() as c:

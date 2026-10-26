@@ -169,7 +169,7 @@ def test_worker_concurrency_default_is_still_four():
 
 def test_turn_task_codec_rejects_unknown_protocol_version():
     with pytest.raises(ValueError, match="unsupported turn task version"):
-        TurnTaskCodec.loads('{"version":2}')
+        TurnTaskCodec.loads('{"version":999}')
 
 
 def test_turn_task_codec_rejects_non_object_json():

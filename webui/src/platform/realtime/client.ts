@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@/shared/types";
 import type { KnowledgeBookContext, ServerEvent } from "@/shared/types";
 import { createUuid } from "@/shared/utils/uuid";
 import { api } from "@/platform/http/api";
@@ -140,7 +141,7 @@ export class StudentSocket {
     }
   }
 
-  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, thinkingEnabled?: boolean, knowledgeBookContext?: KnowledgeBookContext): void {
+  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, thinkingEnabled?: ThinkingLevel | boolean, knowledgeBookContext?: KnowledgeBookContext): void {
     this.command("chat.send", {
       session_id: sessionId,
       content,

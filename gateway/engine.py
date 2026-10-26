@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
+from core.model_runtime.runtime import ModelRuntimeExhaustedError
 from core.coordinator_runtime import CoordinatorRuntime
 from core.session_context import SessionContext
 from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress, TeachingMaterials
@@ -18,6 +19,7 @@ from core.observability.context import bind_telemetry_context, current_telemetry
 from core.observability.runtime import global_telemetry
 from core.task_manager import global_task_manager
 from core.model_runtime.selection import (
+    current_model_snapshot, bind_model_snapshot,
     bind_model_profile,
     bind_thinking_enabled,
     current_model_profile,
@@ -59,12 +61,16 @@ class LangGraphAgentEngine:
         self._connection = None
         self._runtime: CoordinatorRuntime | None = None
         self._event_sink: EngineEventSink | None = None
+        self._model_task_loader = None
         self._started = False
         self._session_model_profiles: dict[str, str | None] = {}
         self._foreground_outputs: dict[str, list[str]] = {}
         self._abandoned_tasks: set[asyncio.Task[Any]] = set()
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._session_thinking_enabled: dict[str, bool] = {}
+
+    def set_model_task_loader(self, loader):
+        self._model_task_loader = loader
 
     async def start(self, event_sink: EngineEventSink) -> None:
         if self._started:
@@ -102,6 +108,22 @@ class LangGraphAgentEngine:
     ) -> None:
         if self._app is None:
             raise RuntimeError("Agent engine is not started")
+        snapshot = current_model_snapshot()
+        if snapshot is None or snapshot.turn_id != turn_id:
+            snapshot = None
+            if self._model_task_loader is not None:
+                from gateway.redis_transport import TurnTaskCodec
+                payload = await asyncio.to_thread(self._model_task_loader, turn_id)
+                if payload:
+                    snapshot = TurnTaskCodec.loads(payload).model_snapshot
+        if snapshot is not None:
+            snapshot.require_owner(user_id=context.user_id, workspace_id=context.workspace_id,
+                session_id=context.session_id, turn_id=turn_id)
+        if current_model_snapshot() != snapshot:
+            with bind_model_snapshot(snapshot):
+                return await self._invoke(messages, context, background, turn_id,
+                    learning_context, learning_progress, exercise_state, teaching_materials,
+                    knowledge_book_context)
         selected_profile = current_model_profile() or self._session_model_profiles.get(
             context.storage_key
         )
@@ -327,8 +349,12 @@ class LangGraphAgentEngine:
                 timeout_s=_CHECKPOINT_READ_TIMEOUT_S,
                 task_name=f"checkpoint-read:{context.session_id}",
             )
+            if state.values.get("runtime_turn_id") == turn_id and state.values.get("runtime_stop_reason") == "model_error":
+                raise ModelRuntimeExhaustedError("模型请求未恢复，本轮已停止，请重试。")
             state_messages = list(state.values.get("messages", []))
         except asyncio.CancelledError:
+            raise
+        except ModelRuntimeExhaustedError:
             raise
         except Exception as error:
             state_error = error

@@ -173,12 +173,13 @@ describe("DeveloperWorkspace shell access", () => {
 
     await screen.findByRole("heading", { name: "模型与 Provider" });
     fireEvent.click(screen.getByRole("tab", { name: "模型预设" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "coordinator-fast 思考强度" }), { target: { value: "low" } });
+    expect(screen.queryByRole("combobox", { name: "coordinator-fast 思考强度" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "coordinator-fast 最大输出 Token" }), { target: { value: "12000" } });
     fireEvent.click(screen.getByRole("button", { name: "保存模型预设" }));
 
     await waitFor(() => expect(saveModelPresetMock).toHaveBeenCalledWith("coordinator-fast", expect.objectContaining({
       model: "deepseek-v4-flash",
-      thinking: { enabled: true, effort: "low" },
+      generation: expect.objectContaining({ max_output_tokens: 12000 }),
     })));
   });
 });

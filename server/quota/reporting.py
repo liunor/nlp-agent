@@ -322,7 +322,7 @@ class DurableModelUsageReporter(ModelUsageReporter):
     ) -> tuple[str | None, int | None, str]:
         if usage.source == "none":
             return None, None, "unavailable"
-        if usage.semantics in {"cumulative", "delta", "partial"} or outcome.status in {
+        if getattr(usage, "semantics", "final") in {"cumulative", "delta", "partial"} or outcome.status in {
             "cancelled",
             "interrupted",
         }:

@@ -563,21 +563,13 @@ def _command_error(error: Exception) -> tuple[str, str, dict[str, Any]]:
             AdmissionLimitError.USER_ACTIVE_LIMIT_REACHED: "你的进行中任务已达上限，请等待已有任务完成。",
             AdmissionLimitError.MODEL_QUOTA_EXCEEDED: "模型额度不足，暂时无法提交任务。",
         }
-        return error.code, messages[error.code]
+        return error.code, messages[error.code], {}
     if isinstance(error, StorageQuotaExceeded):
         return "storage_quota_exceeded", "账户通用存储空间已达到配额，请清理会话、记忆或图片后重试", {}
     if isinstance(error, QuotaRejectedError):
-        problem = error.problem
-        return (
-            problem.code.value,
-            problem.reason,
-            {
-                "remaining_micro": problem.remaining_micro,
-                "reset_at": problem.reset_at.isoformat() if problem.reset_at else None,
-                "allowed_model_profiles": list(problem.allowed_model_profiles),
-                "retryable": problem.retryable,
-            },
-        )
+        from server.quota.transport import quota_error
+        code, message, _status = quota_error(error)
+        return code, message, {}
     if isinstance(error, ValidationError):
         return "validation_error", "command payload is invalid", {}
     if name == "TeachingConfigurationError":

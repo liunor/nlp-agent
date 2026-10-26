@@ -1,6 +1,7 @@
 import type { UserSettings } from "@/shared/types";
 
 export const DEFAULT_SETTINGS: UserSettings = {
+  thinking_level: "light",
   locale: "zh-CN",
   theme: "light",
   content_font_size: "medium",

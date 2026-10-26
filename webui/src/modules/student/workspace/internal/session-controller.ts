@@ -1,17 +1,20 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import { api } from "@/platform/http/api";
 import type { LearningPreferences, SessionLearningMeta, SessionSummary } from "@/shared/types";
 
 interface SessionControllerOptions {
+  accountKey?: string | null;
   preferences: LearningPreferences;
   persistPreferences: (update: (current: LearningPreferences) => LearningPreferences) => void;
   updateSessionMeta: (sessionId: string, patch: Partial<SessionLearningMeta>) => void;
-  onRequestError: (message: string) => void;
+  onRequestError?: (message: string) => void;
   onActiveSessionChange?: (sessionId: string | null) => void;
 }
 
-export function useSessionController({ preferences, persistPreferences, updateSessionMeta, onRequestError, onActiveSessionChange }: SessionControllerOptions) {
+export function useSessionController({ preferences, persistPreferences, updateSessionMeta, onRequestError = () => undefined, onActiveSessionChange, accountKey = null }: SessionControllerOptions) {
+  const accountToken = useMemo(() => ({ owner: accountKey }), [accountKey]);
+  const activeAccount = useRef<typeof accountToken | null>(accountToken);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [workspaceId, setWorkspaceId] = useState("default");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -22,6 +25,15 @@ export function useSessionController({ preferences, persistPreferences, updateSe
   const chatEpochRef = useRef(0);
   const sessionLoadGenerationRef = useRef(0);
 
+  useLayoutEffect(() => {
+    activeAccount.current = accountToken;
+    chatEpochRef.current += 1;
+    sessionLoadGenerationRef.current += 1;
+    creationRef.current = null;
+    freshSessionIdsRef.current.clear();
+    return () => { activeAccount.current = null; chatEpochRef.current += 1; };
+  }, [accountToken]);
+
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
   }, [activeSessionId]);
@@ -29,7 +41,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
   const loadSessions = useCallback(async () => {
     const generation = ++sessionLoadGenerationRef.current;
     const response = await api.listSessions();
-    if (generation !== sessionLoadGenerationRef.current) return [];
+    if (activeAccount.current !== accountToken || generation !== sessionLoadGenerationRef.current) return [];
     setSessions(response.items);
     const existing = new Set(response.items.map((session) => session.session_id));
     persistPreferences((current) => {
@@ -41,13 +53,14 @@ export function useSessionController({ preferences, persistPreferences, updateSe
         : { ...current, sessions };
     });
     return response.items;
-  }, [persistPreferences]);
+  }, [accountToken, persistPreferences]);
 
   const invalidateSessionLoads = useCallback(() => {
     sessionLoadGenerationRef.current += 1;
   }, []);
 
   const createBackendSession = useCallback(() => {
+    if (activeAccount.current !== accountToken) return Promise.resolve(null);
     if (creationRef.current) return creationRef.current;
     const epoch = chatEpochRef.current;
     const creation = (async () => {
@@ -73,7 +86,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
       () => { if (creationRef.current === creation) creationRef.current = null; },
     );
     return creation;
-  }, [preferences.context.topic_name, updateSessionMeta, workspaceId]);
+  }, [accountToken, preferences.context.topic_name, updateSessionMeta, workspaceId]);
 
   const selectSession = useCallback((sessionId: string) => {
     if (activeSessionRef.current === sessionId) return;
@@ -96,6 +109,7 @@ export function useSessionController({ preferences, persistPreferences, updateSe
 
   const deleteSession = useCallback(async (sessionId: string) => {
     await api.deleteSession(sessionId);
+    if (activeAccount.current !== accountToken) return;
     const remaining = sessions.filter((session) => session.session_id !== sessionId);
     setSessions(remaining);
     persistPreferences((current) => {
@@ -110,11 +124,12 @@ export function useSessionController({ preferences, persistPreferences, updateSe
       setComposerRevision((current) => current + 1);
       setActiveSessionId(nextSessionId);
     }
-  }, [onActiveSessionChange, persistPreferences, sessions]);
+  }, [accountToken, onActiveSessionChange, persistPreferences, sessions]);
 
   const renameSessionTitle = useCallback(async (sessionId: string, title: string) => {
     try {
       const renamed = await api.renameSession(sessionId, title);
+      if (activeAccount.current !== accountToken) return;
       setSessions((current) => current.map((session) => session.session_id === sessionId ? { ...session, title: renamed.title, title_is_manual: true } : session));
       persistPreferences((current) => {
         const meta = current.sessions[sessionId];
@@ -124,11 +139,12 @@ export function useSessionController({ preferences, persistPreferences, updateSe
         return { ...current, sessions: { ...current.sessions, [sessionId]: next } };
       });
     } catch (error) {
+      if (activeAccount.current !== accountToken) return;
       // The sidebar fires rename fire-and-forget; swallow the rejection here so
       // it never becomes an unhandled promise rejection, and surface the failure.
       onRequestError(`重命名失败：${error instanceof Error ? error.message : String(error)}`);
     }
-  }, [onRequestError, persistPreferences]);
+  }, [accountToken, onRequestError, persistPreferences]);
 
   return {
     sessions,

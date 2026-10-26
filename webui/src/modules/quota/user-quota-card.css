@@ -1,0 +1,3 @@
+.quota-user-card { margin:16px 0; padding:16px; border:1px solid var(--border); border-radius:12px; color:var(--fg); background:var(--soft-bg); }
+.quota-user-card h3 { margin:0 auto 0 0; }
+.quota-user-card p { margin:8px 0; }

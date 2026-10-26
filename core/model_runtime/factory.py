@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 
@@ -16,8 +18,10 @@ from core.model_runtime.adapters.qwen import QwenAdapter
 from core.model_runtime.contracts import ModelPresetConfig, ModelRuntimeConfig, ReasoningEffort
 from core.model_runtime.registry import ProviderRegistry, global_provider_registry
 from core.model_runtime.runtime import ModelCandidate, ResilientChatModel
-
-
+from core.model_runtime.snapshot import ModelExecutionSnapshot, SnapshotPreset
+from core.model_runtime.thinking import (
+    THINKING_MAPPING_VERSION, ThinkingLevel, UnsupportedThinkingLevelError, resolve_thinking_config,
+)
 from core.model_runtime.reporters import ModelUsageReporterSlot
 from core.model_runtime.usage import ModelIdentity
 from utils.tokens import rough_estimation_for_messages
@@ -69,6 +73,104 @@ class ModelFactory:
         """Apply the latest runtime config and discard models built from old presets."""
         self.config = self.config_from_raw(settings._config)
         self._cache.clear()
+
+    def snapshot(
+        self, *, profile_name: str, level: ThinkingLevel | str, user_id: str,
+        workspace_id: str, session_id: str, turn_id: str,
+    ) -> ModelExecutionSnapshot:
+        """Freeze effective ordinary parameters and the fixed system policies."""
+
+        selected = ThinkingLevel(level)
+        profile = self.config.profile(profile_name)
+        worker_override = settings.NLP_AGENT_WORKER_MODEL.strip()
+
+        def ordinary(role: str) -> tuple[SnapshotPreset, ...]:
+            primary = getattr(profile, role)
+            overrides: dict[str, ModelPresetConfig] = {}
+            if role == "worker" and worker_override:
+                if worker_override in self.config.model_presets:
+                    primary = worker_override
+                elif worker_override in self.config.models:
+                    base_name, base = self.config.route_presets("worker")[0]
+                    primary = f"{base_name}@{worker_override}"
+                    overrides[primary] = base.model_copy(update={"model": worker_override})
+                else:
+                    raise ValueError(f"Unknown global Worker model {worker_override!r}")
+            names = [primary]
+            route = self.config.model_routes.get(role)
+            if route and route.primary == primary:
+                names.extend(route.fallbacks)
+            result: list[SnapshotPreset] = []
+            for name in names:
+                preset = overrides[name] if name in overrides else self.config.preset(name)
+                model = self.config.models[preset.model]
+                provider = self.config.providers[model.provider]
+                try:
+                    if preset.generation.max_output_tokens > model.max_output_tokens:
+                        raise UnsupportedThinkingLevelError("Worker override exceeds model output limit")
+                    if preset.native_search.enabled:
+                        raise UnsupportedThinkingLevelError("Native search is a fixed system policy")
+                    thinking = resolve_thinking_config(provider.adapter, model.model_id, selected)
+                    if thinking.enabled and not model.capabilities.thinking:
+                        raise UnsupportedThinkingLevelError("Model thinking capability is disabled")
+                    if provider.adapter not in self.registry.names or (name != primary and not self._api_key(provider.api_key_env)):
+                        raise UnsupportedThinkingLevelError("Model credentials or adapter are unavailable")
+                except UnsupportedThinkingLevelError:
+                    if name == primary:
+                        raise
+                    continue
+                result.append(SnapshotPreset(preset_name=name, preset=preset.model_copy(update={"thinking": thinking})))
+            return tuple(result)
+
+        coordinator, worker = ordinary("coordinator"), ordinary("worker")
+        raw = self.config.model_dump(mode="json")
+        for provider in raw["providers"].values():
+            endpoint = urlsplit(provider["base_url"])
+            if endpoint.username or endpoint.password or endpoint.query:
+                raise ValueError("Provider endpoints must not embed credentials or query parameters")
+            provider["default_headers"] = {}
+        return ModelExecutionSnapshot(
+            user_id=user_id, workspace_id=workspace_id, session_id=session_id, turn_id=turn_id,
+            profile_name=profile_name, level=selected, mapping_version=THINKING_MAPPING_VERSION,
+            worker_override=bool(worker_override),
+            runtime_json=json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            coordinator=coordinator, worker=worker,
+            utility=(SnapshotPreset(preset_name=profile.utility, preset=self.config.preset(profile.utility)),),
+            system_worker=(SnapshotPreset(preset_name=profile.worker, preset=self.config.preset(profile.worker)),),
+        )
+
+    def _snapshot_factory(self, snapshot: ModelExecutionSnapshot) -> "ModelFactory":
+        config = ModelRuntimeConfig.model_validate_json(snapshot.runtime_json)
+        providers = {}
+        for name, provider in config.providers.items():
+            current = self.config.providers.get(name)
+            providers[name] = provider.model_copy(update={"default_headers": current.default_headers if current else {}})
+        return ModelFactory(config.model_copy(update={"providers": providers}), registry=self.registry, reporter_slot=self.reporter_slot)
+
+    def build_snapshot_role(
+        self, snapshot: ModelExecutionSnapshot, role: str, *, preset_name: str | None = None,
+    ) -> ResilientChatModel:
+        entries = snapshot.role_presets(role)
+        if preset_name is not None:
+            entries = tuple(item for item in entries if item.preset_name == preset_name)
+            if not entries:
+                raise ValueError("Requested preset is outside this Turn execution snapshot")
+        key = (("snapshot", snapshot.execution_key(), role, "preset", preset_name)
+               if preset_name is not None else ("snapshot", snapshot.execution_key(), role, "route"))
+        if key not in self._cache:
+            frozen = self._snapshot_factory(snapshot)
+            self._cache[key] = ResilientChatModel(
+                [frozen._candidate(item.preset_name, item.preset) for item in entries],
+                model_profile=snapshot.profile_name, route=role, reporter_slot=self.reporter_slot,
+            )
+        return self._cache[key]
+
+    def build_snapshot_system_preset(self, snapshot: ModelExecutionSnapshot, preset_name: str) -> ResilientChatModel:
+        key = ("snapshot-system", snapshot.execution_key(), preset_name)
+        if key not in self._cache:
+            frozen = self._snapshot_factory(snapshot)
+            self._cache[key] = frozen.build_preset(preset_name, model_profile=snapshot.profile_name)
+        return self._cache[key]
 
     def _api_key(self, env_name: str) -> str:
         return str(os.environ.get(env_name) or getattr(settings, env_name, "") or self._dotenv.get(env_name) or "")
@@ -254,12 +356,42 @@ class ModelFactory:
         provider = self.config.providers[profile.provider]
         return bool(self._api_key(provider.api_key_env))
 
+    def profile_thinking_levels(self, profile_name: str) -> tuple[ThinkingLevel, ...]:
+        from core.model_runtime.thinking import supported_profile_thinking_levels
+
+        override = settings.NLP_AGENT_WORKER_MODEL.strip()
+        if not override:
+            return supported_profile_thinking_levels(self.config, profile_name)
+        preset = self.config.model_presets.get(override)
+        if preset is None:
+            if override not in self.config.models:
+                return ()
+            _, base = self.config.route_presets("worker")[0]
+            preset = base.model_copy(update={"model": override})
+        model = self.config.models[preset.model]
+        provider = self.config.providers[model.provider]
+        if (preset.native_search.enabled or preset.generation.max_output_tokens > model.max_output_tokens
+                or provider.adapter not in self.registry.names or not self._api_key(provider.api_key_env)):
+            return ()
+        profile = self.config.profile(profile_name).model_copy(update={"worker": "__effective_worker"})
+        effective = self.config.model_copy(update={
+            "model_presets": {**self.config.model_presets, "__effective_worker": preset},
+            "model_profiles": {**self.config.model_profiles, profile_name: profile},
+        })
+        return supported_profile_thinking_levels(effective, profile_name)
+
     def public_profiles(self) -> dict[str, dict[str, Any]]:
         return {
             name: {
                 "label": profile.label,
                 "provider": profile.provider,
                 "available": self.profile_available(name),
+                "supported_levels": [
+                    level.value for level in self.profile_thinking_levels(name)
+                ] if (
+                    self.profile_available(name)
+                    and self.config.providers[profile.provider].adapter in self.registry.names
+                ) else [],
             }
             for name, profile in self.config.model_profiles.items()
         }

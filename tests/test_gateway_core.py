@@ -439,20 +439,13 @@ async def test_gateway_returns_cancelled_when_dispatcher_cancel_is_unavailable(
 async def test_gateway_carries_an_allowed_model_profile_to_the_dispatcher(
     tmp_path, principal, monkeypatch
 ):
-    class ProfileConfig:
-        @staticmethod
-        def profile(name):
-            if name != "qwen":
-                raise KeyError(name)
-            return SimpleNamespace(label="Qwen")
+    from core.model_runtime.factory import ModelFactory
+    from core.model_runtime.registry import ProviderRegistry
+    from core.runtime_config import load_runtime_config
 
-    factory = SimpleNamespace(
-        config=ProfileConfig(),
-        profile_available=lambda name: name == "qwen",
-    )
-    monkeypatch.setattr(
-        "core.model_runtime.factory.get_global_model_factory", lambda: factory
-    )
+    factory = ModelFactory(ModelFactory.config_from_raw(load_runtime_config()), registry=ProviderRegistry())
+    monkeypatch.setattr(factory, "_api_key", lambda _name: "test-key")
+    monkeypatch.setattr("core.model_runtime.factory.get_global_model_factory", lambda: factory)
     dispatcher = RecordingTurnDispatcher()
     gateway = BackendGateway(
         engine=FakeEngine(),
@@ -467,12 +460,13 @@ async def test_gateway_carries_an_allowed_model_profile_to_the_dispatcher(
         principal,
         SubmitTurnRequest(
             session_id=session.session_id,
-            content="use qwen",
-            model_profile="qwen",
+            content="use deepseek",
+            model_profile="deepseek",
         ),
     )
 
-    assert dispatcher.submissions[0].model_profile == "qwen"
+    assert dispatcher.submissions[0].model_profile == "deepseek"
+    assert dispatcher.submissions[0].model_snapshot.level.value == "light"
     await gateway.close()
 
 
@@ -913,7 +907,7 @@ async def test_gateway_shutdown_cancels_turn_after_grace_before_engine_close(
     assert engine.cancel_calls == [accepted.turn_id]
     assert engine.lifecycle == ["cancel", "close"]
     reopened = GatewayRepository(tmp_path / "gateway.sqlite3")
-    assert reopened.get_turn(accepted.turn_id).status == TurnStatus.CANCELLED
+    assert reopened.get_turn(accepted.turn_id).status == TurnStatus.INTERRUPTED
     reopened.close()
 
 

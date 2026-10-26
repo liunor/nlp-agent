@@ -574,7 +574,10 @@ export interface LearningPreferences {
   categories: LearningCategory[];
 }
 
+export type ThinkingLevel = "quick" | "light" | "deep" | "extreme";
+
 export interface UserSettings {
+  thinking_level: ThinkingLevel;
   locale: string;
   theme: "system" | "light" | "dark";
     content_font_size: "small" | "medium" | "large";
@@ -589,6 +592,7 @@ export interface RuntimeModelProfile {
   label: string;
   provider: string;
   available: boolean;
+  supported_levels?: ThinkingLevel[];
 }
 
 export interface SettingsRuntime {

@@ -75,6 +75,7 @@ async def test_fenced_executor_claims_turn_before_invoking_agent(monkeypatch) ->
         lease_s=30,
         user_id="user-1",
         workspace_id="default",
+        task=task,
     )
     unit_of_work.commit.assert_awaited_once()
     reliability.quota_reservation_for_turn.assert_awaited_once_with(
@@ -275,4 +276,37 @@ async def test_fenced_executor_rejects_legacy_task_without_authorization_context
 
     with pytest.raises(PermissionError, match="lacks authorization context"):
         await FencedTurnExecutor(factory, reliability, execute, worker_id="worker-a", lease_s=30)(task)
+    execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["inactive", "version", "permission", "workspace"])
+async def test_fenced_executor_commits_revocation_without_invoking_model(monkeypatch, reason):
+    from server.worker.fencing import FencedTurnExecutor
+
+    unit = AsyncMock()
+    unit.session = AsyncMock()
+    unit.__aenter__.return_value = unit
+    factory = MagicMock()
+    factory.begin.return_value = unit
+    reliability = AsyncMock()
+    reliability.claim_turn.return_value = 2
+    reliability.reject_revoked_task.return_value = True
+    principal = AuthenticatedPrincipal(
+        user_id="u", authorization_version=9 if reason == "version" else 3,
+        workspace_ids=frozenset({"elsewhere"}) if reason == "workspace" else frozenset({"default"}),
+        permissions=frozenset({Permission.IDENTITY_PROFILE_READ_SELF}) if reason == "permission" else frozenset({Permission.AGENT_TURN_SUBMIT}),
+    )
+    lookup = AsyncMock(side_effect=PermissionError("inactive")) if reason == "inactive" else AsyncMock(return_value=principal)
+    monkeypatch.setattr("server.worker.fencing.rbac_service.principal_for_user_id", lookup)
+    task = TurnTask(
+        context=SessionContext(session_id="s", user_id="u"), turn_id="t", content="hi",
+        learning_context=None, learning_progress=None, exercise_state=None,
+        teaching_materials=TeachingMaterials(), guided_session_id=None, exercise_session_id=None,
+        authorization=ExecutionAuthorizationContext("u", "default", 3),
+    )
+    execute = AsyncMock()
+    assert await FencedTurnExecutor(factory, reliability, execute, worker_id="w", lease_s=30)(task) is True
+    reliability.reject_revoked_task.assert_awaited_once_with(unit.session, task=task, generation=2, worker_id="w")
+    unit.commit.assert_awaited_once()
     execute.assert_not_awaited()

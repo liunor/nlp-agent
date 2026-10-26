@@ -59,6 +59,7 @@ Side effects:
     - 通过 `asyncio.create_task` 创建的后台任务不阻塞调用方，Coordinator 立即返回。
     - 沙箱超时（60s）或轮次耗尽（6 轮）均不会导致进程崩溃，错误通过通知 JSON 回传。
 """
+from contextvars import ContextVar
 import asyncio
 import hashlib
 import time
@@ -339,6 +340,17 @@ class SendMessageInput(BaseModel):
     message: str = Field(..., description="追加的明确指令或纠正要求。")
 
 
+_worker_model_role: ContextVar[str | None] = ContextVar("worker_model_role", default=None)
+_worker_model_request: ContextVar[str | None] = ContextVar("worker_model_request", default=None)
+
+
+def _sandbox_worker_llm(model_name: str):
+    role = _worker_model_role.get()
+    if role is not None:
+        return get_worker_llm(agent_name=role, tool_specified_model=_worker_model_request.get())
+    return get_worker_llm(tool_specified_model=model_name) if model_name else get_tool_llm()
+
+
 async def _execute_sandbox_loop(
     worker_id: str,
     session_id: str,
@@ -368,7 +380,7 @@ async def _execute_sandbox_loop(
             session_id=session_id,
             profile="legacy",
         )
-    base_llm = get_worker_llm(tool_specified_model=model_name) if model_name else get_tool_llm()
+    base_llm = _sandbox_worker_llm(model_name)
     llm = base_llm
     if toolset.tools:
         llm = llm.bind_tools(toolset.tools)
@@ -1069,16 +1081,23 @@ async def spawn_worker(
     )
     record_sidechain_transcript(session_id, worker_id, initial_messages)
 
-    bg_task = asyncio.create_task(
-        _background_task_wrapper(
-            worker_id,
-            session_id,
-            initial_messages,
-            toolset,
-            resolved_model,
-            parent_context,
+    model_role_token = _worker_model_role.set(profile.name)
+    explicit_request = profile.model or model.strip()
+    model_request_token = _worker_model_request.set(explicit_request if explicit_request != "inherit" else None)
+    try:
+        bg_task = asyncio.create_task(
+            _background_task_wrapper(
+                worker_id,
+                session_id,
+                initial_messages,
+                toolset,
+                resolved_model,
+                parent_context,
+            )
         )
-    )
+    finally:
+        _worker_model_request.reset(model_request_token)
+        _worker_model_role.reset(model_role_token)
 
     global_task_manager.register_task(
         task_id=worker_id,

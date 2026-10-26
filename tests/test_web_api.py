@@ -478,7 +478,13 @@ def test_http_lifecycle_sessions_chat_settings_and_csrf(web_app, monkeypatch):
     app, engine = web_app
     with TestClient(app) as client:
         assert client.get("/health/live").json() == {"status": "ok"}
-        assert client.get("/health/ready").status_code == 200
+        readiness = client.get("/health/ready")
+        assert readiness.status_code == 200
+        assert readiness.json()["deployment_environment"] in {
+            "test",
+            "production",
+            "unknown",
+        }
         csrf = authenticate(client)
         developer = client.get("/api/v1/developer/snapshot")
         assert developer.status_code == 200
@@ -546,13 +552,14 @@ def test_http_lifecycle_sessions_chat_settings_and_csrf(web_app, monkeypatch):
         events = client.get(f"/api/v1/chat/turns/{turn_id}/events").json()["items"]
         assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
 
+        before_revision = client.get("/api/v1/settings").json()["preferences"]["revision"]
         updated = client.patch(
             "/api/v1/settings",
             json={"theme": "dark", "content_font_size": "large", "reduce_motion": True, "show_reasoning": True, "model_profile": "qwen"},
             headers=write_headers(csrf),
         )
         # Teaching catalog revisions are isolated from per-user UI settings.
-        assert updated.json()["revision"] == 1
+        assert updated.json()["revision"] == before_revision + 1
         settings_payload = client.get("/api/v1/settings").json()
         assert settings_payload["preferences"]["settings"]["theme"] == "dark"
         assert settings_payload["preferences"]["settings"]["content_font_size"] == "large"

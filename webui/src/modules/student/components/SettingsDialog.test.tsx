@@ -12,6 +12,7 @@ vi.mock("@/platform/http/api", () => ({
 vi.mock("@/platform/realtime/client", () => ({ StudentSocket: class { connect() {} close() {} } }));
 
 const settings: UserSettings = {
+  thinking_level: "light",
   theme: "system",
   content_font_size: "medium",
   reduce_motion: false,
@@ -36,6 +37,15 @@ const baseProps = {
 };
 
 describe("SettingsDialog", () => {
+  it("only changes reasoning visibility, leaving the chat level independent", () => {
+    const onChange = vi.fn();
+    render(<SettingsDialog {...baseProps} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "对话与流式" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /显示思考过程/ }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ show_reasoning: false });
+    expect(screen.queryByText("启用思考过程")).not.toBeInTheDocument();
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+  });
   beforeEach(() => {
     localStorage.clear();
     listPublishedReleaseNotesMock.mockReset();
@@ -292,6 +302,14 @@ describe("SettingsDialog", () => {
     const entry = screen.getByRole("button", { name: "意见反馈" });
     expect(entry).toBeDisabled();
     expect(entry).toHaveAttribute("title", "当前身份不支持提交反馈");
+  });
+
+  it("keeps classroom requests hidden in an anonymous preview", () => {
+    const { rerender } = render(<SettingsDialog {...baseProps} roles={[]} permissions={[]} />);
+    expect(screen.queryByRole("button", { name: "我的班级" })).not.toBeInTheDocument();
+
+    rerender(<SettingsDialog {...baseProps} roles={["guest"]} userId="guest-1" />);
+    expect(screen.getByRole("button", { name: "我的班级" })).toBeVisible();
   });
 
   it("keeps feedback submittable for a custom role granted the permission", async () => {

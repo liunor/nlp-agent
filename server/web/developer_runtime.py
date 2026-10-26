@@ -11,6 +11,7 @@ import yaml
 
 from core.runtime_config import (
     BASE_DIR,
+    _merge,
     RESERVED_WORKER_PROFILES,
     load_runtime_config,
     load_runtime_overrides,
@@ -23,6 +24,7 @@ from core.model_runtime.contracts import (
     ModelRuntimeConfig,
     ProviderConfig,
 )
+from core.model_runtime.editor import ModelPresetEdit, editable_presets
 from core.tool_config import CustomToolsConfig, MCPServerConfig, ToolPoliciesConfig, WorkerProfileSpec
 from core.tool_runtime import ToolCatalog
 
@@ -144,9 +146,11 @@ async def upsert_model_provider(name: str, config: dict[str, Any]) -> dict[str, 
 
 
 async def upsert_model_preset(name: str, config: dict[str, Any]) -> dict[str, Any]:
-    preset = ModelPresetConfig.model_validate(config)
+    edit = ModelPresetEdit.model_validate(config).model_dump(mode="json", exclude_unset=True, exclude_none=True)
+    raw = load_runtime_config()
+    preset = ModelPresetConfig.model_validate(_merge(raw.get("model_presets", {}).get(name, {}), edit))
     validated = _validated_model_update("model_presets", name, preset.model_dump(mode="json"))
-    _persist_model_entry("model_presets", name, validated["model_presets"][name])
+    _persist_model_entry("model_presets", name, editable_presets({name: validated["model_presets"][name]})[name])
     result = await reload_runtime()
     return {**result, "preset": _require_name(name, "Model preset name")}
 
@@ -184,12 +188,17 @@ async def update_custom_tools(custom: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_model_presets(presets: dict[str, Any]) -> dict[str, Any]:
-    """Validate and hot-apply model thinking/generation presets for new turns."""
+    """Update non-reasoning fields, retaining server-owned thinking policy."""
     raw = load_runtime_config()
+    try:
+        edits = {name: ModelPresetEdit.model_validate(value).model_dump(mode="json", exclude_unset=True)
+                 for name, value in presets.items()}
+    except (TypeError, ValueError) as error:
+        raise DeveloperConfigurationError(f"模型预设仅允许编辑非思考字段：{error}") from error
     candidate = {
         "providers": raw.get("providers", {}),
         "models": raw.get("models", {}),
-        "model_presets": presets,
+        "model_presets": _merge(raw.get("model_presets", {}), edits),
         "model_routes": raw.get("model_routes", {}),
         "model_profiles": raw.get("model_profiles", {}),
         "default_model_profile": raw.get("defaults", {}).get("model_profile"),
@@ -199,10 +208,10 @@ async def update_model_presets(presets: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError) as error:
         raise DeveloperConfigurationError(f"模型预设无效：{error}") from error
 
-    normalized = {
+    normalized = editable_presets({
         name: value.model_dump(mode="json")
         for name, value in validated.model_presets.items()
-    }
+    })
     with runtime_overrides_transaction() as overrides:
         overrides["model_presets"] = normalized
     result = await reload_runtime()

@@ -12,6 +12,8 @@ from typing import Any
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.execution_fence import LostTurnClaimError
+from server.application.turn_errors import TurnCancellationRequested
+from server.quota.turns import finish_async
 
 from server.infrastructure.mysql.models import (
     ConversationModel,
@@ -38,10 +40,6 @@ def _json_bytes(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":")).encode("utf-8"))
 
 
-class TurnCancellationRequested(RuntimeError):
-    """The durable turn state says this delivery must be finalized as cancelled."""
-
-
 @dataclass(frozen=True)
 class CancelledTurnClaim:
     """Explicit claim outcome for the cancellation race at the worker boundary."""
@@ -50,6 +48,35 @@ class CancelledTurnClaim:
 
 
 class TurnReliabilityService:
+    async def reject_revoked_task(self, session: AsyncSession, *, task, generation: int, worker_id: str) -> bool:
+        """Terminate a revoked, authentic dispatch and refund in the same transaction.
+
+        A forged Redis payload must never be allowed to terminate the real Turn.
+        The durable task (including its authorization version) is authoritative.
+        """
+        from server.quota.turns import task_from_state
+
+        turn = await session.scalar(
+            select(TurnModel).where(TurnModel.id == task.turn_id).with_for_update()
+        )
+        if (
+            turn is None or turn.status != "running"
+            or turn.claim_generation != generation or turn.claimed_by != worker_id
+            or turn.user_id != task.context.user_id
+            or turn.workspace_id != task.context.workspace_id
+            or task_from_state(turn.learning_state_json) != task
+        ):
+            return False
+        turn.status = "failed"
+        turn.error_kind = "authorization_revoked"
+        turn.error_message = "账户权限已发生变化，请重新登录后重试。"
+        turn.completed_at = utc_now()
+        turn.claimed_by = None
+        turn.lease_expires_at = None
+        await finish_async(session, turn)
+        await session.flush()
+        return True
+
     async def enqueue(self, session: AsyncSession, *, topic: str, payload: dict[str, Any]) -> OutboxMessageModel:
         message = OutboxMessageModel(id=str(uuid.uuid4()), topic=topic, payload_json=payload)
         session.add(message)
@@ -73,6 +100,7 @@ class TurnReliabilityService:
         lease_s: int,
         user_id: str | None = None,
         workspace_id: str | None = None,
+        task=None,
     ) -> int | CancelledTurnClaim | None:
         statement = (
             select(TurnModel)
@@ -93,6 +121,11 @@ class TurnReliabilityService:
         now = utc_now()
         if turn is None:
             return None
+        if task is not None:
+            from server.quota.turns import task_from_state
+            durable = task_from_state(turn.learning_state_json)
+            if durable is not None and durable != task:
+                raise PermissionError("worker task differs from durable dispatch")
         cancellation = await session.scalar(
             select(TurnCancellationModel).where(
                 TurnCancellationModel.turn_id == turn.id
@@ -104,6 +137,7 @@ class TurnReliabilityService:
                 turn.completed_at = now
                 turn.claimed_by = None
                 turn.lease_expires_at = None
+                await finish_async(session, turn)
                 await session.flush()
             return CancelledTurnClaim()
         if turn.status != "accepted" and not (
@@ -145,6 +179,7 @@ class TurnReliabilityService:
             turn.completed_at = utc_now()
             turn.claimed_by = None
             turn.lease_expires_at = None
+            await finish_async(session, turn)
             await session.flush()
             return False
         if turn.status != "running":
@@ -177,6 +212,7 @@ class TurnReliabilityService:
                 turn.error_kind = "turn_lease_recovery_exhausted"
                 turn.error_message = "turn lease recovery limit exceeded"
                 turn.completed_at = now
+                await finish_async(session, turn)
                 turn.claimed_by = None
                 turn.heartbeat_at = None
                 turn.lease_expires_at = None

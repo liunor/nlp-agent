@@ -15,6 +15,8 @@ interface TurnSenderOptions {
   cancelledTurnIds: MutableRefObject<Set<string>>;
   preferences: LearningPreferences;
   settings: UserSettings;
+  canSend?: () => boolean;
+  thinkingSupported?: boolean;
   messages: ChatMessage[];
   createBackendSession: () => Promise<string | null>;
   updateSessionMeta: (sessionId: string, patch: Partial<SessionLearningMeta>) => void;
@@ -35,15 +37,18 @@ export function useTurnSender({
   updateSessionMeta,
   setMessages,
   setRequestError,
+  canSend = () => true,
+  thinkingSupported = true,
 }: TurnSenderOptions) {
   const send = useCallback(async (content: string, attachments?: ChatAttachment[], knowledgeBookContext?: KnowledgeBookContext) => {
+    if (!canSend()) return;
     setRequestError(null);
     const requestId = createUuid();
     inFlightTurnIds.current.add(requestId);
     pendingRequests.current.set(requestId, "");
     let sessionId = activeSessionRef.current;
     if (!sessionId) sessionId = await createBackendSession();
-    if (!sessionId || !pendingRequests.current.has(requestId)) {
+    if (!sessionId || !pendingRequests.current.has(requestId) || !canSend()) {
       // The session creation was abandoned by a newer chat (createBackendSession
       // returned null) or the request was cancelled while awaiting; drop it.
       pendingRequests.current.delete(requestId);
@@ -80,10 +85,10 @@ export function useTurnSender({
       preferences.context,
       settings.model_profile,
       attachments?.map((attachment) => ({ file_name: attachment.fileName })),
-      settings.show_reasoning,
+      thinkingSupported ? settings.thinking_level : undefined,
       knowledgeBookContext,
     );
-  }, [activeSessionRef, createBackendSession, inFlightTurnIds, pendingRequests, preferences.context, preferences.sessions, setMessages, setRequestError, settings.model_profile, settings.show_reasoning, socketRef, updateSessionMeta]);
+  }, [activeSessionRef, createBackendSession, inFlightTurnIds, pendingRequests, preferences.context, preferences.sessions, setMessages, setRequestError, settings.model_profile, settings.thinking_level, canSend, thinkingSupported, socketRef, updateSessionMeta]);
 
   const cancel = useCallback(() => {
     const running = [...messages].reverse().find((message) => message.role === "assistant" && ["accepted", "running"].includes(message.status ?? ""));

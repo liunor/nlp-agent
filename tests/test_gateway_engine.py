@@ -57,8 +57,18 @@ class ToolEventGraph(RecordingGraph):
     async def astream_events(self, _state, *, config, version):
         self.configs.append(config)
         yield {"event": "on_chain_start", "metadata": {"langgraph_node": "tools"}}
-        yield {"event": "on_tool_start", "name": "search_docs", "run_id": "tool-1", "metadata": {"langgraph_node": "tools"}}
-        yield {"event": "on_tool_end", "name": "search_docs", "run_id": "tool-1", "metadata": {"langgraph_node": "tools"}}
+        yield {
+            "event": "on_tool_start",
+            "name": "search_docs",
+            "run_id": "tool-1",
+            "metadata": {"langgraph_node": "tools"},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "search_docs",
+            "run_id": "tool-1",
+            "metadata": {"langgraph_node": "tools"},
+        }
         yield {"event": "on_chain_end", "metadata": {"langgraph_node": "tools"}}
 
 
@@ -133,7 +143,9 @@ class InternalCompressionStreamingGraph(RecordingGraph):
 
 
 @pytest.mark.asyncio
-async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config(monkeypatch):
+async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config(
+    monkeypatch,
+):
     async def record_transcript_without_database(*_args, **_kwargs):
         return None
 
@@ -153,9 +165,17 @@ async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config(monk
         channel="web",
     )
     materials = TeachingMaterials(
-        learning_topic={"name": "Transformer", "description": "模型结构", "knowledge_points": ["QKV"]},
+        learning_topic={
+            "name": "Transformer",
+            "description": "模型结构",
+            "knowledge_points": ["QKV"],
+        },
         exercise_blueprint={"id": "bp", "instructions": "生成一道 QKV 题"},
-        guided_session={"id": "guided-1", "objective": "理解 Attention", "stage": "awaiting_learner_response"},
+        guided_session={
+            "id": "guided-1",
+            "objective": "理解 Attention",
+            "stage": "awaiting_learner_response",
+        },
         guided_blueprint={"id": "guided-bp", "guidance": "先用问题帮助学生区分 QKV。"},
     )
 
@@ -163,7 +183,9 @@ async def test_engine_injects_teacher_topic_and_blueprint_into_graph_config(monk
         context,
         "turn-1",
         "开始练习",
-        learning_context=LearningContext(topic_id="transformer", topic_name="Transformer", mode="practice"),
+        learning_context=LearningContext(
+            topic_id="transformer", topic_name="Transformer", mode="practice"
+        ),
         learning_progress=LearningProgress(objective="掌握 Transformer"),
         exercise_state=ExerciseState(blueprint_id="bp", status="awaiting_answer"),
         teaching_materials=materials,
@@ -296,7 +318,9 @@ async def test_engine_emits_named_tool_lifecycle_events_for_the_webui():
         emitted.append((turn_id, session_id, event_type, payload))
 
     engine._event_sink = sink
-    context = SessionContext(session_id="session-1", user_id="alice", workspace_id="w1", channel="web")
+    context = SessionContext(
+        session_id="session-1", user_id="alice", workspace_id="w1", channel="web"
+    )
 
     await engine._invoke([], context, False, "turn-1")
 

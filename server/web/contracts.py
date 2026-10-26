@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, field_validator, model_validator
+from core.model_runtime.thinking import ThinkingLevel
 from core.learning import KnowledgeBookContext, LearningContext
 from gateway.contracts import EvaluationContext
 
@@ -176,7 +177,8 @@ class SubmitChatBody(StrictModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
-    thinking_enabled: bool = True
+    thinking_enabled: bool | None = None
+    thinking_level: ThinkingLevel | None = None
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "SubmitChatBody":
@@ -198,6 +200,7 @@ class ToolApprovalBody(StrictModel):
 
 
 class UpdateSettingsBody(StrictModel):
+    thinking_level: ThinkingLevel | None = None
     locale: str | None = Field(default=None, min_length=2, max_length=20)
     theme: Literal["system", "light", "dark"] | None = None
     content_font_size: Literal["small", "medium", "large"] | None = None
@@ -247,6 +250,24 @@ class ReleaseNoteBody(StrictModel):
     status: Literal["draft", "published"] = "published"
 
 
+class QuotaPeriodBody(StrictModel):
+    bucket_type: Literal["daily", "weekly"]
+    period_start: datetime
+    period_end: datetime
+
+    @model_validator(mode="after")
+    def require_admission_period(self):
+        start, end = self.period_start, self.period_end
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("额度周期必须带时区，并对齐 UTC 自然日或周一")
+        start, end = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+        if (start.hour or start.minute or start.second or start.microsecond
+            or (self.bucket_type == "weekly" and start.weekday() != 0)
+            or end != start + timedelta(days=7 if self.bucket_type == "weekly" else 1)):
+            raise ValueError("额度周期必须对齐 UTC 自然日或周一，并覆盖完整日/周")
+        return self
+
+
 class QuotaPolicyBody(StrictModel):
     code: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,127}$")
     version: str = Field(min_length=1, max_length=64)
@@ -289,7 +310,7 @@ class QuotaBindingBody(StrictModel):
     effective_until: datetime | None = None
 
 
-class QuotaGrantBody(StrictModel):
+class QuotaGrantBody(QuotaPeriodBody):
     owner_type: Literal["user", "workspace", "classroom"]
     owner_id: str = Field(min_length=1, max_length=128)
     bucket_type: Literal["daily", "weekly"]
@@ -304,7 +325,7 @@ class QuotaGrantBody(StrictModel):
     expires_at: datetime | None = None
 
 
-class QuotaAdjustmentBody(StrictModel):
+class QuotaAdjustmentBody(QuotaPeriodBody):
     owner_type: Literal["user", "workspace", "classroom"]
     owner_id: str = Field(min_length=1, max_length=128)
     bucket_type: Literal["daily", "weekly"]
@@ -353,7 +374,7 @@ class QuotaBillingReconcileBody(StrictModel):
     statements: list[QuotaBillingStatementBody] = Field(min_length=1, max_length=10_000)
 
 
-class QuotaCreditOperationBody(StrictModel):
+class QuotaCreditOperationBody(QuotaPeriodBody):
     owner_type: Literal["user", "workspace", "classroom"]
     owner_id: str = Field(min_length=1, max_length=128)
     bucket_type: Literal["daily", "weekly"]
@@ -366,7 +387,7 @@ class QuotaCreditOperationBody(StrictModel):
     expires_at: datetime | None = None
 
 
-class QuotaRoleCreditOperationBody(StrictModel):
+class QuotaRoleCreditOperationBody(QuotaPeriodBody):
     role_code: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
     bucket_type: Literal["daily", "weekly"]
     period_start: datetime
@@ -410,7 +431,8 @@ class ChatSendPayload(StrictModel):
     model_profile: str | None = Field(
         default=None, pattern=r"^[a-z][a-z0-9_-]{0,63}$"
     )
-    thinking_enabled: bool = True
+    thinking_enabled: bool | None = None
+    thinking_level: ThinkingLevel | None = None
 
     @model_validator(mode="after")
     def require_content_or_attachment(self) -> "ChatSendPayload":

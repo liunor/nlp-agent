@@ -182,8 +182,10 @@ async def test_developer_ui_persists_validated_model_presets_and_reloads_runtime
             encoding="utf-8"
         )
     )
-    presets = deepcopy(raw["model_presets"])
-    presets["coordinator-fast"]["thinking"] = {"enabled": True, "effort": "low"}
+    from core.model_runtime.editor import editable_presets
+
+    presets = editable_presets(deepcopy(raw["model_presets"]))
+    presets["coordinator-fast"]["generation"]["max_output_tokens"] = 12000
     persisted: dict[str, object] = {}
     reload_calls: list[dict[str, bool]] = []
 
@@ -204,7 +206,7 @@ async def test_developer_ui_persists_validated_model_presets_and_reloads_runtime
     monkeypatch.setattr(developer_runtime, "reload_runtime", fake_reload_runtime)
     result = await developer_runtime.update_model_presets(presets)
 
-    assert persisted["model_presets"]["coordinator-fast"]["thinking"]["effort"] == "low"
-    assert persisted["model_presets"]["coordinator-fast"]["thinking"]["enabled"] is True
+    assert persisted["model_presets"]["coordinator-fast"]["generation"]["max_output_tokens"] == 12000
+    assert "thinking" not in persisted["model_presets"]["coordinator-fast"]
     assert reload_calls == [{}]
-    assert result["presets"]["coordinator-fast"]["thinking"]["effort"] == "low"
+    assert result["presets"]["coordinator-fast"]["generation"]["max_output_tokens"] == 12000
