@@ -329,10 +329,16 @@ def test_retry_next_day_does_not_touch_historical_or_other_turn_buckets(quota):
         assert old_daily["consumed_micro"] == 0
 
 
-def test_running_fixed_turn_can_recover_after_quota_lease_without_rereserving(quota):
+@pytest.mark.parametrize("already_running", [False, True])
+def test_running_fixed_turn_can_recover_after_quota_lease_without_rereserving(
+    quota, already_running
+):
     from datetime import timedelta
+    from server.quota.service import _aware
 
     turn, result = admit(quota)
+    if already_running:
+        assert quota.begin_reservation(result.reservation_id, now=NOW)
     charge = charge_snapshot("light", turn)
     command = AdmitTurn(
         request_id=turn,
@@ -345,9 +351,74 @@ def test_running_fixed_turn_can_recover_after_quota_lease_without_rereserving(qu
         idempotency_key=turn,
         fixed_charge=charge,
     )
-    assert quota.admit_turn(command, now=NOW + timedelta(days=1)).duplicate
+    recovered_at = NOW + timedelta(days=1)
+    assert quota.admit_turn(command, now=recovered_at).duplicate
+    assert quota.begin_reservation(result.reservation_id, now=recovered_at)
+    # A delayed heartbeat must not release a live fixed charge either.
+    heartbeat_at = recovered_at + timedelta(seconds=quota.lease_seconds + 1)
+    assert quota.heartbeat(result.reservation_id, now=heartbeat_at)
     with quota.engine.connect() as c:
+        reservation = c.execute(select(models.QuotaReservationModel)).mappings().one()
+        assert reservation["status"] == "running"
+        assert _aware(reservation["lease_expires_at"]) == heartbeat_at + timedelta(
+            seconds=quota.lease_seconds
+        )
+        assert reservation["policy_snapshot_json"]["fixed_turn"] == charge.model_dump(mode="json")
         assert len(c.execute(select(models.QuotaLedgerEntryModel)).all()) == 2
+        assert all(
+            row.reserved_micro == 2_000_000 and row.consumed_micro == 0
+            for row in c.execute(select(models.QuotaBucketModel))
+        )
+    with quota.engine.begin() as c:
+        for _ in range(2):
+            quota.finish_fixed_in_transaction(
+                c, turn_id=turn, status="completed", has_body=True, now=heartbeat_at
+            )
+        assert all(
+            row.reserved_micro == 0 and row.consumed_micro == 2_000_000
+            for row in c.execute(select(models.QuotaBucketModel))
+        )
+
+
+@pytest.mark.parametrize("method", ["begin_reservation", "heartbeat"])
+@pytest.mark.parametrize("status", ["completed", "cancelled", "failed"])
+def test_fixed_quota_lease_cannot_revive_a_finished_reservation(quota, method, status):
+    from datetime import timedelta
+
+    turn, result = admit(quota)
+    with quota.engine.begin() as c:
+        quota.finish_fixed_in_transaction(
+            c, turn_id=turn, status=status, has_body=True, now=NOW
+        )
+        before = c.execute(select(models.QuotaLedgerEntryModel)).all()
+        balances = c.execute(select(models.QuotaBucketModel)).all()
+    assert not getattr(quota, method)(
+        result.reservation_id, now=NOW + timedelta(seconds=quota.lease_seconds + 1)
+    )
+    with quota.engine.connect() as c:
+        assert c.execute(select(models.QuotaLedgerEntryModel)).all() == before
+        assert c.execute(select(models.QuotaBucketModel)).all() == balances
+
+
+@pytest.mark.parametrize("method", ["begin_reservation", "heartbeat"])
+def test_usage_based_reservations_still_expire_at_the_original_lease(quota, method):
+    from datetime import timedelta
+
+    result = quota.admit_turn(AdmitTurn(
+        request_id="usage", user_id="a", workspace_id="w", turn_id="usage",
+        model_profile="deepseek", model_role="coordinator", estimated_output_tokens=0,
+        estimated_micro=2_000_000, idempotency_key="usage",
+    ), now=NOW)
+    assert not getattr(quota, method)(
+        result.reservation_id, now=NOW + timedelta(seconds=quota.lease_seconds + 1)
+    )
+    with quota.engine.connect() as c:
+        reservation = c.execute(select(models.QuotaReservationModel)).mappings().one()
+        assert reservation["status"] == "expired"
+        assert all(
+            row.reserved_micro == 0 and row.consumed_micro == 0
+            for row in c.execute(select(models.QuotaBucketModel))
+        )
 
 
 @pytest.mark.asyncio

@@ -1380,7 +1380,12 @@ class QuotaService:
                 ).mappings().first()
                 if reservation is None or reservation["status"] not in _ACTIVE_RESERVATION_STATUSES:
                     return False
-                if _aware(reservation["lease_expires_at"]) <= at:
+                # Fixed charges follow the durable Turn lifecycle, including
+                # fenced recovery after a Worker lease has expired.
+                if (
+                    not reservation["policy_snapshot_json"].get("fixed_turn")
+                    and _aware(reservation["lease_expires_at"]) <= at
+                ):
                     self.finish_in_transaction(
                         connection,
                         FinishTurn(
@@ -1602,7 +1607,10 @@ class QuotaService:
                 ).mappings().first()
                 if reservation is None or reservation["status"] not in _ACTIVE_RESERVATION_STATUSES:
                     return False
-                if _aware(reservation["lease_expires_at"]) <= at:
+                if (
+                    not reservation["policy_snapshot_json"].get("fixed_turn")
+                    and _aware(reservation["lease_expires_at"]) <= at
+                ):
                     self.finish_in_transaction(
                         connection,
                         FinishTurn(

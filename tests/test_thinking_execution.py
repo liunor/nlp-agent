@@ -286,6 +286,84 @@ def test_glm_actual_wire_parameters(factory, level, effort):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["quick", "light", "deep", "extreme"])
+async def test_websocket_freezes_message_level_instead_of_other_tab_preference(
+    factory, tmp_path, monkeypatch, level
+):
+    from unittest.mock import AsyncMock
+
+    from core.identity import AuthenticatedPrincipal
+    from gateway.core import BackendGateway
+    from gateway.repository import GatewayRepository
+    from server.web.contracts import CommandEnvelope
+    from server.web.websocket import _dispatch_command
+    from test_gateway_core import FakeEngine, FakeSessions, RecordingTurnDispatcher
+
+    monkeypatch.setattr(
+        "core.model_runtime.factory.get_global_model_factory", lambda: factory
+    )
+    repository = GatewayRepository(tmp_path / "websocket.sqlite3")
+    dispatcher = RecordingTurnDispatcher()
+    gateway = BackendGateway(
+        engine=FakeEngine(), sessions=FakeSessions(), repository=repository,
+        dispatcher=dispatcher,
+    )
+    principal = AuthenticatedPrincipal(
+        user_id="a", workspace_ids=frozenset({"default"}), roles=frozenset({"student"})
+    )
+    await gateway.start()
+    try:
+        session = await gateway.create_session(principal)
+        # Another tab has saved a different preference since this tab loaded.
+        other_level = "extreme" if level == "quick" else "quick"
+        repository.update_user_settings("a", {"thinking_level": other_level})
+        connection = SimpleNamespace(
+            principal=principal, gateway=gateway, subscribe=AsyncMock(),
+            send=AsyncMock(), auth_session_id=None,
+        )
+        await _dispatch_command(connection, CommandEnvelope(
+            type="chat.send", request_id="message-request", payload={
+                "session_id": session.session_id, "content": "hello",
+                "model_profile": "deepseek", "thinking_level": level,
+                "idempotency_key": "message-request",
+            },
+        ))
+        assert len(dispatcher.submissions) == 1
+        task = dispatcher.submissions[0]
+        assert task.model_snapshot.level.value == level
+        assert repository.get_user_settings("a")["settings"]["thinking_level"] == other_level
+    finally:
+        await gateway.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False, None])
+async def test_websocket_preserves_legacy_thinking_without_inventing_a_level(enabled):
+    from unittest.mock import AsyncMock
+
+    from core.identity import AuthenticatedPrincipal
+    from gateway.contracts import TurnAccepted, TurnStatus
+    from server.web.contracts import CommandEnvelope
+    from server.web.websocket import _dispatch_command
+
+    gateway = SimpleNamespace(submit_turn=AsyncMock(return_value=TurnAccepted(
+        turn_id="t", session_id="s", status=TurnStatus.ACCEPTED,
+    )))
+    connection = SimpleNamespace(
+        principal=AuthenticatedPrincipal(user_id="a", roles=frozenset({"student"})),
+        gateway=gateway, subscribe=AsyncMock(), send=AsyncMock(), auth_session_id=None,
+    )
+    await _dispatch_command(connection, CommandEnvelope(
+        type="chat.send", request_id="request", payload={
+            "session_id": "s", "content": "hello", "thinking_enabled": enabled,
+        },
+    ))
+    request = gateway.submit_turn.await_args.args[1]
+    assert request.thinking_level is None
+    assert request.thinking_enabled is enabled
+
+
+@pytest.mark.asyncio
 async def test_gateway_persists_user_level_and_dispatch_retry_never_reresolves(
     factory, tmp_path, monkeypatch
 ):

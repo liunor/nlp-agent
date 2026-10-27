@@ -610,6 +610,7 @@ async def _dispatch_command(
                 knowledge_book_context=payload.knowledge_book_context,
                 model_profile=payload.model_profile,
                 thinking_enabled=payload.thinking_enabled,
+                thinking_level=payload.thinking_level,
             ),
             auth_session_id=connection.auth_session_id,
         )

@@ -141,7 +141,7 @@ export class StudentSocket {
     }
   }
 
-  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, thinkingEnabled?: ThinkingLevel | boolean, knowledgeBookContext?: KnowledgeBookContext): void {
+  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, thinkingChoice?: ThinkingLevel | boolean, knowledgeBookContext?: KnowledgeBookContext): void {
     this.command("chat.send", {
       session_id: sessionId,
       content,
@@ -150,7 +150,8 @@ export class StudentSocket {
       ...(modelProfile ? { model_profile: modelProfile } : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...(knowledgeBookContext ? { knowledge_book_context: knowledgeBookContext } : {}),
-      ...(typeof thinkingEnabled === "boolean" ? { thinking_enabled: thinkingEnabled } : {}),
+      ...(typeof thinkingChoice === "string" ? { thinking_level: thinkingChoice } : {}),
+      ...(typeof thinkingChoice === "boolean" ? { thinking_enabled: thinkingChoice } : {}),
     }, requestId);
   }
 
