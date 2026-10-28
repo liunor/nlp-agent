@@ -216,6 +216,8 @@ class BackendGateway:
             raise RuntimeError("runtime persistence must be mysql; SQLite is migration-CLI only")
         self._quota_rollout = settings.quota_rollout
         self.quota_service = getattr(self.repository, "quota_service", None)
+        if hasattr(self.engine, "set_model_task_loader") and hasattr(self.repository, "get_turn_task"):
+            self.engine.set_model_task_loader(self.repository.get_turn_task)
         self.sessions = sessions
         self.events = GatewayEventBroker()
         self._in_process_executor: InProcessTurnExecutor | None = None
@@ -347,6 +349,7 @@ class BackendGateway:
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
         self._accepting = False
+
 
     @property
     def authorization_session_factory(self):
@@ -488,6 +491,7 @@ class BackendGateway:
         enriched_content = _enrich_content_with_attachments(
             context, request.content, request.attachments
         )
+        existing = None
         resubmission_reservation_id: str | None = None
         if request.idempotency_key:
             existing = await asyncio.to_thread(
@@ -632,40 +636,44 @@ class BackendGateway:
             guided_session=guided_session,
             guided_blueprint=guided_session.get("guided_blueprint", {}),
         )
-        turn_id = str(uuid.uuid4())
+        from core.model_runtime.factory import get_global_model_factory
+        from core.model_runtime.thinking import ThinkingLevel
+        from server.quota.fixed_turn import charge_snapshot, command_for_task
+        factory = get_global_model_factory()
+        preferences = (await self.get_user_settings(principal))["settings"]
+        selected_profile = request.model_profile or preferences.get("model_profile") or factory.config.default_model_profile
+        selected_level = request.thinking_level
+        if selected_level is not None and request.thinking_enabled is not None:
+            raise ValueError("Use thinking_level without the legacy thinking_enabled field")
+        if selected_level is None:
+            selected_level = (ThinkingLevel.LIGHT if request.thinking_enabled else ThinkingLevel.QUICK) if request.thinking_enabled is not None else ThinkingLevel(preferences["thinking_level"])
+        turn_id = existing.turn_id if existing is not None else str(uuid.uuid4())
+        persisted = await asyncio.to_thread(self.repository.get_turn_task, turn_id) if existing is not None else None
+        original_task = TurnTaskCodec.loads(persisted) if persisted else None
+        adapter = factory.config.providers[factory.config.profile(selected_profile).provider].adapter
+        model_snapshot = None
+        if original_task is not None and original_task.model_snapshot is not None:
+            model_snapshot = original_task.model_snapshot
+            selected_profile, selected_level = model_snapshot.profile_name, model_snapshot.level
+        elif adapter in {"deepseek", "glm"}:
+            model_snapshot = factory.snapshot(profile_name=selected_profile, level=selected_level,
+                user_id=context.user_id, workspace_id=context.workspace_id, session_id=context.session_id, turn_id=turn_id)
+        elif request.thinking_level is not None:
+            raise ValueError("Thinking levels are unavailable for this model profile")
         quota_admission = None
         reservation_id = None
-        if self.quota_service is not None and self._quota_rollout.enabled_for(
-            context.user_id, context.workspace_id
-        ):
-            from core.model_runtime.factory import get_global_model_factory
-
-            factory = get_global_model_factory()
-            profile_name = request.model_profile or factory.config.default_model_profile
-            if not profile_name:
-                raise QuotaRejectedError(
-                    QuotaProblem(
-                        code=QuotaErrorCode.ADMISSION_DENIED,
-                        reason="额度校验需要明确的模型 Profile",
-                        remaining_micro=0,
-                        retryable=False,
-                    )
-                )
-            identity = factory.profile_identity(profile_name, "coordinator")
-            quota_admission = AdmitTurn(
-                request_id=request.idempotency_key or turn_id,
-                user_id=context.user_id,
-                workspace_id=context.workspace_id,
-                turn_id=turn_id,
-                model_profile=profile_name,
-                model_role="coordinator",
-                estimated_input_tokens=factory.estimate_input_tokens(
-                    profile_name, [enriched_content]
-                ),
-                estimated_output_tokens=identity.max_output_tokens or 0,
-                pricing_key=identity.pricing_key,
-                idempotency_key=request.idempotency_key or turn_id,
-            )
+        if model_snapshot is not None and self.quota_service is not None and getattr(self.repository, "fixed_turn_billing", False):
+            if model_snapshot.billing is None:
+                model_snapshot = model_snapshot.model_copy(update={"billing": charge_snapshot(selected_level, turn_id)})
+            reservation_id = self.quota_service.reservation_id_for_turn(turn_id)
+        elif model_snapshot is None and self.quota_service is not None and self._quota_rollout.enabled_for(context.user_id, context.workspace_id):
+            identity = factory.profile_identity(selected_profile, "coordinator")
+            quota_admission = AdmitTurn(request_id=request.idempotency_key or turn_id,
+                user_id=context.user_id, workspace_id=context.workspace_id, turn_id=turn_id,
+                model_profile=selected_profile, model_role="coordinator",
+                estimated_input_tokens=factory.estimate_input_tokens(selected_profile, [enriched_content]),
+                estimated_output_tokens=identity.max_output_tokens or 0, pricing_key=identity.pricing_key,
+                idempotency_key=request.idempotency_key or turn_id)
             reservation_id = self.quota_service.reservation_id_for_turn(turn_id)
         durable_quota = isinstance(self.repository, MySQLGatewayRepository)
         quota_reservation_id = (resubmission_reservation_id or str(uuid.uuid4())) if durable_quota else None
@@ -683,8 +691,9 @@ class BackendGateway:
             teaching_materials=teaching_materials,
             guided_session_id=guided_session.get("id"),
             exercise_session_id=(teaching_session.get("id") if teaching_session is not None else None),
-            model_profile=request.model_profile,
-            thinking_enabled=request.thinking_enabled,
+            model_profile=selected_profile,
+            thinking_enabled=(selected_level != ThinkingLevel.QUICK) if model_snapshot else (request.thinking_enabled if request.thinking_enabled is not None else True),
+            model_snapshot=model_snapshot,
             authorization=ExecutionAuthorizationContext(
                 submitter_user_id=principal.user_id,
                 workspace_id=context.workspace_id,
@@ -693,6 +702,8 @@ class BackendGateway:
             reservation_id=reservation_id,
             quota_reservation_id=quota_reservation_id,
         )
+        if model_snapshot is not None and model_snapshot.billing is not None:
+            quota_admission = command_for_task(task, request_id=request.idempotency_key or turn_id)
         turn, duplicate = await asyncio.to_thread(
             self.repository.create_turn,
             turn_id=turn_id,
@@ -715,12 +726,13 @@ class BackendGateway:
             guided_session_status=str(guided_session.get("status") or "active"),
             exercise_state=exercise,
             dispatch_payload=TurnTaskCodec.dumps(task) if self._remote_execution else None,
+            persisted_task=TurnTaskCodec.dumps(task),
             quota_admission=quota_admission,
             quota_role_codes=tuple(principal.roles),
             quota_classroom_ids=tuple(principal.classroom_ids),
             quota_reservation_id=quota_reservation_id,
             reserved_tokens=reserved_tokens,
-            model_profile=request.model_profile,
+            model_profile=selected_profile,
         )
         resubmitted = bool(
             duplicate
@@ -760,11 +772,8 @@ class BackendGateway:
             guided_session_id=task.guided_session_id, exercise_session_id=task.exercise_session_id,
             model_profile=task.model_profile, thinking_enabled=task.thinking_enabled,
             authorization=task.authorization,
-            reservation_id=(
-                self.quota_service.reservation_id_for_turn(turn.turn_id)
-                if self.quota_service is not None
-                else None
-            ),
+            model_snapshot=task.model_snapshot,
+            reservation_id=task.reservation_id,
             quota_reservation_id=task.quota_reservation_id,
         )
         try:
@@ -772,7 +781,7 @@ class BackendGateway:
         except Exception as error:
             await asyncio.to_thread(
                 self.repository.update_turn,
-                turn.turn_id,
+                task.turn_id,
                 TurnStatus.FAILED,
                 error_kind="dispatch_failed",
                 error_message=str(error),
@@ -785,7 +794,7 @@ class BackendGateway:
                     idempotency_key=f"dispatch-failed:{turn.turn_id}",
                 )
             await self._emit(
-                turn.turn_id,
+                task.turn_id,
                 context.session_id,
                 GatewayEventType.TURN_FAILED,
                 {
@@ -796,7 +805,7 @@ class BackendGateway:
             )
             raise
         return TurnAccepted(
-            turn_id=turn.turn_id,
+            turn_id=task.turn_id,
             session_id=context.session_id,
             status=TurnStatus.ACCEPTED,
             duplicate=resubmitted,

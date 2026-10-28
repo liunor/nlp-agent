@@ -141,6 +141,32 @@ describe("StudentSocket", () => {
     client.close();
   });
 
+  it.each(["quick", "light", "deep", "extreme", true, false, undefined] as const)("preserves this message's thinking selection (%s)", async (selection) => {
+    const instances: FakeWebSocket[] = [];
+    vi.stubGlobal("WebSocket", class extends FakeWebSocket {
+      constructor(url: string) { super(url); instances.push(this); }
+    });
+    const client = new StudentSocket(vi.fn(), vi.fn(), async () => "test-ticket");
+    client.setSession("session_1");
+    await Promise.resolve();
+    instances[0].open();
+    instances[0].onmessage?.({ data: JSON.stringify({ type: "connection.ready", payload: {} }) });
+    client.sendChat("session_1", "hello", "request_1", undefined, "deepseek", undefined, selection);
+
+    const command = instances[0].sent.map((value) => JSON.parse(value)).find((frame) => frame.type === "chat.send");
+    if (typeof selection === "string") {
+      expect(command.payload.thinking_level).toBe(selection);
+      expect(command.payload).not.toHaveProperty("thinking_enabled");
+    } else if (typeof selection === "boolean") {
+      expect(command.payload.thinking_enabled).toBe(selection);
+      expect(command.payload).not.toHaveProperty("thinking_level");
+    } else {
+      expect(command.payload).not.toHaveProperty("thinking_level");
+      expect(command.payload).not.toHaveProperty("thinking_enabled");
+    }
+    client.close();
+  });
+
   it("resends an idempotent chat command when the connection drops before its acknowledgement", async () => {
     vi.useFakeTimers();
     const instances: FakeWebSocket[] = [];
@@ -159,6 +185,7 @@ describe("StudentSocket", () => {
       undefined,
       undefined,
       [{ file_name: "safe-image.png" }],
+      "quick",
     );
 
     instances[0].disconnect();
@@ -171,7 +198,7 @@ describe("StudentSocket", () => {
     expect(resent).toContainEqual(expect.objectContaining({
       type: "chat.send",
       request_id: "request_1",
-      payload: expect.objectContaining({ attachments: [{ file_name: "safe-image.png" }] }),
+      payload: expect.objectContaining({ attachments: [{ file_name: "safe-image.png" }], thinking_level: "quick" }),
     }));
     client.close();
   });

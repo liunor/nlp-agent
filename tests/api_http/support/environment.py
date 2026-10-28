@@ -145,6 +145,7 @@ class ManagedHttpEnvironment:
             _verify_redis(redis_port, redis_db, run_id)
             _run_migrations(environment.env)
             environment.users = _seed_users(environment.env)
+            _seed_quota_policy(environment.env, environment.users)
             if real_sandbox_image is not None:
                 environment._start_sandbox_manager()
             environment._start_server(
@@ -737,6 +738,33 @@ def _seed_users(environment: dict[str, str]) -> dict[str, SeededUser]:
             await runtime.close()
 
     return asyncio.run(seed())
+
+
+def _seed_quota_policy(environment: dict[str, str], users: dict[str, SeededUser]) -> None:
+    """Provision finite quota in the isolated HTTP database before server startup."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import create_engine, insert
+    from server.quota.models import PolicyBindingModel, QuotaPolicyModel
+
+    now = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+    engine = create_engine(environment["NLP_AGENT_DATABASE_URL"].replace("mysql+aiomysql://", "mysql+pymysql://", 1))
+    policy_id = str(uuid.uuid4())
+    try:
+        with engine.begin() as connection:
+            connection.execute(insert(QuotaPolicyModel).values(
+                id=policy_id, code="api-http-chat", version="1", name="Isolated HTTP test chat",
+                status="active", request_limit_micro=8_000_000,
+                daily_limit_micro=100_000_000_000, weekly_limit_micro=500_000_000_000,
+                concurrency_limit=100, max_overdraft_micro=0,
+                allowed_model_profiles=[], unlimited=False, effective_from=now,
+                created_by=users["developer"].user_id,
+            ))
+            connection.execute(insert(PolicyBindingModel).values(
+                id=str(uuid.uuid4()), subject_type="default", subject_id="*",
+                policy_id=policy_id, priority=0, status="active", effective_from=now,
+            ))
+    finally:
+        engine.dispose()
 
 
 def _safe_child_environment(

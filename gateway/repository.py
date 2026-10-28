@@ -24,6 +24,7 @@ from gateway.contracts import (
     TurnStatus,
 )
 from core.learning import ExerciseState, LearningContext, LearningProgress, knowledge_point_ids
+from core.user_settings import migrate_thinking_settings
 from gateway.analytics_time import localize_turn_time
 
 
@@ -267,7 +268,7 @@ class GatewayRepository:
             for name in (
                 "learning_context_json", "learning_progress_json", "exercise_state_json",
                 "guided_session_id", "guided_blueprint_id", "guided_blueprint_snapshot_sha256",
-                "guided_session_attempts", "guided_session_status",
+                "guided_session_attempts", "guided_session_status", "dispatch_task_json",
             ):
                 if name not in columns:
                     self._conn.execute(f"ALTER TABLE gateway_turns ADD COLUMN {name} TEXT")
@@ -296,6 +297,7 @@ class GatewayRepository:
         guided_session_status: str | None = None,
         exercise_state: ExerciseState | None = None,
         dispatch_payload: str | None = None,
+        persisted_task: str | None = None,
         # The MySQL repository performs quota admission in the same
         # transaction as turn creation.  Keep the in-memory repository
         # compatible with that gateway contract; quota-aware callers may use
@@ -323,8 +325,8 @@ class GatewayRepository:
                    turn_id,session_id,workspace_id,user_id,status,input_text,
                    learning_context_json,learning_progress_json,guided_session_id,guided_blueprint_id,
                    guided_blueprint_snapshot_sha256,guided_session_attempts,guided_session_status,
-                   exercise_state_json,idempotency_key,created_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   exercise_state_json,idempotency_key,created_at,dispatch_task_json
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     turn_id,
                     session_id,
@@ -342,12 +344,18 @@ class GatewayRepository:
                     exercise_state.model_dump_json() if exercise_state else None,
                     idempotency_key,
                     created_at,
+                    persisted_task or dispatch_payload,
                 ),
             )
             row = self._conn.execute(
                 "SELECT * FROM gateway_turns WHERE turn_id=?", (turn_id,)
             ).fetchone()
             return self._turn(row), False
+
+    def get_turn_task(self, turn_id: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT dispatch_task_json FROM gateway_turns WHERE turn_id=?", (turn_id,)).fetchone()
+            return row["dispatch_task_json"] if row else None
 
     def update_turn(
         self,
@@ -867,28 +875,32 @@ class GatewayRepository:
         return int(row[0])
 
     def get_user_settings(self, user_id: str) -> dict[str, Any]:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT revision,settings_json,updated_at FROM gateway_user_settings "
-                "WHERE user_id=?",
-                (user_id,),
-            ).fetchone()
-        if row is None:
-            return {"revision": 0, "settings": {}, "updated_at": None}
-        return {
-            "revision": int(row["revision"]),
-            "settings": json.loads(row["settings_json"] or "{}"),
-            "updated_at": row["updated_at"],
-        }
+        return self._user_settings_transaction(user_id, {})
 
     def update_user_settings(
         self,
         user_id: str,
         changes: dict[str, Any],
     ) -> dict[str, Any]:
+        return self._user_settings_transaction(user_id, changes)
+
+    def _user_settings_transaction(
+        self, user_id: str, changes: dict[str, Any],
+    ) -> dict[str, Any]:
         with self._lock, self._conn:
-            current = self.get_user_settings(user_id)
-            merged = {**current["settings"], **changes}
+            # RLock only protects this instance. Acquire the SQLite write lock
+            # before reading so another connection cannot race lazy migration.
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT revision,settings_json,updated_at FROM gateway_user_settings WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            current = {"revision": int(row["revision"]) if row else 0}
+            original = json.loads(row["settings_json"] or "{}") if row else {}
+            # Migrate the historical value before applying a display-only patch.
+            merged = migrate_thinking_settings({**migrate_thinking_settings(original), **changes})
+            if merged == original and row is not None and not changes:
+                return {"revision": current["revision"], "settings": merged, "updated_at": row["updated_at"]}
             revision = int(current["revision"]) + 1
             updated_at = _now()
             self._conn.execute(

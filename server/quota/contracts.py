@@ -12,6 +12,7 @@ from core.model_runtime.usage import (
     InvocationOutcome,
     ModelInvocation,
 )
+from core.model_runtime.snapshot import FixedTurnBillingSnapshot
 from server.quota.errors import QuotaErrorCode
 
 
@@ -144,6 +145,7 @@ class QuotaBalance(QuotaFrozenModel):
 class AdmitTurn(QuotaFrozenModel):
     """Stable input for the Turn Admission seam."""
 
+    fixed_charge: FixedTurnBillingSnapshot | None = None
     request_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
     workspace_id: str | None = None

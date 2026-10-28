@@ -8,6 +8,7 @@ from typing import Any
 from configs.settings import BASE_DIR, settings
 from core.identity import AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
+from core.model_runtime.editor import editable_presets
 
 
 _SENSITIVE_PARTS = ("secret", "password", "api_key", "authorization", "access_token")
@@ -125,7 +126,7 @@ async def developer_snapshot(
             "defaults": _safe(raw.get("defaults", {})),
             "routes": _safe(raw.get("model_routes", {})),
             "models": _safe(raw.get("models", {})),
-            "presets": _safe(raw.get("model_presets", {})),
+            "presets": _safe(editable_presets(raw.get("model_presets", {}))),
             "profiles": _safe(raw.get("model_profiles", {})),
             "default_model_profile": _safe(
                 raw.get("defaults", {}).get("model_profile")

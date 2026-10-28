@@ -15,7 +15,7 @@ from core.session_context import SessionContext
 from gateway.dispatch import ExecutionAuthorizationContext, TurnTask
 from gateway.contracts import GatewayEvent
 from gateway.events import GatewayEventBroker
-from server.application.turn_reliability import TurnCancellationRequested
+from server.application.turn_errors import TurnCancellationRequested
 
 
 logger = logging.getLogger(__name__)
@@ -709,13 +709,14 @@ class RedisEventBridge:
 class TurnTaskCodec:
     """Stable JSON representation shared by the Web process and Workers."""
 
-    VERSION = 1
+    VERSION = 2
 
     @staticmethod
     def dumps(task: TurnTask) -> str:
         return json.dumps(
             {
-                "version": TurnTaskCodec.VERSION,
+                "version": TurnTaskCodec.VERSION if task.model_snapshot else 1,
+                "model_snapshot": task.model_snapshot.model_dump(mode="json") if task.model_snapshot else None,
                 "context": task.context.model_dump(mode="json"),
                 "turn_id": task.turn_id,
                 "content": task.content,
@@ -748,9 +749,16 @@ class TurnTaskCodec:
         value = json.loads(payload)
         if not isinstance(value, dict):
             raise ValueError("turn task payload must be a JSON object")
-        if value.get("version") != TurnTaskCodec.VERSION:
+        if value.get("version") not in {1, TurnTaskCodec.VERSION}:
             raise ValueError(f"unsupported turn task version: {value.get('version')!r}")
+        if value["version"] == 2 and not value.get("model_snapshot"):
+            raise ValueError("v2 task requires an execution snapshot")
+        if "thinking_enabled" in value and not isinstance(value["thinking_enabled"], bool):
+            raise ValueError("thinking_enabled must be a boolean")
+        from core.model_runtime.snapshot import ModelExecutionSnapshot
+
         return TurnTask(
+            model_snapshot=ModelExecutionSnapshot.model_validate(value["model_snapshot"]) if value.get("model_snapshot") else None,
             context=SessionContext.model_validate(value["context"]),
             turn_id=str(value["turn_id"]),
             content=str(value["content"]),

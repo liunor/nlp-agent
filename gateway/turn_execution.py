@@ -15,6 +15,7 @@ from core.agent_runtime import configured_budget
 from core.vision_execution import attached_image_names, bind_image_turn, image_turn_timeout
 from core.rbac import Permission
 from gateway.dispatch import TurnTask
+from core.model_runtime.selection import bind_model_snapshot
 from gateway.engine import AgentEngine
 from gateway.state import TurnExecutionState
 from core.model_runtime.usage import UsageAttributionContext, bind_usage_attribution
@@ -194,6 +195,11 @@ class InProcessTurnExecutor:
         if event is not None:
             event.set()
     async def run(self, task: TurnTask, execution_context: Any | None = None) -> None:
+        if task.model_snapshot is not None and hasattr(self._repository, "get_turn_task"):
+            from gateway.redis_transport import TurnTaskCodec
+            payload = await asyncio.to_thread(self._repository.get_turn_task, task.turn_id)
+            if payload and TurnTaskCodec.loads(payload) != task:
+                raise ValueError("Worker task does not match the persisted execution snapshot")
         fence = self._fence(execution_context)
         await asyncio.to_thread(
             self._repository.update_turn,
@@ -233,7 +239,7 @@ class InProcessTurnExecutor:
                 worker_id=None,
                 purpose="coordinator",
             )
-            with bind_usage_attribution(attribution):
+            with bind_model_snapshot(task.model_snapshot), bind_usage_attribution(attribution):
                 final_text, updated = await self._run_turn_with_timeout(
                     task, execution_context
                 )
@@ -247,12 +253,14 @@ class InProcessTurnExecutor:
         except asyncio.CancelledError:
             await self._engine.cancel_turn(task.context, task.turn_id)
             # Interruption of a fenced owner is recoverable, not a user cancel.
-            if current_turn_write_fence() is not None:
+            cancellation_reader = getattr(self._repository, "cancellation_requested", None)
+            user_cancel = (await asyncio.to_thread(cancellation_reader, task.turn_id)) is True if callable(cancellation_reader) else False
+            if (current_turn_write_fence() is not None or execution_context is not None) and not user_cancel:
                 raise
             updated = await asyncio.to_thread(
                 self._repository.update_turn,
                 task.turn_id,
-                TurnStatus.CANCELLED,
+                TurnStatus.CANCELLED if user_cancel else TurnStatus.INTERRUPTED,
                 **fence,
             )
             if getattr(updated, "status", TurnStatus.CANCELLED) == TurnStatus.CANCELLED:
@@ -512,6 +520,8 @@ class InProcessTurnExecutor:
 
     async def _finish_quota(self, task: TurnTask) -> None:
         service = getattr(self._repository, "quota_service", None)
+        if task.model_snapshot is not None and task.model_snapshot.billing is not None:
+            return
         if service is None or task.reservation_id is None:
             return
         await asyncio.to_thread(
@@ -564,7 +574,7 @@ class InProcessTurnExecutor:
             worker_id=fence.worker_id if fence is not None else None,
             purpose="worker" if fence is not None else "coordinator",
         )
-        with bind_usage_attribution(attribution):
+        with bind_model_snapshot(task.model_snapshot), bind_usage_attribution(attribution):
             return await self._engine.run_turn(
                 task.context, task.turn_id, task.content, **kwargs
             )

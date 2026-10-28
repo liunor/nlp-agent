@@ -357,7 +357,6 @@ def _public_runtime_settings() -> dict[str, Any]:
     presets = {
         name: {
             "model": item.get("model"),
-            "thinking": item.get("thinking", {}),
             "generation": item.get("generation", {}),
         }
         for name, item in raw.get("model_presets", {}).items()
@@ -1533,13 +1532,31 @@ def create_app(
             detail=str(error),
         )
 
+    @app.get("/api/v1/developer/quota/users/{user_id}", tags=["quota"])
+    async def get_user_quota(user_id: str, request: Request, principal: Principal):
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
+        subject_error = await require_quota_subject(request, subject_type="user", subject_id=user_id)
+        if subject_error is not None:
+            return subject_error
+        async with authorization_session_factory(request)() as session:
+            owner = await rbac_service.principal_for_user_id(session, user_id)
+        service = getattr(request.app.state, "quota_read_service", None) or request.app.state.gateway.quota_service
+        snapshot = await asyncio.to_thread(service.snapshot, user_id=user_id)
+        try:
+            policy = await asyncio.to_thread(quota_management_for(request).explain_policy,
+                user_id=user_id, workspace_id=None, role_codes=tuple(owner.roles),
+                classroom_ids=(), at=datetime.now(timezone.utc))
+        except QuotaDomainError:
+            policy = None
+        return {"quota": snapshot, "policy": policy}
+
     @app.get("/api/v1/developer/quota/policies", tags=["quota"])
     async def list_quota_policies(
         request: Request,
         principal: Principal,
         code: str | None = Query(default=None, max_length=128),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(quota_management_for(request).list_policies, code=code)}
 
     @app.get("/api/v1/developer/quota/pricing-rules", tags=["quota"])
@@ -1548,7 +1565,7 @@ def create_app(
         principal: Principal,
         pricing_key: str | None = Query(default=None, max_length=255),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_management_for(request).list_pricing_rules,
             pricing_key=pricing_key,
@@ -1560,7 +1577,7 @@ def create_app(
         request: Request,
         principal: Principal,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         try:
             return await asyncio.to_thread(
                 quota_management_for(request).get_pricing_rule,
@@ -1580,7 +1597,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_management_for(request).create_pricing_rule,
@@ -1617,7 +1634,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_management_for(request).retire_pricing_rule,
@@ -1641,7 +1658,7 @@ def create_app(
 
     @app.get("/api/v1/developer/quota/policies/{policy_id}", tags=["quota"])
     async def get_quota_policy(policy_id: str, request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         try:
             return await asyncio.to_thread(quota_management_for(request).get_policy, policy_id)
         except QuotaDomainError as error:
@@ -1654,7 +1671,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_management_for(request).create_policy,
@@ -1684,7 +1701,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_management_for(request).update_policy,
@@ -1718,7 +1735,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_management_for(request).archive_policy,
@@ -1745,7 +1762,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_management_for(request).publish_policy,
@@ -1772,7 +1789,7 @@ def create_app(
         subject_type: str | None = Query(default=None, max_length=16),
         subject_id: str | None = Query(default=None, max_length=128),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_management_for(request).list_bindings,
             subject_type=subject_type,
@@ -1781,7 +1798,7 @@ def create_app(
 
     @app.get("/api/v1/developer/quota/bindings/{binding_id}", tags=["quota"])
     async def get_quota_binding(binding_id: str, request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         try:
             return await asyncio.to_thread(quota_management_for(request).get_binding, binding_id)
         except QuotaDomainError as error:
@@ -1794,7 +1811,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_management_for(request).retire_binding,
@@ -1821,7 +1838,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         subject_error = await require_quota_subject(
             request,
             subject_type=body.subject_type,
@@ -1853,7 +1870,7 @@ def create_app(
         owner_type: str | None = Query(default=None, max_length=16),
         owner_id: str | None = Query(default=None, max_length=128),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_management_for(request).list_grants,
             owner_type=owner_type,
@@ -1862,7 +1879,7 @@ def create_app(
 
     @app.get("/api/v1/developer/quota/grants/{grant_id}", tags=["quota"])
     async def get_quota_grant(grant_id: str, request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         try:
             return await asyncio.to_thread(quota_management_for(request).get_grant, grant_id)
         except QuotaDomainError as error:
@@ -1875,7 +1892,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         subject_error = await require_quota_subject(
             request,
             subject_type=body.owner_type,
@@ -1916,7 +1933,7 @@ def create_app(
             default=None, alias="Idempotency-Key"
         ),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         idempotency_key = (
             body.idempotency_key
             if body is not None
@@ -1951,7 +1968,7 @@ def create_app(
         owner_type: str | None = Query(default=None, max_length=16),
         owner_id: str | None = Query(default=None, max_length=128),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_management_for(request).list_adjustments,
             owner_type=owner_type,
@@ -1960,7 +1977,7 @@ def create_app(
 
     @app.get("/api/v1/developer/quota/adjustments/{adjustment_id}", tags=["quota"])
     async def get_quota_adjustment(adjustment_id: str, request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         try:
             return await asyncio.to_thread(quota_management_for(request).get_adjustment, adjustment_id)
         except QuotaDomainError as error:
@@ -1973,7 +1990,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         subject_error = await require_quota_subject(
             request,
             subject_type=body.owner_type,
@@ -2011,7 +2028,7 @@ def create_app(
         user_id: str | None = Query(default=None, max_length=128),
         workspace_id: str | None = Query(default=None, max_length=128),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_operations_for(request).list_daily_rollups,
             start=start,
@@ -2027,7 +2044,7 @@ def create_app(
         reconciliation_status: str | None = Query(default=None, alias="status", max_length=16),
         limit: int = Query(default=100, ge=1, le=1000),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_operations_for(request).list_billing_reconciliation,
             status=reconciliation_status,
@@ -2041,7 +2058,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             result = await asyncio.to_thread(
                 quota_operations_for(request).reconcile_provider_billing,
@@ -2067,7 +2084,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_operations_for(request).repair_billing,
@@ -2098,7 +2115,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         subject_error = await require_quota_subject(
             request,
             subject_type=body.owner_type,
@@ -2132,7 +2149,7 @@ def create_app(
         principal: Principal,
         limit: int = Query(default=100, ge=1, le=1000),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_operations_for(request).list_credit_operations,
             limit=limit,
@@ -2145,7 +2162,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         subject_error = await require_quota_subject(
             request,
             subject_type="role",
@@ -2194,7 +2211,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         subject_error = await require_quota_subject(
             request,
             subject_type=body.owner_type,
@@ -2229,7 +2246,7 @@ def create_app(
         alert_status: str | None = Query(default=None, alias="status", max_length=16),
         limit: int = Query(default=100, ge=1, le=1000),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_operations_for(request).list_alerts,
             status=alert_status,
@@ -2244,7 +2261,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             row = await asyncio.to_thread(
                 quota_operations_for(request).update_alert,
@@ -2273,7 +2290,7 @@ def create_app(
         principal: Principal,
         limit: int = Query(default=100, ge=1, le=1000),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_operations_for(request).list_archive_batches,
             limit=limit,
@@ -2286,7 +2303,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         result = await asyncio.to_thread(
             quota_operations_for(request).archive_usage_events,
             before=body.before,
@@ -2311,7 +2328,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             result = await asyncio.to_thread(
                 quota_operations_for(request).purge_archived_usage_events,
@@ -2345,7 +2362,7 @@ def create_app(
         owner_id: str | None = Query(default=None, max_length=128),
         limit: int = Query(default=200, ge=1, le=1000),
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         return {"items": await asyncio.to_thread(
             quota_operations_for(request).list_buckets,
             owner_type=owner_type,
@@ -2355,7 +2372,7 @@ def create_app(
 
     @app.get("/api/v1/developer/quota/buckets/{bucket_id}/replay", tags=["quota"])
     async def replay_quota_bucket(bucket_id: str, request: Request, principal: Principal):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_READ)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_READ, ResourceRef("quota_administration"))
         try:
             return (await asyncio.to_thread(quota_operations_for(request).replay_bucket, bucket_id)).as_dict()
         except KeyError:
@@ -2369,7 +2386,7 @@ def create_app(
         principal: Principal,
         _claims: WriteClaims,
     ):
-        authorization_service.require(principal, Permission.SYSTEM_QUOTA_MANAGE)
+        authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
         try:
             result = await asyncio.to_thread(
                 quota_operations_for(request).repair_bucket,
@@ -2833,7 +2850,12 @@ def create_app(
         )
 
     @app.get("/api/v1/settings", tags=["settings"])
-    async def get_settings(request: Request, principal: Principal):
+    async def get_settings(
+        request: Request, principal: Principal,
+        expected_account: Annotated[str | None, Header(alias="X-Settings-Account")] = None,
+    ):
+        if expected_account is not None and expected_account != principal.user_id:
+            return _problem(request, status_code=409, code="settings_account_changed", title="账号已切换，请刷新后重试")
         preferences = await request.app.state.gateway.get_user_settings(principal)
         return {"preferences": preferences, "runtime": _public_runtime_settings()}
 
@@ -3825,8 +3847,13 @@ def create_app(
         request: Request,
         principal: Principal,
         _claims: WriteClaims,
+        expected_account: Annotated[str | None, Header(alias="X-Settings-Account")] = None,
     ):
-        changes = body.model_dump(exclude_none=True)
+        # This is only a precondition. All storage keys still come exclusively
+        # from Principal, never from the submitted account/header/query.
+        if expected_account is not None and expected_account != principal.user_id:
+            return _problem(request, status_code=409, code="settings_account_changed", title="账号已切换，请刷新后重试")
+        changes = body.model_dump(mode="json", exclude_none=True)
         if "model_profile" in changes:
             from fastapi import HTTPException
             from core.model_runtime.factory import get_global_model_factory
@@ -3841,6 +3868,16 @@ def create_app(
                 raise HTTPException(400, f"Unknown model profile {profile_name!r}")
         if "default_workspace_id" in changes:
             principal.require_workspace(changes["default_workspace_id"])
+        if "thinking_level" in changes:
+            from fastapi import HTTPException
+            from core.model_runtime.factory import get_global_model_factory
+
+            factory = get_global_model_factory()
+            current = await request.app.state.gateway.get_user_settings(principal)
+            profile_name = changes.get("model_profile") or current["settings"].get("model_profile") or factory.config.default_model_profile
+            profile = factory.public_profiles().get(profile_name, {})
+            if changes["thinking_level"] not in profile.get("supported_levels", []):
+                raise HTTPException(400, "Thinking level is unavailable for the selected model profile")
         updated = await request.app.state.gateway.update_user_settings(principal, changes)
         await hub.broadcast(
             control_event("settings.updated", payload=updated),
@@ -3952,25 +3989,9 @@ def create_app(
 
     @app.exception_handler(QuotaRejectedError)
     async def quota_rejected_error(request: Request, error: QuotaRejectedError):
-        problem = error.problem
-        status_code = (
-            status.HTTP_403_FORBIDDEN
-            if problem.code == "quota_model_not_allowed"
-            else status.HTTP_429_TOO_MANY_REQUESTS
-        )
-        return _problem(
-            request,
-            status_code=status_code,
-            code=problem.code.value,
-            title="Quota admission rejected",
-            detail=problem.reason,
-            extra={
-                "remaining_micro": problem.remaining_micro,
-                "reset_at": problem.reset_at.isoformat() if problem.reset_at else None,
-                "allowed_model_profiles": list(problem.allowed_model_profiles),
-                "retryable": problem.retryable,
-            },
-        )
+        from server.quota.transport import quota_error
+        code, message, http_status = quota_error(error)
+        return _problem(request, status_code=http_status, code=code, title=message)
 
     @app.websocket("/ws/v1")
     async def websocket_route(websocket: WebSocket):

@@ -81,7 +81,7 @@ vi.mock("@/platform/http/api", () => ({
   AuthStateChangedError: class extends Error {},
   getAuthGeneration: () => 0,
   subscribeAuthChanges: () => () => undefined,
-  ensureAuth: vi.fn().mockResolvedValue({}),
+  ensureAuth: vi.fn().mockResolvedValue({ user_id: "user", workspace_ids: ["default"], roles: ["student"] }),
   uploadAttachment: stream.uploadAttachment,
   api: {
     listSessions: vi.fn().mockResolvedValue({ items: [] }),
@@ -176,7 +176,7 @@ describe("student stream rendering", () => {
     fireEvent.click(screen.getByRole("button", { name: "对话模型" }));
 
     fireEvent.click(screen.getByRole("option", { name: "Qwen" }));
-    await waitFor(() => expect(stream.updateSettings).toHaveBeenCalledWith({ model_profile: "qwen" }));
+    await waitFor(() => expect(stream.updateSettings).toHaveBeenCalledWith({ model_profile: "qwen" }, expect.any(AbortSignal), "user"));
 
     const input = screen.getByRole("textbox", { name: "学习问题" });
     fireEvent.change(input, { target: { value: "解释 Qwen" } });

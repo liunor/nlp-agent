@@ -19,6 +19,7 @@ import {
 import { api } from "@/platform/http/api";
 
 import { Composer } from "@/modules/student/components/Composer";
+import { ThinkingLevelControl } from "@/modules/student/components/ThinkingLevelControl";
 import { AccountDialog } from "@/modules/student/components/AccountDialog";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { LearningContextBar } from "@/modules/student/components/LearningContextBar";
@@ -370,6 +371,14 @@ export function StudentWorkspace({
                 running={false}
                 onSend={() => setLoginOpen(true)}
                 onCancel={() => undefined}
+                thinkingControl={
+                  <ThinkingLevelControl
+                    value="light"
+                    supportedLevels={[]}
+                    onChange={() => undefined}
+                    onRequireLogin={() => setLoginOpen(true)}
+                  />
+                }
               />
             </div>
           </section>
@@ -410,12 +419,28 @@ export function StudentWorkspace({
   const canManageTeaching = ["teacher", "developer", "admin"].some((role) =>
     roles.includes(role),
   );
+  const selectedProfile = workspace.modelProfiles[workspace.settings.model_profile];
+  const supportedThinkingLevels = selectedProfile?.supported_levels ?? [];
+  const thinkingSelectionAvailable =
+    supportedThinkingLevels.length === 0 ||
+    supportedThinkingLevels.includes(workspace.settings.thinking_level);
+  const thinkingControl = (
+    <ThinkingLevelControl
+      value={workspace.settings.thinking_level}
+      supportedLevels={supportedThinkingLevels}
+      disabled={!statusOnline || workspace.isRunning || workspace.selectionSaving}
+      onPreviewChange={workspace.setSelectionPreview}
+      onChange={(thinking_level) => void workspace.patchSettings({ thinking_level })}
+    />
+  );
   const composer = (centered = false) => (
     <Composer
       key={workspace.composerRevision}
       sessionId={workspace.activeSessionId}
       centered={centered}
       disabled={!statusOnline}
+      sendDisabled={workspace.selectionPending || !thinkingSelectionAvailable}
+      thinkingControl={thinkingControl}
       running={workspace.isRunning}
       cancelling={workspace.isCancelling}
       onSend={(text, attachments) => void workspace.send(text, attachments)}
@@ -433,7 +458,7 @@ export function StudentWorkspace({
           onModelProfileChange={(modelProfile) =>
             void workspace.patchSettings({ model_profile: modelProfile })
           }
-          modelSelectionDisabled={!statusOnline || workspace.isRunning}
+          modelSelectionDisabled={!statusOnline || workspace.isRunning || workspace.selectionPending}
         />
       }
     />
@@ -771,3 +796,4 @@ export function StudentWorkspace({
     </div>
   );
 }
+

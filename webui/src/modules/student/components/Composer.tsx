@@ -30,9 +30,11 @@ function uploadErrorMessage(reason: unknown): string {
   return "上传失败，请检查网络后重试";
 }
 
-export function Composer({ sessionId, disabled, running, cancelling = false, centered = false, onSend, onCancel, onEnsureSession, contextControl }: {
+export function Composer({ sessionId, disabled, sendDisabled = false, selectionNotice, thinkingControl, running, cancelling = false, centered = false, onSend, onCancel, onEnsureSession, contextControl }: {
   sessionId?: string | null;
   disabled: boolean;
+  sendDisabled?: boolean;
+  selectionNotice?: string;
   running: boolean;
   cancelling?: boolean;
   centered?: boolean;
@@ -40,6 +42,7 @@ export function Composer({ sessionId, disabled, running, cancelling = false, cen
   onCancel: () => void;
   onEnsureSession?: () => Promise<string | null>;
   contextControl?: ReactNode;
+  thinkingControl?: ReactNode;
 }) {
   const [content, setContent] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -66,7 +69,7 @@ export function Composer({ sessionId, disabled, running, cancelling = false, cen
 
   const sendValue = (value: string) => {
     const trimmed = value.trim();
-    if ((!trimmed && readyAttachments.length === 0) || !attachmentsReady || disabled || running) return;
+    if ((!trimmed && readyAttachments.length === 0) || !attachmentsReady || disabled || sendDisabled || running) return;
     setContent("");
     if (readyAttachments.length > 0) {
       onSend(trimmed, readyAttachments);
@@ -177,7 +180,7 @@ export function Composer({ sessionId, disabled, running, cancelling = false, cen
   };
 
   return <div className={`composer-wrap ${centered ? "centered" : ""}`}>
-    <div className="quick-prompts">{prompts.map((prompt) => <button key={prompt} type="button" onClick={() => submitPrompt(prompt)} disabled={disabled || running || !attachmentsReady}>{prompt}</button>)}</div>
+    <div className="quick-prompts">{prompts.map((prompt) => <button key={prompt} type="button" onClick={() => submitPrompt(prompt)} disabled={disabled || sendDisabled || running || !attachmentsReady}>{prompt}</button>)}</div>
     <div className="composer">
       {attachments.length > 0 && (
         <div className="composer-attachments" style={{ display: "flex", gap: "8px", padding: "8px", borderBottom: "1px solid var(--border)", overflowX: "auto" }}>
@@ -192,11 +195,13 @@ export function Composer({ sessionId, disabled, running, cancelling = false, cen
         </div>
       )}
       {pasteNotice && <p className="composer-upload-notice" role="alert">{pasteNotice}</p>}
+      {selectionNotice && <p className="composer-upload-notice" role="status">{selectionNotice}</p>}
       <textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={keyDown} onPaste={handlePaste} disabled={disabled} rows={centered ? 3 : 1} placeholder="问一个 NLP 问题……" aria-label="学习问题" />
       <div className="composer-toolbar">
         <input type="file" ref={fileInputRef} hidden accept="image/jpeg,image/png,image/webp" onChange={handleFileSelect} />
         <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={!canUploadAttachments} aria-label="上传附件"><Plus size={18} /></button>
-        <span><GraduationCap size={15} />Nova · LSNU NLP Learning Agent</span>
+        <span className="composer-brand"><GraduationCap size={15} />Nova · LSNU NLP Learning Agent</span>
+        {thinkingControl}
         {contextControl}
         {running ? <button className="send-button stop" type="button" onClick={onCancel} disabled={cancelling} aria-label={cancelling ? "停止中" : "停止生成"}><Square size={14} fill="currentColor" /></button> : <button className="send-button" type="button" onClick={submit} disabled={disabled || !attachmentsReady || (!content.trim() && readyAttachments.length === 0)} aria-label="发送"><ArrowUp size={18} /></button>}
       </div>

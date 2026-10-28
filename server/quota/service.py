@@ -346,7 +346,7 @@ class QuotaService:
                     allowed_model_profiles=candidate.allowed_model_profiles,
                 )
 
-        reservation_micro = int(command.estimated_micro)
+        reservation_micro = command.fixed_charge.amount_micro if command.fixed_charge else int(command.estimated_micro)
         if reservation_micro == 0:
             try:
                 reservation_micro = self._estimate_micro(connection, command, at)
@@ -486,6 +486,10 @@ class QuotaService:
                 ],
             },
         }
+        if command.fixed_charge is not None:
+            snapshot["fixed_turn"] = command.fixed_charge.model_dump(mode="json")
+            snapshot["fixed_bucket_ids"] = [bucket["id"] for bucket in buckets]
+            snapshot["fixed_generation"] = (int(existing["policy_snapshot_json"].get("fixed_generation", 0)) if existing is not None else 0) + 1
         if rearm_existing:
             connection.execute(
                 update(QuotaReservationModel)
@@ -497,6 +501,7 @@ class QuotaService:
                     reserved_micro=reservation_micro,
                     settled_micro=0,
                     status="reserved",
+                    concurrency_units=int(policy.concurrency_limit is not None),
                     lease_expires_at=lease_expires,
                     last_heartbeat_at=db_now,
                     max_overdraft_micro=policy.max_overdraft_micro,
@@ -521,7 +526,7 @@ class QuotaService:
                     lease_expires_at=lease_expires,
                     last_heartbeat_at=db_now,
                     max_overdraft_micro=policy.max_overdraft_micro,
-                    concurrency_units=1,
+                    concurrency_units=int(policy.concurrency_limit is not None),
                     over_limit=False,
                     created_at=db_now,
                     updated_at=db_now,
@@ -631,6 +636,8 @@ class QuotaService:
             .where(QuotaReservationModel.id == reservation_id)
             .with_for_update()
         ).mappings().first()
+        if reservation is not None and reservation["policy_snapshot_json"].get("fixed_turn"):
+            return 0
         lease_expires_at = _aware(reservation["lease_expires_at"]) if reservation else None
         if (
             reservation is None
@@ -804,6 +811,8 @@ class QuotaService:
             .where(QuotaReservationModel.id == reservation_id)
             .with_for_update()
         ).mappings().first()
+        if reservation is not None and reservation["policy_snapshot_json"].get("fixed_turn"):
+            return 0
         if reservation is None:
             raise QuotaDomainError(
                 QuotaErrorCode.RESERVATION_NOT_ACTIVE,
@@ -952,6 +961,10 @@ class QuotaService:
         # cross-process MySQL retries into a current read after the first
         # settlement commits, instead of relying on a stale REPEATABLE READ
         # snapshot and then surfacing a unique-key error.
+        if reservation is not None and reservation["policy_snapshot_json"].get("fixed_turn"):
+            return UsageRecordResult(operation_id=operation_id, usage_source=usage_source,
+                credits_micro=credits_micro, usage_status=usage_status,
+                pricing_key=pricing_key, pricing_version=pricing_version)
         existing_rows = connection.execute(
             select(QuotaLedgerEntryModel)
             .where(
@@ -1206,6 +1219,10 @@ class QuotaService:
                 QuotaErrorCode.RESERVATION_NOT_ACTIVE,
                 f"Reservation {reservation_id!r} does not exist",
             )
+        if reservation is not None and reservation["policy_snapshot_json"].get("fixed_turn"):
+            return UsageRecordResult(operation_id=operation_id, usage_source=usage_source,
+                credits_micro=credits_micro, usage_status=usage_status,
+                pricing_key=pricing_key, pricing_version=pricing_version)
         existing_rows = connection.execute(
             select(QuotaLedgerEntryModel)
             .where(
@@ -1363,7 +1380,12 @@ class QuotaService:
                 ).mappings().first()
                 if reservation is None or reservation["status"] not in _ACTIVE_RESERVATION_STATUSES:
                     return False
-                if _aware(reservation["lease_expires_at"]) <= at:
+                # Fixed charges follow the durable Turn lifecycle, including
+                # fenced recovery after a Worker lease has expired.
+                if (
+                    not reservation["policy_snapshot_json"].get("fixed_turn")
+                    and _aware(reservation["lease_expires_at"]) <= at
+                ):
                     self.finish_in_transaction(
                         connection,
                         FinishTurn(
@@ -1533,7 +1555,7 @@ class QuotaService:
         with _GLOBAL_QUOTA_LOCK:
             with self._engine.begin() as connection:
                 stale = connection.execute(
-                    select(QuotaReservationModel.id, QuotaReservationModel.turn_id)
+                    select(QuotaReservationModel.id, QuotaReservationModel.turn_id, QuotaReservationModel.policy_snapshot_json)
                     .where(
                         QuotaReservationModel.status.in_(_ACTIVE_RESERVATION_STATUSES),
                         QuotaReservationModel.lease_expires_at <= _db_time(at),
@@ -1541,6 +1563,8 @@ class QuotaService:
                     .with_for_update()
                 ).mappings().all()
                 for row in stale:
+                    if row["policy_snapshot_json"].get("fixed_turn"):
+                        continue
                     self.finish_in_transaction(
                         connection,
                         FinishTurn(
@@ -1583,7 +1607,10 @@ class QuotaService:
                 ).mappings().first()
                 if reservation is None or reservation["status"] not in _ACTIVE_RESERVATION_STATUSES:
                     return False
-                if _aware(reservation["lease_expires_at"]) <= at:
+                if (
+                    not reservation["policy_snapshot_json"].get("fixed_turn")
+                    and _aware(reservation["lease_expires_at"]) <= at
+                ):
                     self.finish_in_transaction(
                         connection,
                         FinishTurn(
@@ -2363,7 +2390,7 @@ class QuotaService:
 
     def _expire_stale_in_transaction(self, connection: Connection, at: datetime) -> None:
         rows = connection.execute(
-            select(QuotaReservationModel.id, QuotaReservationModel.turn_id)
+            select(QuotaReservationModel.id, QuotaReservationModel.turn_id, QuotaReservationModel.policy_snapshot_json)
             .where(
                 QuotaReservationModel.status.in_(_ACTIVE_RESERVATION_STATUSES),
                 QuotaReservationModel.lease_expires_at <= _db_time(at),
@@ -2371,6 +2398,8 @@ class QuotaService:
             .with_for_update()
         ).mappings().all()
         for row in rows:
+            if row["policy_snapshot_json"].get("fixed_turn"):
+                continue
             self.finish_in_transaction(
                 connection,
                 FinishTurn(

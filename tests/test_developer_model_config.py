@@ -87,12 +87,12 @@ async def test_model_preset_update_uses_full_runtime_validation(monkeypatch):
         "worker-fast",
         {
             "model": "deepseek-v4-flash",
-            "thinking": {"enabled": True, "effort": "high"},
             "generation": {"max_output_tokens": 16000},
         },
     )
 
     assert saved["model_presets"]["worker-fast"]["generation"]["max_output_tokens"] == 16000  # type: ignore[index]
+    assert "thinking" not in saved["model_presets"]["worker-fast"]  # type: ignore[index]
     assert result["preset"] == "worker-fast"
 
 

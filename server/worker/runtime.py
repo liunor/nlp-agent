@@ -151,6 +151,7 @@ async def run_worker() -> None:
     await asyncio.to_thread(repository.reconcile_capacity)
     await asyncio.to_thread(repository.reconcile_model_quota)
     engine = LangGraphAgentEngine()
+    engine.set_model_task_loader(repository.get_turn_task)
     publisher = RedisEventPublisher(redis, config)
     reliability = TurnReliabilityService()
     worker_id = f"{socket.gethostname()}-{id(redis)}"

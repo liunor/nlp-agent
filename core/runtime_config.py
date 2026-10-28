@@ -28,6 +28,10 @@ _RUNTIME_OVERRIDE_THREAD_LOCK = threading.Lock()
 def _compatible_overrides(value: dict[str, Any]) -> dict[str, Any]:
     """Drop obsolete or reserved overrides while preserving unrelated UI state."""
     override = deepcopy(value)
+    presets = override.get("model_presets")
+    if isinstance(presets, dict):
+        from core.model_runtime.editor import editable_presets
+        override["model_presets"] = editable_presets(presets)
     profiles = override.get("worker_profiles")
     if isinstance(profiles, dict):
         for name in RESERVED_WORKER_PROFILES:
@@ -73,7 +77,7 @@ def load_runtime_overrides() -> dict[str, Any]:
         value = yaml.safe_load(file) or {}
     if not isinstance(value, dict):
         raise ValueError(f"runtime override must be a mapping: {OVERRIDE_PATH}")
-    return value
+    return _compatible_overrides(value)
 
 
 @contextmanager
@@ -107,7 +111,7 @@ def runtime_overrides_transaction() -> Iterator[dict[str, Any]]:
 def save_runtime_overrides(overrides: dict[str, Any]) -> None:
     """Atomically persist UI-managed overrides without rewriting the commented base YAML."""
     OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    rendered = yaml.safe_dump(overrides, allow_unicode=True, sort_keys=False)
+    rendered = yaml.safe_dump(_compatible_overrides(overrides), allow_unicode=True, sort_keys=False)
     fd, name = tempfile.mkstemp(prefix="runtime-overrides-", suffix=".yaml", dir=OVERRIDE_PATH.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:

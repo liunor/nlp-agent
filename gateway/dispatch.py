@@ -9,6 +9,7 @@ from typing import Protocol
 
 from core.learning import ExerciseState, KnowledgeBookContext, LearningContext, LearningProgress, TeachingMaterials
 from core.session_context import SessionContext
+from core.model_runtime.snapshot import ModelExecutionSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +38,17 @@ class TurnTask:
     model_profile: str | None = None
     thinking_enabled: bool = True
     authorization: ExecutionAuthorizationContext | None = None
+    model_snapshot: ModelExecutionSnapshot | None = None
     reservation_id: str | None = None
     quota_reservation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.model_snapshot is not None:
+            self.model_snapshot.require_owner(user_id=self.context.user_id, workspace_id=self.context.workspace_id, session_id=self.context.session_id, turn_id=self.turn_id)
+            if self.thinking_enabled != (self.model_snapshot.level.value != "quick"):
+                raise ValueError("Legacy thinking flag does not match execution snapshot")
+            if self.model_profile != self.model_snapshot.profile_name:
+                raise ValueError("Model profile does not match execution snapshot")
 
 
 def require_durable_quota_reservation(

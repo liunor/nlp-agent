@@ -81,11 +81,15 @@ class FencedTurnExecutor:
                 lease_s=self._lease_s,
                 user_id=task.context.user_id,
                 workspace_id=task.context.workspace_id,
+                task=task,
             )
             if isinstance(generation, CancelledTurnClaim):
                 await unit_of_work.commit()
                 raise TurnCancellationRequested(task.turn_id)
             if generation is None:
+                # claim_turn may have finalized a durable cancellation. Its
+                # terminal state and quota release must survive this early exit.
+                await unit_of_work.commit()
                 return False
             if task.authorization is None:
                 raise PermissionError("worker task lacks authorization context")
@@ -93,17 +97,27 @@ class FencedTurnExecutor:
                 raise PermissionError("worker authorization user mismatch")
             if task.authorization.workspace_id != task.context.workspace_id:
                 raise PermissionError("worker task workspace mismatch")
-            principal = await rbac_service.principal_for_user_id(
-                unit_of_work.session, task.authorization.submitter_user_id
-            )
-            if principal.authorization_version != task.authorization.authorization_version:
-                raise PermissionError("submitter authorization has changed")
-            if task.authorization.workspace_id != task.context.workspace_id:
-                raise PermissionError("worker authorization workspace mismatch")
-            authorization_service.require(
-                principal, Permission.AGENT_TURN_SUBMIT,
-                workspace_id=task.authorization.workspace_id,
-            )
+            try:
+                principal = await rbac_service.principal_for_user_id(
+                    unit_of_work.session, task.authorization.submitter_user_id
+                )
+                if principal.authorization_version != task.authorization.authorization_version:
+                    raise PermissionError("submitter authorization has changed")
+                if task.authorization.workspace_id != task.context.workspace_id:
+                    raise PermissionError("worker authorization workspace mismatch")
+                authorization_service.require(
+                    principal, Permission.AGENT_TURN_SUBMIT,
+                    workspace_id=task.authorization.workspace_id,
+                )
+            except PermissionError:
+                rejected = await self._reliability.reject_revoked_task(
+                    unit_of_work.session, task=task, generation=generation,
+                    worker_id=self._worker_id,
+                )
+                if not rejected:
+                    raise
+                await unit_of_work.commit()
+                return True
             await rbac_service.audit(
                 unit_of_work.session, actor_user_id=principal.user_id,
                 target_user_id=None, decision="allow", reason_code="worker_turn_authorized",

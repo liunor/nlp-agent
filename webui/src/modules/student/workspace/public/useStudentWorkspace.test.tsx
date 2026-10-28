@@ -3,11 +3,12 @@ import type { ServerEvent, SessionSummary, TurnRecord } from "@/shared/types";
 import { useStudentWorkspace } from "./useStudentWorkspace";
 import { api, AUTH_EXPIRED_EVENT } from "@/platform/http/api";
 import { AuthProvider } from "@/platform/auth/AuthContext";
+import type { SettingsRuntime } from "@/shared/types";
 
-const runtime = {
+const runtime: SettingsRuntime = {
   default_model_profile: "deepseek",
   model_profiles: {
-    deepseek: { label: "DeepSeek", provider: "deepseek", available: true },
+    deepseek: { label: "DeepSeek", provider: "deepseek", available: true, supported_levels: ["quick", "light", "deep", "extreme"] },
     qwen: { label: "Qwen", provider: "dashscope", available: true },
   },
 };
@@ -130,6 +131,22 @@ describe("useStudentWorkspace settings", () => {
     expect(ensureAuthMock.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.listTurns).mock.invocationCallOrder[0]);
   });
 
+  it("does not restore a delayed settings GET while logout is still pending", async () => {
+    let finishSettings!: (value: Awaited<ReturnType<typeof api.getSettings>>) => void;
+    let finishLogout!: () => void;
+    getSettingsMock.mockReturnValueOnce(new Promise((resolve) => { finishSettings = resolve; }));
+    vi.mocked(api.logout).mockReturnValueOnce(new Promise((resolve) => { finishLogout = resolve; }));
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(getSettingsMock).toHaveBeenCalled());
+    let leaving!: Promise<void>;
+    act(() => { leaving = result.current.logout(); });
+    await act(async () => finishSettings({ preferences: { settings: { thinking_level: "extreme" } }, runtime }));
+    expect(result.current.settings.thinking_level).toBe("light");
+    await act(async () => { await result.current.patchSettings({ thinking_level: "deep" }); });
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    await act(async () => { finishLogout(); await leaving; });
+  });
+
   it("rolls back optimistic settings and exposes a visible error on network failure", async () => {
     vi.mocked(api.updateSettings).mockRejectedValueOnce(new Error("offline"));
     const { result } = renderHook(() => useStudentWorkspace());
@@ -139,6 +156,40 @@ describe("useStudentWorkspace settings", () => {
 
     expect(result.current.settings.theme).toBe("system");
     expect(result.current.settingsError).toContain("offline");
+  });
+
+  it("blocks every send while the selected level is being saved and rolls back failure", async () => {
+    let fail!: (reason: Error) => void;
+    vi.mocked(api.updateSettings).mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+    let save!: Promise<void>;
+    await act(async () => {
+      save = result.current.patchSettings({ thinking_level: "extreme" });
+      await result.current.send("不能抢在保存前发送");
+    });
+    expect(sendChatMock).not.toHaveBeenCalled();
+    expect(createSessionMock).not.toHaveBeenCalled();
+    expect(result.current.selectionPending).toBe(true);
+    await act(async () => { fail(new Error("offline")); await save; });
+    expect(result.current.selectionPending).toBe(false);
+    expect(result.current.settings.thinking_level).toBe("light");
+    await act(async () => { await result.current.send("使用已恢复的等级"); });
+    expect(sendChatMock.mock.calls[0][6]).toBe("light");
+  });
+
+  it("abandons a deferred first send when its captured level changes before session creation", async () => {
+    let finishSession!: (session: { session_id: string; user_id: string; workspace_id: string; channel: string }) => void;
+    createSessionMock.mockReturnValueOnce(new Promise((resolve) => { finishSession = resolve; }));
+    vi.mocked(api.updateSettings).mockResolvedValueOnce({ settings: { thinking_level: "deep" } });
+    const { result } = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(result.current.bootStatus).toBe("ready"));
+    let sending!: Promise<void>;
+    act(() => { sending = result.current.send("旧等级不应在稍后发送"); });
+    await act(async () => { await result.current.patchSettings({ thinking_level: "deep" }); });
+    await act(async () => { finishSession({ session_id: "session-new", user_id: "user", workspace_id: "default", channel: "web" }); await sending; });
+    expect(sendChatMock).not.toHaveBeenCalled();
+    expect(result.current.messages).toEqual([]);
   });
 
   it("rolls consecutive failed writes back to the last confirmed settings", async () => {
@@ -572,7 +623,7 @@ describe("useStudentWorkspace settings", () => {
     expect(result.current.messages.some((message) => message.role === "user")).toBe(true);
   });
 
-  it("sends the reasoning preference with each new chat turn", async () => {
+  it("sends the selected level independently of reasoning visibility", async () => {
     getSettingsMock.mockResolvedValue({
       preferences: { settings: { show_reasoning: false } },
       runtime,
@@ -583,7 +634,7 @@ describe("useStudentWorkspace settings", () => {
 
     await act(async () => { await result.current.send("解释 Transformer"); });
 
-    expect(sendChatMock.mock.calls[0][6]).toBe(false);
+    expect(sendChatMock.mock.calls[0][6]).toBe("light");
   });
 
   it("starts a fresh backend session after a new chat while a previous creation is in flight", async () => {

@@ -269,7 +269,15 @@ def resolve_usage_attribution() -> UsageAttributionContext:
         purpose: UsagePurpose = override_purpose or (
             "worker" if telem.worker_id else "coordinator"
         )
+        from core.model_runtime.selection import current_model_snapshot
+        snapshot = current_model_snapshot()
+        reservation_id = None
+        if snapshot is not None and snapshot.billing is not None:
+            snapshot.require_owner(user_id=telem.user_id, workspace_id=telem.workspace_id,
+                session_id=telem.session_id, turn_id=telem.turn_id)
+            reservation_id = snapshot.billing.reservation_id
         return UsageAttributionContext(
+            reservation_id=reservation_id,
             request_id=telem.request_id,
             user_id=telem.user_id,
             workspace_id=telem.workspace_id,

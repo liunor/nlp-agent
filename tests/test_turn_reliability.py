@@ -15,6 +15,46 @@ from server.infrastructure.mysql.models import TurnCancellationModel, TurnModel
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tampered", [False, True])
+async def test_revoked_dispatch_releases_only_the_matching_durable_task(monkeypatch, tampered):
+    from dataclasses import replace
+    from core.learning import TeachingMaterials
+    from core.session_context import SessionContext
+    from gateway.dispatch import ExecutionAuthorizationContext, TurnTask
+    from gateway.redis_transport import TurnTaskCodec
+
+    task = TurnTask(
+        context=SessionContext(session_id="s", user_id="u"), turn_id="t", content="hi",
+        learning_context=None, learning_progress=None, exercise_state=None,
+        teaching_materials=TeachingMaterials(), guided_session_id=None, exercise_session_id=None,
+        authorization=ExecutionAuthorizationContext("u", "default", 3),
+    )
+    turn = TurnModel(id="t", conversation_id="s", workspace_id="default", user_id="u",
+                     input_text="hi", status="running", claim_generation=2, claimed_by="w",
+                     learning_state_json={"dispatch_task": TurnTaskCodec.dumps(task)})
+    session = AsyncMock()
+    session.scalar.return_value = turn
+    finish = AsyncMock()
+    monkeypatch.setattr("server.application.turn_reliability.finish_async", finish)
+    delivered = replace(task, authorization=ExecutionAuthorizationContext("u", "default", 9)) if tampered else task
+
+    rejected = await TurnReliabilityService().reject_revoked_task(
+        session, task=delivered, generation=2, worker_id="w"
+    )
+
+    assert rejected is (not tampered)
+    if tampered:
+        assert turn.status == "running"
+        finish.assert_not_awaited()
+    else:
+        assert turn.status == "failed"
+        assert turn.claimed_by is None
+        assert turn.lease_expires_at is None
+        assert turn.error_kind == "authorization_revoked"
+        finish.assert_awaited_once_with(session, turn)
+
+
+@pytest.mark.asyncio
 async def test_claim_increments_generation_and_heartbeat_requires_the_same_owner() -> None:
     turn = TurnModel(id="turn-1", conversation_id="conversation-1", workspace_id="workspace-1", user_id="user-1", input_text="hi", status="accepted", claim_generation=0)
     session = AsyncMock()
@@ -147,7 +187,8 @@ async def test_recovery_repairs_legacy_unleased_zombie_and_preserves_sequence(mo
     latest_sequence = MagicMock()
     latest_sequence.first.return_value = 7
     session.scalars.side_effect = [scalars, latest_sequence]
-    session.scalar.return_value = {"turn_id": "turn-1", "task": "encoded-turn-task"}
+    recovered_dispatch = {"turn_id": "turn-1", "task": "encoded-turn-task"}
+    session.scalar.side_effect = [recovered_dispatch, turn, None]
     service = TurnReliabilityService()
 
     recovered = await service.recover_stuck_turns(session)
@@ -183,7 +224,7 @@ async def test_recovery_repairs_legacy_unleased_zombie_and_preserves_sequence(mo
 
 
 @pytest.mark.asyncio
-async def test_recovery_exhaustion_converges_turn_to_failed_terminal_state() -> None:
+async def test_recovery_exhaustion_converges_turn_to_failed_terminal_state(monkeypatch) -> None:
     expired_at = utc_now() - timedelta(seconds=1)
     turn = TurnModel(
         id="turn-1",
@@ -202,6 +243,8 @@ async def test_recovery_exhaustion_converges_turn_to_failed_terminal_state() -> 
     scalars = MagicMock()
     scalars.all.return_value = [turn]
     session.scalars.return_value = scalars
+    finish = AsyncMock()
+    monkeypatch.setattr("server.application.turn_reliability.finish_async", finish)
 
     recovered = await TurnReliabilityService().recover_stuck_turns(
         session, max_retries=3
@@ -214,6 +257,7 @@ async def test_recovery_exhaustion_converges_turn_to_failed_terminal_state() -> 
     assert turn.claimed_by is None
     assert turn.heartbeat_at is None
     assert turn.lease_expires_at is None
+    finish.assert_awaited_once_with(session, turn)
 
 
 @pytest.mark.asyncio

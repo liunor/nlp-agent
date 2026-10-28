@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from core.model_runtime.snapshot import ModelExecutionSnapshot
 
 
 _current_model_profile: ContextVar[str | None] = ContextVar(
@@ -13,6 +14,20 @@ _current_model_profile: ContextVar[str | None] = ContextVar(
 _current_thinking_enabled: ContextVar[bool | None] = ContextVar(
     "current_thinking_enabled", default=None
 )
+_current_model_snapshot: ContextVar[ModelExecutionSnapshot | None] = ContextVar("current_model_snapshot", default=None)
+
+
+def current_model_snapshot() -> ModelExecutionSnapshot | None:
+    return _current_model_snapshot.get()
+
+
+@contextmanager
+def bind_model_snapshot(snapshot: ModelExecutionSnapshot | None) -> Iterator[None]:
+    token = _current_model_snapshot.set(snapshot)
+    try:
+        yield
+    finally:
+        _current_model_snapshot.reset(token)
 
 
 def current_model_profile() -> str | None:

@@ -16,6 +16,7 @@ import { useTurnHistory } from "../internal/turn-history";
 
 export function useStudentWorkspace() {
   const globalAuth = useOptionalAuth();
+  const [authRevision, setAuthRevision] = useState(0);
   const refreshAuthSession = globalAuth?.refreshSession;
   const {
     preferences,
@@ -27,7 +28,8 @@ export function useStudentWorkspace() {
     renameCategory,
     deleteCategory,
   } = usePreferencesController();
-  const { settings, settingsError, initializeSettings, patchSettings, resetSettings } = useSettingsController();
+  const settingsAccount = globalAuth ? (globalAuth.user?.user_id ?? null) : `embedded:${authRevision}`;
+  const { settings, settingsError, selectionPending, selectionSaving, setSelectionPreview, isSelectionReady, initializeSettings, patchSettings, resetSettings, clearSettings } = useSettingsController(settingsAccount);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const handleActiveSessionChange = useCallback((sessionId: string | null) => {
@@ -56,6 +58,7 @@ export function useStudentWorkspace() {
     deleteSession,
     renameSessionTitle,
   } = useSessionController({
+    accountKey: settingsAccount,
     preferences,
     persistPreferences,
     updateSessionMeta,
@@ -65,7 +68,6 @@ export function useStudentWorkspace() {
   const [modelProfiles, setModelProfiles] = useState<Record<string, RuntimeModelProfile>>({});
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [bootStatus, setBootStatus] = useState<"loading" | "ready" | "unauthenticated" | "error">("loading");
-  const [authRevision, setAuthRevision] = useState(0);
   const [error, setError] = useState("");
   const [socketStatus, setSocketStatus] = useState<"connecting" | "connected" | "reconnecting" | "offline">("connecting");
   const socketRef = useRef<StudentSocket | null>(null);
@@ -128,7 +130,7 @@ export function useStudentWorkspace() {
     [activeSessionRef, cancelledTurnIds, inFlightTurnIds, loadSessions, loadTurns, persistPreferences, setActiveSessionId, socketRef, updateSessionMeta],
   );
 
-  useWorkspaceBootstrap({
+  const cancelBootstrap = useWorkspaceBootstrap({
     authRevision,
     authProviderPresent: globalAuth !== null,
     initialSession: globalAuth?.user ?? undefined,
@@ -140,6 +142,23 @@ export function useStudentWorkspace() {
     setBootStatus,
     setError,
   });
+
+  useLayoutEffect(() => {
+    loadGenerationRef.current += 1;
+    activeSessionRef.current = null;
+    pendingRequests.current.clear();
+    inFlightTurnIds.current.clear();
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setSessions([]);
+      setActiveSessionId(null);
+      setMessages([]);
+      setAuthSession(null);
+      setRequestError(null);
+    });
+    return () => { active = false; };
+  }, [settingsAccount, activeSessionRef, setActiveSessionId, setSessions]);
 
   useEffect(() => {
     if (bootStatus !== "ready") return;
@@ -201,6 +220,8 @@ export function useStudentWorkspace() {
   }, [activeSessionId, freshSessionIdsRef, loadTurns]);
 
   const { send, cancel } = useTurnSender({
+    canSend: () => isSelectionReady(settings) && (!(modelProfiles[settings.model_profile]?.supported_levels?.length) || (modelProfiles[settings.model_profile]?.supported_levels ?? []).includes(settings.thinking_level)),
+    thinkingSupported: Boolean(modelProfiles[settings.model_profile]?.supported_levels?.length),
     activeSessionRef,
     socketRef,
     pendingRequests,
@@ -231,10 +252,14 @@ const authenticate = useCallback(async (username: string, password: string) => {
     setError("");
     setRequestError(null);
     setBootStatus("loading");
+    cancelBootstrap();
     setAuthRevision((current) => current + 1);
-  }, []);
+  }, [cancelBootstrap]);
 
   const logout = useCallback(async () => {
+    cancelBootstrap();
+    clearSettings();
+    setBootStatus("unauthenticated");
     clearImportedFiles(authSession?.user_id ?? null, workspaceId);
     try {
       if (globalAuth) await globalAuth.logout();
@@ -252,7 +277,7 @@ const authenticate = useCallback(async (username: string, password: string) => {
       // Redirect to login page
       window.location.href = "/";
     }
-  }, [authSession, globalAuth, setActiveSessionId, setSessions, workspaceId]);
+  }, [authSession, cancelBootstrap, clearSettings, globalAuth, setActiveSessionId, setSessions, workspaceId]);
 
   return {
     sessions,
@@ -266,7 +291,11 @@ const authenticate = useCallback(async (username: string, password: string) => {
     activeMeta,
     settings,
     modelProfiles,
+    supportedThinkingLevels: modelProfiles[settings.model_profile]?.supported_levels ?? [],
     settingsError,
+    selectionPending,
+    selectionSaving,
+    setSelectionPreview,
     bootStatus,
     error,
     requestError,

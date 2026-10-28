@@ -35,6 +35,7 @@ from server.quota.models import (
     QuotaGrantModel,
     QuotaLedgerEntryModel,
     QuotaPolicyModel,
+    QuotaReservationModel,
     QuotaProviderBillingModel,
     QuotaRoleCreditOperationModel,
     QuotaUsageArchiveBatchModel,
@@ -56,6 +57,7 @@ _REPLAY_ENTRY_TYPES = (
     "settle",
     "reconcile",
     "release",
+    "refund",
     "billing_adjustment",
 )
 _OWNER_TYPES = {"user", "workspace", "classroom"}
@@ -349,7 +351,14 @@ class QuotaOperationsService:
                 raise ValueError("billing discrepancy has no UsageEvent")
             reservation_id = usage["reservation_id"]
             bucket_ids: list[str] = []
-            if reservation_id:
+            reservation_snapshot = connection.execute(
+                select(QuotaReservationModel.policy_snapshot_json)
+                .where(QuotaReservationModel.id == reservation_id)
+            ).scalar_one_or_none() if reservation_id else None
+            # Provider costs remain auditable, but a fixed Turn has already
+            # charged its frozen tariff. Invoice corrections cannot reprice it.
+            fixed_turn = bool(reservation_snapshot and reservation_snapshot.get("fixed_turn"))
+            if reservation_id and not fixed_turn:
                 bucket_ids = list(
                     connection.execute(
                         select(QuotaLedgerEntryModel.bucket_id)
