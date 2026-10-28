@@ -23,13 +23,15 @@ from server.auth.dependencies import Principal, WriteClaims, get_db_session
 from server.classroom_join import service
 from server.classroom_join.schemas import (
     ApproveJoinRequest,
-    JoinRequestByCodeCreate,
+    JoinRequestByCodeCreate, 
     JoinRequestCreate,
     JoinRequestListResponse,
     JoinRequestResponse,
 )
 from server.infrastructure.mysql.models import ClassJoinRequestModel
 from server.rbac.service import rbac_service
+
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/classrooms", tags=["classroom-join-requests"])
 
@@ -125,6 +127,12 @@ async def submit_join_request_by_code(
     )
     return await _loaded_response(db, req.id)
 
+@router.get("/my-join-requests", response_model=JoinRequestListResponse)
+async def my_join_requests(principal: Principal, db: DbSession):
+    """当前用户查看自己的全部加入申请。"""
+    authorization_service.require(principal, Permission.CLASSROOM_JOIN_REQUEST_SUBMIT)
+    requests = await service.get_user_join_requests(db, principal.user_id)
+    return JoinRequestListResponse(items=[_to_response(r) for r in requests], total=len(requests))
 
 @router.post(
     "/{classroom_id}/join-requests",
@@ -256,11 +264,3 @@ async def reject_join_request(
     )
     req = result.scalar_one()
     return _to_response(req)
-
-
-@router.get("/my-join-requests", response_model=JoinRequestListResponse)
-async def my_join_requests(principal: Principal, db: DbSession):
-    """当前用户查看自己的全部加入申请。"""
-    authorization_service.require(principal, Permission.CLASSROOM_JOIN_REQUEST_SUBMIT)
-    requests = await service.get_user_join_requests(db, principal.user_id)
-    return JoinRequestListResponse(items=[_to_response(r) for r in requests], total=len(requests))
