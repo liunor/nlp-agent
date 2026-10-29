@@ -115,9 +115,11 @@ const AssistantMessage = memo(function AssistantMessage({ message, showReasoning
 const UserMessage = memo(function UserMessage({
   message,
   onPreviewImage,
+  onDismissRejected,
 }: {
   message: ChatMessage;
   onPreviewImage?: (att: { url: string; alt?: string }) => void;
+  onDismissRejected?: (id: string) => void;
 }) {
   let content = message.content;
   const attachments = [...(message.attachments || [])];
@@ -172,16 +174,20 @@ const UserMessage = memo(function UserMessage({
         </div>
       )}
       {content}
+      {message.status === "failed" && <div role="status">发送失败，问题未提交。请复制内容后重试。
+        {onDismissRejected && <button type="button" onClick={() => onDismissRejected(message.id)}>移除未提交的问题</button>}
+      </div>}
     </div>
   );
 });
 
-export function MessageList({ messages, loading, showReasoning, streamRenderIntervalMs = 30, onFollowUp }: {
+export function MessageList({ messages, loading, showReasoning, streamRenderIntervalMs = 30, onFollowUp, onDismissRejected }: {
   messages: ChatMessage[];
   loading: boolean;
   showReasoning: boolean;
   streamRenderIntervalMs?: number;
   onFollowUp: (text: string) => void;
+  onDismissRejected?: (id: string) => void;
 }) {
   const [previewAttachment, setPreviewAttachment] = useState<{ url: string; alt?: string } | null>(null);
 
@@ -203,6 +209,7 @@ export function MessageList({ messages, loading, showReasoning, streamRenderInte
           key={message.id}
           message={message}
           onPreviewImage={setPreviewAttachment}
+          onDismissRejected={onDismissRejected}
         />
       ) : (
         <AssistantMessage

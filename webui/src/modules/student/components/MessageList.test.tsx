@@ -11,6 +11,11 @@ const message = (id: string, content: string): ChatMessage => ({ id, turnId: id,
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 
 describe("MessageList session updates", () => {
+  it("shows the original question and marks a rejected message as unsent", () => {
+    render(<MessageList messages={[{ ...message("rejected", "我的问题"), status: "failed" }]} loading={false} showReasoning={false} onFollowUp={vi.fn()} />);
+    expect(screen.getByText("我的问题")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("问题未提交");
+  });
   afterEach(() => {
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: originalScrollIntoView });
   });

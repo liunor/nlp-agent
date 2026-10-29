@@ -13,6 +13,7 @@ import { useSessionController } from "../internal/session-controller";
 import { useSettingsController } from "../internal/settings-controller";
 import { useTurnSender } from "../internal/send-turn";
 import { useTurnHistory } from "../internal/turn-history";
+import { clearRejectedDrafts, removeRejectedDraft } from "../internal/rejected-drafts";
 
 export function useStudentWorkspace() {
   const globalAuth = useOptionalAuth();
@@ -72,23 +73,25 @@ export function useStudentWorkspace() {
   const [socketStatus, setSocketStatus] = useState<"connecting" | "connected" | "reconnecting" | "offline">("connecting");
   const socketRef = useRef<StudentSocket | null>(null);
   const pendingRequests = useRef(new Map<string, string>());
+  const pendingDrafts = useRef(new Map<string, { sessionId: string; owner: string | null; message: ChatMessage }>());
   const inFlightTurnIds = useRef(new Set<string>());
   const cancelledTurnIds = useRef(new Set<string>());
   const loadGenerationRef = useRef(0);
 
+  const authenticatedUserId = globalAuth !== null
+    ? globalAuth.user?.user_id ?? null
+    : authSession?.user_id ?? null;
   const loadTurns = useTurnHistory({
     activeSessionRef,
     socketRef,
     preferencesRef,
     inFlightTurnIds,
     loadGenerationRef,
+    draftOwner: authenticatedUserId,
     setMessages,
     setLoadingMessages,
     updateSessionMeta,
   });
-  const authenticatedUserId = globalAuth !== null
-    ? globalAuth.user?.user_id ?? null
-    : authSession?.user_id ?? null;
   const previousAuthenticatedUserIdRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     const previousUserId = previousAuthenticatedUserIdRef.current;
@@ -96,6 +99,7 @@ export function useStudentWorkspace() {
       invalidateSessionLoads();
       loadGenerationRef.current += 1;
       pendingRequests.current.clear();
+      pendingDrafts.current.clear();
       inFlightTurnIds.current.clear();
       cancelledTurnIds.current.clear();
       freshSessionIdsRef.current.clear();
@@ -117,6 +121,7 @@ export function useStudentWorkspace() {
       socketRef,
       activeSessionRef,
       pendingRequests,
+      pendingDrafts,
       inFlightTurnIds,
       cancelledTurnIds,
       setMessages,
@@ -147,6 +152,7 @@ export function useStudentWorkspace() {
     loadGenerationRef.current += 1;
     activeSessionRef.current = null;
     pendingRequests.current.clear();
+    pendingDrafts.current.clear();
     inFlightTurnIds.current.clear();
     let active = true;
     queueMicrotask(() => {
@@ -225,6 +231,8 @@ export function useStudentWorkspace() {
     activeSessionRef,
     socketRef,
     pendingRequests,
+    pendingDrafts,
+    draftOwner: authenticatedUserId,
     inFlightTurnIds,
     cancelledTurnIds,
     preferences,
@@ -258,6 +266,7 @@ const authenticate = useCallback(async (username: string, password: string) => {
 
   const logout = useCallback(async () => {
     cancelBootstrap();
+    clearRejectedDrafts(authenticatedUserId);
     clearSettings();
     setBootStatus("unauthenticated");
     clearImportedFiles(authSession?.user_id ?? null, workspaceId);
@@ -277,7 +286,7 @@ const authenticate = useCallback(async (username: string, password: string) => {
       // Redirect to login page
       window.location.href = "/";
     }
-  }, [authSession, cancelBootstrap, clearSettings, globalAuth, setActiveSessionId, setSessions, workspaceId]);
+  }, [authSession, authenticatedUserId, cancelBootstrap, clearSettings, globalAuth, setActiveSessionId, setSessions, workspaceId]);
 
   return {
     sessions,
@@ -300,6 +309,10 @@ const authenticate = useCallback(async (username: string, password: string) => {
     error,
     requestError,
     clearRequestError: () => setRequestError(null),
+    dismissRejected: (id: string) => {
+      if (activeSessionId) removeRejectedDraft(authenticatedUserId, activeSessionId, id);
+      setMessages((current) => current.filter((message) => message.id !== id || message.status !== "failed"));
+    },
     socketStatus,
     loadingMessages,
     isRunning,

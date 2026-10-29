@@ -3,6 +3,28 @@ import type { ChatMessage, LearningPreferences, ServerEvent } from "@/shared/typ
 import { createRealtimeEventHandler } from "./realtime-reducer";
 
 describe("realtime acknowledgement reconciliation", () => {
+  it("keeps a rejected question visible and marks it unsent without changing other drafts", () => {
+    let messages: ChatMessage[] = [
+      { id: "request-1:user", turnId: "request-1", role: "user", content: "原来的问题", createdAt: "2026-10-29T00:00:00Z" },
+      { id: "request-2:user", turnId: "request-2", role: "user", content: "另一个问题", createdAt: "2026-10-29T00:00:00Z" },
+    ];
+    const setRequestError = vi.fn();
+    const handler = createRealtimeEventHandler({
+      socketRef: { current: null }, activeSessionRef: { current: "session-1" },
+      pendingRequests: { current: new Map([["request-1", "request-1:user"]]) },
+      inFlightTurnIds: { current: new Set(["request-1"]) },
+      setMessages: (update) => { messages = typeof update === "function" ? update(messages) : update; },
+      setActiveSessionId: vi.fn(), setRequestError, persistPreferences: vi.fn(),
+      updateSessionMeta: vi.fn(), loadSessions: vi.fn(async () => []), loadTurns: vi.fn(async () => undefined),
+    });
+    handler({ v: "1", type: "command.error", request_id: "request-1", session_id: "session-1",
+      timestamp: new Date().toISOString(), payload: { code: "quota_request_limit" } });
+    expect(messages[0]).toMatchObject({ content: "原来的问题", status: "failed" });
+    expect(messages[1].content).toBe("另一个问题");
+    expect(messages[1].status).toBeUndefined();
+    expect(setRequestError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("单次额度限制") }));
+  });
+
   it("keeps live deltas when status changes instead of overwriting them with stale HTTP history", () => {
     let messages: ChatMessage[] = [];
     const loadTurns = vi.fn(async () => undefined);
