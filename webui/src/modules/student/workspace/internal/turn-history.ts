@@ -7,6 +7,7 @@ import {
 } from "@/platform/storage/learning-preferences";
 import { StudentSocket } from "@/platform/realtime/client";
 import type { ChatMessage, LearningPreferences, SessionLearningMeta, TurnRecord } from "@/shared/types";
+import { readRejectedDrafts } from "./rejected-drafts";
 
 function restoredAttachments(turn: TurnRecord): ChatMessage["attachments"] {
   const attachments = [];
@@ -57,6 +58,7 @@ interface TurnHistoryOptions {
   preferencesRef: MutableRefObject<LearningPreferences>;
   inFlightTurnIds: MutableRefObject<Set<string>>;
   loadGenerationRef: MutableRefObject<number>;
+  draftOwner?: string | null;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setLoadingMessages: Dispatch<SetStateAction<boolean>>;
   updateSessionMeta: (sessionId: string, patch: Partial<SessionLearningMeta>) => void;
@@ -68,6 +70,7 @@ export function useTurnHistory({
   preferencesRef,
   inFlightTurnIds,
   loadGenerationRef,
+  draftOwner = null,
   setMessages,
   setLoadingMessages,
   updateSessionMeta,
@@ -81,10 +84,13 @@ export function useTurnHistory({
       const turns = [...response.items].reverse();
       const restored = turns.flatMap(turnMessages);
       const restoredTurnIds = new Set(turns.map((turn) => turn.turn_id));
+      const failedDrafts = readRejectedDrafts(draftOwner, sessionId);
       for (const turnId of restoredTurnIds) inFlightTurnIds.current.delete(turnId);
       setMessages((current) => [
         ...restored,
-        ...current.filter((message) => inFlightTurnIds.current.has(message.turnId) && !restoredTurnIds.has(message.turnId)),
+        ...failedDrafts,
+        ...current.filter((message) => inFlightTurnIds.current.has(message.turnId) && !restoredTurnIds.has(message.turnId)
+          && !failedDrafts.some((draft) => draft.id === message.id)),
       ]);
       const first = turns[0];
       const lastAnswer = [...turns].reverse().find((turn) => turn.final_text)?.final_text;
@@ -101,5 +107,5 @@ export function useTurnHistory({
     } finally {
       if (generation === loadGenerationRef.current) setLoadingMessages(false);
     }
-  }, [activeSessionRef, inFlightTurnIds, loadGenerationRef, preferencesRef, setLoadingMessages, setMessages, socketRef, updateSessionMeta]);
+  }, [activeSessionRef, draftOwner, inFlightTurnIds, loadGenerationRef, preferencesRef, setLoadingMessages, setMessages, socketRef, updateSessionMeta]);
 }

@@ -604,6 +604,7 @@ export function StudentWorkspace({
                   workspace.settings.stream_render_interval_ms
                 }
                 onFollowUp={(text) => void workspace.send(text)}
+                onDismissRejected={workspace.dismissRejected}
               />
             </div>
             <ScrollToBottom

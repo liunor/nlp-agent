@@ -86,6 +86,7 @@ describe("useStudentWorkspace settings", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     dark = false;
     onChange = undefined;
     socketConnectMock.mockReset();
@@ -112,6 +113,35 @@ describe("useStudentWorkspace settings", () => {
     socketCancelMock.mockClear();
     renameSessionMock.mockClear();
     socketConstructMock.mockClear();
+  });
+
+  it("restores a rejected question after changing sessions and remounting, and removes it only on request", async () => {
+    ensureAuthMock.mockResolvedValue({ user_id: "owner-a", csrf_token: "x", workspace_ids: ["default"] });
+    const first = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(first.result.current.bootStatus).toBe("ready"));
+    act(() => first.result.current.selectSession("session-a"));
+    await waitFor(() => expect(first.result.current.loadingMessages).toBe(false));
+    await act(async () => { await first.result.current.send("保留的问题"); });
+    const requestId = sendChatMock.mock.calls[0][2] as string;
+    act(() => socketEventHandlerRef.current?.({ v: "1", type: "command.error", request_id: requestId,
+      session_id: "session-a", timestamp: new Date().toISOString(), payload: { code: "quota_request_limit" } }));
+    expect(first.result.current.messages).toEqual(expect.arrayContaining([expect.objectContaining({ content: "保留的问题", status: "failed" })]));
+    act(() => first.result.current.selectSession("session-b"));
+    await waitFor(() => expect(first.result.current.loadingMessages).toBe(false));
+    expect(first.result.current.messages).toEqual([]);
+    act(() => first.result.current.selectSession("session-a"));
+    await waitFor(() => expect(first.result.current.messages).toEqual(expect.arrayContaining([expect.objectContaining({ content: "保留的问题", status: "failed" })])));
+    first.unmount();
+    const second = renderHook(() => useStudentWorkspace());
+    await waitFor(() => expect(second.result.current.bootStatus).toBe("ready"));
+    act(() => second.result.current.selectSession("session-a"));
+    await waitFor(() => expect(second.result.current.messages).toEqual(expect.arrayContaining([expect.objectContaining({ content: "保留的问题", status: "failed" })])));
+    const id = second.result.current.messages.find((item) => item.status === "failed")!.id;
+    act(() => second.result.current.dismissRejected(id));
+    act(() => second.result.current.selectSession("session-b"));
+    act(() => second.result.current.selectSession("session-a"));
+    await waitFor(() => expect(second.result.current.loadingMessages).toBe(false));
+    expect(second.result.current.messages).toEqual([]);
   });
 
   it("keeps default WS tickets and refreshes auth before restoring history on ready", async () => {

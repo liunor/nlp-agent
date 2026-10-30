@@ -127,7 +127,9 @@ export function ThinkingLevelControl({ value, supportedLevels, disabled = false,
       <div className="thinking-level-labels">{levels.map((level) => <button key={level} type="button" disabled={disabled || !supportedLevels.includes(level)}
         aria-pressed={draft === level} title={!supportedLevels.includes(level) ? "当前模型不支持" : undefined}
         onClick={() => { preview(level); draftRef.current = level; commit(); }}>{labels[level]}</button>)}</div>
-      {!available && <p className="thinking-level-unavailable" role="status">当前模型不支持{labels[value]}，请选择其他等级</p>}
+      {!available && <p className="thinking-level-unavailable" role="status">{supportedLevels.length === 0
+        ? "当前模型不支持思考程度，请切换支持该功能的模型。"
+        : `当前模型不支持${labels[value]}，请选择其他等级`}</p>}
     </div>, document.body)}
   </>;
 }

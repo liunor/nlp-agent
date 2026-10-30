@@ -11,6 +11,8 @@ interface TurnSenderOptions {
   activeSessionRef: MutableRefObject<string | null>;
   socketRef: MutableRefObject<StudentSocket | null>;
   pendingRequests: MutableRefObject<Map<string, string>>;
+  pendingDrafts: MutableRefObject<Map<string, { sessionId: string; owner: string | null; message: ChatMessage }>>;
+  draftOwner?: string | null;
   inFlightTurnIds: MutableRefObject<Set<string>>;
   cancelledTurnIds: MutableRefObject<Set<string>>;
   preferences: LearningPreferences;
@@ -28,6 +30,8 @@ export function useTurnSender({
   activeSessionRef,
   socketRef,
   pendingRequests,
+  pendingDrafts,
+  draftOwner = null,
   inFlightTurnIds,
   cancelledTurnIds,
   preferences,
@@ -57,7 +61,7 @@ export function useTurnSender({
     }
     const optimisticId = `${requestId}:user`;
     pendingRequests.current.set(requestId, optimisticId);
-    setMessages((current) => [...current, {
+    const optimisticMessage: ChatMessage = {
       id: optimisticId,
       turnId: requestId,
       role: "user",
@@ -72,7 +76,9 @@ export function useTurnSender({
         status: "ready" as const,
       })) } : {}),
       createdAt: new Date().toISOString(),
-    }]);
+    };
+    pendingDrafts.current.set(requestId, { sessionId, owner: draftOwner, message: optimisticMessage });
+    setMessages((current) => [...current, optimisticMessage]);
     const currentMeta = preferences.sessions[sessionId];
     if (!currentMeta?.topic) {
       updateSessionMeta(sessionId, { topic: preferences.context.topic_name });
@@ -88,7 +94,7 @@ export function useTurnSender({
       thinkingSupported ? settings.thinking_level : undefined,
       knowledgeBookContext,
     );
-  }, [activeSessionRef, createBackendSession, inFlightTurnIds, pendingRequests, preferences.context, preferences.sessions, setMessages, setRequestError, settings.model_profile, settings.thinking_level, canSend, thinkingSupported, socketRef, updateSessionMeta]);
+  }, [activeSessionRef, createBackendSession, inFlightTurnIds, pendingRequests, pendingDrafts, draftOwner, preferences.context, preferences.sessions, setMessages, setRequestError, settings.model_profile, settings.thinking_level, canSend, thinkingSupported, socketRef, updateSessionMeta]);
 
   const cancel = useCallback(() => {
     const running = [...messages].reverse().find((message) => message.role === "assistant" && ["accepted", "running"].includes(message.status ?? ""));

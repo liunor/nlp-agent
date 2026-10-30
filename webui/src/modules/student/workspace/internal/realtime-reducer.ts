@@ -2,6 +2,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
 import { extractConcepts } from "@/platform/storage/learning-preferences";
 import { StudentSocket } from "@/platform/realtime/client";
+import { saveRejectedDraft } from "./rejected-drafts";
 import type {
   ActivityItem,
   ChatMessage,
@@ -29,7 +30,7 @@ function quotaErrorMessage(event: ServerEvent): string | undefined {
     quota_daily_exhausted: "今日额度已用尽",
     quota_weekly_exhausted: "本周额度已用尽",
     quota_workspace_exhausted: "工作区额度已用尽",
-    quota_request_limit: "本次请求预计超过单次额度限制",
+    quota_request_limit: "本次请求超过单次额度限制，请选择更低的思考程度，或联系开发者调整额度。",
     quota_concurrency_limit: "当前并发请求已达上限，请稍后重试",
     quota_model_not_allowed: "当前模型不在可用额度范围内",
     quota_policy_not_found: "暂未配置可用额度策略，请联系开发者",
@@ -68,6 +69,7 @@ interface RealtimeHandlerOptions {
   socketRef: MutableRefObject<StudentSocket | null>;
   activeSessionRef: MutableRefObject<string | null>;
   pendingRequests: MutableRefObject<Map<string, string>>;
+  pendingDrafts?: MutableRefObject<Map<string, { sessionId: string; owner: string | null; message: ChatMessage }>>;
   inFlightTurnIds: MutableRefObject<Set<string>>;
   cancelledTurnIds?: MutableRefObject<Set<string>>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
@@ -83,6 +85,7 @@ export function createRealtimeEventHandler({
   socketRef,
   activeSessionRef,
   pendingRequests,
+  pendingDrafts,
   inFlightTurnIds,
   cancelledTurnIds,
   setMessages,
@@ -100,8 +103,15 @@ export function createRealtimeEventHandler({
     if (event.type === "command.error") {
       const requestId = event.request_id ?? (pendingRequests.current.size === 1 ? pendingRequests.current.keys().next().value : undefined);
       if (requestId) {
+        const draft = pendingDrafts?.current.get(requestId);
+        if (draft && event.payload.code !== "not_found") {
+          saveRejectedDraft(draft.owner, draft.sessionId, { ...draft.message, status: "failed" });
+        }
+        pendingDrafts?.current.delete(requestId);
         const optimisticId = pendingRequests.current.get(requestId);
-        if (optimisticId) setMessages((current) => current.filter((message) => message.id !== optimisticId));
+        if (optimisticId) setMessages((current) => current.map((message) => message.id === optimisticId
+          ? { ...message, status: "failed" }
+          : message));
         pendingRequests.current.delete(requestId);
         inFlightTurnIds.current.delete(requestId);
       }
@@ -130,6 +140,7 @@ export function createRealtimeEventHandler({
     }
     if (["session.created", "session.deleted", "session.updated"].includes(event.type)) void loadSessions();
     if (event.type === "command.ack" && event.request_id) {
+      pendingDrafts?.current.delete(event.request_id);
       const optimisticId = pendingRequests.current.get(event.request_id);
       if (optimisticId) {
         if (event.turn_id) { inFlightTurnIds.current.delete(event.request_id); inFlightTurnIds.current.add(event.turn_id); }

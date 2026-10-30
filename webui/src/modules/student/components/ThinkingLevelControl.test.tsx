@@ -66,6 +66,13 @@ it("does not silently change an unsupported saved selection", () => {
   expect(props.onChange).toHaveBeenCalledExactlyOnceWith("deep");
 });
 
+it("suggests switching models when no thinking level is supported", () => {
+  render(<ThinkingLevelControl {...props} supportedLevels={[]} />);
+  fireEvent.click(screen.getByRole("button", { name: "思考程度：轻度" }));
+  expect(screen.getByRole("status")).toHaveTextContent("请切换支持该功能的模型");
+  expect(screen.getByRole("slider")).toBeDisabled();
+});
+
 it("releases a preview when an empty history response remounts the composer", () => {
   const { unmount } = render(<ThinkingLevelControl {...props} />);
   fireEvent.click(screen.getByRole("button", { name: "思考程度：轻度" }));
