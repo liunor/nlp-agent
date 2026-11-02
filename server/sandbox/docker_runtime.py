@@ -327,14 +327,21 @@ class DockerRuntimeAdapter:
         if not 1 <= timeout_seconds <= 60:
             raise ValueError("timeout_seconds must be between 1 and 60")
         name = f"nova-scratch-{uuid4().hex}"
-        command = list(self.create_command(name=name, claim_nonce=""))
-        image_name = self.config.image
-        command = [c for c in command if c != image_name]
-        if "--detach" in command:
-            command.remove("--detach")
-        command[2:3] = ["--rm"]
-        command.insert(2, "--interactive")
-        command.append(image_name)
+        command = [
+            "docker", "run", 
+            "--interactive", 
+            "--rm",
+            "--name", name,
+            "--runtime", self.config.runtime,
+            "--read-only", "--network", "none", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges=true",
+            "--memory", self.config.memory, "--cpus", self.config.cpus,
+            "--pids-limit", str(self.config.pids_limit), "--shm-size", self.config.shm_size,
+            "--tmpfs", f"/workspace:rw,nosuid,nodev,size={self.config.workspace_size}",
+            "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.config.tmp_size}",
+            "--tmpfs", "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m",
+        ]
+        command.extend(["--user", "10001:10001", self.config.image])
         command.extend(("python", "/opt/nova-runtime/nova_runtime.py", "scratch", "--timeout-seconds", str(timeout_seconds), "--output-limit-bytes", str(output_limit_bytes)))
         process = await asyncio.create_subprocess_exec(
             *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
