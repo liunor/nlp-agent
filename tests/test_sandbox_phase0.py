@@ -109,10 +109,10 @@ def test_environment_contract_enforces_one_owner_and_session_bound_leases() -> N
     owner_unique = [
         constraint
         for constraint in SandboxEnvironmentModel.__table__.constraints
-        if getattr(constraint, "name", None) == "uq_nlp_sandbox_environments_owner"
+        if getattr(constraint, "name", None) == "uq_nlp_sandbox_environments_owner_workspace"
     ]
     assert len(owner_unique) == 1
-    assert {column.name for column in owner_unique[0].columns} == {"owner_user_id"}
+    assert {column.name for column in owner_unique[0].columns} == {"owner_user_id", "workspace_id"}
     assert "auth_session_id" in SandboxLeaseModel.__table__.c
     assert "generation" in SandboxLeaseModel.__table__.c
     owner_link = [

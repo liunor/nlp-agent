@@ -14,8 +14,7 @@ import math
 import time
 import os
 import tempfile
-import threading
-from server.storage.filesystem_bridge import mount_user_filesystem
+import threadingfrom server.storage.filesystem_bridge import mount_user_filesystem
 
 from uuid import uuid4
 from sqlalchemy import exists, select, text
@@ -593,6 +592,7 @@ class WarmPoolManager:
             self._trace("sandbox.manager.claim.files_bridge", path=mount_path)
             def _start_fuse():
                 try:
+                    from server.storage.filesystem_bridge import mount_user_filesystem
                     mount_user_filesystem(
                         user_id=scope.owner_user_id, 
                         workspace_id=scope.workspace_id, 
