@@ -568,7 +568,7 @@ class WarmPoolManager:
 
     async def claim(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
         self._trace("sandbox.manager.claim.started", lease_id=lease_id)
-        ENABLE_FILES_BRIDGE = True 
+        ENABLE_FILES_BRIDGE = os.getenv("SANDBOX_ENABLE_FILES_BRIDGE", "false").lower() == "true" 
         if ENABLE_FILES_BRIDGE:
             base_dir = os.getenv("SANDBOX_BRIDGE_BASE_DIR", os.path.join(tempfile.gettempdir(), "sandbox_bridge"))
             mount_path = os.path.join(base_dir, scope.owner_user_id, scope.workspace_id)
