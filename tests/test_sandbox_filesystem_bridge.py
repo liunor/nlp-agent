@@ -1,4 +1,5 @@
 import pytest
+fuse = pytest.importorskip("fuse")
 from unittest.mock import AsyncMock, patch
 import stat
 import errno

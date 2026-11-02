@@ -160,7 +160,8 @@ class DockerRuntimeAdapter:
         ]
         if files_mount:
             cmd.extend(["--mount", f"type=bind,source={files_mount},target=/files"])
-        cmd.extend(["--user", "10001:10001", self.config.image])
+        cmd.extend(["--user", "10001:10001"])
+        cmd.append(self.config.image)
         return tuple(cmd)
 
     def create_l1_command(self, *, name: str, files_mount: str | None = None) -> tuple[str, ...]:
@@ -327,8 +328,12 @@ class DockerRuntimeAdapter:
             raise ValueError("timeout_seconds must be between 1 and 60")
         name = f"nova-scratch-{uuid4().hex}"
         command = list(self.create_command(name=name, claim_nonce=""))
+        image_name = self.config.image
+        if image_name in command:
+            command.remove(image_name)
         command[2:3] = ["--rm"]
         command.insert(2, "--interactive")
+        command.append(image_name)
         command.extend(("python", "/opt/nova-runtime/nova_runtime.py", "scratch", "--timeout-seconds", str(timeout_seconds), "--output-limit-bytes", str(output_limit_bytes)))
         process = await asyncio.create_subprocess_exec(
             *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
