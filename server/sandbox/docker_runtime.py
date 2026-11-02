@@ -329,8 +329,9 @@ class DockerRuntimeAdapter:
         name = f"nova-scratch-{uuid4().hex}"
         command = list(self.create_command(name=name, claim_nonce=""))
         image_name = self.config.image
-        if image_name in command:
-            command.remove(image_name)
+        command = [c for c in command if c != image_name]
+        if "--detach" in command:
+            command.remove("--detach")
         command[2:3] = ["--rm"]
         command.insert(2, "--interactive")
         command.append(image_name)
