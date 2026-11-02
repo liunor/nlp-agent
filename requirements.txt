@@ -30,3 +30,4 @@ structlog>=24.0
 uvicorn[standard]>=0.35
 pytest>=8.0
 pytest-asyncio>=0.24
+fusepy>=3.0.1

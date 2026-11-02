@@ -476,7 +476,7 @@ def test_create_one_keeps_delayed_kernel_alive_until_ready() -> None:
         async def image_cached(self) -> bool:
             return False
 
-        async def create_ready(self, *, name: str, claim_nonce: str) -> str:
+        async def create_ready(self, *, name: str, claim_nonce: str,files_mount: str) -> str:
             assert name.startswith("nova-runtime-")
             assert claim_nonce == ""
             return "external-runtime-1"
@@ -540,7 +540,7 @@ def test_create_one_starts_cached_l1_before_retrying_kernel_readiness() -> None:
             self.calls.append(("image_cached", ""))
             return True
 
-        async def create_l1(self, *, name: str) -> str:
+        async def create_l1(self, *, name: str, files_mount: str) -> str:
             self.calls.append(("create_l1", name))
             return "external-runtime-l1"
 

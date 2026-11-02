@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import math
 import time
+import os
 from uuid import uuid4
 
 from sqlalchemy import exists, select, text
@@ -566,6 +567,26 @@ class WarmPoolManager:
 
     async def claim(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
         self._trace("sandbox.manager.claim.started", lease_id=lease_id)
+        ENABLE_FILES_BRIDGE = True 
+        if ENABLE_FILES_BRIDGE:
+            mount_path = f"/data/bridge/{scope.owner_user_id}/{scope.workspace_id}"
+            os.makedirs(mount_path, exist_ok=True)
+            try:
+                os.chown(mount_path, 10001, 10001)
+            except PermissionError:
+                pass
+            runtime_id = str(uuid4())
+            self._trace("sandbox.manager.claim.files_bridge", path=mount_path)
+            await self._create_one(runtime_id=runtime_id, files_mount=mount_path)   
+            async with self._session_factory.begin() as session:
+                runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
+                if runtime is None or runtime.state == RuntimeState.FAILED:
+                    return None
+                lease = await session.get(SandboxLeaseModel, lease_id, with_for_update=True)
+                if lease and lease.user_id == scope.owner_user_id and lease.workspace_id == scope.workspace_id:
+                    lease.runtime_instance_id = runtime.id
+                    return RuntimeClaim(runtime=runtime, nonce=None)   
+            return None
         claim = await self._claim_once(scope, lease_id=lease_id)
         if claim is None:
             await self.refill()
@@ -1072,7 +1093,7 @@ class WarmPoolManager:
             runtime.state = RuntimeState.FAILED
             runtime.failure_reason = "pool.create.timeout"
 
-    async def _create_one(self, *, runtime_id: str | None = None) -> None:
+    async def _create_one(self, *, runtime_id: str | None = None,files_mount: str | None = None) -> None:
         if runtime_id is None:
             runtime_id = str(uuid4())
             async with self._session_factory.begin() as session:
@@ -1089,7 +1110,7 @@ class WarmPoolManager:
             self._faults.fail_if_configured("docker.create")
             name = runtime_container_name(runtime_id)
             if await self._docker.image_cached():
-                external_id = await self._docker.create_l1(name=name)
+                external_id = await self._docker.create_l1(name=name, files_mount=files_mount)
                 async with self._session_factory.begin() as session:
                     runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
                     if runtime is not None:
@@ -1099,7 +1120,7 @@ class WarmPoolManager:
             else:
                 # L0 fallback: Docker resolves the pinned digest, then this
                 # slot proceeds through the same L3 readiness gate.
-                external_id = await self._docker.create_ready(name=name, claim_nonce="")
+                external_id = await self._docker.create_ready(name=name, claim_nonce="",files_mount=files_mount)
             readiness = await wait_for_kernel_ready(self._docker, external_id)
             if not readiness:
                 self._trace(

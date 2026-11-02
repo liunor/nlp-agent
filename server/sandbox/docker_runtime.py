@@ -138,8 +138,9 @@ class DockerRuntimeAdapter:
             "disk_free_gb": disk.free / (1024**3),
         }
 
-    def create_command(self, *, name: str, claim_nonce: str) -> tuple[str, ...]:
-        return (
+    def create_command(self, *, name: str, claim_nonce: str, files_mount: str | None = None
+                       ) -> tuple[str, ...]:
+        cmd = [
             "docker", "run", "--detach", "--name", name,
             "--runtime", self.config.runtime,
             # Scope the managed marker to this deployment namespace.  A
@@ -156,13 +157,17 @@ class DockerRuntimeAdapter:
             "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.config.tmp_size}",
             "--tmpfs", "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m",
             "--user", "10001:10001", self.config.image,
-        )
+        ]
+        if files_mount:
+            cmd.extend(["--mount", f"type=bind,source={files_mount},target=/files"])
+        cmd.extend(["--user", "10001:10001", self.config.image])
+        return tuple(cmd)
 
-    def create_l1_command(self, *, name: str) -> tuple[str, ...]:
-        command = list(self.create_command(name=name, claim_nonce=""))
+    def create_l1_command(self, *, name: str, files_mount: str | None = None) -> tuple[str, ...]:
+        command = list(self.create_command(name=name, claim_nonce="",files_mount=files_mount))
         command[1] = "create"
         command.remove("--detach")
-        return tuple(command)
+        return  tuple(command)
 
     async def image_cached(self) -> bool:
         process = await asyncio.create_subprocess_exec(
@@ -172,23 +177,27 @@ class DockerRuntimeAdapter:
         await _wait(process)
         return process.returncode == 0
 
-    async def create_l1(self, *, name: str) -> str:
-        process = await asyncio.create_subprocess_exec(*self.create_l1_command(name=name), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    async def create_l1(self, *, name: str, files_mount: str | None = None) -> str:
+        process = await asyncio.create_subprocess_exec(
+            *self.create_l1_command(name=name, files_mount=files_mount), 
+            stdout=asyncio.subprocess.PIPE, 
+            stderr=asyncio.subprocess.PIPE
+        )
         stdout, stderr = await _communicate(process)
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
         return stdout.decode("utf-8", "replace").strip()
-
+    
     async def start_l1(self, external_runtime_id: str) -> None:
         process = await asyncio.create_subprocess_exec("docker", "start", external_runtime_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, stderr = await _communicate(process)
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
 
-    async def create_ready(self, *, name: str, claim_nonce: str) -> str:
+    async def create_ready(self, *, name: str, claim_nonce: str, files_mount: str | None = None) -> str:
         del claim_nonce  # persisted only as a DB hash; never put it in Docker metadata.
         process = await asyncio.create_subprocess_exec(
-            *self.create_command(name=name, claim_nonce=""),
+            *self.create_command(name=name, claim_nonce="",files_mount=files_mount),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

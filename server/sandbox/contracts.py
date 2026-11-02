@@ -37,8 +37,8 @@ class SandboxScope:
 
     @property
     def environment_owner_key(self) -> str:
-        return self.owner_user_id
-
+        return f"{self.owner_user_id}:{self.workspace_id}"
+    
     @classmethod
     def from_authenticated_request(
         cls,

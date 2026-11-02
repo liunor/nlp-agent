@@ -27,6 +27,7 @@ RUN apt-get update \
         libx11-6 \
         libxext6 \
         libglib2.0-0 \
+        libfuse2 \
         libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
