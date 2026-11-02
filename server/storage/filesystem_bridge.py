@@ -127,7 +127,9 @@ class StorageFuseBridge(Operations):
 
 
 def mount_user_filesystem(user_id: str, workspace_id: str, session_factory):
-    mount_point = f"/data/bridge/{user_id}/{workspace_id}"
+    base_dir = os.path.join(tempfile.gettempdir(), "sandbox_bridge")
+    mount_point = os.path.join(base_dir, user_id, workspace_id)
+    
     os.makedirs(mount_point, exist_ok=True)
     
     try:

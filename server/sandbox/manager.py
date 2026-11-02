@@ -569,9 +569,10 @@ class WarmPoolManager:
         self._trace("sandbox.manager.claim.started", lease_id=lease_id)
         ENABLE_FILES_BRIDGE = True 
         if ENABLE_FILES_BRIDGE:
-            mount_path = f"/data/bridge/{scope.owner_user_id}/{scope.workspace_id}"
-            os.makedirs(mount_path, exist_ok=True)
+            base_dir = os.path.join(tempfile.gettempdir(), "sandbox_bridge")
+            mount_path = os.path.join(base_dir, scope.owner_user_id, scope.workspace_id)
             try:
+                os.makedirs(mount_path, exist_ok=True)
                 os.chown(mount_path, 10001, 10001)
             except PermissionError:
                 pass
