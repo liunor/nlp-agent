@@ -67,13 +67,14 @@ class SandboxLifecycleService:
         # Avoid an absent-row gap lock; MySQL can deadlock two first creators.
         environment = await session.scalar(
             select(SandboxEnvironmentModel).where(
-                SandboxEnvironmentModel.owner_user_id == scope.owner_user_id
+                SandboxEnvironmentModel.owner_user_id == scope.owner_user_id,
+                SandboxEnvironmentModel.workspace_id == scope.workspace_id
             )
         )
         if environment is not None:
             environment = await session.scalar(
                 select(SandboxEnvironmentModel)
-                .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id)
+                .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id, SandboxEnvironmentModel.workspace_id == scope.workspace_id)
                 .with_for_update()
             )
             return environment
@@ -82,6 +83,7 @@ class SandboxLifecycleService:
                 environment = SandboxEnvironmentModel(
                     id=str(uuid4()),
                     owner_user_id=scope.owner_user_id,
+                    workspace_id=scope.workspace_id, 
                     resource_profile_id=resource_profile_id,
                     profile_revision=1,
                     status="ready",
@@ -93,7 +95,7 @@ class SandboxLifecycleService:
         except IntegrityError:
             environment = await session.scalar(
                 select(SandboxEnvironmentModel)
-                .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id)
+                .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id, SandboxEnvironmentModel.workspace_id == scope.workspace_id)
                 .with_for_update()
             )
             if environment is None:

@@ -1263,7 +1263,7 @@ class SandboxEnvironmentModel(TimestampedModel, Base):
 
     __tablename__ = "nlp_sandbox_environments"
     __table_args__ = (
-        UniqueConstraint("owner_user_id", name="uq_nlp_sandbox_environments_owner"),
+        UniqueConstraint("owner_user_id", "workspace_id", name="uq_nlp_sandbox_environments_owner"),
         UniqueConstraint("id", "owner_user_id", name="uq_nlp_sandbox_environments_id_owner"),
         Index("ix_nlp_sandbox_environments_status_deadline", "status", "lease_deadline_at"),
     )
@@ -1271,6 +1271,9 @@ class SandboxEnvironmentModel(TimestampedModel, Base):
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     owner_user_id: Mapped[str] = mapped_column(
         UUID, ForeignKey("nlp_users.id", ondelete="RESTRICT"), nullable=False
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="RESTRICT"), nullable=False
     )
     resource_profile_id: Mapped[str] = mapped_column(String(64), nullable=False, server_default="python-base")
     profile_revision: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False, server_default="1")

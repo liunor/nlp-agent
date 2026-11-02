@@ -16,6 +16,7 @@ class StorageFuseBridge(Operations):
         self.workspace_id = workspace_id
         self.session_factory = session_factory
         self._fh_map = {}
+        self._next_fh = 1
 
     def _run_async(self, coro):
         try:
@@ -109,7 +110,8 @@ class StorageFuseBridge(Operations):
         if not os.path.exists(real_path):
             raise OSError(errno.ENOENT, f"File not found: {real_path}")
 
-        fh = len(self._fh_map) + 1
+        fh = self._next_fh
+        self._next_fh += 1
         self._fh_map[fh] = open(real_path, 'rb')
         return fh
 

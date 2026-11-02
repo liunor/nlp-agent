@@ -14,8 +14,10 @@ import math
 import time
 import os
 import tempfile
-from uuid import uuid4
+import threading
+from server.storage.filesystem_bridge import mount_user_filesystem
 
+from uuid import uuid4
 from sqlalchemy import exists, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from configs.settings import settings
@@ -578,7 +580,41 @@ class WarmPoolManager:
             except PermissionError:
                 pass
             runtime_id = str(uuid4())
+            async with self._session_factory.begin() as session:
+                session.add(
+                    SandboxRuntimeInstanceModel(
+                        id=runtime_id,
+                        runtime_kind=self._runtime_kind,
+                        image_digest=self._docker.image_digest,
+                        resource_profile_id=self._resource_profile_id,
+                        state="creating",
+                    )
+                )
             self._trace("sandbox.manager.claim.files_bridge", path=mount_path)
+            def _start_fuse():
+                try:
+                    mount_user_filesystem(
+                        user_id=scope.owner_user_id, 
+                        workspace_id=scope.workspace_id, 
+                        session_factory=self._session_factory
+                    )
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).error(f"FUSE mount failed: {e}")
+          
+            fuse_thread = threading.Thread(target=_start_fuse, daemon=True)
+            fuse_thread.start()
+            deadline = time.time() + 3.0
+            is_mounted = False
+            while time.time() < deadline:
+                if os.path.ismount(mount_path):
+                    is_mounted = True
+                    break
+                time.sleep(0.1)
+            if not is_mounted:
+                self._trace("sandbox.manager.claim.files_bridge.mount_timeout", path=mount_path)
+                return None
+
             await self._create_one(runtime_id=runtime_id, files_mount=mount_path)   
             async with self._session_factory.begin() as session:
                 runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
@@ -587,6 +623,8 @@ class WarmPoolManager:
                 lease = await session.get(SandboxLeaseModel, lease_id, with_for_update=True)
                 if lease and lease.user_id == scope.owner_user_id and lease.workspace_id == scope.workspace_id:
                     lease.runtime_instance_id = runtime.id
+                    runtime.state = RuntimeState.ASSIGNED
+                    runtime.environment_id = lease.environment_id 
                     return RuntimeClaim(runtime=runtime, nonce=None)   
             return None
         claim = await self._claim_once(scope, lease_id=lease_id)

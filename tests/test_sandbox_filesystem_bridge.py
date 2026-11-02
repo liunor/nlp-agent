@@ -12,6 +12,12 @@ import errno
 from server.storage.filesystem_bridge import StorageFuseBridge
 from server.infrastructure.mysql.models import UserFileModel
 
+@pytest.fixture(autouse=True)
+def mock_fuse_and_env(monkeypatch):
+    with patch("server.sandbox.manager.mount_user_filesystem") as mock_mount:
+        with patch("os.path.ismount", return_value=True):
+            yield mock_mount
+
 class FakeResult:
     def __init__(self, value):
         self.value = value
