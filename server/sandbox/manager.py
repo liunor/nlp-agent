@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import math
 import time
 import os
+import tempfile
 from uuid import uuid4
 
 from sqlalchemy import exists, select, text
@@ -569,7 +570,7 @@ class WarmPoolManager:
         self._trace("sandbox.manager.claim.started", lease_id=lease_id)
         ENABLE_FILES_BRIDGE = True 
         if ENABLE_FILES_BRIDGE:
-            base_dir = os.path.join(tempfile.gettempdir(), "sandbox_bridge")
+            base_dir = os.getenv("SANDBOX_BRIDGE_BASE_DIR", os.path.join(tempfile.gettempdir(), "sandbox_bridge"))
             mount_path = os.path.join(base_dir, scope.owner_user_id, scope.workspace_id)
             try:
                 os.makedirs(mount_path, exist_ok=True)

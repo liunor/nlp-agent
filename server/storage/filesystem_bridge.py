@@ -3,6 +3,7 @@ import subprocess
 import stat
 import errno
 import asyncio
+import tempfile
 from fuse import Operations, FUSE
 from sqlalchemy import select
 
