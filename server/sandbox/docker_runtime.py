@@ -138,8 +138,7 @@ class DockerRuntimeAdapter:
             "disk_free_gb": disk.free / (1024**3),
         }
 
-    def create_command(self, *, name: str, claim_nonce: str, files_mount: str | None = None
-                       ) -> tuple[str, ...]:
+    def create_command(self, *, name: str, claim_nonce: str, files_mount: str | None = None  ) -> tuple[str, ...]:
         cmd = [
             "docker", "run", "--detach", "--name", name,
             "--runtime", self.config.runtime,
@@ -156,7 +155,6 @@ class DockerRuntimeAdapter:
             "--tmpfs", f"/workspace:rw,nosuid,nodev,size={self.config.workspace_size}",
             "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.config.tmp_size}",
             "--tmpfs", "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m",
-            "--user", "10001:10001", self.config.image,
         ]
         if files_mount:
             cmd.extend(["--mount", f"type=bind,source={files_mount},target=/files"])
