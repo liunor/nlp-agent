@@ -12,6 +12,9 @@ pytestmark = pytest.mark.skipif(
 
 
 async def test_real_personal_file_is_readable_and_readonly_in_runsc(monkeypatch, tmp_path):
+    # This test needs root to mount FUSE. Keep its log directory away from
+    # the unprivileged benchmark and integration tests that follow it.
+    monkeypatch.setenv("NLP_AGENT_LOG_DIR", str(tmp_path / "logs"))
     import asyncio
     from sqlalchemy import select
     from configs.settings import settings

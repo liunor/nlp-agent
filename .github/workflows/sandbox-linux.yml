@@ -192,11 +192,12 @@ jobs:
       - name: Verify real MySQL files through FUSE and gVisor
         env:
           RUN_SANDBOX_FILES_BRIDGE_INTEGRATION: '1'
+          NLP_AGENT_LOG_DIR: ${{ runner.temp }}/files-bridge-logs
         run: |
           sudo apt-get update
           sudo apt-get install -y libfuse2t64
           test -c /dev/fuse || sudo modprobe fuse
-          sudo --preserve-env=PATH,NLP_AGENT_DATABASE_URL,NLP_AGENT_SANDBOX_MANAGER_TEST_IMAGE,RUN_SANDBOX_FILES_BRIDGE_INTEGRATION \
+          sudo --preserve-env=PATH,NLP_AGENT_DATABASE_URL,NLP_AGENT_SANDBOX_MANAGER_TEST_IMAGE,RUN_SANDBOX_FILES_BRIDGE_INTEGRATION,NLP_AGENT_LOG_DIR \
             "$(command -v python)" -m pytest tests/test_sandbox_files_bridge_linux.py -vv -s -o faulthandler_timeout=60
       - name: Benchmark real Manager claim path
         run: |
