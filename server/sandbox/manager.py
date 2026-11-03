@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import math
 import time
-from uuid import uuid4
+import os
 
+from uuid import uuid4
 from sqlalchemy import exists, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from configs.settings import settings
@@ -26,7 +27,7 @@ from .host_budget import host_budget_lock
 from .optimization import AdaptivePoolPolicy, host_capacity_allows_create, refill_count
 from .runtime_adapters import SandboxRuntimeAdapter
 from .runtime_profile import DEFAULT_SANDBOX_RUNTIME_LIMITS
-from .warm_pool import RuntimeClaim, RuntimeState, reconcile_runtime_ids, runtime_container_name, warm_pool_service
+from .warm_pool import claim_nonce_hash, RuntimeClaim, RuntimeState, reconcile_runtime_ids, runtime_container_name, warm_pool_service
 
 
 SCRATCH_ADMISSION_TIMEOUT_SECONDS = 5.0
@@ -244,6 +245,9 @@ class WarmPoolManager:
             max(1, int(settings.NLP_AGENT_SANDBOX_EXECUTION_CONCURRENCY_MAX))
         )
         self._last_metrics_sample_at = 0.0
+        from server.storage.files_mounts import StorageMountRegistry
+        self._files_mounts = StorageMountRegistry(session_factory)
+        self._files_claim_lock = asyncio.Lock()
 
     @staticmethod
     def _trace(name: str, **payload: object) -> None:
@@ -407,6 +411,9 @@ class WarmPoolManager:
         caller's shared host-budget lock.  The per-profile MySQL advisory lock
         is released before Docker I/O; the host lock is deliberately not.
         """
+        if os.getenv("SANDBOX_ENABLE_FILES_BRIDGE", "false").lower() == "true":
+            await self._retire_unbound_runtimes()
+            return 0
         self._trace("sandbox.manager.refill.started", profile=self._resource_profile_id)
         lock_name = f"nova.sandbox.pool.{self._resource_profile_id}"
         reserved_runtime_ids: list[str] = []
@@ -461,6 +468,20 @@ class WarmPoolManager:
             created=len(reserved_runtime_ids),
         )
         return len(reserved_runtime_ids)
+
+    async def _retire_unbound_runtimes(self) -> int:
+        """Bridge containers cannot consume unscoped warm slots."""
+        async with self._session_factory.begin() as session:
+            rows = list((await session.scalars(select(SandboxRuntimeInstanceModel).where(
+                SandboxRuntimeInstanceModel.resource_profile_id == self._resource_profile_id,
+                SandboxRuntimeInstanceModel.state == RuntimeState.READY_UNBOUND,
+                SandboxRuntimeInstanceModel.environment_id.is_(None),
+            ).with_for_update())).all())
+            for runtime in rows:
+                runtime.state = RuntimeState.DRAINING
+                runtime.failure_reason = "files_bridge.replaced_unbound_pool"
+        await self._retry_draining_runtimes()
+        return len(rows)
 
     async def _host_resources(self) -> dict[str, float | None] | None:
         probe = getattr(self._docker, "host_resources", None)
@@ -566,6 +587,8 @@ class WarmPoolManager:
 
     async def claim(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
         self._trace("sandbox.manager.claim.started", lease_id=lease_id)
+        if os.getenv("SANDBOX_ENABLE_FILES_BRIDGE", "false").lower() == "true":
+            return await self._claim_files_runtime(scope, lease_id=lease_id)
         claim = await self._claim_once(scope, lease_id=lease_id)
         if claim is None:
             await self.refill()
@@ -579,6 +602,110 @@ class WarmPoolManager:
             return claim
         await self.destroy_runtime(claim.runtime.id, reason="kernel.not.ready")
         return None
+
+    async def _files_claim_context(self, session, scope, lease_id):
+        lease = await session.get(SandboxLeaseModel, lease_id, with_for_update=True)
+        if (lease is None or lease.user_id != scope.owner_user_id
+            or lease.auth_session_id != scope.auth_session_id
+            or lease.workspace_id != scope.workspace_id or lease.state != "active"):
+            return None
+        auth = await session.get(SessionModel, lease.auth_session_id)
+        user = await session.get(UserModel, lease.user_id)
+        if not auth_lifecycle_allows_execution(lease=lease, auth_session=auth, user=user,
+            scope_generation=scope.generation, scope_workspace_id=scope.workspace_id, now=_utc_now()):
+            return None
+        environment = await session.get(SandboxEnvironmentModel, lease.environment_id, with_for_update=True)
+        if (environment is None or environment.owner_user_id != scope.owner_user_id
+            or environment.workspace_id != scope.workspace_id or environment.generation != lease.generation):
+            return None
+        return lease, environment
+
+    @staticmethod
+    def _bind_files_runtime(runtime, lease, environment):
+        nonce = str(uuid4())
+        runtime.state = RuntimeState.ASSIGNED
+        runtime.environment_id = environment.id
+        runtime.generation = environment.generation
+        runtime.claim_nonce_hash = claim_nonce_hash(nonce)
+        environment.active_runtime_id = runtime.id
+        lease.runtime_instance_id = runtime.id
+        return RuntimeClaim(runtime=runtime, nonce=nonce)
+
+    async def _claim_files_runtime(self, scope, *, lease_id):
+        if self._require_host_lock and not settings.NLP_AGENT_SANDBOX_HOST_LOCK_FILE.strip():
+            raise RuntimeError("Sandbox Manager host capacity lock is required for files bridge")
+        # Serializes provisioning with pool refills and orphan reconciliation,
+        # including other deployments on this Docker host.
+        async with host_budget_lock(settings.NLP_AGENT_SANDBOX_HOST_LOCK_FILE):
+            async with self._files_claim_lock:
+                existing = None
+                async with self._session_factory.begin() as session:
+                    context = await self._files_claim_context(session, scope, lease_id)
+                    if context is None:
+                        return None
+                    lease, environment = context
+                    environment_id = environment.id
+                    if environment.active_runtime_id:
+                        existing = await session.get(SandboxRuntimeInstanceModel,
+                            environment.active_runtime_id, with_for_update=True)
+                        if (existing is None or existing.state != RuntimeState.ASSIGNED
+                            or existing.environment_id != environment.id
+                            or existing.generation != environment.generation):
+                            existing = None
+                if existing is not None:
+                    check_mount = getattr(self._docker, "files_mount_matches", None)
+                    mount_path = self._files_mounts.path_for(scope.owner_user_id, scope.workspace_id)
+                    if (self._files_mounts.owns(scope.owner_user_id, scope.workspace_id)
+                        and check_mount is not None and await check_mount(existing.external_runtime_id, mount_path)):
+                        async with self._session_factory.begin() as session:
+                            context = await self._files_claim_context(session, scope, lease_id)
+                            runtime = await session.get(SandboxRuntimeInstanceModel, existing.id, with_for_update=True)
+                            if (context is not None and runtime is not None
+                                and runtime.state == RuntimeState.ASSIGNED
+                                and context[1].active_runtime_id == runtime.id
+                                and runtime.generation == context[1].generation):
+                                return self._bind_files_runtime(runtime, *context)
+                        return None
+                    await self.destroy_runtime(existing.id, reason="files_bridge.mount.changed", refill=False)
+                await self._retire_unbound_runtimes()
+                async with self._session_factory.begin() as session:
+                    counts = await self._counts(session)
+                if (counts.total_count >= settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX
+                    or not await self._host_allows_create(total_count=counts.total_count)):
+                    return None
+                try:
+                    mount_path = await self._files_mounts.ensure(scope.owner_user_id, scope.workspace_id)
+                except (OSError, RuntimeError) as error:
+                    self._trace("sandbox.manager.claim.files_bridge.mount_failed", error=str(error))
+                    return None
+                runtime_id = str(uuid4())
+                async with self._session_factory.begin() as session:
+                    session.add(SandboxRuntimeInstanceModel(id=runtime_id,
+                        runtime_kind=self._runtime_kind, image_digest=self._docker.image_digest,
+                        resource_profile_id=self._resource_profile_id, environment_id=environment_id, state="creating"))
+                await self._create_one(runtime_id=runtime_id, files_mount=mount_path)
+                async with self._session_factory.begin() as session:
+                    context = await self._files_claim_context(session, scope, lease_id)
+                    runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
+                    if (context is not None and runtime is not None
+                        and runtime.state == "creating" and runtime.external_runtime_id):
+                        lease, environment = context
+                        return self._bind_files_runtime(runtime, lease, environment)
+                    external_id = None if runtime is None else runtime.external_runtime_id
+                    if runtime is not None:
+                        runtime.state = RuntimeState.DRAINING
+                        runtime.failure_reason = "files_bridge.claim.invalidated"
+                if external_id:
+                    try:
+                        await self._docker.destroy(external_id)
+                    except Exception:
+                        # Reconciliation retries DRAINING rows.
+                        return None
+                async with self._session_factory.begin() as session:
+                    runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
+                    if runtime is not None:
+                        runtime.state = RuntimeState.DESTROYED
+                return None
 
     async def _claim_once(self, scope: SandboxScope, *, lease_id: str) -> RuntimeClaim | None:
         async with self._session_factory.begin() as session:
@@ -863,7 +990,35 @@ class WarmPoolManager:
             except Exception as error:
                 self._trace("sandbox.manager.metrics.record_failed", error=type(error).__name__)
         await self.refill()
+        await self._reap_files_mounts()
         return actions
+
+    async def _reap_files_mounts(self) -> None:
+        async with host_budget_lock(settings.NLP_AGENT_SANDBOX_HOST_LOCK_FILE):
+            async with self._files_claim_lock:
+                await self._reap_files_mounts_locked()
+
+    async def _reap_files_mounts_locked(self) -> None:
+        if not self._files_mounts.has_mounts:
+            return
+        # Count provisioned-but-not-yet-claimed containers as live users of
+        # the mount as well; they are reserved with environment_id already set.
+        async with self._session_factory() as session:
+            active = (await session.execute(select(
+                SandboxEnvironmentModel.owner_user_id, SandboxEnvironmentModel.workspace_id,
+            ).join(SandboxRuntimeInstanceModel,
+                SandboxRuntimeInstanceModel.environment_id == SandboxEnvironmentModel.id).where(
+                SandboxRuntimeInstanceModel.state.in_(
+                    ("creating", "created", RuntimeState.CLAIMING, RuntimeState.ASSIGNED, RuntimeState.DRAINING)
+                ),
+            ))).all()
+        await self._files_mounts.reap(set(active))
+
+    async def close(self) -> None:
+        try:
+            await self._files_mounts.reap(set())
+        except Exception as error:
+            self._trace("sandbox.manager.files_bridge.close_failed", error=str(error))
 
     async def _destroy_unleased_assigned_runtimes(self) -> None:
         """Lease expiry is authoritative even when an Outbox message was missed."""
@@ -1072,7 +1227,7 @@ class WarmPoolManager:
             runtime.state = RuntimeState.FAILED
             runtime.failure_reason = "pool.create.timeout"
 
-    async def _create_one(self, *, runtime_id: str | None = None) -> None:
+    async def _create_one(self, *, runtime_id: str | None = None,files_mount: str | None = None) -> None:
         if runtime_id is None:
             runtime_id = str(uuid4())
             async with self._session_factory.begin() as session:
@@ -1089,7 +1244,7 @@ class WarmPoolManager:
             self._faults.fail_if_configured("docker.create")
             name = runtime_container_name(runtime_id)
             if await self._docker.image_cached():
-                external_id = await self._docker.create_l1(name=name)
+                external_id = await self._docker.create_l1(name=name, **({"files_mount": files_mount} if files_mount else {}))
                 async with self._session_factory.begin() as session:
                     runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
                     if runtime is not None:
@@ -1099,7 +1254,7 @@ class WarmPoolManager:
             else:
                 # L0 fallback: Docker resolves the pinned digest, then this
                 # slot proceeds through the same L3 readiness gate.
-                external_id = await self._docker.create_ready(name=name, claim_nonce="")
+                external_id = await self._docker.create_ready(name=name, claim_nonce="", **({"files_mount": files_mount} if files_mount else {}))
             readiness = await wait_for_kernel_ready(self._docker, external_id)
             if not readiness:
                 self._trace(
@@ -1123,7 +1278,7 @@ class WarmPoolManager:
             runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
             if runtime is not None and runtime.state in {"creating", "created"}:
                 runtime.external_runtime_id = external_id
-                runtime.state = ready_state_after_kernel_check(runtime.state)
+                runtime.state = "creating" if files_mount else ready_state_after_kernel_check(runtime.state)
                 runtime.last_heartbeat_at = _utc_now()
 
     @dataclass(frozen=True)

@@ -138,8 +138,8 @@ class DockerRuntimeAdapter:
             "disk_free_gb": disk.free / (1024**3),
         }
 
-    def create_command(self, *, name: str, claim_nonce: str) -> tuple[str, ...]:
-        return (
+    def create_command(self, *, name: str, claim_nonce: str, files_mount: str | None = None  ) -> tuple[str, ...]:
+        cmd = [
             "docker", "run", "--detach", "--name", name,
             "--runtime", self.config.runtime,
             # Scope the managed marker to this deployment namespace.  A
@@ -155,14 +155,30 @@ class DockerRuntimeAdapter:
             "--tmpfs", f"/workspace:rw,nosuid,nodev,size={self.config.workspace_size}",
             "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.config.tmp_size}",
             "--tmpfs", "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m",
-            "--user", "10001:10001", self.config.image,
-        )
+        ]
+        if files_mount:
+            cmd.extend(["--mount", f"type=bind,source={files_mount},target=/files,readonly"])
+        cmd.extend(["--user", "10001:10001"])
+        cmd.append(self.config.image)
+        return tuple(cmd)
 
-    def create_l1_command(self, *, name: str) -> tuple[str, ...]:
-        command = list(self.create_command(name=name, claim_nonce=""))
+    def create_l1_command(self, *, name: str, files_mount: str | None = None) -> tuple[str, ...]:
+        command = list(self.create_command(name=name, claim_nonce="",files_mount=files_mount))
         command[1] = "create"
         command.remove("--detach")
-        return tuple(command)
+        return  tuple(command)
+
+    async def files_mount_matches(self, external_runtime_id: str, mount_path: str) -> bool:
+        process = await asyncio.create_subprocess_exec(
+            "docker", "inspect", "--format", "{{json .Mounts}}", external_runtime_id,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await _communicate(process)
+        if process.returncode != 0:
+            return False
+        mounts = json.loads(stdout)
+        return any(mount.get("Type") == "bind" and mount.get("Destination") == "/files"
+                   and mount.get("Source") == mount_path and mount.get("RW") is False for mount in mounts)
 
     async def image_cached(self) -> bool:
         process = await asyncio.create_subprocess_exec(
@@ -172,8 +188,12 @@ class DockerRuntimeAdapter:
         await _wait(process)
         return process.returncode == 0
 
-    async def create_l1(self, *, name: str) -> str:
-        process = await asyncio.create_subprocess_exec(*self.create_l1_command(name=name), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    async def create_l1(self, *, name: str, files_mount: str | None = None) -> str:
+        process = await asyncio.create_subprocess_exec(
+            *self.create_l1_command(name=name, files_mount=files_mount),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
         stdout, stderr = await _communicate(process)
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
@@ -185,10 +205,10 @@ class DockerRuntimeAdapter:
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
 
-    async def create_ready(self, *, name: str, claim_nonce: str) -> str:
+    async def create_ready(self, *, name: str, claim_nonce: str, files_mount: str | None = None) -> str:
         del claim_nonce  # persisted only as a DB hash; never put it in Docker metadata.
         process = await asyncio.create_subprocess_exec(
-            *self.create_command(name=name, claim_nonce=""),
+            *self.create_command(name=name, claim_nonce="",files_mount=files_mount),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -317,9 +337,24 @@ class DockerRuntimeAdapter:
         if not 1 <= timeout_seconds <= 60:
             raise ValueError("timeout_seconds must be between 1 and 60")
         name = f"nova-scratch-{uuid4().hex}"
-        command = list(self.create_command(name=name, claim_nonce=""))
-        command[2:3] = ["--rm"]
-        command.insert(2, "--interactive")
+        command = [
+            "docker", "run",
+            "--interactive",
+            "--rm",
+            "--name", name,
+            "--runtime", self.config.runtime,
+            "--label", f"nova.sandbox.managed={self.config.namespace}",
+            "--label", f"nova.sandbox.namespace={self.config.namespace}",
+            "--label", "nova.sandbox.state=ready_unbound",
+            "--read-only", "--network", "none", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges=true",
+            "--memory", self.config.memory, "--cpus", self.config.cpus,
+            "--pids-limit", str(self.config.pids_limit), "--shm-size", self.config.shm_size,
+            "--tmpfs", f"/workspace:rw,nosuid,nodev,size={self.config.workspace_size}",
+            "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.config.tmp_size}",
+            "--tmpfs", "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m",
+        ]
+        command.extend(["--user", "10001:10001", self.config.image])
         command.extend(("python", "/opt/nova-runtime/nova_runtime.py", "scratch", "--timeout-seconds", str(timeout_seconds), "--output-limit-bytes", str(output_limit_bytes)))
         process = await asyncio.create_subprocess_exec(
             *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

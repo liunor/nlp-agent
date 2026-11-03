@@ -9,10 +9,12 @@ import pytest
 class _RecordingSession:
     def __init__(self) -> None:
         self.pending: list[object] = []
+        self.added: list[object] = []
         self.flushed_batches: list[list[type[object]]] = []
 
     def add(self, value: object) -> None:
         self.pending.append(value)
+        self.added.append(value)
 
     async def flush(self) -> None:
         self.flushed_batches.append([type(value) for value in self.pending])
@@ -45,6 +47,7 @@ async def test_manager_claim_probe_flushes_parent_rows_before_lease() -> None:
         [SessionModel, SandboxEnvironmentModel],
         [SandboxLeaseModel],
     ]
+    assert all(row.workspace_id == "workspace-id" for row in session.added)
 
 
 def test_manager_claim_probe_image_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,7 +20,8 @@ from server.rbac.catalog import permission_id, permission_row, role_id
 def test_migration_graph_has_one_deployable_head_after_t07_additions() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20261017_55_t07_sms_history"]
+    assert scripts.get_heads() == ["20261102_add_workspace_id"]
+    assert scripts.get_revision("20261102_add_workspace_id").down_revision == "20261017_55_t07_sms_history"
     assert scripts.get_revision("20261017_55_t07_sms_history").down_revision == "20261017_54_t07"
     assert scripts.get_revision("20261017_54_t07").down_revision == "20261017_53_t07"
     assert scripts.get_revision("20261017_53_t07").down_revision == "20261016_52_t07"
@@ -50,6 +51,17 @@ def test_current_head_revision_fits_legacy_alembic_version_column() -> None:
 
     assert len(scripts.get_heads()) == 1
     assert len(scripts.get_heads()[0]) <= 32
+
+
+def test_workspace_migration_replaces_fk_supporting_index_before_dropping_it() -> None:
+    output = StringIO()
+    config = Config("alembic.ini", output_buffer=output)
+    command.upgrade(config, "20261017_55_t07_sms_history:head", sql=True)
+    sql = output.getvalue()
+    assert sql.index("ADD CONSTRAINT uq_nlp_sandbox_environments_owner_workspace") < sql.index(
+        "DROP INDEX uq_nlp_sandbox_environments_owner;"
+    )
+    assert "workspace_id VARCHAR(36) COLLATE ascii_bin" in sql
 
 
 @pytest.mark.parametrize(

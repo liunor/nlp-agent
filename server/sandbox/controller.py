@@ -325,7 +325,8 @@ async def execute_sandbox(
     async with session_factory.begin() as session:
         environment = await session.scalar(
             select(SandboxEnvironmentModel).where(
-                SandboxEnvironmentModel.owner_user_id == scope.owner_user_id
+                SandboxEnvironmentModel.owner_user_id == scope.owner_user_id,
+                SandboxEnvironmentModel.workspace_id == scope.workspace_id,
             )
         )
         lease = None

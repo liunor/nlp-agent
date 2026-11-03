@@ -1,0 +1,20 @@
+# Optional Linux-only overlay. See docs/operations/sandbox-files-bridge.md.
+services:
+  nova-sandbox-manager:
+    environment:
+      SANDBOX_ENABLE_FILES_BRIDGE: "true"
+      SANDBOX_BRIDGE_BASE_DIR: "${NOVA_SANDBOX_BRIDGE_DIR:?Set an absolute host path unique to this deployment}"
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - nova-data:/app/.data:ro
+      - type: bind
+        source: "${NOVA_SANDBOX_BRIDGE_DIR:?Set an absolute host path unique to this deployment}"
+        target: "${NOVA_SANDBOX_BRIDGE_DIR:?Set an absolute host path unique to this deployment}"
+        bind:
+          propagation: rshared
+          create_host_path: false

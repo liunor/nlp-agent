@@ -173,7 +173,8 @@ class WarmPoolService:
     ) -> RuntimeClaim | None:
         environment = await session.scalar(
             select(SandboxEnvironmentModel)
-            .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id)
+            .where(SandboxEnvironmentModel.owner_user_id == scope.owner_user_id,
+                   SandboxEnvironmentModel.workspace_id == scope.workspace_id)
             .with_for_update()
         )
         if environment is None:

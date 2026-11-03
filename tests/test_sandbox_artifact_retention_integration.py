@@ -61,6 +61,7 @@ async def test_expired_artifact_is_removed_from_mysql_and_store(tmp_path: Path) 
                 SandboxEnvironmentModel(
                     id=environment_id,
                     owner_user_id=user.id,
+                    workspace_id=workspace_id,
                     resource_profile_id="python-base",
                     generation=1,
                 )

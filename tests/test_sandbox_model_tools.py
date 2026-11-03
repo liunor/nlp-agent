@@ -125,6 +125,8 @@ async def test_model_tools_authorize_with_login_session_not_conversation_id() ->
             return None
 
         async def scalar(self, _statement):
+            assert "nlp_sandbox_environments.workspace_id" in str(_statement.whereclause)
+            assert "workspace-1" in _statement.compile().params.values()
             return None
 
     class Factory:

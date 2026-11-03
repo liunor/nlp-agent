@@ -281,7 +281,11 @@ async def test_started_event_failure_is_finalized_before_manager_call(monkeypatc
 
         async def scalar(self, _statement):
             self.scalar_calls += 1
-            return environment if self.initial and self.scalar_calls == 1 else lease
+            if self.initial and self.scalar_calls == 1:
+                assert "nlp_sandbox_environments.workspace_id" in str(_statement.whereclause)
+                assert "workspace-1" in _statement.compile().params.values()
+                return environment
+            return lease
 
         async def get(self, model, _identifier, **_kwargs):
             assert model is SandboxExecutionModel
