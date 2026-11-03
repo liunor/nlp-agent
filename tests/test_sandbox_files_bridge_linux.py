@@ -71,6 +71,8 @@ async def test_real_personal_file_is_readable_and_readonly_in_runsc(monkeypatch,
                 storage_key=key, size_bytes=len(content), status="active"))
         claim = await manager.claim(scope, lease_id=lease.id)
         assert claim is not None, "real FUSE mount and container provisioning must succeed"
+        assert await adapter.files_mount_matches(claim.runtime.external_runtime_id,
+            manager._files_mounts.path_for(scope.owner_user_id, scope.workspace_id))
         result = await manager.execute_claimed(scope, lease_id=lease.id, runtime_id=claim.runtime.id,
             generation=claim.runtime.generation, nonce=claim.nonce,
             source="print(open('/files/data.csv').read())\n"
@@ -78,7 +80,9 @@ async def test_real_personal_file_is_readable_and_readonly_in_runsc(monkeypatch,
                    "except OSError as error:\n print('READONLY', error.errno)\n")
         assert result["status"] == "completed", result
         assert "Alice" in result["stdout"]
-        assert "READONLY 30" in result["stdout"]
+        # The sandbox uid is not the file's owner, so Unix mode checks may
+        # reject the write with EACCES before the read-only mount returns EROFS.
+        assert any(f"READONLY {code}" in result["stdout"] for code in (13, 30))
         assert physical.read_bytes() == content
         reused = await manager.claim(scope, lease_id=lease.id)
         assert reused.runtime.id == claim.runtime.id

@@ -90,6 +90,7 @@ async def seed_manager_claim_probe_records(
         SandboxEnvironmentModel(
             id=environment_id,
             owner_user_id=user.id,
+            workspace_id=workspace_id,
             resource_profile_id="python-base",
             generation=1,
         )

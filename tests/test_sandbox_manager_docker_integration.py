@@ -206,7 +206,7 @@ async def test_manager_rejects_and_reclaims_runtime_after_auth_lifecycle_change(
                 authorization_version=user.authorization_version, expires_at=session_expires_at,
                 revoked_at=None,
             ))
-            session.add(SandboxEnvironmentModel(id=environment_id, owner_user_id=user.id, generation=1))
+            session.add(SandboxEnvironmentModel(id=environment_id, owner_user_id=user.id, workspace_id=workspace_id, generation=1))
             session.add(SandboxRuntimeInstanceModel(
                 id=runtime_id, environment_id=environment_id, external_runtime_id=container_id,
                 runtime_kind="docker", state="assigned", generation=1,
@@ -344,6 +344,7 @@ async def test_reset_claim_execute_uses_new_environment_generation() -> None:
                 SandboxEnvironmentModel(
                     id=environment_id,
                     owner_user_id=user.id,
+                    workspace_id=workspace_id,
                     generation=1,
                     active_runtime_id=old_runtime_id,
                 )
