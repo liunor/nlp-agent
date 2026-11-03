@@ -4,11 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-try:
-    from fuse import FUSE, Operations
-except (ImportError, OSError) as e:
-    pytest.skip(f"Skipping FUSE-dependent tests: {e}", allow_module_level=True)
-    
+
+
 def test_adaptive_pool_target_is_bounded_and_uses_refill_p95() -> None:
     from server.sandbox.optimization import AdaptivePoolPolicy
 

@@ -24,9 +24,8 @@ class SandboxScopeError(PermissionError):
 class SandboxScope:
     """Server-derived identity used for every Sandbox Manager command.
 
-    ``workspace_id`` is retained as audit context only.  It is intentionally
-    excluded from ``environment_owner_key`` so members of a shared classroom
-    never end up sharing a runtime.
+    Environments are scoped by both user and workspace, so neither classmates
+    nor one user's different workspaces share a runtime or mounted file tree.
     """
 
     owner_user_id: str
@@ -38,7 +37,7 @@ class SandboxScope:
     @property
     def environment_owner_key(self) -> str:
         return f"{self.owner_user_id}:{self.workspace_id}"
-    
+
     @classmethod
     def from_authenticated_request(
         cls,

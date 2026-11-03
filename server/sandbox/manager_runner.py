@@ -233,6 +233,7 @@ async def run_forever() -> None:
                         pass
             await asyncio.sleep(0.05)
     finally:
+        await manager.close()
         if command_store is not None:
             await command_store.close()
         if rpc_server is not None:

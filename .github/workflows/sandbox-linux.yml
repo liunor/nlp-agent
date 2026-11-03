@@ -32,6 +32,9 @@ jobs:
               - 'sandbox-runtime/**'
               - 'scripts/benchmark_sandbox_startup.py'
               - 'server/sandbox/**'
+              - 'server/storage/filesystem_bridge.py'
+              - 'server/storage/files_mounts.py'
+              - 'compose.files-bridge.yaml'
               - 'tests/test_sandbox_*.py'
               - 'tests/api_http/sandbox/**'
 
@@ -186,6 +189,15 @@ jobs:
       - run: alembic upgrade head
       - name: Build pinned runtime for Manager claim benchmark
         run: docker build --tag nova-sandbox-runtime:manager-ci sandbox-runtime
+      - name: Verify real MySQL files through FUSE and gVisor
+        env:
+          RUN_SANDBOX_FILES_BRIDGE_INTEGRATION: '1'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2t64
+          test -c /dev/fuse || sudo modprobe fuse
+          sudo --preserve-env=PATH,NLP_AGENT_DATABASE_URL,NLP_AGENT_SANDBOX_MANAGER_TEST_IMAGE,RUN_SANDBOX_FILES_BRIDGE_INTEGRATION \
+            "$(command -v python)" -m pytest tests/test_sandbox_files_bridge_linux.py -vv -s -o faulthandler_timeout=60
       - name: Benchmark real Manager claim path
         run: |
           set -o pipefail

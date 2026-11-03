@@ -35,7 +35,8 @@ class SandboxLifecycleService:
         await self.revoke_expired_leases(session, owner_user_id=scope.owner_user_id)
         environment = await session.scalar(
             select(SandboxEnvironmentModel).where(
-                SandboxEnvironmentModel.owner_user_id == scope.owner_user_id
+                SandboxEnvironmentModel.owner_user_id == scope.owner_user_id,
+                SandboxEnvironmentModel.workspace_id == scope.workspace_id,
             )
         )
         lease = None
@@ -83,7 +84,7 @@ class SandboxLifecycleService:
                 environment = SandboxEnvironmentModel(
                     id=str(uuid4()),
                     owner_user_id=scope.owner_user_id,
-                    workspace_id=scope.workspace_id, 
+                    workspace_id=scope.workspace_id,
                     resource_profile_id=resource_profile_id,
                     profile_revision=1,
                     status="ready",

@@ -1,24 +1,35 @@
 import os
-import subprocess
 import stat
 import errno
 import asyncio
-import tempfile
-from fuse import Operations, FUSE
+import threading
 from sqlalchemy import select
 
 from server.infrastructure.mysql.models import UserFileModel
-from server.storage.service import storage_root
+from server.storage.service import StorageScope, StorageValidationError, storage_path_for
 
-class StorageFuseBridge(Operations):
-    def __init__(self, user_id: str, workspace_id: str, session_factory):
+class StorageFuseBridge:
+    """File operations independent of libfuse, which is loaded only at mount time."""
+
+    def __init__(self, user_id: str, workspace_id: str, session_factory, *, event_loop=None):
         self.user_id = user_id
         self.workspace_id = workspace_id
         self.session_factory = session_factory
         self._fh_map = {}
         self._next_fh = 1
+        self._event_loop = event_loop
+        self._handles_lock = threading.RLock()
 
     def _run_async(self, coro):
+        if self._event_loop is not None:
+            # The pooled MySQL connections belong to the Manager loop. Never
+            # move them into a fresh asyncio.run() loop for each FUSE callback.
+            future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
+            try:
+                return future.result(timeout=30)
+            except TimeoutError:
+                future.cancel()
+                raise OSError(errno.EIO, "File metadata query timed out")
         try:
             return asyncio.run(coro)
         except Exception as e:
@@ -28,14 +39,14 @@ class StorageFuseBridge(Operations):
     def _resolve_path(self, path: str) -> dict:
         if path == "/":
             return {"id": None, "name": "/", "is_dir": True, "size": 0, "storage_key": None}
-            
+
         parts = [p for p in path.strip("/").split("/") if p]
-        
+
         async def _query():
             async with self.session_factory() as session:
                 current_parent_id = None
                 target_node = None
-                
+
                 for part in parts:
                     stmt = select(UserFileModel).where(
                         UserFileModel.owner_user_id == self.user_id,
@@ -46,12 +57,12 @@ class StorageFuseBridge(Operations):
                     )
                     result = await session.execute(stmt)
                     target_node = result.scalar_one_or_none()
-                    
+
                     if not target_node:
                         raise FileNotFoundError(f"Not found: {part}")
-                        
+
                     current_parent_id = target_node.id
-                    
+
                 return {
                     "id": target_node.id,
                     "name": target_node.display_name,
@@ -59,7 +70,7 @@ class StorageFuseBridge(Operations):
                     "size": target_node.size_bytes,
                     "storage_key": target_node.storage_key
                 }
-        
+
         return self._run_async(_query())
 
     def getattr(self, path, fh=None):
@@ -77,7 +88,7 @@ class StorageFuseBridge(Operations):
             node = self._resolve_path(path)
             if not node["is_dir"]:
                 raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
-            
+
             async def _query_list():
                 async with self.session_factory() as session:
                     stmt = select(UserFileModel.display_name).where(
@@ -89,7 +100,7 @@ class StorageFuseBridge(Operations):
                     result = await session.execute(stmt)
                     file_names = result.scalars().all()
                     return ['.', '..'] + list(file_names)
-            
+
             return self._run_async(_query_list())
         except FileNotFoundError:
             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
@@ -97,58 +108,57 @@ class StorageFuseBridge(Operations):
     def open(self, path, flags):
         if (flags & 3) != os.O_RDONLY:
             raise OSError(errno.EROFS, os.strerror(errno.EROFS))
-        
+
         node = self._resolve_path(path)
         if node["is_dir"]:
             raise OSError(errno.EISDIR, os.strerror(errno.EISDIR))
-            
+
         if not node.get("storage_key"):
             raise OSError(errno.ENOENT, "No storage_key")
-            
-        real_path = str(storage_root() / node["storage_key"])
+
+        try:
+            real_path = str(storage_path_for(
+                StorageScope(self.user_id, self.workspace_id, policy=None), node["storage_key"]
+            ))
+        except StorageValidationError as error:
+            raise OSError(errno.EACCES, "Invalid file storage location") from error
 
         if not os.path.exists(real_path):
             raise OSError(errno.ENOENT, f"File not found: {real_path}")
 
-        fh = self._next_fh
-        self._next_fh += 1
-        self._fh_map[fh] = open(real_path, 'rb')
+        with self._handles_lock:
+            fh = self._next_fh
+            self._next_fh += 1
+            self._fh_map[fh] = open(real_path, 'rb')
         return fh
 
     def read(self, path, size, offset, fh):
-        if fh not in self._fh_map:
-            raise OSError(errno.EBADF, os.strerror(errno.EBADF))
-        f = self._fh_map[fh]
-        f.seek(offset)
-        return f.read(size)
+        with self._handles_lock:
+            if fh not in self._fh_map:
+                raise OSError(errno.EBADF, os.strerror(errno.EBADF))
+            f = self._fh_map[fh]
+            f.seek(offset)
+            return f.read(size)
 
     def release(self, path, fh):
-        if fh in self._fh_map:
-            self._fh_map[fh].close()
-            del self._fh_map[fh]
+        with self._handles_lock:
+            if fh in self._fh_map:
+                self._fh_map[fh].close()
+                del self._fh_map[fh]
         return 0
 
 
-def mount_user_filesystem(user_id: str, workspace_id: str, session_factory):
-    base_dir = os.path.join(tempfile.gettempdir(), "sandbox_bridge")
-    mount_point = os.path.join(base_dir, user_id, workspace_id)
-    
-    os.makedirs(mount_point, exist_ok=True)
-    
-    try:
-        subprocess.run(
-            ["umount", "-l", mount_point],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-    except FileNotFoundError:
+def mount_user_filesystem(user_id: str, workspace_id: str, session_factory, *, mount_point: str, event_loop):
+    from fuse import FUSE, Operations
+
+    class ReadOnlyOperations(StorageFuseBridge, Operations):
         pass
-        
-    print(f"[Bridge] Mounting {mount_point} for user {user_id}...")
+
     FUSE(
-        StorageFuseBridge(user_id, workspace_id, session_factory), 
-        mount_point, 
-        foreground=True, 
-        allow_other=True
+        ReadOnlyOperations(user_id, workspace_id, session_factory, event_loop=event_loop),
+        mount_point,
+        foreground=True,
+        allow_other=True,
+        ro=True,
+        nothreads=True,
     )

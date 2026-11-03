@@ -124,7 +124,8 @@ class SandboxModelToolService:
                 return None
             environment = await session.scalar(
                 select(SandboxEnvironmentModel).where(
-                    SandboxEnvironmentModel.owner_user_id == context.user_id
+                    SandboxEnvironmentModel.owner_user_id == context.user_id,
+                    SandboxEnvironmentModel.workspace_id == context.workspace_id,
                 )
             )
             lease = None

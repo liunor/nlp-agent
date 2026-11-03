@@ -323,3 +323,26 @@ def test_runtime_usage_returns_only_current_cpu_and_memory_percentages() -> None
     assert command == (
         "docker", "stats", "--no-stream", "--format", "{{.CPUPerc}}|{{.MemPerc}}", "container-id"
     )
+
+
+@pytest.mark.parametrize("source,readonly,expected", [("/bridge/u/w", False, True),
+    ("/bridge/other/w", False, False), ("/bridge/u/w", True, False)])
+async def test_files_mount_matches_checks_source_destination_and_readonly(source, readonly, expected):
+    import json
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+    adapter = DockerRuntimeAdapter(DockerRuntimeConfig(image="registry/nova@sha256:" + "a" * 64))
+    process = AsyncMock()
+    process.returncode = 0
+    process.communicate.return_value = (json.dumps([
+        {"Type": "bind", "Source": source, "Destination": "/files", "RW": readonly}
+    ]).encode(), b"")
+    with patch("server.sandbox.docker_runtime.asyncio.create_subprocess_exec", return_value=process):
+        assert await adapter.files_mount_matches("container", "/bridge/u/w") is expected
+
+
+def test_files_bind_is_readonly_for_l0_and_l1():
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+    adapter = DockerRuntimeAdapter(DockerRuntimeConfig(image="registry/nova@sha256:" + "a" * 64))
+    for command in (adapter.create_command(name="l0", claim_nonce="", files_mount="/bridge/u/w"),
+                    adapter.create_l1_command(name="l1", files_mount="/bridge/u/w")):
+        assert "type=bind,source=/bridge/u/w,target=/files,readonly" in command

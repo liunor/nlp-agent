@@ -4,10 +4,7 @@ import time
 
 import pytest
 
-try:
-    from fuse import FUSE, Operations
-except (ImportError, OSError) as e:
-    pytest.skip(f"Skipping FUSE-dependent tests: {e}", allow_module_level=True)
+
 
 @pytest.mark.asyncio
 async def test_manager_command_store_round_trips_pool_target() -> None:

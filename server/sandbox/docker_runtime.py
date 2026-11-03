@@ -157,7 +157,7 @@ class DockerRuntimeAdapter:
             "--tmpfs", "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m",
         ]
         if files_mount:
-            cmd.extend(["--mount", f"type=bind,source={files_mount},target=/files"])
+            cmd.extend(["--mount", f"type=bind,source={files_mount},target=/files,readonly"])
         cmd.extend(["--user", "10001:10001"])
         cmd.append(self.config.image)
         return tuple(cmd)
@@ -167,6 +167,18 @@ class DockerRuntimeAdapter:
         command[1] = "create"
         command.remove("--detach")
         return  tuple(command)
+
+    async def files_mount_matches(self, external_runtime_id: str, mount_path: str) -> bool:
+        process = await asyncio.create_subprocess_exec(
+            "docker", "inspect", "--format", "{{json .Mounts}}", external_runtime_id,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await _communicate(process)
+        if process.returncode != 0:
+            return False
+        mounts = json.loads(stdout)
+        return any(mount.get("Type") == "bind" and mount.get("Destination") == "/files"
+                   and mount.get("Source") == mount_path and mount.get("RW") is False for mount in mounts)
 
     async def image_cached(self) -> bool:
         process = await asyncio.create_subprocess_exec(
@@ -178,15 +190,15 @@ class DockerRuntimeAdapter:
 
     async def create_l1(self, *, name: str, files_mount: str | None = None) -> str:
         process = await asyncio.create_subprocess_exec(
-            *self.create_l1_command(name=name, files_mount=files_mount), 
-            stdout=asyncio.subprocess.PIPE, 
+            *self.create_l1_command(name=name, files_mount=files_mount),
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await _communicate(process)
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
         return stdout.decode("utf-8", "replace").strip()
-    
+
     async def start_l1(self, external_runtime_id: str) -> None:
         process = await asyncio.create_subprocess_exec("docker", "start", external_runtime_id, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, stderr = await _communicate(process)
@@ -326,8 +338,8 @@ class DockerRuntimeAdapter:
             raise ValueError("timeout_seconds must be between 1 and 60")
         name = f"nova-scratch-{uuid4().hex}"
         command = [
-            "docker", "run", 
-            "--interactive", 
+            "docker", "run",
+            "--interactive",
             "--rm",
             "--name", name,
             "--runtime", self.config.runtime,
