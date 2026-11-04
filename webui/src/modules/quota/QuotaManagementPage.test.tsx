@@ -33,6 +33,7 @@ const methods = vi.hoisted(() => ({
   listRoles: vi.fn(),
   giftQuotaCredits: vi.fn(),
   giftQuotaRoleCredits: vi.fn(),
+  resetQuotaCredits: vi.fn(),
 }));
 
 vi.mock("@/platform/http/api", () => ({ api: methods }));
@@ -153,6 +154,53 @@ describe("QuotaManagementPage", () => {
       idempotency_key: "role-gift-1",
     })));
     expect(methods.giftQuotaCredits).not.toHaveBeenCalled();
+  });
+
+  it("explains missing gift and reset fields instead of disabling the button", async () => {
+    render(<QuotaManagementPage />);
+    await waitFor(() => expect(methods.listQuotaPolicies).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "运营与对账" }));
+    await waitFor(() => expect(methods.listRoles).toHaveBeenCalled());
+    expect((screen.getByLabelText("幂等键") as HTMLInputElement).value).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认赠送" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("请填写：对象、额度、原因。");
+    expect(methods.giftQuotaCredits).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "重置" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认重置" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("请填写：对象、额度、原因。");
+    expect(methods.resetQuotaCredits).not.toHaveBeenCalled();
+  });
+
+  it("keeps the operation key and effective time when retrying a failed gift", async () => {
+    methods.giftQuotaCredits.mockRejectedValueOnce(new Error("连接失败")).mockResolvedValueOnce({});
+    render(<QuotaManagementPage />);
+    await waitFor(() => expect(methods.listQuotaPolicies).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "运营与对账" }));
+    fireEvent.change(screen.getByLabelText("归属 ID"), { target: { value: "user-123" } });
+    fireEvent.change(screen.getByLabelText("额度（μcredits）"), { target: { value: "1000000" } });
+    fireEvent.change(screen.getByLabelText("原因"), { target: { value: "测试" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认赠送" }));
+    await screen.findByText("连接失败");
+    fireEvent.click(screen.getByRole("button", { name: "确认赠送" }));
+    await waitFor(() => expect(methods.giftQuotaCredits).toHaveBeenCalledTimes(2));
+    expect(methods.giftQuotaCredits.mock.calls[1][0].idempotency_key).toBe(methods.giftQuotaCredits.mock.calls[0][0].idempotency_key);
+    expect(methods.giftQuotaCredits.mock.calls[1][0].effective_from).toBe(methods.giftQuotaCredits.mock.calls[0][0].effective_from);
+  });
+
+  it("submits a reset with an automatically generated key and rotates it on success", async () => {
+    methods.resetQuotaCredits.mockResolvedValueOnce({});
+    render(<QuotaManagementPage />);
+    await waitFor(() => expect(methods.listQuotaPolicies).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "运营与对账" }));
+    await waitFor(() => expect(methods.listRoles).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "重置" }));
+    fireEvent.change(screen.getByLabelText("归属 ID"), { target: { value: "user-123" } });
+    fireEvent.change(screen.getByLabelText("额度（μcredits）"), { target: { value: "1000000" } });
+    fireEvent.change(screen.getByLabelText("原因"), { target: { value: "测试" } });
+    const key = (screen.getByLabelText("幂等键") as HTMLInputElement).value;
+    fireEvent.click(screen.getByRole("button", { name: "确认重置" }));
+    await waitFor(() => expect(methods.resetQuotaCredits).toHaveBeenCalledWith(expect.objectContaining({ idempotency_key: key })));
+    await waitFor(() => expect((screen.getByLabelText("幂等键") as HTMLInputElement).value).not.toBe(key));
   });
 
   it("keeps overdraft and model profile restrictions configurable", async () => {
