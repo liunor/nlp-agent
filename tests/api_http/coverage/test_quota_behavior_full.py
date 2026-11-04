@@ -375,6 +375,7 @@ def test_quota_grant_adjustment_credit_and_read_models_are_consistent(
     assert isinstance(buckets["items"], list)
 
 
+@pytest.mark.api_async_core
 def test_credit_operations_accept_public_identity_but_store_internal_user_id(
     authenticated_client_for,
     developer_user,
