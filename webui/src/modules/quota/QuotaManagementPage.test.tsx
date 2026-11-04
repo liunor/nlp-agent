@@ -176,7 +176,7 @@ describe("QuotaManagementPage", () => {
     render(<QuotaManagementPage />);
     await waitFor(() => expect(methods.listQuotaPolicies).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: "运营与对账" }));
-    fireEvent.change(screen.getByLabelText("归属 ID"), { target: { value: "user-123" } });
+    fireEvent.change(screen.getByLabelText("用户身份 ID（或内部用户 ID）"), { target: { value: "user-123" } });
     fireEvent.change(screen.getByLabelText("额度（μcredits）"), { target: { value: "1000000" } });
     fireEvent.change(screen.getByLabelText("原因"), { target: { value: "测试" } });
     fireEvent.click(screen.getByRole("button", { name: "确认赠送" }));
@@ -194,13 +194,26 @@ describe("QuotaManagementPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "运营与对账" }));
     await waitFor(() => expect(methods.listRoles).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: "重置" }));
-    fireEvent.change(screen.getByLabelText("归属 ID"), { target: { value: "user-123" } });
+    fireEvent.change(screen.getByLabelText("用户身份 ID（或内部用户 ID）"), { target: { value: "user-123" } });
     fireEvent.change(screen.getByLabelText("额度（μcredits）"), { target: { value: "1000000" } });
     fireEvent.change(screen.getByLabelText("原因"), { target: { value: "测试" } });
     const key = (screen.getByLabelText("幂等键") as HTMLInputElement).value;
     fireEvent.click(screen.getByRole("button", { name: "确认重置" }));
     await waitFor(() => expect(methods.resetQuotaCredits).toHaveBeenCalledWith(expect.objectContaining({ idempotency_key: key })));
     await waitFor(() => expect((screen.getByLabelText("幂等键") as HTMLInputElement).value).not.toBe(key));
+  });
+
+  it("accepts a public identity ID for user credit gifts", async () => {
+    methods.giftQuotaCredits.mockResolvedValueOnce({});
+    render(<QuotaManagementPage />);
+    await waitFor(() => expect(methods.listQuotaPolicies).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "运营与对账" }));
+    await waitFor(() => expect(methods.listRoles).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("用户身份 ID（或内部用户 ID）"), { target: { value: "TEACHER01" } });
+    fireEvent.change(screen.getByLabelText("额度（μcredits）"), { target: { value: "1000000" } });
+    fireEvent.change(screen.getByLabelText("原因"), { target: { value: "测试" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认赠送" }));
+    await waitFor(() => expect(methods.giftQuotaCredits).toHaveBeenCalledWith(expect.objectContaining({ owner_type: "user", owner_id: "TEACHER01" })));
   });
 
   it("keeps overdraft and model profile restrictions configurable", async () => {

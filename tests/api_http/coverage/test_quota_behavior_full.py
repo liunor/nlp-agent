@@ -375,6 +375,39 @@ def test_quota_grant_adjustment_credit_and_read_models_are_consistent(
     assert isinstance(buckets["items"], list)
 
 
+def test_credit_operations_accept_public_identity_but_store_internal_user_id(
+    authenticated_client_for,
+    developer_user,
+    mysql_probe,
+) -> None:
+    client = authenticated_client_for(developer_user)
+    identity = mysql_probe.scalar(
+        "SELECT identity_id FROM nlp_users WHERE id = :user_id",
+        user_id=developer_user.user_id,
+    )
+    assert identity
+    period_start, period_end, effective_from, _ = _window()
+    key = f"identity-credit-{uuid.uuid4().hex}"
+    public_body = _credit_body(
+        f" {identity.lower()} ", effective_from=effective_from,
+        period_start=period_start, period_end=period_end, idempotency_key=key,
+    )
+    gift = json_response(client.post("/api/v1/developer/quota/credits/gift", json=public_body), 201)
+    assert gift["owner_id"] == developer_user.user_id
+    replay = json_response(client.post("/api/v1/developer/quota/credits/gift", json={
+        **public_body, "owner_id": developer_user.user_id,
+    }), 201)
+    assert replay["operation_id"] == gift["operation_id"]
+    reset = json_response(client.post("/api/v1/developer/quota/credits/reset", json={
+        **public_body, "idempotency_key": f"identity-reset-{uuid.uuid4().hex}",
+    }), 201)
+    assert reset["owner_id"] == developer_user.user_id
+    missing = client.post("/api/v1/developer/quota/credits/gift", json={
+        **public_body, "owner_id": "NO_SUCH_USER", "idempotency_key": f"missing-{uuid.uuid4().hex}",
+    })
+    assert problem_response(missing, 422)["code"] == "quota_subject_not_found"
+
+
 def test_quota_billing_archive_alert_and_not_found_contracts(
     authenticated_client_for,
     developer_user,
