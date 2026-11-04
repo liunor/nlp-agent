@@ -387,7 +387,11 @@ def test_credit_operations_accept_public_identity_but_store_internal_user_id(
         user_id=developer_user.user_id,
     )
     assert identity
-    period_start, period_end, effective_from, _ = _window()
+    now = datetime.now(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    period_start = start.isoformat()
+    period_end = (start + timedelta(days=1)).isoformat()
+    effective_from = now.isoformat()
     key = f"identity-credit-{uuid.uuid4().hex}"
     public_body = _credit_body(
         f" {identity.lower()} ", effective_from=effective_from,
