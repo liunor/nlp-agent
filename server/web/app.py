@@ -57,6 +57,7 @@ from server.rbac.catalog import permission_display, role_display
 from server.agent.session_service import DatabaseSessionService, local_session_service
 from server.storage.quota import StorageQuotaExceeded
 from server.quota.errors import QuotaDomainError, QuotaRejectedError
+from server.quota.credit_identity import resolve_credit_user_id
 from server.quota.management import QuotaManagementService
 from server.quota.notifications import (
     DEFAULT_QUOTA_SNAPSHOT_CHANNEL,
@@ -1437,6 +1438,27 @@ def create_app(
             detail=f"active {subject_type} subject {subject_id!r} does not exist",
         )
 
+    async def resolve_credit_subject(
+        request: Request, *, subject_type: str, subject_id: str
+    ) -> tuple[str | None, Response | None]:
+        """Accept public user identities for credit gifts and resets only."""
+        factory = getattr(request.app.state.gateway, "authorization_session_factory", None)
+        if subject_type == "user" and factory is not None:
+            resolved = await resolve_credit_user_id(factory, subject_id)
+            if resolved is None:
+                return None, _problem(
+                    request,
+                    status_code=422,
+                    code="quota_subject_not_found",
+                    title="用户不存在或不可用",
+                    detail="请检查用户身份 ID，确认账号未被禁用或删除。",
+                )
+            return resolved, None
+        error = await require_quota_subject(
+            request, subject_type=subject_type, subject_id=subject_id
+        )
+        return (None, error) if error is not None else (subject_id, None)
+
     def quota_management_for(request: Request) -> QuotaManagementService:
         service = getattr(request.app.state, "quota_management", None)
         if service is not None:
@@ -2116,18 +2138,20 @@ def create_app(
         _claims: WriteClaims,
     ):
         authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
-        subject_error = await require_quota_subject(
+        owner_id, subject_error = await resolve_credit_subject(
             request,
             subject_type=body.owner_type,
             subject_id=body.owner_id,
         )
         if subject_error is not None:
             return subject_error
+        payload = body.model_dump()
+        payload["owner_id"] = owner_id
         try:
             row = await asyncio.to_thread(
                 quota_operations_for(request).gift_credits,
                 quota_management_for(request),
-                **body.model_dump(),
+                **payload,
                 actor_user_id=principal.user_id,
             )
         except (QuotaDomainError, ValueError) as error:
@@ -2140,7 +2164,7 @@ def create_app(
             resource_id=row["operation_id"],
             detail={"operation_type": "gift", "owner_type": row["owner_type"], "owner_id": row["owner_id"], "amount_micro": row["amount_micro"]},
         )
-        await emit_quota_snapshot(owner_type=body.owner_type, owner_id=body.owner_id)
+        await emit_quota_snapshot(owner_type=body.owner_type, owner_id=owner_id)
         return row
 
     @app.get("/api/v1/developer/quota/credits", tags=["quota"])
@@ -2212,18 +2236,20 @@ def create_app(
         _claims: WriteClaims,
     ):
         authorization_service.require_resource(principal, Permission.SYSTEM_QUOTA_MANAGE, ResourceRef("quota_administration"))
-        subject_error = await require_quota_subject(
+        owner_id, subject_error = await resolve_credit_subject(
             request,
             subject_type=body.owner_type,
             subject_id=body.owner_id,
         )
         if subject_error is not None:
             return subject_error
+        payload = body.model_dump()
+        payload["owner_id"] = owner_id
         try:
             row = await asyncio.to_thread(
                 quota_operations_for(request).reset_credits,
                 quota_management_for(request),
-                **body.model_dump(),
+                **payload,
                 actor_user_id=principal.user_id,
             )
         except (QuotaDomainError, ValueError) as error:
@@ -2236,7 +2262,7 @@ def create_app(
             resource_id=row["operation_id"],
             detail={"operation_type": "reset", "owner_type": row["owner_type"], "owner_id": row["owner_id"], "amount_micro": row["amount_micro"]},
         )
-        await emit_quota_snapshot(owner_type=body.owner_type, owner_id=body.owner_id)
+        await emit_quota_snapshot(owner_type=body.owner_type, owner_id=owner_id)
         return row
 
     @app.get("/api/v1/developer/quota/alerts", tags=["quota"])
