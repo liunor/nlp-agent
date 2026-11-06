@@ -11,7 +11,7 @@ Browser / CLI / future channels
       BackendGateway
        /     |      \
  Turn store Events  LangGraphAgentEngine
-   SQLite   SQLite       |
+   MySQL   MySQL       |
                     Coordinator/Worker
 ```
 
@@ -25,7 +25,7 @@ Browser / CLI / future channels
   channels, then call `await gateway.close()`. The Gateway rejects new turns,
   gives active turns `shutdown_grace_s` to finish, cancels the remainder, closes
   the Agent engine and its session/memory/tool/telemetry resources, and finally
-  commits and checkpoints SQLite.
+  flushes pending persistence and closes MySQL resources.
 - Do not run several Uvicorn workers with embedded Gateway instances. A future
   FastAPI layer may scale independently only when it talks to the single
   Gateway over an internal transport.
@@ -34,7 +34,7 @@ Browser / CLI / future channels
 
 Every Gateway event has a per-turn monotonic `sequence`. Clients reconnect with
 their last sequence and call `replay_events()` before resuming `stream_events()`.
-The SQLite event log is authoritative; bounded live queues are only a latency
+The MySQL event log is authoritative; bounded live queues are only a latency
 optimization. Persisting an event means it is available for replay, not that a
 browser received it. There is intentionally no misleading `delivered` or
 process-local outbox state without a downstream client ACK.

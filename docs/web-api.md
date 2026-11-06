@@ -11,7 +11,7 @@ flowchart LR
     UI["React WebUI"] -->|"HTTP control plane"| API["FastAPI :8765"]
     UI <-->|"WebSocket realtime plane /ws/v1"| API
     API -->|"direct async Python calls"| GW["BackendGateway"]
-    GW --> STORE["SQLite Turn / Durable Event"]
+    GW --> STORE["MySQL Turn / Durable Event"]
     GW --> ENGINE["LangGraphAgentEngine"]
     ENGINE --> AGENTS["Coordinator / Workers / Tools"]
 ```
@@ -27,7 +27,7 @@ The server binds to `127.0.0.1:8765` by default. Uvicorn must stay at one
 worker while the Gateway is embedded. The FastAPI lifespan performs
 `gateway.start()` before readiness succeeds. During shutdown it rejects new
 turns, closes WebSocket channels, drains active turns for `shutdown_grace_s`,
-cancels any remainder, closes Agent-owned resources, and flushes SQLite.
+cancels any remainder, closes Agent-owned resources, and flushes pending writes and closes MySQL resources.
 
 Health probes:
 
@@ -119,7 +119,7 @@ For reconnect recovery, the browser sends:
 }
 ```
 
-The adapter subscribes to live events first, then replays SQLite events. It
+The adapter subscribes to live events first, then replays MySQL events. It
 deduplicates by `(turn_id, sequence)` and fills detected gaps before delivering
 new live events, so a reconnect cannot silently reorder the stream. When old
 events have expired, the server emits `stream.gap` and the browser reloads the
@@ -140,3 +140,11 @@ frames with the versioned commands above, and map nanobot `delta`,
 `reasoning_delta`, `turn_end`, and `session_updated` handlers to `chat.delta`,
 `chat.reasoning.delta`, `chat.completed`, and `session.updated`. HTTP history
 loads from `/api/v1/sessions/{session_id}/messages`.
+
+## 注册与权限变更
+
+公开注册使用邮箱验证码和图片验证码，新账号为 guest；不开放手机号自注册。注册接口拒绝手机号、短信码等额外字段，旧短信发送入口返回 410 / `sms_registration_disabled`。旧手机号身份、账号及短信历史继续兼容，不因此删除数据。登录接受已有账号、邮箱或学号。
+
+注册成功后返回登录，不自动建立会话。验证码有效期和重发冷却由接口返回；邮件网关明确失败返回 502 / `email_gateway_failed`，不保留可用邮箱码。服务商接受不等于已投递到收件箱。
+
+HTTP 和 WebSocket 共用闲置与绝对到期判断，过期会话先提交撤销及租约释放；ping 不刷新闲置时间，活动不突破绝对期限。迟到或重复的 `authorization.changed` 通知逐连接重查数据库权限，保留已持有新权限的连接；校验失败关闭为可重试的 1013，不让监听器退出。

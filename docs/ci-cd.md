@@ -68,3 +68,11 @@ NLP_AGENT_DATABASE_URL=mysql+aiomysql://测试专用用户:密码@mysql:3306/测
 3. 确认 candidate 的测试结果后，从 `main` 创建并推送带注释的版本 Tag，例如 `v1.0.1`。
 4. `Release Production` 只把 candidate 的 digest 晋级为 `ghcr.io/liunor/nlp-agent:v1.0.1`，等待 production 审批后部署。
 5. 部署成功后自动同步 Gitee。
+
+## 部署恢复与现场配置
+
+- 发布前核对已有 MySQL/Redis 的 Compose project、健康状态及数据卷；迁移失败不重建应用或数据库，也不删除卷、不手动 stamp 跳过迁移。
+- MySQL 开启 binlog 时创建容量触发器可能报 1419。测试发布脚本仅在 nova-test 的已有 MySQL 内准备并验证 `log_bin_trust_function_creators=1`；生产只读检查，由 DBA 提供所需权限或配置，不给应用扩大 SUPER 权限。恢复使用修正后的镜像和脚本，从现有 checkpoint 续跑。
+- 测试发布使用共用串行队列，不取消正在运行的发布；构建和部署前重新核对分支头，过时提交不覆盖新版本。环境标签和镜像元数据按实际 checkout 记录。
+- TEST 多 Worker 使用动态 IP，按真实容器 ID 和 Compose 标签核对副本，不依赖连续编号；固定 IP 的服务先更新。正式站沿用其单独发布流程。
+- 保留服务器 `.env` 中已确认的沙箱数量、内存、CPU、预热和主机保护参数；示例文件不覆盖现场值。变更副本、并发或资源预算后，必须复核实际 Compose、容器配置与 TTL 心跳，部署成功不能替代负载验收。

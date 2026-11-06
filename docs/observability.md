@@ -89,3 +89,9 @@ uv run python scripts/observability_cli.py health
 Web 层只负责身份验证、参数校验、序列化和实时推送，不负责产生指标。建议映射为 `/debug/overview`、`/debug/traces`、`/debug/usage`、`/debug/errors`、`/debug/events`，WebSocket 消费 `subscribe()` 返回的队列。
 
 调用方关闭 Agent 运行时时应执行 `await global_telemetry.close()`，确保队列完成刷盘。
+
+## 总览指标口径
+
+逻辑请求与 Model/Worker/Tool 的 Span attempt 分开计算：内部重试不增加用户请求数或逻辑错误率。总览区分请求量、错误、P50/P95 响应与首 Token、活跃用户/工作区/会话、依赖调用/重试/Token、Telemetry 队列和丢弃事件；用量通过 UsageReadService 读取 canonical Token、Credits 和计价完整度。
+
+没有采集器或 exporter 的 CPU、内存、磁盘及依赖指标不能根据 Trace 凭空补出。高基数 user/session/turn/trace/span/runtime ID 与错误消息保留在明细查询，不作为 Prometheus 标签；标签只使用受控的 operation、status、channel、provider、model、tool 和错误类型。
