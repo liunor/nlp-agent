@@ -2,7 +2,6 @@ import os
 import json
 from typing import Any, Dict
 from langchain_core.messages import ToolMessage
-from langgraph.prebuilt import ToolNode
 from utils.logger import get_logger
 
 # 触发条件：工具结果字符数超过 50,000
@@ -67,17 +66,3 @@ def persist_tool_messages(
         )
         processed_messages.append(msg)
     return processed_messages
-
-class PersistingToolNode(ToolNode):
-    """
-    自定义的 ToolNode，会将过大的工具结果持久化到磁盘。
-    如果 ToolMessage 的内容超过阈值，会将其保存为文件，
-    并将内容替换为包含预览的 JSON 元数据，以节省上下文空间。
-    """
-
-    async def ainvoke(self, input: Any, config: Dict[str, Any], **kwargs: Any) -> Any:
-        result = await super().ainvoke(input, config, **kwargs)
-        if not isinstance(result, dict) or "messages" not in result:
-            return result
-        result["messages"] = persist_tool_messages(result["messages"], config)
-        return result
