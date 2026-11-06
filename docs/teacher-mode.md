@@ -59,3 +59,9 @@ replace the aggregation without changing the WebUI contract.
 Teaching goals currently reuse the Gateway's local versioned settings storage.
 They are namespaced by `teacher_goals:{workspace_id}`. A future course database
 can migrate this record behind `TeacherService`.
+
+## 班级申请
+
+学生在“偏好设置 → 我的班级”填写班级码、提交申请并查看审核状态；入口按 `classroom:join_request:submit` 权限展示。教师在 `/teacher/classrooms` 管理班级码与审核。
+
+guest 审批通过后，在同一事务中成为 student 并建立班级成员关系；已有 student 也需要申请或加入具体班级。仅拥有 student 角色不等于已加入班级。审批升级可刷新当前有效会话的权限版本；降权、停用、移除成员或密码变更仍走安全撤销路径。

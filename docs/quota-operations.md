@@ -1,8 +1,8 @@
-# Pro_NLP Phase 4：额度运营、对账与恢复
+# 额度运营、对账与恢复
 
 ## 1. 目标与边界
 
-Phase 4 负责把 Phase 1～3 产生的 UsageEvent、Quota Ledger、Grant 和 Bucket 变成可持续运营的读模型、对账流程和恢复工具。Turn 主链路只写事实和必要的 Bucket 状态；Rollup、告警、归档、账单对账和修复均在后台或开发者接口执行。
+额度运营把 UsageEvent、Quota Ledger、Grant 和 Bucket 变成可持续运营的读模型、对账流程和恢复工具。Turn 主链路只写事实和必要的 Bucket 状态；Rollup、告警、归档、账单对账和修复均在后台或开发者接口执行。
 
 原始 UsageEvent 和原始 Ledger 永不被对账修复覆盖。对账差异只能通过 `billing_adjustment` 或 `balance_repair` 追加校正记录体现，操作人、原因和幂等键必须保留。
 

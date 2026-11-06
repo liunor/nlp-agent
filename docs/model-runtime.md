@@ -52,7 +52,7 @@ GLM 请求始终设置 `tool_stream=true`，使长工具参数生成能够持续
 
 GLM 还可能在 HTTP 请求正常结束时通过 `finish_reason` 表示错误。`model_context_window_exceeded` 按上下文超限处理，`network_error` 按可重试过载处理，`sensitive` 按不可重试错误处理。首个可见 delta 前可以执行既有 retry/fallback；已经输出正文或工具参数后会抛出 `StreamInterruptedError`，不会把另一轮输出拼接到原流。若只有 reasoning 增量而尚未产生正文或工具参数，且错误属于可重试的连接、超时或过载错误，则允许透明重试；这样不会把没有形成答案的半截推理误当作最终结果。
 
-数字业务码在通用 HTTP 状态之前分类：`1113` 是欠费、`1261` 是 Prompt 超长、`1301` 是安全拦截，均不可重试；`1302` 是可重试限流；`1305` 是可重试过载；`1308–1311` 与 `1313–1321` 属于用量上限或订阅权益限制，不进行短退避重试。完整依据与暂不映射的代码见 `docs/model_runtime_p0_specs.md`。
+数字业务码在通用 HTTP 状态之前分类：`1113` 是欠费、`1261` 是 Prompt 超长、`1301` 是安全拦截，均不可重试；`1302` 是可重试限流；`1305` 是可重试过载；`1308–1311` 与 `1313–1321` 属于用量上限或订阅权益限制，不进行短退避重试。完整映射与未验证错误码的处理约束见下文“GLM 业务错误码”。
 
 ## Provider 密钥
 
@@ -132,7 +132,7 @@ model.stream_interrupted
 
 未来 Gateway/WebUI 继续通过 `ObservabilityService` 查询，无需理解具体 Provider SDK。
 
-## 计量与 Token 配额交接 (Multi-Provider Metering & Quota Handoff)
+## 计量与 Token 配额接口
 
 模型层为下游计费与配额控制系统提供不可变的标准化用量上报协议。
 
@@ -180,3 +180,47 @@ model.stream_interrupted
 - `upstream_overloaded`: 408/409/5xx 或厂商过载（可重试）
 - `upstream_empty_response`: 空流或空响应（可重试）
 - `upstream_unknown`: 未知异常（不可重试）
+
+## 计量持久化与进程边界
+
+稳定类型与 Reporter 协议定义在 `core/model_runtime/usage.py`；实际持久化与额度处理见 `server/model_usage/` 和 `server/quota/`。
+
+- 每次真实 Provider 尝试使用独立 `operation_id`。相同 ID、相同内容重报为幂等成功，内容不同必须报冲突；Provider response ID 仅用于辅助对账。
+- 失败、中断和取消也可能产生费用，不能只结算 succeeded。`source=none` 表示未知用量，不代表免费；显式全零 Provider Usage 则是合法观测。
+- 普通输入为 input 减去缓存读写子集，reasoning 已包含在 output 中，不重复计价。用量事实与账本必须可靠持久化，Reporter 错误不得触发第二次 Provider 请求。
+- 模型实例全局缓存，不在实例上保存用户、工作区、Turn 或 Reservation。Redis 任务显式传播归属字段，由 Worker 重新绑定；恢复沿用 Reservation，每次实际新尝试生成新 operation ID。
+- `ModelFactory.profile_identity(profile, role)` 供准入读取身份，role 为 coordinator/worker/utility；`estimate_input_tokens()` 是粗估，返回 None 时不能按零风险放行。
+
+## 用户思考档位
+
+聊天提供快速、轻度、深度、极致四档，偏好按已认证账号保存，过期响应不能覆盖新账号状态。请求按模型能力映射思考参数；不支持的模型保留原有流程。
+
+每个接纳回合冻结档位与 1/2/4/8 Credits 计费快照，取消、失败、重试与恢复遵循同一回合的幂等规则；实际 Token 预留、日志和调用保护仍独立运行。余额来自已有额度策略，不自动发放。开发者模型编辑器不接受旧思考字段，历史覆盖中的这些字段不再生效。实现见 `core/model_runtime/thinking.py`、`server/application/thinking_policy.py`、`server/quota/fixed_turn.py`，运营见 [额度指南](quota-operations.md)。
+
+## GLM 业务错误码
+
+以下为项目现有分类约定，业务码优先于通用 HTTP 状态。厂商依据见[智谱错误码文档](https://docs.bigmodel.cn/cn/api/api-code)，实现与回归以 `core/model_runtime/runtime.py` 和 `tests/test_glm_adapter.py` 为准；清理文档不代表重新核验厂商接口。
+
+| 错误码 (Code) | 常见 HTTP 状态 | 官方描述 | 映射分类 (`error_kind`) | 重试决策 |
+| :--- | :--- | :--- | :--- | :--- |
+| `1000` / `1001` / `1003` / `1005` | 401 | 身份验证失败、缺失、过期或需要二次认证 | `upstream_auth_failed` | 不可重试 |
+| `1113` | 429 | 账户欠费 | `upstream_provider_quota_exhausted` | 不可重试 |
+| `1200` | 500 | API 调用失败 | `upstream_overloaded` | 可重试 |
+| `1210` / `1212` / `1213` / `1214` / `1215` | 400 | API 调用参数、方法、必填字段或字段值错误 | `upstream_invalid_request` | 不可重试 |
+| `1211` | 400 | 模型不存在 | `upstream_model_unavailable` | 不可重试 |
+| `1220` | 403 | 无权访问 API | `upstream_auth_failed` | 不可重试 |
+| `1221` / `1222` | 400 | API 已下线或不存在 | `upstream_model_unavailable` | 不可重试 |
+| `1230` / `1234` | 500 | API 流程或网络错误 | `upstream_overloaded` | 可重试（以原始响应为准） |
+| `1261` | 400 | Prompt 超长 | `upstream_context_length_exceeded` | 不可重试 |
+| `1301` | 400 | 输入或生成内容触发安全策略 | `upstream_unknown` | 不可重试 |
+| `1302` | 429 | 账户达到速率限制 | `upstream_rate_limited` | 可重试 |
+| `1305` | 429 | 模型当前访问量过大 | `upstream_overloaded` | 可重试 |
+| `1308` | 429 | 达到使用上限，等待重置 | `upstream_provider_quota_exhausted` | 不可立即重试 |
+| `1309` | 429 | GLM Coding Plan 已到期 | `upstream_provider_quota_exhausted` | 不可重试 |
+| `1310` | 429 | 达到每周/每月使用上限 | `upstream_provider_quota_exhausted` | 不可立即重试 |
+| `1311` | 429 | 订阅暂未开放指定模型权限 | `upstream_provider_quota_exhausted` | 不可重试 |
+| `1313` | 429 | 公平使用策略限制请求频率 | `upstream_provider_quota_exhausted` | 不可立即重试 |
+| `1314` / `1315` | 429 | 企业套餐失效或 API Key 产品类型不匹配 | `upstream_provider_quota_exhausted` | 不可重试 |
+| `1316` / `1317` / `1318` / `1319` / `1320` / `1321` | 429 | 5 小时、7 天或企业/子账号消费上限 | `upstream_provider_quota_exhausted` | 不可立即重试 |
+
+> `1002`、`1303`、`1304`、`1306`、`1114`、`1115` 未出现在当前官方错误码页的列表中。本项目不得在没有真实响应证据的情况下把它们写入确定性映射；如真实请求出现，应保存脱敏后的原始 HTTP 状态、业务码、消息和响应 ID 后再补表。

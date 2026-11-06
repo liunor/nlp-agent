@@ -1,18 +1,12 @@
-"""Compatibility adapters for transcript and model-facing context trimming."""
+"""Compatibility adapter for transcript replay under the model context budget."""
 
 from __future__ import annotations
 
 from typing import List
 
-from langchain_core.messages import BaseMessage
-
 from configs.settings import settings
-from server.agent.compression.context_manager import trim_legal_history
 from server.agent.session_storage import TranscriptMessage
 from utils.tokens import token_count_with_estimation
-
-
-MAX_CONTEXT_TOKENS = 200_000  # Compatibility; runtime code uses _input_limit().
 
 
 def _input_limit() -> int:
@@ -49,10 +43,3 @@ def compress_messages(
         used += cost
     kept.reverse()
     return system + [message for turn in kept for message in turn]
-
-
-def trim_context(
-    messages: List[BaseMessage],
-    max_tokens: int | None = None,
-) -> List[BaseMessage]:
-    return trim_legal_history(messages, max_tokens or _input_limit())

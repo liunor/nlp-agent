@@ -79,3 +79,9 @@ uv run python -m evaluation run academic-routing-v1 --live --limit 2
 4. 关闭共享能力：仅限确认单进程运行时，设置 `tools.academic.reliability.redis_enabled=false`。
 5. 关闭整个功能：设置 `tools.academic.enabled=false`，并将 Coordinator Prompt
    切回 1.3。
+
+## 概念教学与长输出排查
+
+稳定概念解释、经典算法推导和代码实现由 Coordinator 直接回答；明确要求论文出处、作者、年份或最新进展时才触发学术检索。路由规则以当前配置选用的 Coordinator Prompt 为准，回归用例位于 `.jbeval/suites/academic-routing-v1/dataset.yaml`。
+
+长回答分别受首 token 等待、流式空闲和回合绝对上限约束；收到引擎活动可延长空闲等待，但不能突破绝对上限。检查 `configs/agent_config.yaml` 的 `agent_runtime.coordinator.max_duration_s`、模型 preset 的 `timeouts` 及 `gateway/turn_execution.py`。超时行为的自动化回归见 `tests/test_turn_execution.py`。

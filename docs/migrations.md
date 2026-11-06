@@ -4,6 +4,14 @@
 
 `bootstrap-db` 可安全重复运行。系统创建的旧开放定价规则会在同一事务内闭合并切换到新版本；人工或来源不明的重叠规则不会被自动修改。配额开启时，冲突或缺失会返回非零退出码，Compose 的常驻服务因此不会启动；配额关闭时，缺失项会作为警告输出，相关用量保持 `pending`。
 
+## MySQL 与切换运维要求
+
+- 使用 MySQL 8.4 LTS、InnoDB、`utf8mb4` 和 UTC；异步驱动为 `aiomysql`，连接由 `NLP_AGENT_DATABASE_URL` 提供。
+- 生产连接使用 TLS，并分离运行、迁移与只读账号。
+- 开启 binlog 和自动备份，在生产快照上完成时间点恢复演练。
+- 从旧 SQLite 数据迁移时，先生成一致性副本并运行 `PRAGMA integrity_check`；相关工具为 `scripts/migrate_sqlite_to_mysql.py` 和 `scripts/validate_mysql_cutover.py`。
+- 每次切换保留加密只读源快照 7–14 天；MySQL 接受新写入后不得直接回退 SQLite。
+
 ## RBAC 权限 / 角色播种必须幂等
 
 **背景（已知坑）**：迁移 `20260804_12_rbac_foundation.py` 用
@@ -37,5 +45,4 @@ CI 每次在全新 MySQL 上跑 `alembic upgrade head`，所以这类迁移在 C
 
 ## 相关文档
 
-- `docs/mysql-foundation-baseline.md` —— MySQL 阶段基线。
 - `server/rbac/catalog.py` —— 权限/角色 ID 与种子行的唯一来源（`uuid5` 稳定 ID）。

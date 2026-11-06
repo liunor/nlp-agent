@@ -112,3 +112,10 @@ OCR/表格/图表/描述/问答 → 结果带置信度和引用返回前端。
 路径: .data/uploads/<workspace>/<user>/<session>/a1b2c3d4.jpg
 ---附件结束---
 ```
+
+## 故障排查与验证边界
+
+- 云端返回 `AllocationQuota.FreeTierOnly` 时，检查对应账户的模型额度与计费配置；本地重试不能解除账户限制。
+- 多图任务共用有界执行预算，增加 Worker 数量不会自动提高图像工具并发上限。检查 `core/vision_execution.py` 和 `server/tools/vision/batch.py` 的预算及逐图交付。
+- VLM 故障时保留可用 OCR 结果并标记降级；本地计费准入失败仍须拒绝调用。结构化解析错误与 Provider 可用性错误分别处理。
+- 识别结果与前端预览分别验证；模拟响应测试不证明云端额度可用，也不替代真实部署验收。历史修复细节见 [PR #185](https://github.com/liunor/nlp-agent/pull/185)。

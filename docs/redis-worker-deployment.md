@@ -28,10 +28,44 @@ MySQL 终态与必要终态事件在同一事务提交。对于历史遗留的�
 
 ## 扩容与约束
 
-生产仍保持一个 Worker、一个执行槽，Compose 默认 concurrency 为 1。只有隔离 test/staging 才逐步设置 `NLP_AGENT_WORKER_CONCURRENCY=4` 并验证 1×4、2×4；当前补丁不授权直接扩容生产。
+通用 Compose 和生产示例的默认值不代表 TEST 的实际发布档位。发布与扩容以生效配置、实际容器和 TTL 心跳为准，不能从旧实施计划中的 1×1 或 2×4 推断当前状态。
 
-Redis Streams 是 **at-least-once** 传输。当前 SQL 终态、事件与学习状态使用 generation/owner/lease fencing；生产允许 pending reclaim，任一执行槽释放后可继续拉取。它们不等于外部模型和工具副作用 exactly-once：工具幂等、checkpoint/transcript 审计、detached background resume 权威生命周期与模型额度账本仍需补齐。
+Redis Streams 是 at-least-once 传输；MySQL generation/owner/lease fencing 保护终态和学习状态，但不等于外部模型、工具副作用 exactly-once。detached background resume 的独立持久生命周期、工具副作用幂等及 checkpoint/transcript 审计仍需独立验证，不能因旧规格删除就视为完成。
 
-Web、两个 Worker、Monitor、Sandbox manager 的同步及异步池合计上限为 59，含 10 条运维预留为 69，当前 MySQL `max_connections=100`。同步辅助存储按进程共享 engine；pool timeout 为 5 秒。修改副本数、进程数或池配置后必须重新核算。
+修改 Worker 数量、并发或进程数时，合计 Web、Worker、Monitor、Manager 的全部同步/异步连接池和 overflow，再加入运维预留，与真实 MySQL max_connections 对照。记录 acquire 等待、锁等待、pool timeout、队列深度/年龄及现有会话可用性。
 
-本轮实现、测试结果和未完成 gate 见 [T07 复审验证记录](specs/t07-review-fix-verification.md)。未通过完整 50/30 负载、故障注入和额度一致性验收前，不执行 `docker compose up --scale nova-worker=2`。
+## Outbox 消息路由
+
+| topic | 目的地 |
+| --- | --- |
+| turn.dispatch | 编码后的对话任务流 |
+| authorization.changed | 权限变更 Pub/Sub |
+| sandbox.lease.released / sandbox.lease.revoked | `<任务流名称>:sandbox-events` |
+| 未知 topic 或缺少编码任务 | 保留 MySQL outbox 行并重试，不投入任务流 |
+
+沙箱事件流保留 topic、payload、outbox ID，近似 MAXLEN 10000，不能替代永久审计。发布与确认之间退出仍可造成重复通知。执行许可仍按数据库会话、授权与租约核对，Manager reconcile 回收失效 runtime；单会话退出不等于释放该用户所有会话。
+
+## 容量目标与未完成验收
+
+对话目标为 41 人同时发消息时正文首段 P95 不超过 20 秒；HTTP 202、排队提示、思考或任务开始事件均不算正文首段。另报完整回答耗时、完成率、最慢值和普通会话可用性。短问题结果不能推广到工具、长上下文或代码负载。
+
+2026-10 的历史记录包含失败与部分通过，以下只保留防止误操作所需的结论，完整现场日志和中间实验可查 Git 历史：
+
+| 场景 | 历史结论与边界 |
+| --- | --- |
+| TEST 2×8 Worker 试验 | 41 用户阶段出现终态及 WebSocket 失败，该配置被拒绝并恢复 |
+| PR #268 选择的 TEST 2×16 | 41/41 完成，25/41 在 20 秒内看到正文，首段 P95 25.016 秒；未达到严格 20 秒目标 |
+| 首次 2×24 尝试 | 应用配置校验阻止启动，已恢复 2×16；没有吞吐验收结果 |
+| 后续并发校验上限提高到 32 | 仅允许有界比较，不代表部署选择或主机容量承诺 |
+
+选定 2×16 的 TEST 发布使用每 Worker 异步 pool/overflow 8/2、共享同步 pool/overflow 16/2、pool timeout 5 秒。这是历史选定方案，后续部署必须从现行发布脚本和现场配置重新确认，不能据此直接修改正式站。
+
+后续验收需覆盖真实 MySQL 迁移/并发、Redis 中断、Worker 强杀/接管、排队和运行取消、迟到用量结算、无重复终态和额度泄漏，以及完整课堂时段。保留 tests/load 的基线/修复后对比能力；模拟测试和心跳只能分别证明其覆盖范围。
+
+## 沙箱与对话资源分别验收
+
+沙箱内核保留数量、代码执行并发和聊天 Worker 槽是三个限制。一次代码执行结束不等于内核租约释放，少量沙箱通过不能推断全班独立交互式环境容量。
+
+2026-10-25 的有限现场对照采用 512 MiB / 1 CPU、TEST 最多 4 个内核、整机受管上限 6、代码并发 2、动态预热目标 1（最少 1、最多 2）、内存预留 2560 MiB、磁盘预留 15 GiB；4 用户完成 8 次小型混合执行。此前 3072 MiB 预留曾在第 3 人领取时触发内存保护。该记录不覆盖全班代码、打满内存、长时计算或对话叠加，不能用提高数量上限绕过主机保护。
+
+scratch 必须与交互执行共用主机数量/内存/磁盘保护；scratch 生命周期与 reconcile 遵循同一共享主机锁，取消/超时精确回收自身容器。排队后重新核对会话、授权和 nonce，避免凭排队前的授权执行。锁仅协调遵循该协议的进程，共享主机的其他版本需要独立确认。

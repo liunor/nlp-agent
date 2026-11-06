@@ -1,26 +1,5 @@
-import re
 import secrets
-from typing import Any, Optional
-
-UUID_REGEX = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE
-)
-
-
-def validate_uuid(maybe_uuid: Any) -> Optional[str]:
-    """ 验证输入是否为合法的 UUID 字符串。
-
-    Args:
-        maybe_uuid: 待检查的值，任意类型。仅当其为字符串且匹配 UUID 正则时被认为合法。
-
-    Returns:
-        Optional[str]: 如果输入是合法的 UUID 字符串，返回该字符串；否则返回 None。
-    """
-    if not isinstance(maybe_uuid, str):
-        return None
-
-    return maybe_uuid if UUID_REGEX.match(maybe_uuid) else None
+from typing import Optional
 
 
 def create_agent_id(label: Optional[str] = None) -> str:
