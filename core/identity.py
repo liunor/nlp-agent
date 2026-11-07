@@ -42,7 +42,7 @@ class AuthenticatedPrincipal(BaseModel):
 
     def can_access(self, context: SessionContext) -> bool:
         return self.user_id == context.user_id and (
-            "*" in self.workspace_ids or context.workspace_id in self.workspace_ids
+            self.is_admin or "*" in self.workspace_ids or context.workspace_id in self.workspace_ids
         )
 
     def require_context(self, context: SessionContext) -> None:

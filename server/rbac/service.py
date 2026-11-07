@@ -135,8 +135,6 @@ class RbacService:
             )
         ).all()
         workspace_list.extend(w for w in classroom_ws_rows if w)
-        if any(r in {"developer", "admin"} for r in roles):
-            workspace_list.append("*")
         workspaces = frozenset(workspace_list)
         classrooms = frozenset((await session.scalars(
             select(ClassroomMemberModel.classroom_id)
