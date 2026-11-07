@@ -330,14 +330,33 @@ class TeacherService:
         if not deleted:
             raise FileNotFoundError(file_id)
 
-    async def learning_book_navigation(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
+    @staticmethod
+    def require_learning_book_read(
+        principal: AuthenticatedPrincipal, workspace_id: str
+    ) -> None:
+        if principal.has_permission(Permission.LEARNING_CONTENT_READ_PUBLIC):
+            return
         authorization_service.require(
             principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
         )
+
+    @staticmethod
+    async def _resolve_published_workspace(gateway: Any, workspace_id: str, candidate_workspaces: list[str] | None = None) -> str:
+        repo = getattr(gateway, "repository", None)
+        find_fn = getattr(repo, "find_published_workspace", None)
+        if callable(find_fn):
+            resolved = await asyncio.to_thread(find_fn, workspace_id, candidate_workspaces)
+            if resolved:
+                return str(resolved)
+        return workspace_id
+
+    async def learning_book_navigation(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str) -> dict[str, Any]:
+        self.require_learning_book_read(principal, workspace_id)
+        target_ws = await self._resolve_published_workspace(gateway, workspace_id, list(principal.workspace_ids))
         catalog = TeacherCatalog.model_validate(
-            (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
+            (await gateway.get_published_teaching_catalog(principal, target_ws))["catalog"]
         )
-        rows = await gateway.list_knowledge_pages(principal, workspace_id)
+        rows = await gateway.list_knowledge_pages(principal, target_ws)
         pages = {str(row["knowledge_point_id"]): row for row in rows}
         items: list[dict[str, Any]] = []
         for topic in catalog.topics:
@@ -360,16 +379,15 @@ class TeacherService:
         return {"workspace_id": workspace_id, "items": items}
 
     async def learning_book_page(self, principal: AuthenticatedPrincipal, gateway: Any, workspace_id: str, knowledge_point_id: str) -> dict[str, Any]:
-        authorization_service.require(
-            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
-        )
+        self.require_learning_book_read(principal, workspace_id)
+        target_ws = await self._resolve_published_workspace(gateway, workspace_id, list(principal.workspace_ids))
         catalog = TeacherCatalog.model_validate(
-            (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
+            (await gateway.get_published_teaching_catalog(principal, target_ws))["catalog"]
         )
         topic, point = self._catalog_point(catalog, knowledge_point_id)
         if topic.status != "enabled" or point.status != "enabled":
             raise FileNotFoundError(knowledge_point_id)
-        row = await gateway.get_published_knowledge_page(principal, workspace_id, knowledge_point_id)
+        row = await gateway.get_published_knowledge_page(principal, target_ws, knowledge_point_id)
         if row is None:
             raise FileNotFoundError(knowledge_point_id)
         files = [
@@ -391,7 +409,7 @@ class TeacherService:
                 ),
             )
             for file in await gateway.list_published_knowledge_book_files(
-                principal, workspace_id, knowledge_point_id
+                principal, target_ws, knowledge_point_id
             )
         ]
         page = LearningBookPage(
@@ -413,14 +431,13 @@ class TeacherService:
         workspace_id: str,
         file_id: str,
     ) -> dict[str, Any]:
-        authorization_service.require(
-            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
-        )
-        row = await gateway.get_published_knowledge_book_file(principal, workspace_id, file_id)
+        self.require_learning_book_read(principal, workspace_id)
+        target_ws = await self._resolve_published_workspace(gateway, workspace_id, list(principal.workspace_ids))
+        row = await gateway.get_published_knowledge_book_file(principal, target_ws, file_id)
         if row is None:
             raise FileNotFoundError(file_id)
         catalog = TeacherCatalog.model_validate(
-            (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
+            (await gateway.get_published_teaching_catalog(principal, target_ws))["catalog"]
         )
         try:
             topic, point = self._catalog_point(catalog, str(row["knowledge_point_id"]))
@@ -429,7 +446,7 @@ class TeacherService:
         if topic.status != "enabled" or point.status != "enabled":
             raise FileNotFoundError(file_id)
         page = await gateway.get_published_knowledge_page(
-            principal, workspace_id, str(row["knowledge_point_id"])
+            principal, target_ws, str(row["knowledge_point_id"])
         )
         if page is None:
             raise FileNotFoundError(file_id)
@@ -447,8 +464,10 @@ class TeacherService:
         parts = asset_path.split("/")
         if any(part in {"", ".", ".."} for part in parts):
             raise FileNotFoundError(asset_path)
+        self.require_learning_book_read(principal, workspace_id)
+        target_ws = await self._resolve_published_workspace(gateway, workspace_id, list(principal.workspace_ids))
         catalog = TeacherCatalog.model_validate(
-            (await gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
+            (await gateway.get_published_teaching_catalog(principal, target_ws))["catalog"]
         )
         visible_point_ids = {
             point.id
@@ -458,7 +477,7 @@ class TeacherService:
             if point.status == "enabled"
         }
         asset_marker = f"/assets/{quote(asset_path, safe='/')}"
-        rows = await gateway.list_knowledge_pages(principal, workspace_id)
+        rows = await gateway.list_knowledge_pages(principal, target_ws)
         if not any(
             str(row.get("knowledge_point_id")) in visible_point_ids
             and row.get("published_markdown") is not None
@@ -466,7 +485,7 @@ class TeacherService:
             for row in rows
         ):
             raise FileNotFoundError(asset_path)
-        asset = await gateway.get_knowledge_book_asset(principal, workspace_id, asset_path)
+        asset = await gateway.get_knowledge_book_asset(principal, target_ws, asset_path)
         if asset is None:
             raise FileNotFoundError(asset_path)
         return asset
