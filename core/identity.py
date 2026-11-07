@@ -36,6 +36,10 @@ class AuthenticatedPrincipal(BaseModel):
     def is_admin(self) -> bool:
         return bool({"admin", "developer"} & self.roles)
 
+    def has_permission(self, permission: object) -> bool:
+        perm_str = getattr(permission, "value", str(permission))
+        return self.is_admin or perm_str in self.permissions
+
     def can_access(self, context: SessionContext) -> bool:
         return self.user_id == context.user_id and (
             "*" in self.workspace_ids or context.workspace_id in self.workspace_ids
@@ -48,7 +52,7 @@ class AuthenticatedPrincipal(BaseModel):
             )
 
     def require_workspace(self, workspace_id: str) -> None:
-        if "*" not in self.workspace_ids and workspace_id not in self.workspace_ids:
+        if not self.is_admin and "*" not in self.workspace_ids and workspace_id not in self.workspace_ids:
             raise AccessDeniedError(
                 f"principal {self.user_id!r} cannot access workspace {workspace_id!r}"
             )

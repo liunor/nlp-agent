@@ -1070,6 +1070,44 @@ class GatewayRepository:
             markers.append(f'code="{item_row["asset_code"]}"')
         return sum(1 for row in rows if any(marker in (row["draft_markdown"] or "") or marker in (row["published_markdown"] or "") for marker in markers))
 
+    def find_published_workspace(
+        self,
+        workspace_id: str | None = None,
+        candidate_workspaces: list[str] | None = None,
+    ) -> str | None:
+        with self._lock:
+            if workspace_id:
+                row = self._conn.execute(
+                    "SELECT 1 FROM gateway_knowledge_pages WHERE workspace_id=? AND published_markdown IS NOT NULL LIMIT 1",
+                    (workspace_id,),
+                ).fetchone()
+                if row:
+                    return workspace_id
+
+            if candidate_workspaces:
+                for cand in candidate_workspaces:
+                    if cand and cand != workspace_id:
+                        row = self._conn.execute(
+                            "SELECT 1 FROM gateway_knowledge_pages WHERE workspace_id=? AND published_markdown IS NOT NULL LIMIT 1",
+                            (cand,),
+                        ).fetchone()
+                        if row:
+                            return cand
+
+            row = self._conn.execute(
+                "SELECT 1 FROM gateway_knowledge_pages WHERE workspace_id='default' AND published_markdown IS NOT NULL LIMIT 1"
+            ).fetchone()
+            if row:
+                return "default"
+
+            row = self._conn.execute(
+                "SELECT workspace_id FROM gateway_knowledge_pages WHERE published_markdown IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                return str(row["workspace_id"])
+
+            return workspace_id
+
     def list_knowledge_pages(self, workspace_id: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
@@ -1083,9 +1121,14 @@ class GatewayRepository:
 
     def get_published_knowledge_page(self, workspace_id: str, knowledge_point_id: str) -> dict[str, Any] | None:
         row = self.get_knowledge_page(workspace_id, knowledge_point_id)
-        if row is None or row["published_markdown"] is None:
-            return None
-        return row
+        if row is not None and row["published_markdown"] is not None:
+            return row
+        fallback_ws = self.find_published_workspace(workspace_id)
+        if fallback_ws and fallback_ws != workspace_id:
+            row = self.get_knowledge_page(fallback_ws, knowledge_point_id)
+            if row is not None and row["published_markdown"] is not None:
+                return row
+        return None
 
     @staticmethod
     def _check_knowledge_page_revision(current: dict[str, Any] | None, expected_revision: int | None) -> int:
@@ -1241,9 +1284,20 @@ class GatewayRepository:
                    WHERE workspace_id=? AND asset_path=?""",
                 (workspace_id, asset_path),
             ).fetchone()
-        if row is None or row["content"] is None:
-            return None
-        return dict(row)
+        if row is not None and row["content"] is not None:
+            return dict(row)
+        fallback_ws = self.find_published_workspace(workspace_id)
+        if fallback_ws and fallback_ws != workspace_id:
+            with self._lock:
+                row = self._conn.execute(
+                    """SELECT workspace_id,asset_path,media_type,published_content AS content,size_bytes,sha256
+                       FROM gateway_knowledge_book_assets
+                       WHERE workspace_id=? AND asset_path=?""",
+                    (fallback_ws, asset_path),
+                ).fetchone()
+            if row is not None and row["content"] is not None:
+                return dict(row)
+        return None
 
     def create_knowledge_book_file(
         self,
@@ -1339,7 +1393,25 @@ class GatewayRepository:
                    ORDER BY r.sort_order,r.file_id""",
                 (workspace_id, knowledge_point_id),
             ).fetchall()
-        return [dict(row) for row in rows]
+        if rows:
+            return [dict(row) for row in rows]
+        fallback_ws = self.find_published_workspace(workspace_id)
+        if fallback_ws and fallback_ws != workspace_id:
+            with self._lock:
+                rows = self._conn.execute(
+                    """SELECT f.id,f.workspace_id,f.knowledge_point_id,f.original_name,
+                              f.display_name,f.media_type,f.size_bytes,f.sha256,
+                              f.created_by,f.created_at,f.updated_at
+                       FROM gateway_knowledge_book_files AS f
+                       JOIN gateway_knowledge_book_file_refs AS r
+                         ON r.workspace_id=f.workspace_id AND r.file_id=f.id
+                       WHERE f.workspace_id=? AND r.knowledge_point_id=f.knowledge_point_id
+                         AND r.knowledge_point_id=? AND r.state='published'
+                       ORDER BY r.sort_order,r.file_id""",
+                    (fallback_ws, knowledge_point_id),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        return []
 
     def update_knowledge_book_file(
         self,
@@ -1516,7 +1588,25 @@ class GatewayRepository:
                      AND r.knowledge_point_id=f.knowledge_point_id AND r.state='published'""",
                 (workspace_id, file_id),
             ).fetchone()
-        return dict(row) if row is not None else None
+        if row is not None:
+            return dict(row)
+        fallback_ws = self.find_published_workspace(workspace_id)
+        if fallback_ws and fallback_ws != workspace_id:
+            with self._lock:
+                row = self._conn.execute(
+                    """SELECT f.id,f.workspace_id,f.knowledge_point_id,f.original_name,
+                              f.display_name,f.media_type,f.content,f.size_bytes,f.sha256,
+                              f.created_by,f.created_at,f.updated_at
+                       FROM gateway_knowledge_book_files AS f
+                       JOIN gateway_knowledge_book_file_refs AS r
+                         ON r.workspace_id=f.workspace_id AND r.file_id=f.id
+                       WHERE f.workspace_id=? AND f.id=?
+                         AND r.knowledge_point_id=f.knowledge_point_id AND r.state='published'""",
+                    (fallback_ws, file_id),
+                ).fetchone()
+            if row is not None:
+                return dict(row)
+        return None
 
     def select_guided_blueprint(self, *, workspace_id: str, topic_id: str) -> dict[str, Any] | None:
         catalog = self.get_teaching_catalog(workspace_id)["catalog"]
