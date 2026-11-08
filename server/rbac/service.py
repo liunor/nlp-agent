@@ -113,7 +113,7 @@ class RbacService:
         permission_scopes: dict[str, frozenset[str]] = {}
         for code, scope in scope_rows:
             permission_scopes[code] = permission_scopes.get(code, frozenset()) | {scope}
-        workspaces = frozenset(
+        workspace_list = list(
             (
                 await session.scalars(
                     select(WorkspaceMemberModel.workspace_id).where(
@@ -123,6 +123,19 @@ class RbacService:
                 )
             ).all()
         )
+        classroom_ws_rows = (
+            await session.scalars(
+                select(ClassroomModel.workspace_id)
+                .join(ClassroomMemberModel, ClassroomModel.id == ClassroomMemberModel.classroom_id)
+                .where(
+                    ClassroomMemberModel.user_id == user.id,
+                    ClassroomMemberModel.status == "active",
+                    ClassroomModel.status == "active",
+                )
+            )
+        ).all()
+        workspace_list.extend(w for w in classroom_ws_rows if w)
+        workspaces = frozenset(workspace_list)
         classrooms = frozenset((await session.scalars(
             select(ClassroomMemberModel.classroom_id)
             .join(ClassroomModel, ClassroomModel.id == ClassroomMemberModel.classroom_id)

@@ -3403,12 +3403,15 @@ def create_app(
 
     @app.get("/api/v1/learning/catalog/{workspace_id}", tags=["learning"])
     async def get_learning_catalog(workspace_id: str, request: Request, principal: Principal):
-        authorization_service.require(
-            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
+        if not principal.has_permission(Permission.LEARNING_CONTENT_READ_PUBLIC):
+            authorization_service.require(
+                principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
+            )
+        catalog_result = await request.app.state.gateway.get_published_teaching_catalog(
+            principal, workspace_id
         )
-        catalog = dict(
-            (await request.app.state.gateway.get_teaching_catalog(principal, workspace_id))["catalog"]
-        )
+        catalog = dict(catalog_result["catalog"])
+        catalog["workspace_id"] = workspace_id
         catalog["topics"] = [
             _public_learning_topic(topic)
             for topic in catalog.get("topics", [])

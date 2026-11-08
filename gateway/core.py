@@ -983,6 +983,31 @@ class BackendGateway:
             changes,
         )
 
+    @staticmethod
+    def _require_learning_content_read(
+        principal: AuthenticatedPrincipal, workspace_id: str
+    ) -> None:
+        if principal.has_permission(Permission.LEARNING_CONTENT_READ_PUBLIC):
+            return
+        authorization_service.require(
+            principal,
+            Permission.LEARNING_CONTENT_READ_WORKSPACE,
+            workspace_id=workspace_id,
+        )
+
+    async def get_published_teaching_catalog(
+        self,
+        principal: AuthenticatedPrincipal,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        self._require_learning_content_read(principal, workspace_id)
+        candidate_ws = list(principal.workspace_ids)
+        find_fn = getattr(self.repository, "find_published_workspace", None)
+        target_ws = workspace_id
+        if callable(find_fn):
+            target_ws = (await asyncio.to_thread(find_fn, workspace_id, candidate_ws)) or workspace_id
+        return await asyncio.to_thread(self.repository.get_teaching_catalog, target_ws)
+
     async def get_teaching_catalog(self, principal: AuthenticatedPrincipal, workspace_id: str) -> dict[str, Any]:
         authorization_service.require(
             principal,
@@ -1019,11 +1044,7 @@ class BackendGateway:
         principal: AuthenticatedPrincipal,
         workspace_id: str,
     ) -> list[dict[str, Any]]:
-        authorization_service.require(
-            principal,
-            Permission.LEARNING_CONTENT_READ_WORKSPACE,
-            workspace_id=workspace_id,
-        )
+        self._require_learning_content_read(principal, workspace_id)
         return await asyncio.to_thread(self.repository.list_knowledge_pages, workspace_id)
 
     async def get_published_knowledge_page(
@@ -1032,11 +1053,7 @@ class BackendGateway:
         workspace_id: str,
         knowledge_point_id: str,
     ) -> dict[str, Any] | None:
-        authorization_service.require(
-            principal,
-            Permission.LEARNING_CONTENT_READ_WORKSPACE,
-            workspace_id=workspace_id,
-        )
+        self._require_learning_content_read(principal, workspace_id)
         return await asyncio.to_thread(
             self.repository.get_published_knowledge_page,
             workspace_id,
@@ -1116,11 +1133,7 @@ class BackendGateway:
         workspace_id: str,
         asset_path: str,
     ) -> dict[str, Any] | None:
-        authorization_service.require(
-            principal,
-            Permission.LEARNING_CONTENT_READ_WORKSPACE,
-            workspace_id=workspace_id,
-        )
+        self._require_learning_content_read(principal, workspace_id)
         return await asyncio.to_thread(
             self.repository.get_knowledge_book_asset,
             workspace_id,
@@ -1245,9 +1258,7 @@ class BackendGateway:
         workspace_id: str,
         knowledge_point_id: str,
     ) -> list[dict[str, Any]]:
-        authorization_service.require(
-            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
-        )
+        self._require_learning_content_read(principal, workspace_id)
         return await asyncio.to_thread(
             self.repository.list_published_knowledge_book_files,
             workspace_id,
@@ -1348,9 +1359,7 @@ class BackendGateway:
         workspace_id: str,
         file_id: str,
     ) -> dict[str, Any] | None:
-        authorization_service.require(
-            principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
-        )
+        self._require_learning_content_read(principal, workspace_id)
         return await asyncio.to_thread(
             self.repository.get_published_knowledge_book_file,
             workspace_id,
