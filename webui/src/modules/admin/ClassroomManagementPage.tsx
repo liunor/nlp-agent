@@ -7,13 +7,22 @@ import type { ClassroomSummary, JoinRequest } from "@/shared/types";
 interface ClassroomManagementPageProps {
   workspaceId?: string;
 }
-
+type StudentMember = {
+  user_id: string;
+  username: string;
+  display_name: string;
+  member_role: string;
+  status: string;
+  joined_at?: string;
+};
 type WorkspaceOption = { id: string; name: string };
 
 export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPageProps = {}) {
   const [classrooms, setClassrooms] = useState<ClassroomSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [requests, setRequests] = useState<JoinRequest[]>([]);
+  const [students, setStudents] = useState<StudentMember[]>([]);
+  const [searchKeyword, setSearchKeyword] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
@@ -83,13 +92,15 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
     selectedIdRef.current = id;
     setSelectedId(id);
     setRequests([]);
+    setStudents([]);
     setJoinCode("");
     setCopyMessage("");
     setError("");
-    void Promise.all([api.listJoinRequests(id), api.getClassroomJoinCode(id)]).then(([requestResult, codeResult]) => {
+    void Promise.all([api.listJoinRequests(id), api.getClassroomJoinCode(id), api.listClassroomMembers(id)]).then(([requestResult, codeResult, studentResult]) => {
       if (version !== selectionVersion.current || selectedIdRef.current !== id) return;
       setRequests(requestResult.items);
       setJoinCode(codeResult.join_code);
+      setStudents(studentResult.items || []);
     }).catch((err) => {
       if (version !== selectionVersion.current || selectedIdRef.current !== id) return;
       setError(err instanceof Error ? err.message : "加载班级详情失败");
@@ -139,11 +150,23 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
         await api.rejectJoinRequest(classroomId, requestId);
       }
       await loadRequests(classroomId, version);
+      if (approve) {
+        void api.listClassroomMembers(classroomId).then(res => {
+          if (version === selectionVersion.current && selectedIdRef.current === classroomId) {
+            setStudents(res.items || []);
+          }
+        }).catch(() => undefined);
+      }
       if (version === selectionVersion.current && selectedIdRef.current === classroomId) setActionMessage(approve ? "申请已通过" : "申请已拒绝");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "操作失败");
     }
   };
+  const filteredStudents = students.filter(
+    (s) =>
+      s.display_name?.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+      s.username?.toLowerCase().includes(searchKeyword.toLowerCase())
+  );
 
   return (
     <div className="space-y-6">
@@ -254,6 +277,84 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
           )}
         </div>
       </div>
+      <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm w-full">
+        <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-gray-700">班级学生名单</h2>
+            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-800">
+              共 {filteredStudents.length} 人
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="搜索姓名或账号..."
+              value={searchKeyword}
+              onChange={(e) => setSearchKeyword(e.target.value)}
+              className="w-64 rounded border border-gray-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500"
+            />
+            <button
+              type="button"
+              onClick={() => setSearchKeyword("")}
+              className="rounded bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 transition-colors"
+            >
+              移除筛选
+            </button>
+          </div>
+        </div>
+
+        {!selectedId ? (
+          <p className="py-8 text-center text-sm text-gray-500">选择一个班级查看学生</p>
+        ) : filteredStudents.length === 0 ? (
+          <p className="py-8 text-center text-sm text-gray-500">{searchKeyword ? "没有找到匹配的学生" : "该班级暂无学生"}</p>
+        ) : (
+          <div className="max-h-[500px] overflow-y-auto rounded-md border border-gray-100">
+            <table className="w-full text-left text-sm text-gray-600 whitespace-nowrap">
+              <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500">
+                <tr>
+                  <th className="px-4 py-3 font-medium">账号</th>
+                  <th className="px-4 py-3 font-medium">姓名</th>
+                  <th className="px-4 py-3 font-medium">加入时间</th>
+                  <th className="px-4 py-3 font-medium">状态</th>
+                  <th className="px-4 py-3 font-medium text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredStudents.map((student) => (
+                  <tr key={student.user_id} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                    <td className="px-4 py-3 font-medium text-gray-900">@{student.username}</td>
+                    <td className="px-4 py-3">{student.display_name || "未设置"}</td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {student.joined_at ? new Date(student.joined_at).toLocaleDateString() : "-"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="rounded bg-green-50 px-2 py-1 text-xs font-medium text-green-700">活跃</span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!window.confirm(`确定要将 ${student.username} 移出班级吗？`)) return;
+                          try {
+                            await api.removeClassroomMember(selectedId, student.user_id);
+                            setStudents((prev) => prev.filter((s) => s.user_id !== student.user_id));
+                          } catch (err) {
+                            alert("移除失败：" + (err instanceof Error ? err.message : "未知错误"));
+                          }
+                        }}
+                        className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-100 transition-colors"
+                      >
+                        移除
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    
     </div>
   );
 }

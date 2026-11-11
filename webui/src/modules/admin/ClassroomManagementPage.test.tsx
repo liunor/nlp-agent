@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   getClassroomJoinCode: vi.fn(),
   approveJoinRequest: vi.fn(),
   rejectJoinRequest: vi.fn(),
+  listClassroomMembers: vi.fn(),
+  removeClassroomMember: vi.fn(),
 }));
 
 vi.mock("@/platform/http/api", () => ({
@@ -17,6 +19,8 @@ vi.mock("@/platform/http/api", () => ({
     getClassroomJoinCode: mocks.getClassroomJoinCode,
     approveJoinRequest: mocks.approveJoinRequest,
     rejectJoinRequest: mocks.rejectJoinRequest,
+    listClassroomMembers: mocks.listClassroomMembers,
+    removeClassroomMember: mocks.removeClassroomMember,
   },
 }));
 
@@ -33,6 +37,13 @@ describe("ClassroomManagementPage", () => {
     mocks.getClassroomJoinCode.mockReset().mockResolvedValue({ classroom_id: "class-1", classroom_name: "高一语文", join_code: "ABCD2345" });
     mocks.approveJoinRequest.mockReset().mockResolvedValue({});
     mocks.rejectJoinRequest.mockReset().mockResolvedValue({});
+    mocks.listClassroomMembers.mockReset().mockResolvedValue({
+      items: [
+        { user_id: "student-1", username: "student1", display_name: "张三", member_role: "student", status: "active", joined_at: "2026-10-15T00:00:00Z" }
+      ],
+      total: 1
+    });
+    mocks.removeClassroomMember.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => vi.unstubAllGlobals());
@@ -86,5 +97,48 @@ describe("ClassroomManagementPage", () => {
     await waitFor(() => expect(mocks.rejectJoinRequest).toHaveBeenCalledWith("class-1", "request-1"));
     expect(await screen.findByText("申请已拒绝")).toBeVisible();
     expect(mocks.listJoinRequests).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders the student list correctly after selecting a classroom", async () => {
+    render(<ClassroomManagementPage />);
+    await waitFor(() => expect(mocks.listClassrooms).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    await waitFor(() => expect(mocks.listClassroomMembers).toHaveBeenCalledWith("class-1"));
+    expect(await screen.findByText("@student1")).toBeVisible();
+    expect(await screen.findByText("张三")).toBeVisible();
+    expect(await screen.findByText("活跃")).toBeVisible();
+  });
+
+  it("filters the student list based on the search input", async () => {
+    mocks.listClassroomMembers.mockResolvedValueOnce({
+      items: [
+        { user_id: "student-1", username: "student1", display_name: "张三", member_role: "student", status: "active" },
+        { user_id: "student-2", username: "student2", display_name: "李四", member_role: "student", status: "active" }
+      ],
+      total: 2
+    });
+
+    render(<ClassroomManagementPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    expect(await screen.findByText("李四")).toBeVisible();
+    const searchInput = screen.getByPlaceholderText("搜索姓名或账号...");
+    fireEvent.change(searchInput, { target: { value: "李四" } });
+    expect(screen.getByText("李四")).toBeVisible();
+    expect(screen.queryByText("张三")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "移除筛选" }));
+    expect(await screen.findByText("张三")).toBeVisible();
+  });
+
+  it("calls remove API and drops the row when a student is removed", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<ClassroomManagementPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "移除" }));
+    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => expect(mocks.removeClassroomMember).toHaveBeenCalledWith("class-1", "student-1"));
+    await waitFor(() => expect(screen.queryByText("张三")).not.toBeInTheDocument());
   });
 });

@@ -261,7 +261,7 @@ class ClassroomModel(TimestampedModel, Base):
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
-        UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), unique=True, nullable=False
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     join_code: Mapped[str] = mapped_column(String(12), nullable=False)
@@ -283,7 +283,7 @@ class ClassroomMemberModel(TimestampedModel, Base):
     )
     member_role: Mapped[str] = mapped_column(String(16), nullable=False, server_default="student")
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
-
+    user: Mapped["UserModel"] = relationship(lazy="selectin")
 
 class MenuModel(TimestampedModel, Base):
     __tablename__ = "nlp_menus"

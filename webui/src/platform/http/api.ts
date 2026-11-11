@@ -629,6 +629,13 @@ export const api = {
     request<ClassroomJoinCodeResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-code`),
   listJoinRequests: (classroomId: string) =>
     request<JoinRequestListResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-requests`),
+  listClassroomMembers: (classroomId: string) =>
+    request<{ items: any[] }>(`/classrooms/${encodeURIComponent(classroomId)}/members`),
+  removeClassroomMember: (classroomId: string, userId: string) =>
+    request<void>(`/classrooms/${encodeURIComponent(classroomId)}/members/${encodeURIComponent(userId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ member_role: "student", status: "inactive" }), 
+    }),
   approveJoinRequest: (classroomId: string, requestId: string) =>
     request<JoinRequest>(
       `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/approve`,

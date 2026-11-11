@@ -260,8 +260,8 @@ class RbacService:
         return user_ids
 
     async def create_classroom(self, session: AsyncSession, *, workspace_id: str, name: str, actor_user_id: str) -> ClassroomModel:
-        if await session.scalar(select(ClassroomModel.id).where(ClassroomModel.workspace_id == workspace_id).with_for_update()):
-            raise ValueError("workspace already has a classroom")
+        # if await session.scalar(select(ClassroomModel.id).where(ClassroomModel.workspace_id == workspace_id).with_for_update()):
+        #     raise ValueError("workspace already has a classroom")
         classroom: ClassroomModel | None = None
         for _attempt in range(5):
             candidate = ClassroomModel(

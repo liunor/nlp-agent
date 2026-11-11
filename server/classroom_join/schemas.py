@@ -6,6 +6,9 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from datetime import datetime
+
+
 
 class JoinRequestCreate(BaseModel):
     """Guest/student 提交加入申请（学号选填）。"""
@@ -44,4 +47,16 @@ class JoinRequestResponse(BaseModel):
 
 class JoinRequestListResponse(BaseModel):
     items: list[JoinRequestResponse]
+    total: int
+
+class ClassroomMemberResponse(BaseModel):
+    user_id: str
+    username: str
+    display_name: str
+    member_role: str
+    status: str
+    joined_at: datetime | None = None
+
+class ClassroomMemberListResponse(BaseModel):
+    items: list[ClassroomMemberResponse]
     total: int
