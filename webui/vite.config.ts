@@ -10,7 +10,7 @@ const packageJson = JSON.parse(
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const target = env.NLP_API_URL ?? "http://127.0.0.1:8765";
+  const target = env.NLP_API_URL ?? "http://127.0.0.1:80";
 
   return {
     plugins: [react()],

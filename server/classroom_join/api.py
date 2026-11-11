@@ -27,6 +27,8 @@ from server.classroom_join.schemas import (
     JoinRequestCreate,
     JoinRequestListResponse,
     JoinRequestResponse,
+    ClassroomMemberResponse,
+    ClassroomMemberListResponse,
 )
 from server.infrastructure.mysql.models import ClassJoinRequestModel
 from server.rbac.service import rbac_service
@@ -63,7 +65,7 @@ async def _require_classroom_manager(principal: Principal, db: AsyncSession, cla
         principal,
         Permission.CLASSROOM_MEMBER_MANAGE,
         ResourceRef("classroom", workspace_id=classroom.workspace_id, classroom_id=classroom.id),
-    )
+    )  
 
 
 async def _submit_pending_request(
@@ -264,3 +266,27 @@ async def reject_join_request(
     )
     req = result.scalar_one()
     return _to_response(req)
+
+@router.get("/{classroom_id}/members", response_model=ClassroomMemberListResponse)
+async def list_classroom_members(
+    classroom_id: str,
+    principal: Principal,
+    db: DbSession,
+):
+    """教师/管理员查看该班级的已入班学生花名册。"""
+    await _require_classroom_manager(principal, db, classroom_id)
+    
+    members = await service.list_active_classroom_members(db, classroom_id)
+    
+    items = [
+        ClassroomMemberResponse(
+            user_id=m.user_id,
+            username=m.user.username if m.user else "",
+            display_name=(m.user.display_name or m.user.username) if m.user else "",
+            member_role=m.member_role,
+            status=m.status,
+            joined_at=m.created_at
+        )
+        for m in members
+    ]
+    return ClassroomMemberListResponse(items=items, total=len(items))
