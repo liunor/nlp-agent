@@ -424,7 +424,7 @@ export function StudentWorkspace({
   const thinkingSelectionAvailable =
     supportedThinkingLevels.length === 0 ||
     supportedThinkingLevels.includes(workspace.settings.thinking_level);
-  const thinkingControl = (
+  const thinkingControl = supportedThinkingLevels.length > 0 ? (
     <ThinkingLevelControl
       value={workspace.settings.thinking_level}
       supportedLevels={supportedThinkingLevels}
@@ -432,7 +432,7 @@ export function StudentWorkspace({
       onPreviewChange={workspace.setSelectionPreview}
       onChange={(thinking_level) => void workspace.patchSettings({ thinking_level })}
     />
-  );
+  ) : null;
   const composer = (centered = false) => (
     <Composer
       key={workspace.composerRevision}

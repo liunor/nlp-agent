@@ -630,7 +630,16 @@ export const api = {
   listJoinRequests: (classroomId: string) =>
     request<JoinRequestListResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-requests`),
   listClassroomMembers: (classroomId: string) =>
-    request<{ items: any[] }>(`/classrooms/${encodeURIComponent(classroomId)}/members`),
+     request<{
+      items: Array<{
+        user_id: string;
+        username: string;
+        display_name: string;
+        member_role: string;
+        status: string;
+        joined_at?: string;
+      }>;
+    }>(`/classrooms/${encodeURIComponent(classroomId)}/members`),
   removeClassroomMember: (classroomId: string, userId: string) =>
     request<void>(`/classrooms/${encodeURIComponent(classroomId)}/members/${encodeURIComponent(userId)}`, {
       method: "PUT",
