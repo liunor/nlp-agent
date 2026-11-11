@@ -131,7 +131,8 @@ describe("ClassroomManagementPage", () => {
   });
 
   it("calls remove API and drops the row when a student is removed", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.fn().mockReturnValue(true);
+    window.confirm = confirmSpy;
 
     render(<ClassroomManagementPage />);
     fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
