@@ -33,7 +33,7 @@ def _is_valid_markdown_name(file_name: str) -> bool:
     path = PurePath(file_name)
     return (
         path.name == file_name
-        and path.suffix.lower() == ".md"
+        and path.suffix.lower() in {".md", ".markdown"}
         and file_name not in {".", ".."}
         and ".." not in path.parts
     )
@@ -172,7 +172,7 @@ def _has_unsafe_markup(content: str) -> bool:
 
 def normalize_teacher_markdown(file_name: str, content_markdown: str) -> TeacherBookImportPreview:
     if not _is_valid_markdown_name(file_name):
-        raise ValueError("教材导入只接受不含路径的 .md 文件")
+        raise ValueError("教材导入只接受不含路径的 Markdown 文件（.md 或 .markdown）")
     if _has_unsafe_markup(content_markdown):
         raise ValueError("教材 Markdown 不支持原始 HTML、脚本、嵌入或危险链接标记")
     if _EXTERNAL_RESOURCE_RE.search(content_markdown) or _has_external_image_reference(content_markdown):

@@ -33,11 +33,12 @@ function previewPosition(row: HTMLElement): { top: number; left: number } {
   return { top, left };
 }
 
-export function WhiteboardLibraryManager({ items, onItemsChange }: {
+export function WhiteboardLibraryManager({ items, onItemsChange, initialExpanded = true }: {
   items: WhiteboardLibraryItem[];
   onItemsChange: (items: WhiteboardLibraryItem[]) => void;
+  initialExpanded?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(initialExpanded);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
