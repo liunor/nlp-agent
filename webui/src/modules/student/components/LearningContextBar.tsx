@@ -77,7 +77,7 @@ export function LearningContextBar({
     : section === "level" ? levels
       : section === "mode" ? modes
         : Object.entries(modelProfiles).map(([key, profile]) => [key, profile.label] as const);
-  return <div className="learning-context-menu" ref={ref}>
+  return <div className="learning-context-menu" ref={ref} style={{ width: '120px', flexShrink: 0 }}>
     <button className="learning-context-menu-trigger" type="button" aria-label="学习设置" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((current) => { if (current) setSection(null); return !current; })}><SlidersHorizontal size={15} /><span className="learning-context-menu-current">{labels.topic}</span><ChevronDown size={14} /></button>
     {open && <div className={section ? "learning-context-menu-panel has-options" : "learning-context-menu-panel"} role="dialog" aria-label="学习设置" onMouseLeave={() => setSection(null)}>
       <div className="learning-context-menu-sections">

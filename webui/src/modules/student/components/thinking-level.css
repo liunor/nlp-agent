@@ -60,36 +60,34 @@
 [data-reduce-motion="true"] .thinking-level-trigger > svg:last-child { transition: none; }
 .composer { container-type: inline-size; }
 .composer-toolbar .thinking-level-trigger { margin-left: auto; }
-.composer-toolbar:has(.thinking-level-trigger) { gap: 8px; }
-.composer-toolbar:has(.thinking-level-trigger) .learning-context-menu { margin-left: 0; min-width: 0; flex: 0 1 auto; }
-.composer-toolbar:has(.thinking-level-trigger) .learning-context-menu-trigger { max-width: 100%; min-width: 0; }
-.composer-toolbar:has(.thinking-level-trigger) .learning-context-menu-current { min-width: 0; }
-.composer-toolbar:has(.thinking-level-trigger) .send-button { margin-left: 0; flex-shrink: 0; }
 @container (max-width: 600px) { .composer-toolbar > .composer-brand { display: none; } }
 @media (max-width: 640px) { .composer-toolbar > .composer-brand { display: none; } .composer-toolbar:has(.thinking-level-trigger) { padding-left: 10px; gap: 6px; } }
 .learning-context-menu-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 auto;
   gap: 6px;
   min-height: 32px; 
   padding: 0 11px;
-  border: 1px solid transparent;
   border-radius: 999px;
-  background: var(--muted-bg); 
-  
+  background: var(--muted-bg);
   color: var(--fg);
   font-size: 12px;
   cursor: pointer;
+  flex: 0 0 auto !important; 
+  width: max-content !important;
+  min-width: max-content !important;
+  white-space: nowrap !important;
+  box-sizing: border-box !important;
+  border: 1px solid transparent;
 }
-
 .learning-context-menu-trigger:hover,
 .learning-context-menu-trigger[aria-expanded="true"] {
-  border-color: var(--border);
   background: var(--accent-soft);
+  border-color: var(--border); 
 }
 
 .learning-context-menu-trigger svg {
-  color: var(--muted); /* 或者改成 var(--accent) 变成紫色 */
+  color: var(--muted); 
+  flex-shrink: 0 !important;
 }
