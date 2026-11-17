@@ -13,7 +13,9 @@ def test_sandbox_runtime_base_image_is_pinned_to_an_immutable_digest() -> None:
 def test_sandbox_runtime_installs_a_pinned_cpu_only_pytorch_wheel() -> None:
     dockerfile = Path("sandbox-runtime/Dockerfile").read_text(encoding="utf-8")
     normalized = dockerfile.lower()
-    assert "ipykernel==6.29.5" in dockerfile
+    lock = Path("sandbox-runtime/requirements.lock").read_text(encoding="utf-8")
+    assert "ipykernel==6.29.5" in lock
+    assert "--require-hashes" in dockerfile
     assert "pytorch_version=2.7.1" in normalized
     assert "download.pytorch.org/whl/cpu" in normalized
     assert 'torch==${pytorch_version}' in normalized
@@ -30,3 +32,15 @@ def test_runtime_health_probe_verifies_the_pinned_cpu_torch_runtime() -> None:
     assert "import torch" in runtime
     assert "torch.cuda.is_available()" in runtime
     assert "verify_runtime_dependencies()" in health
+
+
+def test_runtime_image_includes_cpu_classroom_dependencies_and_offline_smoke():
+    requirements = Path("sandbox-runtime/requirements.in").read_text(encoding="utf-8")
+    for name in ("numpy", "pandas", "scipy", "scikit-learn", "matplotlib", "seaborn",
+                 "pillow", "openpyxl", "jieba", "transformers", "tokenizers", "sentencepiece"):
+        assert any(line.startswith(name + operator) for line in requirements.splitlines()
+                   for operator in ("==", ">="))
+    dockerfile = Path("sandbox-runtime/Dockerfile").read_text(encoding="utf-8")
+    assert "verify_profile.py" in dockerfile
+    assert "HF_HUB_OFFLINE=1" in dockerfile
+    assert "OPENBLAS_NUM_THREADS=1" in dockerfile
