@@ -19,7 +19,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("user_id", "release_note_id"),
         sa.ForeignKeyConstraint(["user_id"], ["nlp_users.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["release_note_id"], ["nlp_release_notes.id"], ondelete="CASCADE"),
-        comment="用户发布说明已读记录",
+        comment="用户发布说明已读记录。",
     )
 
 

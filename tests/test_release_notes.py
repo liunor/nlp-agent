@@ -11,6 +11,18 @@ from server.release_notes.service import (
 )
 
 
+def test_read_receipt_migration_comment_matches_model(monkeypatch) -> None:
+    import importlib
+    from unittest.mock import Mock
+    from server.infrastructure.mysql.models import ReleaseNoteReadModel
+
+    migration = importlib.import_module("migrations.versions.20261117_release_note_reads")
+    create_table = Mock()
+    monkeypatch.setattr(migration.op, "create_table", create_table)
+    migration.upgrade()
+    assert create_table.call_args.kwargs["comment"] == ReleaseNoteReadModel.__table__.comment
+
+
 def _service_with(crud: AsyncMock) -> ReleaseNoteService:
     return ReleaseNoteService(lambda _session: crud)
 
