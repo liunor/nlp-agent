@@ -1162,6 +1162,19 @@ class ReleaseNoteModel(TimestampedModel, Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="published")
 
 
+class ReleaseNoteReadModel(Base):
+    """Account-scoped receipts, shared across devices and workspaces."""
+
+    __tablename__ = "nlp_release_note_reads"
+    user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    release_note_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_release_notes.id", ondelete="CASCADE"), primary_key=True
+    )
+    read_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
+
+
 class MemoryArchiveModel(TimestampedModel, Base):
     __tablename__ = "nlp_memory_archives"
     __table_args__ = (UniqueConstraint("user_id", "workspace_id", "source_id", name="uq_nlp_memory_archive_source"),)

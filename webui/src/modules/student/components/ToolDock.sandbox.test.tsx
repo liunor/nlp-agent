@@ -9,6 +9,18 @@ vi.mock("./SandboxArtifactFrame", () => ({ SandboxArtifactFrame: () => null }));
 const ready = { runtime_available: true, runtime: { kind: "inmemory", ticket: null } };
 const warming = { runtime_available: false, runtime: null, pool_status: "warming" };
 
+it("shows stdout and a readable traceback together without terminal escape codes", async () => {
+  mocks.lease.mockResolvedValue(ready);
+  mocks.execute.mockResolvedValue({ status: "failed", stdout: "中文输出 😀", stderr: "\u001b[31mValueError: 中文错误\u001b[0m" });
+  showSandbox();
+  await act(async () => {});
+  fireEvent.change(screen.getByRole("textbox", { name: "沙箱代码" }), { target: { value: "print('中文输出 😀'); raise ValueError('中文错误')" } });
+  fireEvent.click(screen.getByRole("button", { name: "运行代码" }));
+  await act(async () => {});
+  const output = screen.getByText((_, element) => element?.tagName === "PRE" && Boolean(element.textContent?.includes("ValueError: 中文错误")));
+  expect(output.textContent).toBe("中文输出 😀\nValueError: 中文错误");
+});
+
 function showSandbox() {
   return render(<ToolDock open expanded={false} openTools={["sandbox"]} activeTool="sandbox" toolMenuOpen={false}
     onToolMenuOpenChange={vi.fn()} onOpenTool={vi.fn()} onReorderTools={vi.fn()} onCloseTool={vi.fn()}

@@ -70,6 +70,16 @@ describe("FilesPanel", () => {
     expect(api.getStorageUsage).toHaveBeenCalledWith("workspace-1");
   });
 
+  it("refreshes files and usage after sandbox execution changes platform files", async () => {
+    render(<FilesPanel workspaceId="workspace-1" />);
+    await screen.findByText("此文件夹为空");
+    vi.mocked(api.listStorageFiles).mockClear();
+    vi.mocked(api.getStorageUsage).mockClear();
+    fireEvent(window, new Event("sandbox:files-changed"));
+    await waitFor(() => expect(api.listStorageFiles).toHaveBeenCalledWith("workspace-1", undefined));
+    expect(api.getStorageUsage).toHaveBeenCalledWith("workspace-1");
+  });
+
   it("keeps the learning-document importer behind a separate tab", async () => {
     render(<FilesPanel workspaceId="workspace-1" />);
 

@@ -94,9 +94,12 @@ def main():
     parser.add_argument("--project", choices=("nova-test", "nova-prod"), required=True)
     parser.add_argument("--env-file", required=True)
     parser.add_argument("--override", required=True)
+    parser.add_argument("--files-bridge-override")
     args = parser.parse_args()
     compose = ["docker", "compose", "--profile", "monitor", "-p", args.project,
                "--env-file", args.env_file, "-f", "compose.yaml", "-f", args.override]
+    if args.files_bridge_override:
+        compose.extend(["-f", args.files_bridge_override])
     print(json.dumps(update(compose, args.project)))
 
 

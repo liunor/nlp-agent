@@ -459,4 +459,50 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(heading?.querySelector(".teacher-book-page-actions")).toBeTruthy();
     expect(screen.queryByText(/教师教材/)).not.toBeInTheDocument();
   });
+
+  it("allows selecting target topic directory when importing markdown to create a new knowledge point", async () => {
+    const user = userEvent.setup();
+    updateCatalogMock.mockResolvedValue({ catalog });
+    previewImportMock.mockResolvedValue({ content_markdown: "# 隐马尔可夫模型\n\nHMM 核心概念", removed_frameworks: [], warnings: [] });
+    applyImportMock.mockResolvedValue({ page: {
+      workspace_id: "workspace-1", topic_id: "pytorch", topic_name: "PyTorch 基础", knowledge_point_id: "new-point", title: "隐马尔可夫模型",
+      draft_markdown: "# 隐马尔可夫模型\n\nHMM 核心概念", published_markdown: "", revision: 1, published_revision: null, updated_at: null,
+    } });
+    render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
+
+    await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    const markdown = new File(["# 隐马尔可夫模型\n\nHMM 核心概念"], "05-hmm.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText("导入 Markdown/图片"), { target: { files: [markdown] } });
+
+    await screen.findByText("05-hmm.md");
+    expect(screen.getByRole("combobox", { name: "选择导入目标" })).toBeVisible();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "选择导入目标" }), "new:pytorch");
+    expect(screen.getByRole("textbox", { name: "新建知识点名称" })).toHaveValue("隐马尔可夫模型");
+
+    const importButton = screen.getByRole("button", { name: "新建知识点并导入" });
+    await user.click(importButton);
+
+    await waitFor(() => expect(updateCatalogMock).toHaveBeenCalledWith("workspace-1", expect.objectContaining({
+      topics: expect.arrayContaining([expect.objectContaining({ id: "pytorch" })]),
+    })));
+    expect(applyImportMock).toHaveBeenCalledWith("workspace-1", expect.any(String), "05-hmm.md", "# 隐马尔可夫模型\n\nHMM 核心概念", 0, []);
+  });
+
+  it("allows quick-adding a knowledge point to a topic via the topic quick-add button", async () => {
+    const user = userEvent.setup();
+    updateCatalogMock.mockResolvedValue({ catalog });
+    render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
+
+    await screen.findByRole("textbox", { name: "教材正文 Markdown" });
+    const quickAddButton = screen.getByRole("button", { name: "在“PyTorch 基础”目录下新增知识点" });
+    await user.click(quickAddButton);
+
+    await waitFor(() => expect(updateCatalogMock).toHaveBeenCalledWith("workspace-1", expect.objectContaining({
+      topics: expect.arrayContaining([expect.objectContaining({
+        id: "pytorch",
+        knowledge_points: expect.arrayContaining([expect.objectContaining({ name: "未命名知识点" })]),
+      })]),
+    })));
+  });
 });

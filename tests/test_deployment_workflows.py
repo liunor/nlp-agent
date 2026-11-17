@@ -17,6 +17,18 @@ WORKFLOW_PATHS = (
 RETRY_HELPER_PATH = ROOT / ".github" / "scripts" / "run-with-transient-registry-retry.sh"
 
 
+def test_test_deployment_enables_files_bridge_for_config_and_recreation():
+    workflow = yaml.safe_load(WORKFLOW_PATHS[0].read_text(encoding="utf-8"))
+    deploy = next(step for step in workflow["jobs"]["deploy"]["steps"]
+                  if "AUTH_DEPLOY_SOURCE_DIR" in step.get("env", {}))
+    script = deploy["run"]
+    assert script.index("prepare-files-bridge.sh") < script.index("config --format json")
+    assert '--files-bridge-override "$FILES_BRIDGE_OVERRIDE"' in script
+    for line in script.splitlines():
+        if '-f compose.yaml -f "$AUTH_PROXY_OVERRIDE"' in line:
+            assert '-f "$FILES_BRIDGE_OVERRIDE"' in line
+
+
 def test_test_publish_queues_fallbacks_without_cancelling_live_deployments() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/publish-test-image.yml").read_text(encoding="utf-8"))
     assert workflow["concurrency"]["cancel-in-progress"] is False

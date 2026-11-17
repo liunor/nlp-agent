@@ -1,3 +1,4 @@
+import { STUDENT_AGENT_LABEL } from "@/shared/branding";
 import { Archive, BookOpen, FolderPlus,  Menu, MoreHorizontal, Pencil, Pin, Plus, Search, Settings, Trash2, UserRound, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -115,7 +116,7 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
     <aside className={`sidebar ${open ? "open" : ""} ${collapsed ? "collapsed" : ""}`} onClickCapture={expandFromCollapsedRail}>
       <div className="sidebar-brand">
         <button className="brand-mark" type="button" aria-label={collapsed ? "展开侧栏" : "Nova NLP 学习助手"} onClick={collapsed ? onExpand : undefined}><img src={novaMarkUrl} alt="" /></button>
-        {!collapsed && <><span className="sidebar-brand-copy"><strong>Nova</strong><small>LSNU NLP Learning Agent</small></span><button className="icon-button collapse-button" type="button" aria-label="折叠侧栏" onClick={onCollapse}><Menu size={16} /></button><button className="mobile-only icon-button" type="button" onClick={onClose}><X size={18} /></button></>}
+        {!collapsed && <><span className="sidebar-brand-copy"><strong>Nova</strong><small>{STUDENT_AGENT_LABEL}</small></span><button className="icon-button collapse-button" type="button" aria-label="折叠侧栏" onClick={onCollapse}><Menu size={16} /></button><button className="mobile-only icon-button" type="button" onClick={onClose}><X size={18} /></button></>}
       </div>
       <nav className="sidebar-actions">
         <SideAction collapsed={collapsed} label={t("newChat")} icon={<Plus size={18} />} onClick={onCreate} />

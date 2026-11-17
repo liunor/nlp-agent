@@ -74,7 +74,6 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 auto;
   gap: 6px;
   width: 240px;
   min-height: 32px;

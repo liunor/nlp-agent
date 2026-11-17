@@ -4,6 +4,7 @@ import type { CSSProperties, DragEvent, KeyboardEvent, PointerEvent, ReactNode }
 import { api, type SandboxRuntimeProfile, type SandboxRuntimeUsage } from "@/platform/http/api";
 import { FilesPanel, type FilesPanelPreviewRequest } from "./FilesPanel";
 import { SandboxArtifactFrame } from "./SandboxArtifactFrame";
+import { cleanSandboxOutput, formatSandboxOutput } from "./sandbox-output";
 
 export type ToolDockTool = "files" | "learning" | "book" | "sandbox" | "whiteboard";
 export type ToolDockTabDropPosition = "before" | "after";
@@ -124,6 +125,7 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
     const workbenchHeight = Math.round(workbench.getBoundingClientRect().height || workbench.clientHeight);
     const fixedHeight = [
       workbench.querySelector<HTMLElement>(".sandbox-workbench-titlebar"),
+      workbench.querySelector<HTMLElement>(".sandbox-lease-notice"),
       workbench.querySelector<HTMLElement>(".sandbox-environment-bar"),
       workbench.querySelector<HTMLElement>(".sandbox-editor-statusbar"),
       workbench.querySelector<HTMLElement>(".sandbox-output-resizer"),
@@ -311,9 +313,9 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
         }
         setRunning(true); setTimeline((current) => [...current, { id: Date.now(), label: "开始执行", detail: "正在向隔离 Kernel 发送代码。" }]);
         void api.executeSandbox(source, runtimeTicketRef.current)
-          .then(async (value) => { if (value.ticket) updateRuntimeTicket(value.ticket); if (value.execution_metrics) setRecentExecutionMetrics(value.execution_metrics); setResult(value.stdout || value.stderr || "运行完成。"); if (value.artifacts) setArtifactUrls((await Promise.all(value.artifacts.map((artifact) => api.getSandboxArtifactUrl(artifact.id).then((access) => access.url).catch(() => null)))).filter((url): url is string => Boolean(url))); if (value.execution_id) { const replay = await api.replaySandboxEvents(value.execution_id); setTimeline(replay.events.map((event) => ({ id: event.event_id, label: event.type === "execution.output" ? "运行输出" : event.type === "execution.completed" ? "执行完成" : "开始执行", detail: event.payload.text ?? "运行状态已恢复。" }))); } else setTimeline((current) => [...current, { id: Date.now(), label: "执行完成", detail: value.stderr ? "运行返回错误输出。" : "已收到 Kernel 输出。" }]); })
+          .then(async (value) => { if (value.ticket) updateRuntimeTicket(value.ticket); if (value.execution_metrics) setRecentExecutionMetrics(value.execution_metrics); setResult(formatSandboxOutput(value.stdout, value.stderr)); if (value.artifacts) setArtifactUrls((await Promise.all(value.artifacts.map((artifact) => api.getSandboxArtifactUrl(artifact.id).then((access) => access.url).catch(() => null)))).filter((url): url is string => Boolean(url))); if (value.execution_id) { const replay = await api.replaySandboxEvents(value.execution_id); setTimeline(replay.events.map((event) => ({ id: event.event_id, label: event.type === "execution.output" ? "运行输出" : event.type === "execution.completed" ? "执行完成" : "开始执行", detail: cleanSandboxOutput(event.payload.text ?? "运行状态已恢复。") }))); } else setTimeline((current) => [...current, { id: Date.now(), label: "执行完成", detail: value.stderr ? "运行返回错误输出。" : "已收到 Kernel 输出。" }]); })
           .catch(() => { setResult("当前运行环境不可用。"); setTimeline((current) => [...current, { id: Date.now(), label: "执行失败", detail: "请重新打开或重置运行环境。" }]); })
-          .finally(() => setRunning(false));
+          .finally(() => { setRunning(false); window.dispatchEvent(new Event("sandbox:files-changed")); });
   };
 
   const setTheme = (theme: SandboxEditorTheme) => {
