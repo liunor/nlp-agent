@@ -77,9 +77,10 @@ export function LearningContextBar({
     : section === "level" ? levels
       : section === "mode" ? modes
         : Object.entries(modelProfiles).map(([key, profile]) => [key, profile.label] as const);
-  return <div className="learning-context-menu" ref={ref} style={{ width: '120px', flexShrink: 0 }}>
-    <button className="learning-context-menu-trigger" type="button" aria-label="学习设置" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((current) => { if (current) setSection(null); return !current; })}><SlidersHorizontal size={15} /><span className="learning-context-menu-current">{labels.topic}</span><ChevronDown size={14} /></button>
-    {open && <div className={section ? "learning-context-menu-panel has-options" : "learning-context-menu-panel"} role="dialog" aria-label="学习设置" onMouseLeave={() => setSection(null)}>
+  return <div className="learning-context-menu" ref={ref} >
+    <button className="learning-context-menu-trigger ${open ? 'is-open' : ''}" type="button" aria-label="学习设置" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((current) => { if (current) setSection(null); return !current; })}><SlidersHorizontal size={15} /><span className="learning-context-menu-current">{labels.topic}</span><ChevronDown size={14} /></button>
+    {open && <div className={section ? "learning-context-menu-panel has-options" : "learning-context-menu-panel"} role="dialog" aria-label="学习设置" onMouseLeave={() => setSection(null)}
+      style={{ position: "absolute", bottom: "100%", right: 0, marginBottom: "8px", zIndex: 100 }}>
       <div className="learning-context-menu-sections">
         {sections.map((item) => {
           const itemLabel = item === "topic" ? "主题" : item === "level" ? "水平" : item === "mode" ? "模式" : "模型";
