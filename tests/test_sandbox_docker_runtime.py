@@ -346,3 +346,13 @@ def test_files_bind_is_readonly_for_l0_and_l1():
     for command in (adapter.create_command(name="l0", claim_nonce="", files_mount="/bridge/u/w"),
                     adapter.create_l1_command(name="l1", files_mount="/bridge/u/w")):
         assert "type=bind,source=/bridge/u/w,target=/files,readonly" in command
+
+
+def test_writable_files_mount_has_kernel_size_ceiling(monkeypatch):
+    from server.sandbox.docker_runtime import DockerRuntimeAdapter, DockerRuntimeConfig
+    monkeypatch.setenv("SANDBOX_FILES_BRIDGE_WRITABLE", "true")
+    adapter = DockerRuntimeAdapter(DockerRuntimeConfig(image="registry/nova@sha256:" + "a" * 64))
+    for command in (adapter.create_command(name="rw", claim_nonce="", files_mount="/bridge/u/w", files_max_bytes=1024),
+                    adapter.create_l1_command(name="rw-l1", files_mount="/bridge/u/w", files_max_bytes=1024)):
+        assert "type=bind,source=/bridge/u/w,target=/files" in command
+        assert command[command.index("--ulimit") + 1] == "fsize=1024:1024"

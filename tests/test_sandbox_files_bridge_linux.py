@@ -93,6 +93,33 @@ async def test_real_personal_file_is_readable_and_readonly_in_runsc(monkeypatch,
         await manager.destroy_runtime(claim.runtime.id, reason="test.complete", refill=False)
         await manager._reap_files_mounts()
         assert not manager._files_mounts.has_mounts
+        # The same isolated MySQL/storage fixture also exercises real writable
+        # FUSE callbacks, runsc limits, atomic save and transaction rollback.
+        import runpy
+        from pathlib import Path
+        monkeypatch.setenv("SANDBOX_FILES_BRIDGE_WRITABLE", "true")
+        monkeypatch.setenv("SANDBOX_BRIDGE_BASE_DIR", str(tmp_path / "write-bridge"))
+        monkeypatch.setenv("BRIDGE_PROBE_IMAGE", stdout.decode().strip())
+        probe = runpy.run_path(str(Path(__file__).parents[1] / "scripts/probe_sandbox_files_bridge_write.py"))
+        await probe["main"]()
+        # Exercise the actual Manager provisioning path too, including the
+        # account-derived kernel size limit and the writable mount matcher.
+        claim = await manager.claim(scope, lease_id=lease.id)
+        assert claim is not None, "Manager must provision a writable files runtime"
+        result = await manager.execute_claimed(scope, lease_id=lease.id, runtime_id=claim.runtime.id,
+            generation=claim.runtime.generation, nonce=claim.nonce,
+            source="from pathlib import Path\np=Path('/files/runtime-save.txt')\n"
+                   "p.write_text('saved by manager', encoding='utf-8')\n"
+                   "print(p.read_text(encoding='utf-8'))\n")
+        assert result["status"] == "completed", result
+        assert "saved by manager" in result["stdout"]
+        async with factory() as session:
+            saved = await session.scalar(select(UserFileModel).where(
+                UserFileModel.owner_user_id == user.id,
+                UserFileModel.workspace_id == scope.workspace_id,
+                UserFileModel.display_name == "runtime-save.txt"))
+            assert saved is not None and saved.size_bytes == len(b"saved by manager")
+        await manager.destroy_runtime(claim.runtime.id, reason="test.write.complete", refill=False)
     finally:
         for external_id in await adapter.managed_runtime_ids():
             await adapter.destroy(external_id)
