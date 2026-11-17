@@ -1,5 +1,5 @@
 // Temporary competition presentation: set to true after the competition to
-// restore the original branding in the four student-facing locations.
+// restore the original branding in the student-facing locations, including About team affiliations.
 export const SHOW_STUDENT_SCHOOL_BRANDING = false;
 
 export const STUDENT_AGENT_LABEL = SHOW_STUDENT_SCHOOL_BRANDING
