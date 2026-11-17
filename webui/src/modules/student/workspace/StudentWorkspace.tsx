@@ -1,3 +1,4 @@
+import { SHOW_STUDENT_SCHOOL_BRANDING } from "@/shared/branding";
 import {
   Maximize2,
   Minimize2,
@@ -713,9 +714,11 @@ export function StudentWorkspace({
             : null
         }
       />
-      <div className="student-school-logo">
-        <SchoolLogo />
-      </div>
+      {SHOW_STUDENT_SCHOOL_BRANDING && (
+        <div className="student-school-logo">
+          <SchoolLogo />
+        </div>
+      )}
       {workspace.authSession?.user_id && (
         <FileTransferNotifier
           userId={workspace.authSession.user_id}
