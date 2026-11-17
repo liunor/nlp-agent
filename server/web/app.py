@@ -3371,8 +3371,9 @@ def create_app(
             request,
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             code="storage_quota_exceeded",
-            title="Account storage quota exceeded",
-            detail=str(error),
+            title="Storage limit reached",
+            detail=error.public_message,
+            extra=error.public_details,
         )
 
     @app.exception_handler(WhiteboardLibraryInUseError)

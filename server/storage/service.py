@@ -9,10 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import cast, delete, exists, func, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.sqltypes import Text as SqlText
 
 from configs.settings import settings
 from core.identity import AuthenticatedPrincipal
@@ -39,6 +38,8 @@ from server.infrastructure.mysql.models import (
 )
 from server.tools.vision.input_resolver import DEFAULT_UPLOADS_ROOT
 
+from .accounting import storage_bytes_expr as _bytes_expr
+from .errors import StorageQuotaReason
 from .policy import StorageBucket, StoragePolicy, policy_for_roles, policy_with_overrides, usage_ratio, usage_state
 from .quota import AsyncStorageQuota, StorageError, StorageQuotaExceeded
 
@@ -178,10 +179,6 @@ def storage_path_for(scope: StorageScope, storage_key: str | None) -> Path:
 
 
 _safe_file_path = storage_path_for
-
-
-def _bytes_expr(column):
-    return func.coalesce(func.length(cast(column, SqlText)), 0)
 
 
 async def purge_expired_storage_trash(db: AsyncSession, *, retention_days: int | None = None) -> int:
@@ -479,13 +476,13 @@ class StorageService:
 
     def _check_global_capacity(self, incoming_bytes: int) -> None:
         if self._global_file_bytes() + incoming_bytes > settings.NLP_AGENT_USER_FILES_GLOBAL_LIMIT_BYTES:
-            raise StorageQuotaExceeded("服务器个人文件池已达到系统上限")
+            raise StorageQuotaExceeded("服务器个人文件池已达到系统上限", reason=StorageQuotaReason.GLOBAL_FILES)
         try:
             free_bytes = shutil.disk_usage(storage_root().parent).free
         except OSError:
             return
         if free_bytes - incoming_bytes < settings.NLP_AGENT_STORAGE_MIN_FREE_BYTES:
-            raise StorageQuotaExceeded("服务器需要保留的系统空间不足")
+            raise StorageQuotaExceeded("服务器需要保留的系统空间不足", reason=StorageQuotaReason.DISK)
 
     @staticmethod
     def _bucket(used: int, quota: int, reserved: int = 0) -> dict[str, int | float | str]:
@@ -640,13 +637,13 @@ class StorageService:
             or 0
         )
         if count >= policy.max_items:
-            raise StorageQuotaExceeded("文件数量已达到配额")
+            raise StorageQuotaExceeded("文件数量已达到配额", reason=StorageQuotaReason.FILE_COUNT)
         data = await upload.read(policy.max_file_bytes + 1)
         if len(data) > policy.max_file_bytes:
-            raise StorageQuotaExceeded("文件大小已达到当前角色的单文件配额")
+            raise StorageQuotaExceeded("文件大小已达到当前角色的单文件配额", reason=StorageQuotaReason.FILE_SIZE)
         current = await self._file_used()
         if current + len(data) > policy.files_quota_bytes:
-            raise StorageQuotaExceeded("个人文件空间已达到配额")
+            raise StorageQuotaExceeded("个人文件空间已达到配额", reason=StorageQuotaReason.FILES)
         self._check_global_capacity(len(data))
 
         item_id = str(uuid.uuid4())

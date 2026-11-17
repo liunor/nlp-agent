@@ -565,7 +565,7 @@ def _command_error(error: Exception) -> tuple[str, str, dict[str, Any]]:
         }
         return error.code, messages[error.code], {}
     if isinstance(error, StorageQuotaExceeded):
-        return "storage_quota_exceeded", "账户通用存储空间已达到配额，请清理会话、记忆或图片后重试", {}
+        return "storage_quota_exceeded", error.public_message, error.public_details
     if isinstance(error, QuotaRejectedError):
         from server.quota.transport import quota_error
         code, message, _status = quota_error(error)
