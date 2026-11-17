@@ -1010,7 +1010,7 @@ button { color: inherit; }
 
 /* Sandbox is an editor workbench, not a chat card.  Its layout follows the
    editor / status bar / bottom panel vocabulary of VS Code. */
-.sandbox-workbench { --sandbox-bg:#1e1e1e; --sandbox-surface:#252526; --sandbox-editor:#1e1e1e; --sandbox-output:#181818; --sandbox-gutter:#1e1e1e; --sandbox-border:#3c3c3c; --sandbox-text:#d4d4d4; --sandbox-muted:#9d9d9d; --sandbox-accent:#3794ff; --sandbox-success:#4ec9b0; --sandbox-button:#0e639c; --sandbox-editor-font-size:15px; display:grid; width:100%; min-width:0; grid-template-rows:auto auto minmax(0,1fr) auto 9px minmax(0,auto); min-height:0; height:100%; overflow:hidden; background:var(--sandbox-bg); color:var(--sandbox-text); font-family:Inter,"Noto Sans SC",system-ui,sans-serif; }
+.sandbox-workbench { --sandbox-bg:#1e1e1e; --sandbox-surface:#252526; --sandbox-editor:#1e1e1e; --sandbox-output:#181818; --sandbox-gutter:#1e1e1e; --sandbox-border:#3c3c3c; --sandbox-text:#d4d4d4; --sandbox-muted:#9d9d9d; --sandbox-accent:#3794ff; --sandbox-success:#4ec9b0; --sandbox-button:#0e639c; --sandbox-editor-font-size:15px; display:grid; width:100%; min-width:0; grid-template-rows:auto auto auto minmax(0,1fr) auto 9px minmax(0,auto); min-height:0; height:100%; overflow:hidden; background:var(--sandbox-bg); color:var(--sandbox-text); font-family:Inter,"Noto Sans SC",system-ui,sans-serif; }
 .sandbox-workbench[data-editor-theme="light"] { --sandbox-bg:#ffffff; --sandbox-surface:#f3f3f3; --sandbox-editor:#ffffff; --sandbox-output:#fafafa; --sandbox-gutter:#f8f8f8; --sandbox-border:#e0e0e0; --sandbox-text:#1f1f1f; --sandbox-muted:#626262; --sandbox-accent:#005fb8; --sandbox-success:#16825d; --sandbox-button:#0078d4; }
 .sandbox-workbench[data-editor-theme="high-contrast"] { --sandbox-bg:#000000; --sandbox-surface:#000000; --sandbox-editor:#000000; --sandbox-output:#000000; --sandbox-gutter:#000000; --sandbox-border:#f0f0f0; --sandbox-text:#ffffff; --sandbox-muted:#f2f2f2; --sandbox-accent:#ffff00; --sandbox-success:#00ff9d; --sandbox-button:#ffff00; }
 .sandbox-workbench-titlebar { display:flex; min-height:50px; align-items:center; gap:9px; padding:0 12px 0 14px; overflow-x:auto; overflow-y:hidden; border-bottom:1px solid var(--sandbox-border); background:var(--sandbox-surface); white-space:nowrap; scrollbar-width:none; -ms-overflow-style:none; }.sandbox-workbench-titlebar::-webkit-scrollbar { display:none; }
@@ -3514,6 +3514,13 @@ button { color: inherit; }
 
 .sandbox-lease-notice { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border-bottom:1px solid var(--sandbox-border); color:var(--sandbox-text); font:12px/1.5 Inter,"Noto Sans SC",system-ui,sans-serif; }
 .sandbox-lease-notice button { flex-shrink:0; padding:5px 9px; border:1px solid var(--sandbox-border); border-radius:6px; background:var(--sandbox-surface); color:var(--sandbox-text); cursor:pointer; }
+.sandbox-workbench > .sandbox-workbench-titlebar { grid-row:1; }
+.sandbox-workbench > .sandbox-lease-notice { grid-row:2; }
+.sandbox-workbench > .sandbox-environment-bar { grid-row:3; }
+.sandbox-workbench > .sandbox-editor-pane { grid-row:4; }
+.sandbox-workbench > .sandbox-editor-statusbar { grid-row:5; }
+.sandbox-workbench > .sandbox-output-resizer { grid-row:6; }
+.sandbox-workbench > .sandbox-output-panel { grid-row:7; }
 .teacher-data-scope { display:grid; gap:7px; padding:14px 16px; border:1px solid var(--border); border-radius:10px; color:var(--fg); font-size:13px; }
 .teacher-data-scope > span,.teacher-data-scope p { margin:0; color:var(--muted); line-height:1.6; }
 .teacher-data-scope button { justify-self:start; border:1px solid var(--border); border-radius:7px; padding:6px 10px; background:var(--soft-bg); color:var(--fg); cursor:pointer; }

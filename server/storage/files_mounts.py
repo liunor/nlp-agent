@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import subprocess
+import errno
 
 from .filesystem_bridge import mount_user_filesystem
 
@@ -24,6 +25,41 @@ class StorageMountRegistry:
     def owns(self, user_id: str, workspace_id: str) -> bool:
         entry = self._mounts.get(self.path_for(user_id, workspace_id))
         return entry is not None and entry[0] is not None
+
+    @staticmethod
+    def _is_mount(path):
+        if os.path.ismount(path):
+            return True
+        # ismount() returns False on ENOTCONN, hiding disconnected FUSE roots.
+        try:
+            with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
+                for line in mounts:
+                    fields = line.split()
+                    target = fields[4].replace(r"\040", " ").replace(r"\011", "\t").replace(r"\134", "\\")
+                    if target == path:
+                        return True
+        except FileNotFoundError:
+            pass
+        return False
+
+    @staticmethod
+    def _probe_mount(path):
+        os.stat(path)
+
+    async def _recover_disconnected(self, path):
+        try:
+            await asyncio.wait_for(asyncio.to_thread(self._probe_mount, path), timeout=1)
+        except OSError as error:
+            if error.errno != errno.ENOTCONN:
+                raise
+            result = await asyncio.to_thread(subprocess.run, ["umount", "-l", path],
+                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            if result.returncode != 0 or self._is_mount(path):
+                raise RuntimeError("Failed to detach disconnected files bridge") from error
+            self._mounts.pop(path, None)
+            self._scopes.pop(path, None)
+            return
+        raise RuntimeError("Files bridge mount belongs to another Manager; healthy mounts are preserved")
 
     async def reap(self, active_scopes):
         async with self._lock:
@@ -49,10 +85,11 @@ class StorageMountRegistry:
     async def ensure(self, user_id: str, workspace_id: str) -> str:
         path = self.path_for(user_id, workspace_id)
         async with self._lock:
-            if os.path.ismount(path):
+            if self._is_mount(path):
                 if path not in self._mounts:
-                    raise RuntimeError("Files bridge mount belongs to another Manager; detach stale mounts before restart")
-                return path
+                    await self._recover_disconnected(path)
+                else:
+                    return path
             entry = self._mounts.get(path)
             if entry is None or entry[0] is None or not entry[0].is_alive():
                 Path(path).mkdir(parents=True, exist_ok=True)

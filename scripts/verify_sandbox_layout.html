@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../webui/src/app/styles.css">
+<body>
+<div id="fixture"></div><pre id="result">RUNNING</pre>
+<script>
+const results = [];
+for (const state of ['ready', 'creating', 'error']) {
+  document.getElementById('fixture').innerHTML = `
+    <section class="sandbox-workbench" style="height:800px;width:700px">
+      <header class="sandbox-workbench-titlebar">Code Runner</header>
+      ${state === 'ready' ? '' : '<div class="sandbox-lease-notice">等待可用环境或重试连接</div>'}
+      <div class="sandbox-environment-bar"><div class="sandbox-runtime-status">${state}</div><span>Python 3.11</span></div>
+      <div class="sandbox-editor-pane"><div class="sandbox-code-gutter">1</div><div class="sandbox-editor-layer"><textarea>print('hello')</textarea></div></div>
+      <footer class="sandbox-editor-statusbar">Python</footer>
+      <div class="sandbox-output-resizer"></div>
+      <div class="sandbox-output-panel" style="height:200px"><header>输出</header><pre>结果</pre></div>
+    </section>`;
+  const box = selector => document.querySelector(selector).getBoundingClientRect();
+  const environment = box('.sandbox-environment-bar');
+  const editor = box('.sandbox-editor-pane');
+  const footer = box('.sandbox-editor-statusbar');
+  const output = box('.sandbox-output-panel');
+  const pass = environment.height < 100 && editor.height > 300 &&
+    editor.top >= environment.bottom - 1 && footer.top >= editor.bottom - 1 && output.top > footer.top;
+  results.push({state, pass, environmentHeight: environment.height, editorHeight: editor.height});
+}
+document.getElementById('result').textContent = (results.every(r => r.pass) ? 'PASS ' : 'FAIL ') + JSON.stringify(results);
+</script>
