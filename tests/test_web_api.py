@@ -399,6 +399,59 @@ def test_student_cannot_call_teacher_or_developer_control_planes(student_web_app
         assert client.get("/api/v1/sessions").status_code == 401
 
 
+def test_release_announcement_routes_bind_receipts_to_authenticated_account(web_app, monkeypatch):
+    from types import SimpleNamespace
+    service = SimpleNamespace(
+        latest_unread=AsyncMock(return_value=None),
+        mark_read=AsyncMock(),
+    )
+
+    class FakeSession:
+        @asynccontextmanager
+        async def begin(self):
+            yield
+
+        def add(self, _obj):
+            pass
+
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [])
+
+    class FakeFactory:
+        @asynccontextmanager
+        async def __call__(self):
+            yield FakeSession()
+
+        begin = __call__
+
+    factory = FakeFactory()
+    monkeypatch.setattr("server.web.app.release_note_service", service)
+    monkeypatch.setattr("server.web.app.rbac_service.principal_for_username", AsyncMock(
+        return_value=AuthenticatedPrincipal(user_id="nova", roles=frozenset({"admin"}))
+    ))
+    monkeypatch.setattr(BackendGateway, "authorization_session_factory", property(lambda self: factory))
+    for name in ("reconcile_all_storage_accounts", "purge_expired_storage_trash", "purge_expired_guest_data"):
+        monkeypatch.setattr(f"gateway.core.{name}", AsyncMock(return_value=0))
+    app, _engine = web_app
+    with TestClient(app) as client:
+        assert client.get("/api/v1/learning/release-notes/unread").status_code == 401
+        csrf = authenticate(client)
+        assert client.get("/api/v1/learning/release-notes/unread").json() == {"item": None}
+        service.latest_unread.assert_awaited_once()
+        assert service.latest_unread.call_args.kwargs["user_id"] == "nova"
+        url = "/api/v1/learning/release-notes/n1/read"
+        assert client.post(url).status_code == 403
+        assert client.post(url, headers=write_headers(csrf), json={"user_id": "other"}).status_code == 200
+        assert service.mark_read.call_args.kwargs == {"user_id": "nova", "note_id": "n1"}
+        from server.release_notes.service import ReleaseNoteNotFoundError
+        service.mark_read.side_effect = ReleaseNoteNotFoundError("missing")
+        assert client.post(url, headers=write_headers(csrf)).status_code == 404
+        guest = client.post("/api/v1/auth/guest", headers={"Origin": "http://testserver"})
+        assert guest.status_code == 200
+        assert client.get("/api/v1/learning/release-notes/unread").json() == {"item": None}
+        assert client.post(url, headers=write_headers(guest.json()["csrf_token"])).status_code == 403
+
+
 def test_learning_release_notes_route_requests_only_published(web_app, monkeypatch):
     """The public read route must pass include_drafts=False and serialize the payload.
 
