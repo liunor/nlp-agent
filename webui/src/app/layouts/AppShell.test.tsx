@@ -26,7 +26,7 @@ describe("student ICP record bar", () => {
     );
 
     expect(screen.getByRole("button", { name: "发送" })).toBeVisible();
-    expect(screen.getByText("© 2026 乐山师范学院自然语言处理教学平台")).toBeVisible();
+    expect(screen.getByText("© 2026 自然语言处理教学平台")).toBeVisible();
 
     const recordLink = screen.getByRole("link", { name: "蜀ICP备2026055638号" });
     expect(recordLink).toHaveAttribute("href", "https://beian.miit.gov.cn/");

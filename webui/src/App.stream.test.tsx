@@ -129,13 +129,12 @@ import { App } from "./App";
 const event = (type: string, payload: Record<string, unknown> = {}, timestamp = "2026-07-19T00:00:00Z") => ({ v: "1", type, timestamp, session_id: "session_1", turn_id: "turn_1", payload });
 
 describe("student stream rendering", () => {
-  it("uses a Codex-style tools dock while keeping theme mode in the fixed header actions and the school logo at the upper left", async () => {
+  it("keeps the tools dock and theme controls while hiding the school logo for the competition", async () => {
     render(<App />);
 
-    const logo = await screen.findByAltText("学校校徽");
-    expect(logo.closest(".student-school-logo")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "切换主题" })).toBeVisible();
+    expect(screen.queryByAltText("学校校徽")).not.toBeInTheDocument();
     expect(document.querySelector(".student-app-shell")).toHaveClass("sidebar-is-collapsed");
-    expect(logo.closest(".thread-header")).toBeNull();
     expect(screen.getByRole("button", { name: "切换主题" }).closest(".thread-header-actions")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "打开工具侧栏" }));

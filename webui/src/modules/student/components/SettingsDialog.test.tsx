@@ -128,8 +128,11 @@ describe("SettingsDialog", () => {
     expect(screen.queryByText("Nova · LSNU NLP Learning Agent")).not.toBeInTheDocument();
     expect(screen.queryByRole("img", { name: "Nova" })).not.toBeInTheDocument();
     expect(screen.getByText("了解 Nova 以及项目背后的团队。")).toBeVisible();
-    expect(container.querySelector(".settings-about-team-card")).toBeVisible();
-    expect(container.querySelectorAll(".settings-about-labs article")).toHaveLength(2);
+    expect(container.querySelector(".settings-about-team-card")).not.toBeInTheDocument();
+    expect(screen.queryByText("项目与团队")).not.toBeInTheDocument();
+    for (const affiliation of ["乐山师范学院", "人工智能与机器人学院", "四川省哲学社会科学重点实验室", "特殊教育语言智能", "四川省高校重点实验室", "互联网自然语言智能处理"]) {
+      expect(screen.queryByText(affiliation)).not.toBeInTheDocument();
+    }
     const contributionList = screen.getByRole("list", { name: "可以参与的方向" });
     expect(contributionList).toBeVisible();
     expect(within(contributionList).getAllByRole("listitem")).toHaveLength(7);
