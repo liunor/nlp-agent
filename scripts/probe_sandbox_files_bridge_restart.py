@@ -9,10 +9,11 @@ from server.infrastructure.mysql import DatabaseConfig, create_engine, create_se
 from server.storage.files_mounts import StorageMountRegistry
 
 
-async def main():
+async def main(owner=None, workspace=None):
     engine = create_engine(DatabaseConfig.from_runtime(settings.database_runtime))
     registry = StorageMountRegistry(create_session_factory(engine))
-    owner, workspace = sys.argv[-2:]
+    if owner is None:
+        owner, workspace = sys.argv[-2:]
     child = None
     try:
         if "--daemon" in sys.argv:

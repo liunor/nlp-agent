@@ -120,6 +120,9 @@ async def test_real_personal_file_is_readable_and_readonly_in_runsc(monkeypatch,
                 UserFileModel.display_name == "runtime-save.txt"))
             assert saved is not None and saved.size_bytes == len(b"saved by manager")
         await manager.destroy_runtime(claim.runtime.id, reason="test.write.complete", refill=False)
+        monkeypatch.setenv("SANDBOX_BRIDGE_BASE_DIR", str(tmp_path / "restart-probe-ci"))
+        restart_probe = runpy.run_path(str(Path(__file__).parents[1] / "scripts/probe_sandbox_files_bridge_restart.py"))
+        await restart_probe["main"](user.id, scope.workspace_id)
     finally:
         for external_id in await adapter.managed_runtime_ids():
             await adapter.destroy(external_id)
