@@ -31,9 +31,10 @@ TERMINAL_ESCAPE = re.compile(
 def verify_runtime_dependencies() -> None:
     """Fail readiness when the image does not contain the promised CPU runtime."""
     try:
+        import numpy as np
         import torch
     except ImportError as error:
-        raise RuntimeError("required runtime dependency torch is unavailable") from error
+        raise RuntimeError("required runtime dependencies numpy/torch are unavailable") from error
     installed_version = str(torch.__version__).split("+", 1)[0]
     if installed_version != EXPECTED_TORCH_VERSION:
         raise RuntimeError(
@@ -41,6 +42,8 @@ def verify_runtime_dependencies() -> None:
         )
     if torch.cuda.is_available():
         raise RuntimeError("CPU-only PyTorch runtime unexpectedly exposes CUDA")
+    if torch.from_numpy(np.ones(1, dtype=np.float32)).numpy()[0] != 1:
+        raise RuntimeError("PyTorch/NumPy interoperability failed")
 
 
 class OutputCollector:

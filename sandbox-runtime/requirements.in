@@ -1,0 +1,20 @@
+# CPU-only classroom profile; torch is installed from its dedicated CPU index.
+ipykernel==6.29.5
+numpy>=2.2,<2.4
+pandas>=2.2,<3
+scipy>=1.14,<1.17
+scikit-learn>=1.6,<1.10
+matplotlib>=3.9,<3.12
+seaborn>=0.13,<0.14
+pillow>=11,<13
+openpyxl>=3.1,<4
+jieba==0.42.1
+regex>=2024.11
+tqdm>=4.67,<5
+pyyaml>=6,<7
+transformers>=4.50,<5
+tokenizers>=0.21,<0.24
+sentencepiece>=0.2,<0.3
+safetensors>=0.5,<1
+sympy>=1.13.3,<1.15
+networkx>=3.4,<3.6
