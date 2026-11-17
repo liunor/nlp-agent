@@ -80,8 +80,12 @@ without blocking its database event loop. Metadata queries run on the same loop
 as its pooled database connections. Failed mounts never fall back to an empty,
 writable directory. Reconciliation removes mounts without live runtimes; normal
 Manager shutdown detaches its mounts. A hard-killed Manager may leave a
-disconnected FUSE endpoint: detach that deployment's stale mount with
-`umount -l <mountpoint>` before restarting it.
+disconnected FUSE endpoint. The next scoped claim checks mountinfo (because
+`ismount()` alone hides ENOTCONN roots), probes the endpoint, and detaches it
+only when the kernel reports ENOTCONN. It then mounts a fresh filesystem.
+Healthy mounts belonging to another Manager and hung probes are preserved.
+If automatic recovery fails, inspect that exact deployment mount before any
+manual `umount -l`; never detach mounts across deployment namespaces.
 
 ## Upgrade and rollback
 

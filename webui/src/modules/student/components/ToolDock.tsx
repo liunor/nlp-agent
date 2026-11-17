@@ -125,6 +125,7 @@ function SandboxPhaseZeroPanel({ onExplainCode, sourceRequest, executionDisabled
     const workbenchHeight = Math.round(workbench.getBoundingClientRect().height || workbench.clientHeight);
     const fixedHeight = [
       workbench.querySelector<HTMLElement>(".sandbox-workbench-titlebar"),
+      workbench.querySelector<HTMLElement>(".sandbox-lease-notice"),
       workbench.querySelector<HTMLElement>(".sandbox-environment-bar"),
       workbench.querySelector<HTMLElement>(".sandbox-editor-statusbar"),
       workbench.querySelector<HTMLElement>(".sandbox-output-resizer"),
