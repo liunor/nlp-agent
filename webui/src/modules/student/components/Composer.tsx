@@ -1,3 +1,4 @@
+import { STUDENT_AGENT_LABEL } from "@/shared/branding";
 import { ArrowUp, GraduationCap, Plus, RotateCcw, Square, X } from "lucide-react";
 import { useEffect, useState, useRef, type ChangeEvent, type ClipboardEvent, type KeyboardEvent, type ReactNode } from "react";
 
@@ -200,7 +201,7 @@ export function Composer({ sessionId, disabled, sendDisabled = false, selectionN
       <div className="composer-toolbar">
         <input type="file" ref={fileInputRef} hidden accept="image/jpeg,image/png,image/webp" onChange={handleFileSelect} />
         <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={!canUploadAttachments} aria-label="上传附件"><Plus size={18} /></button>
-        <span className="composer-brand"><GraduationCap size={15} />Nova · LSNU NLP Learning Agent</span>
+        <span className="composer-brand"><GraduationCap size={15} />Nova · {STUDENT_AGENT_LABEL}</span>
         {thinkingControl}
         {contextControl}
         {running ? <button className="send-button stop" type="button" onClick={onCancel} disabled={cancelling} aria-label={cancelling ? "停止中" : "停止生成"}><Square size={14} fill="currentColor" /></button> : <button className="send-button" type="button" onClick={submit} disabled={disabled || !attachmentsReady || (!content.trim() && readyAttachments.length === 0)} aria-label="发送"><ArrowUp size={18} /></button>}
