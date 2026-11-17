@@ -21,7 +21,9 @@ async def main(owner=None, workspace=None):
             print("MOUNT_READY", flush=True)
             await asyncio.Event().wait()
         child = await asyncio.create_subprocess_exec(sys.executable, "-B", __file__,
-            "--daemon", owner, workspace, stdout=asyncio.subprocess.PIPE)
+            "--daemon", owner, workspace, stdout=asyncio.subprocess.PIPE,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])
+                 + os.pathsep + os.environ.get("PYTHONPATH", "")})
         assert await asyncio.wait_for(child.stdout.readline(), 15) == b"MOUNT_READY\n"
         child.kill()
         await child.wait()
