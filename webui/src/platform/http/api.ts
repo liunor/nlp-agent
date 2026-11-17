@@ -524,6 +524,8 @@ export const api = {
     request<ReleaseNoteEntry>(`/developer/release-notes/${encodeURIComponent(noteId)}`, { method: "PUT", body: JSON.stringify(note) }),
   deleteReleaseNote: (noteId: string) => request<void>(`/developer/release-notes/${encodeURIComponent(noteId)}`, { method: "DELETE" }),
   listPublishedReleaseNotes: () => request<{ items: ReleaseNoteEntry[] }>("/learning/release-notes"),
+  getUnreadReleaseNote: () => request<{ item: ReleaseNoteEntry | null }>("/learning/release-notes/unread"),
+  markReleaseNoteRead: (noteId: string) => request<{ ok: boolean }>(`/learning/release-notes/${encodeURIComponent(noteId)}/read`, { method: "POST" }),
   getTeacherOverview: (workspaceId = "default", days = 30) =>
     request<TeacherOverview>(`/teacher/overview?workspace_id=${encodeURIComponent(workspaceId)}&days=${days}`),
   generateTeacherAIAnalysis: (workspaceId: string, body: { course_id: string; content_scope: string; start_date?: string; end_date?: string; period_days?: number; force_refresh?: boolean }) =>

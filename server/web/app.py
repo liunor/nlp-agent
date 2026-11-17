@@ -3302,6 +3302,28 @@ def create_app(
             rows = await release_note_service.list(session, include_drafts=False)
         return {"items": [_release_note_payload(row) for row in rows]}
 
+    @app.get("/api/v1/learning/release-notes/unread", tags=["learning"])
+    async def latest_unread_release_note(request: Request, principal: Principal):
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
+        if principal.roles == frozenset({"guest"}):
+            return {"item": None}
+        async with authorization_session_factory(request)() as session:
+            row = await release_note_service.latest_unread(session, user_id=principal.user_id)
+        return {"item": _release_note_payload(row) if row is not None else None}
+
+    @app.post("/api/v1/learning/release-notes/{note_id}/read", tags=["learning"])
+    async def mark_release_note_read(note_id: str, request: Request, principal: Principal, _claims: WriteClaims):
+        authorization_service.require(principal, Permission.LEARNING_CONTENT_READ_PUBLIC)
+        if principal.roles == frozenset({"guest"}):
+            raise HTTPException(status_code=403, detail="登录后才能记录已读状态")
+        try:
+            async with authorization_session_factory(request)() as session:
+                async with session.begin():
+                    await release_note_service.mark_read(session, user_id=principal.user_id, note_id=note_id)
+        except ReleaseNoteNotFoundError as error:
+            return _problem(request, status_code=status.HTTP_404_NOT_FOUND, code="release_note_not_found", title="发布说明不存在", detail=str(error))
+        return {"ok": True}
+
     @app.get("/api/v1/teacher/overview", tags=["teacher"])
     async def teacher_overview(
         request: Request,

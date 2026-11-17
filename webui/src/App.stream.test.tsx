@@ -115,6 +115,8 @@ vi.mock("@/platform/http/api", () => ({
     listStorageFiles: vi.fn().mockResolvedValue({ items: [] }),
     listStorageTrash: vi.fn().mockResolvedValue({ items: [] }),
     getFileTransferSummary: vi.fn().mockResolvedValue({ pending_count: 0, notification_version: 0 }),
+    getUnreadReleaseNote: vi.fn().mockResolvedValue({ item: null }),
+    markReleaseNoteRead: vi.fn().mockResolvedValue({ ok: true }),
     createStorageFolder: vi.fn(),
     uploadStorageFile: vi.fn(),
     renameStorageFile: vi.fn(),

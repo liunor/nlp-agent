@@ -30,6 +30,7 @@ import { readKnowledgeBookUrl } from "@/modules/student/components/knowledgeBook
 import { LoginDialog } from "@/modules/student/components/LoginDialog";
 import { MessageList } from "@/modules/student/components/MessageList";
 import { SettingsDialog } from "@/modules/student/components/SettingsDialog";
+import { ReleaseUpdateNotice } from "@/modules/student/components/ReleaseUpdateNotice";
 import { FileTransferNotifier } from "@/modules/student/components/FileTransferNotifier";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { Sidebar, SidebarToggle } from "@/modules/student/components/Sidebar";
@@ -731,6 +732,11 @@ export function StudentWorkspace({
           }}
         />
       )}
+      <ReleaseUpdateNotice
+        key={workspace.authSession?.user_id ?? "anonymous"}
+        userId={workspace.authSession?.user_id}
+        paused={settingsOpen || accountOpen || loginOpen || !!deleteTarget}
+      />
       <SettingsDialog
         open={settingsOpen}
         settings={workspace.settings}

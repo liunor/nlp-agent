@@ -87,6 +87,7 @@ TABLE_COMMENTS: dict[str, str] = {
     "nlp_file_transfers": "账户间离线文件发送请求、接收确认与暂存快照索引。",
     "nlp_memory_documents": "用户工作区的长期记忆文档。",
     "nlp_release_notes": "面向开发者和学生的版本发布说明。",
+    "nlp_release_note_reads": "用户发布说明已读记录。",
     "nlp_memory_archives": "记忆归档事件及其来源游标。",
     "nlp_memory_cursors": "记忆消费范围的全局游标。",
     "nlp_tool_audits": "工具执行审计及请求/结果快照。",
