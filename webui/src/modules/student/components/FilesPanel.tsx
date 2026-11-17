@@ -362,6 +362,12 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     return () => window.clearTimeout(handle);
   }, [refresh]);
 
+  useEffect(() => {
+    const listener = () => { refresh(); onRefreshUsage(); };
+    window.addEventListener("sandbox:files-changed", listener);
+    return () => window.removeEventListener("sandbox:files-changed", listener);
+  }, [refresh, onRefreshUsage]);
+
   const refreshTransferSummary = useCallback(() => {
     void api.getFileTransferSummary().then((value) => setPendingTransfers(value.pending_count)).catch(() => undefined);
   }, []);

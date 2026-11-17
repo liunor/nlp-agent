@@ -3,6 +3,7 @@ services:
   nova-sandbox-manager:
     environment:
       SANDBOX_ENABLE_FILES_BRIDGE: "true"
+      SANDBOX_FILES_BRIDGE_WRITABLE: "true"
       SANDBOX_BRIDGE_BASE_DIR: "${NOVA_SANDBOX_BRIDGE_DIR:?Set an absolute host path unique to this deployment}"
     devices:
       - /dev/fuse:/dev/fuse
@@ -11,7 +12,7 @@ services:
     security_opt:
       - apparmor:unconfined
     volumes:
-      - nova-data:/app/.data:ro
+      - nova-data:/app/.data:rw
       - type: bind
         source: "${NOVA_SANDBOX_BRIDGE_DIR:?Set an absolute host path unique to this deployment}"
         target: "${NOVA_SANDBOX_BRIDGE_DIR:?Set an absolute host path unique to this deployment}"

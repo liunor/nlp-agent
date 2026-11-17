@@ -1,7 +1,8 @@
 # Sandbox personal files bridge
 
 This opt-in feature exposes the current user's current workspace files at
-`/files`. Both the FUSE filesystem and the sandbox bind mount are read-only.
+`/files`. The test bridge overlay enables scoped read/write access; without
+`SANDBOX_FILES_BRIDGE_WRITABLE=true`, FUSE and the sandbox bind remain read-only.
 The default Compose deployment keeps the bridge disabled.
 
 The test CD workflow explicitly includes `compose.files-bridge.yaml` in every
@@ -37,10 +38,42 @@ sandbox containers retain their original capability and network restrictions.
 The directory must have the same absolute path inside the Manager and on the
 Docker daemon host, because Docker resolves bind sources on the host.
 
-The overlay mounts `nova-data` read-only into the Manager at `/app/.data`, the
+The overlay mounts `nova-data` read/write into the Manager at `/app/.data`, the
 same volume used by Web and Worker. If `NLP_AGENT_USER_FILES_ROOT` points outside
 that volume, mount the actual storage directory at that configured path as well.
 Non-root Manager deployments additionally need FUSE `user_allow_other` enabled.
+
+## Writable file semantics
+
+Python `open(..., 'w'/'a'/'r+')`, directory creation, rename/move, and atomic
+save through `os.replace` operate on the current user's current workspace.
+Deletion moves items to platform trash; non-empty directories require their
+children to be removed first. Replacing a file preserves the previous item in
+trash. Links, device nodes, arbitrary ownership and permission changes are not
+supported: platform files use UID/GID 10001 and modes 0644/0755.
+
+Every write checks the current database-backed role/quota, reserves growth,
+fsyncs a new blob, and commits its metadata pointer, size and SHA256 together.
+Transaction failure preserves the previous blob. The retired blob is removed
+only after commit; a failed cleanup can leave an unreferenced blob, never a
+metadata pointer to a removed new blob. Writers are serialized by the account
+quota lock, including other Manager processes. Each completed write is visible
+to the platform; large sequential writes currently copy the existing blob for
+each FUSE chunk and should be benchmarked before heavy bulk workloads.
+
+Writable runtimes additionally get a hard RLIMIT_FSIZE from the account's
+single-file policy. This is needed because shared-mode SetStat in the deployed
+runsc can discard a remote truncate error; the kernel limit rejects oversized
+truncation before reaching FUSE. Live quota checks remain authoritative for all
+writes. Reset a runtime after increasing its per-file policy to apply the new
+kernel ceiling. Runsc's existing shared-mode attribute error caveat remains for
+changes to a lower quota while a runtime is already running: storage rejects the
+operation, but an old runtime may not surface a truncate error reliably.
+
+After sandbox execution, the visible file panel and quota summary refresh.
+The writable acceptance probe creates only uniquely named test directories,
+checks writes, append, truncate, quota, replacement, move, trash, metadata and
+rollback, and permanently removes only its own generated fixtures.
 
 The Manager starts one FUSE mount per active user/workspace and waits for it
 without blocking its database event loop. Metadata queries run on the same loop

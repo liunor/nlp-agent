@@ -93,6 +93,15 @@ async def test_real_personal_file_is_readable_and_readonly_in_runsc(monkeypatch,
         await manager.destroy_runtime(claim.runtime.id, reason="test.complete", refill=False)
         await manager._reap_files_mounts()
         assert not manager._files_mounts.has_mounts
+        # The same isolated MySQL/storage fixture also exercises real writable
+        # FUSE callbacks, runsc limits, atomic save and transaction rollback.
+        import runpy
+        from pathlib import Path
+        monkeypatch.setenv("SANDBOX_FILES_BRIDGE_WRITABLE", "true")
+        monkeypatch.setenv("SANDBOX_BRIDGE_BASE_DIR", str(tmp_path / "write-bridge"))
+        monkeypatch.setenv("BRIDGE_PROBE_IMAGE", stdout.decode().strip())
+        probe = runpy.run_path(str(Path(__file__).parents[1] / "scripts/probe_sandbox_files_bridge_write.py"))
+        await probe["main"]()
     finally:
         for external_id in await adapter.managed_runtime_ids():
             await adapter.destroy(external_id)
