@@ -63,3 +63,15 @@ def test_scratch_protocol_enforces_its_own_deadline() -> None:
 
     assert result["status"] == "failed"
     assert "TimeoutError" in result["stderr"]
+
+
+def test_output_payload_strips_split_terminal_codes_without_damaging_unicode():
+    runtime = _load_runtime_module()
+    output = runtime.OutputCollector(limit_bytes=4096)
+    output.append("stdout", "中文输出 😀\n普通 [31m 文本\n")
+    output.append("stderr", "\x1b[3")
+    output.append("stderr", "1mValueError: 中文错误\x1b[0m\n")
+    payload = output.to_payload(status="failed")
+    assert payload["stdout"] == "中文输出 😀\n普通 [31m 文本\n"
+    assert payload["stderr"] == "ValueError: 中文错误\n"
+    assert payload["status"] == "failed"

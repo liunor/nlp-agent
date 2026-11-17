@@ -1,10 +1,22 @@
 import copy
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_cli_includes_files_bridge_overlay_in_application_recreation(updater, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["update", "--project", "nova-test",
+        "--env-file", "test.env", "--override", "auth.json",
+        "--files-bridge-override", "compose.files-bridge.yaml"])
+    monkeypatch.setattr(updater, "update", lambda compose, project: calls.append((compose, project)))
+    updater.main()
+    assert calls[0][0][-2:] == ["-f", "compose.files-bridge.yaml"]
+    assert calls[0][1] == "nova-test"
 
 
 @pytest.fixture

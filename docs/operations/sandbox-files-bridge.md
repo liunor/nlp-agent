@@ -4,6 +4,23 @@ This opt-in feature exposes the current user's current workspace files at
 `/files`. Both the FUSE filesystem and the sandbox bind mount are read-only.
 The default Compose deployment keeps the bridge disabled.
 
+The test CD workflow explicitly includes `compose.files-bridge.yaml` in every
+Compose operation, including the application recreation helper. Before parsing
+Compose it runs `.github/scripts/prepare-files-bridge.sh` to provision the fixed
+test directory `/var/lib/nova/test/files-bridge` and its shared mount. The runner
+needs passwordless sudo for these mount operations. A missing device or failed
+shared mount stops the deployment before application recreation. Production
+remains opt-in; this change does not enable the production bridge.
+
+After host reboot, run the preparation script before starting the Manager (or
+redeploy through test CD); a plain directory does not replace the shared mount.
+For a bounded diagnostic using an existing file, run
+`scripts/probe_sandbox_files_bridge.py` in a disposable bridge-enabled container
+with the test database environment, read-only platform storage, Docker socket,
+and `BRIDGE_PROBE_IMAGE` set to the pinned runtime image. It reads at most 64 bytes
+without printing file contents, checks a different owner's lookup is denied,
+and checks runsc cannot open the file for writing. It creates no database rows.
+
 ## Linux deployment
 
 Use a Linux Docker host with `/dev/fuse` available. Choose an absolute bridge
