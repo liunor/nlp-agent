@@ -428,6 +428,7 @@ export function StudentWorkspace({
     supportedThinkingLevels.includes(workspace.settings.thinking_level);
   const thinkingControl = supportedThinkingLevels.length > 0 ? (
     <ThinkingLevelControl
+      modelLabel={selectedProfile?.label ?? workspace.settings.model_profile}
       value={workspace.settings.thinking_level}
       supportedLevels={supportedThinkingLevels}
       disabled={!statusOnline || workspace.isRunning || workspace.selectionSaving}

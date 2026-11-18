@@ -1,0 +1,51 @@
+/* Match the original compact learning settings trigger for both controls. */
+/* The portaled thinking panel must retain the composer's expanded prompt state,
+   just as the learning menu inside the composer does through :focus-within. */
+.composer-wrap:has(.thinking-level-trigger[aria-expanded="true"]) .quick-prompts {
+  max-height: 44px;
+  padding-block: 6px;
+  opacity: 1;
+  transform: translateY(0);
+}
+.composer-toolbar .thinking-level-trigger,
+.learning-context-menu > .learning-context-menu-trigger {
+  display: inline-flex;
+  width: auto;
+  min-width: 0;
+  height: 30px;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
+.composer-toolbar .thinking-level-trigger:hover,
+.composer-toolbar .thinking-level-trigger.is-open,
+.learning-context-menu > .learning-context-menu-trigger:hover,
+.learning-context-menu > .learning-context-menu-trigger[aria-expanded="true"] {
+  background: var(--muted-bg);
+  color: var(--fg);
+  box-shadow: none;
+}
+.learning-context-menu > .learning-context-menu-trigger { max-width: 194px; }
+.learning-context-menu-trigger > svg:first-child { color: var(--accent); flex-shrink: 0; }
+.learning-context-menu-trigger > svg:last-child { color: var(--muted); flex-shrink: 0; transition: transform .16s ease; }
+.learning-context-menu-trigger[aria-expanded="true"] > svg:last-child { transform: rotate(180deg); }
+.learning-context-menu > .learning-context-menu-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .composer-toolbar .thinking-level-trigger,
+  .learning-context-menu > .learning-context-menu-trigger,
+  .learning-context-menu-trigger > svg:last-child { transition: none; }
+}
+[data-reduce-motion="true"] .thinking-level-trigger,
+[data-reduce-motion="true"] .learning-context-menu-trigger,
+[data-reduce-motion="true"] .learning-context-menu-trigger > svg:last-child { transition: none; }

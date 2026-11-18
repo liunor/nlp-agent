@@ -6,6 +6,50 @@ const props = { value: "light" as const, supportedLevels, onChange: vi.fn(), onP
 
 beforeEach(() => vi.clearAllMocks());
 
+it.each([
+  [0, "quick", "快速"],
+  [1, "light", "轻度"],
+  [2, "deep", "深度"],
+  [3, "extreme", "极致"],
+] as const)("commits detent %i as the backend level %s", (position, level, label) => {
+  render(<ThinkingLevelControl {...props} value={level === "light" ? "deep" : "light"} />);
+  fireEvent.click(screen.getByRole("button", { name: /思考程度：/ }));
+  const slider = screen.getByRole("slider");
+  fireEvent.pointerDown(slider);
+  fireEvent.change(slider, { target: { value: String(position) } });
+  expect(slider).toHaveAttribute("aria-valuetext", label);
+  expect(props.onChange).not.toHaveBeenCalled();
+  fireEvent.pointerUp(slider);
+  fireEvent.lostPointerCapture(slider);
+  fireEvent.blur(slider);
+  expect(props.onChange).toHaveBeenCalledExactlyOnceWith(level);
+});
+
+it("tracks fractional drag positions and snaps to one supported level on release", () => {
+  render(<ThinkingLevelControl {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "思考程度：轻度" }));
+  const slider = screen.getByRole("slider");
+  fireEvent.pointerDown(slider);
+  fireEvent.change(slider, { target: { value: "1.65" } });
+  expect(slider).toHaveValue("1.65");
+  expect(slider).toHaveAttribute("aria-valuetext", "深度");
+  expect(props.onChange).not.toHaveBeenCalled();
+  fireEvent.pointerUp(slider);
+  expect(slider).toHaveValue("2");
+  expect(props.onChange).toHaveBeenCalledExactlyOnceWith("deep");
+});
+
+it("snaps dragging past an unavailable endpoint to the nearest supported level", () => {
+  render(<ThinkingLevelControl {...props} value="deep" supportedLevels={["light", "deep"]} />);
+  fireEvent.click(screen.getByRole("button", { name: "思考程度：深度" }));
+  const slider = screen.getByRole("slider");
+  fireEvent.pointerDown(slider);
+  fireEvent.change(slider, { target: { value: "0.2" } });
+  fireEvent.pointerUp(slider);
+  expect(slider).toHaveValue("1");
+  expect(props.onChange).toHaveBeenCalledExactlyOnceWith("light");
+});
+
 it("previews dragging and commits only once on release without showing prices", () => {
   render(<ThinkingLevelControl {...props} />);
   fireEvent.click(screen.getByRole("button", { name: "思考程度：轻度" }));
@@ -20,10 +64,9 @@ it("previews dragging and commits only once on release without showing prices", 
   expect(screen.getByRole("dialog")).not.toHaveTextContent(/额度|余额|消耗|倍率/);
 });
 
-it("skips unsupported levels with keyboard and disables their labels", () => {
+it("skips unsupported levels with keyboard", () => {
   render(<ThinkingLevelControl {...props} supportedLevels={["light", "deep", "extreme"]} />);
   fireEvent.click(screen.getByRole("button", { name: "思考程度：轻度" }));
-  expect(screen.getByRole("button", { name: "快速" })).toBeDisabled();
   const slider = screen.getByRole("slider");
   fireEvent.keyDown(slider, { key: "Home" });
   fireEvent.keyUp(slider, { key: "Home" });
@@ -62,7 +105,7 @@ it("does not silently change an unsupported saved selection", () => {
   expect(screen.getByRole("button", { name: "思考程度：快速" })).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "思考程度：快速" }));
   expect(screen.getByRole("status")).toHaveTextContent("请选择其他等级");
-  fireEvent.click(screen.getByRole("button", { name: "深度" }));
+  fireEvent.change(screen.getByRole("slider"), { target: { value: "2" } });
   expect(props.onChange).toHaveBeenCalledExactlyOnceWith("deep");
 });
 
