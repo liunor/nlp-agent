@@ -1,4 +1,20 @@
 /* Match the original compact learning settings trigger for both controls. */
+/* Model capability changes must not move the attachment button or brand. */
+.composer .composer-toolbar { gap: 8px; }
+@media (max-width: 640px) {
+  .composer .composer-toolbar { gap: 6px; padding-left: 10px; }
+}
+/* Keep long menus scrollable without showing native scrollbar tracks/arrows. */
+.thinking-level-panel,
+.learning-context-menu-options {
+  scrollbar-width: none;
+}
+.thinking-level-panel::-webkit-scrollbar,
+.learning-context-menu-options::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 /* The portaled thinking panel must retain the composer's expanded prompt state,
    just as the learning menu inside the composer does through :focus-within. */
 .composer-wrap:has(.thinking-level-trigger[aria-expanded="true"]) .quick-prompts {

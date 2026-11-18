@@ -96,9 +96,8 @@
 [data-reduce-motion="true"] .thinking-level-panel { animation: none; }
 [data-reduce-motion="true"] .thinking-level-trigger > svg:last-child { transition: none; }
 .composer-toolbar .thinking-level-trigger { margin-left: auto; }
-.composer-toolbar:has(.thinking-level-trigger) { gap: 8px; }
 .composer-toolbar:has(.thinking-level-trigger) .learning-context-menu { display: flex; margin-left: 0; max-width: 194px; min-width: 80px; flex: 0 1 auto; }
 .composer-toolbar:has(.thinking-level-trigger) .learning-context-menu-trigger { max-width: none; min-width: 0; }
 .composer-toolbar:has(.thinking-level-trigger) .learning-context-menu-current { display: block; min-width: 0; }
 .composer-toolbar:has(.thinking-level-trigger) .send-button { margin-left: 0; flex-shrink: 0; }
-@media (max-width: 640px) { .composer-toolbar > .composer-brand { display: none; } .composer-toolbar:has(.thinking-level-trigger) { padding-left: 10px; gap: 6px; } }
+@media (max-width: 640px) { .composer-toolbar > .composer-brand { display: none; } }
