@@ -42,7 +42,7 @@ def _service(db: AsyncSession, principal, workspace_id: str | None) -> StorageSe
 
 def _write_error(error: StorageError) -> HTTPException:
     if isinstance(error, StorageQuotaExceeded):
-        return HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(error))
+        return HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=error.public_message)
     if isinstance(error, StorageNameConflict):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
     if isinstance(error, TransferConflict):
