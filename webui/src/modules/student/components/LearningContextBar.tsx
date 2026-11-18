@@ -2,6 +2,7 @@ import { Check, ChevronDown, ChevronRight, SlidersHorizontal } from "lucide-reac
 import { useEffect, useRef, useState } from "react";
 
 import type { CourseTopic, LearningContext, RuntimeModelProfile } from "@/shared/types";
+import "./composer-controls.css";
 
 const levels = [["beginner", "入门"], ["intermediate", "进阶"], ["advanced", "深入"]] as const;
 const modes = [["explain", "讲解模式"], ["socratic", "引导模式"], ["practice", "练习模式"], ["review", "复习模式"]] as const;
