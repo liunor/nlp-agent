@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import Principal, WriteClaims, get_db_session
 
-from .schemas import FileTransferRequest, StorageFolderRequest, StorageQuotaUpdateRequest, StorageRenameRequest
+from .schemas import FileDistributionRequest, FileTransferRequest, StorageFolderRequest, StorageQuotaUpdateRequest, StorageRenameRequest
+from .distribution_service import (
+    DistributionError,
+    DistributionPermissionError,
+    DistributionTargetError,
+    FileDistributionService,
+)
 from .service import (
     StorageError,
     StorageNameConflict,
@@ -200,6 +206,56 @@ async def cancel_file_transfer(transfer_id: str, db: DbSession, principal: Princ
         return await _transfer_service(db, principal).cancel(transfer_id)
     except StorageError as error:
         raise _write_error(error) from error
+
+
+@router.get("/distribution-targets")
+async def get_distribution_targets(db: DbSession, principal: Principal) -> dict:
+    try:
+        service = FileDistributionService(db, principal)
+        return await service.get_distribution_targets()
+    except DistributionPermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/transfers/distribute", status_code=status.HTTP_201_CREATED)
+async def distribute_file(
+    body: FileDistributionRequest,
+    db: DbSession,
+    principal: Principal,
+    _write: WriteClaims,
+) -> dict:
+    try:
+        service = FileDistributionService(db, principal, body.workspace_id)
+        return await service.distribute_file(
+            source_file_id=body.source_file_id,
+            target_type=body.target_type,
+            target_value=body.target_value,
+            direct_delivery=body.direct_delivery,
+        )
+    except DistributionPermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except DistributionTargetError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.get("/distribution-history")
+async def get_distribution_history(
+    db: DbSession,
+    principal: Principal,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    try:
+        service = FileDistributionService(db, principal)
+        return {"items": await service.list_distribution_history(limit)}
+    except DistributionPermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except StorageError as error:
+        raise _write_error(error) from error
+
 
 
 @router.post("/folders", status_code=status.HTTP_201_CREATED)
