@@ -448,6 +448,44 @@ async def test_auto_compact_requires_the_active_model_threshold():
         )
 
 
+@pytest.mark.asyncio
+async def test_summary_failure_keeps_history_and_emits_safe_fallback_event(monkeypatch):
+    from unittest.mock import Mock
+
+    from core.observability.context import TelemetryContext, bind_telemetry_context
+    from core.observability.runtime import global_telemetry
+
+    async def unavailable(_messages):
+        raise TimeoutError("private provider detail")
+
+    messages = _history_messages(human_count=25, human_chars=100)
+    store = context_collapse_module.CollapseStore()
+    await context_collapse_module.apply_collapses_if_needed(messages, store, input_limit=1_000_000)
+    assert store.staged
+    events = Mock()
+    monkeypatch.setattr(global_telemetry, "event", events)
+    monkeypatch.setattr(auto_compact_module, "_consecutive_failures", {})
+    monkeypatch.setattr(auto_compact_module, "_generate_global_summary", unavailable)
+    monkeypatch.setattr(context_collapse_module, "_generate_span_summary", unavailable)
+    context = TelemetryContext(trace_id="trace", span_id="prepare", request_id="request",
+                               session_id="session", turn_id="turn")
+    with bind_telemetry_context(context):
+        compressed = await auto_compact_module.autocompact_if_needed(messages, threshold=1)
+        projected = await context_collapse_module.apply_collapses_if_needed(messages, store, input_limit=1)
+
+    assert compressed.messages == messages and not compressed.was_compacted
+    assert projected == messages
+    assert {call.kwargs["payload"]["stage"] for call in events.call_args_list} == {
+        "auto_compact", "context_collapse",
+    }
+    for call in events.call_args_list:
+        assert call.args == ("compression.fallback",)
+        assert call.kwargs["context"] == context
+        assert call.kwargs["level"] == "warning"
+        assert call.kwargs["payload"]["error_kind"] == "TimeoutError"
+    assert "private provider detail" not in str(events.call_args_list)
+
+
 def test_runtime_budget_is_not_capped_by_the_legacy_167k_default():
     deepseek = _budget(1_000_000)
     qwen = _budget(32_000)

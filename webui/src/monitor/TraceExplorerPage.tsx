@@ -7,8 +7,8 @@ type TraceFocus = "all" | "errors" | "slow";
 
 function fmt(value: number | null | undefined, suffix = "") { return value == null ? "—" : `${value.toLocaleString()}${suffix}`; }
 function moment(value?: string) { return value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value)) : "—"; }
-function statusText(value: string) { return value === "error" || value === "timeout" ? "异常" : value === "ok" ? "正常" : value === "running" ? "进行中" : value; }
-function statusClass(value: string) { return value === "error" || value === "timeout" || value === "cancelled" || value === "denied" ? "danger" : value === "ok" ? "success" : "neutral"; }
+function statusText(value: string) { return value === "error" || value === "timeout" ? "异常" : value === "cancelled" ? "已取消" : value === "ok" ? "正常" : value === "running" ? "进行中" : value; }
+function statusClass(value: string) { return value === "error" || value === "timeout" || value === "denied" ? "danger" : value === "ok" ? "success" : "neutral"; }
 function spanAttribute(span: Span, key: string) { const value = span.attributes?.[key]; return typeof value === "string" && value ? value : undefined; }
 
 function FocusButton({ value, active, label, count, onClick }: { value: TraceFocus; active: boolean; label: string; count?: number; onClick: (value: TraceFocus) => void }) {
@@ -19,14 +19,18 @@ function TraceGroupRow({ row, selected, onOpen }: { row: TraceGroupSummary; sele
   const issue = row.error_count > 0;
   const slowMs = row.max_duration_ms ?? row.total_duration_ms;
   return <button className={`mon-trace-group-row ${selected ? "selected" : ""} ${issue ? "issue" : ""}`} type="button" aria-label={`${row.chain_name} ${row.entrypoint} ${row.error_kinds.join(" ")} ${row.error_count} 个错误`} onClick={() => onOpen(row.chain_id)}>
-    <span className={`mon-trace-severity ${issue ? "danger" : row.total_duration_ms >= 1000 ? "warn" : "success"}`}>{issue ? <AlertTriangle size={15} /> : row.total_duration_ms >= 1000 ? <Clock3 size={15} /> : <CheckCircle2 size={15} />}</span>
+    <span className={`mon-trace-severity ${issue ? "danger" : row.total_duration_ms >= 1000 || row.status === "cancelled" ? "warn" : "success"}`}>{issue ? <AlertTriangle size={15} /> : row.total_duration_ms >= 1000 || row.status === "cancelled" ? <Clock3 size={15} /> : <CheckCircle2 size={15} />}</span>
     <span className="mon-trace-group-main"><span className="mon-trace-group-title"><strong>{row.chain_name}</strong><code>{row.entrypoint}</code></span><small><UserRound size={11} />{row.user_ids.join("、") || "未知用户"}<i>·</i><GitBranch size={11} />{row.chain_id}</small>{row.error_kinds.length ? <span className="mon-trace-error-tags">{row.error_kinds.slice(0, 3).map((kind) => <em key={kind}>{kind}</em>)}</span> : null}</span>
     <span className="mon-trace-group-stats"><b>{row.trace_count}</b><small>Trace</small><b className={issue ? "danger-text" : ""}>{row.error_count}</b><small>问题</small><b>{fmt(slowMs, " ms")}</b><small>最长耗时</small></span>
     <time>{moment(row.last_seen)}</time>
   </button>;
 }
 
-function traceStatus(trace: Trace) { return <span className={`mon-trace-status ${statusClass(trace.status)}`}>{statusText(trace.status)}</span>; }
+function traceStatus(trace: Trace) {
+  const executionError = trace.attributes?.execution_error_kind;
+  const title = typeof executionError === "string" ? `执行记录 · ${executionError}` : undefined;
+  return <span className={`mon-trace-status ${statusClass(trace.status)}`} title={title}>{statusText(trace.status)}</span>;
+}
 
 function SpanTree({ spans }: { spans: Array<Span & { trace_id?: string }> }) {
   const children = useMemo(() => {

@@ -111,8 +111,11 @@ async def test_real_scratch_obeys_host_guard_and_survives_concurrent_reconcile(m
         assert result["status"] == "completed" and result["stdout"].strip() == "SCRATCH_OK"
         assert not actions.destroy_orphans, "a live scratch must never be selected as an orphan"
         assert not await adapter.managed_runtime_ids(), "--rm must release the slot"
-        monkeypatch.setattr(manager, "_host_allows_create", AsyncMock(return_value=False))
-        with pytest.raises(RuntimeError, match="resource reserve"):
+        monkeypatch.setattr(
+            manager, "_host_capacity_blocker",
+            AsyncMock(return_value=("sandbox_host_disk_reserve", 14, 15)),
+        )
+        with pytest.raises(RuntimeError, match="disk space"):
             await manager.run_scratch(source="print('must not start')")
         assert not await adapter.managed_runtime_ids()
     finally:

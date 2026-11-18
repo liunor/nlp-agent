@@ -32,6 +32,26 @@ const SAFE_EVENT_LABELS: Record<string, string> = {
 export function safeEventContext(event: TelemetryEvent): string[] {
   const result: string[] = [];
   if (event.worker_id) result.push(`Worker=${event.worker_id.slice(0, 12)}`);
+  if (event.name === "sandbox.model.scratch.blocked") {
+    const { code, actual, threshold } = event.payload;
+    const reasons = {
+      sandbox_host_runtime_limit: ["沙箱数量上限", "个"],
+      sandbox_host_memory_reserve: ["内存预留", "MiB"],
+      sandbox_host_disk_reserve: ["磁盘预留", "GiB"],
+    };
+    if (typeof code === "string" && Object.hasOwn(reasons, code)) {
+      const [label, unit] = reasons[code as keyof typeof reasons];
+      result.push(`拦截=${label}`);
+      if (typeof actual === "number" && Number.isFinite(actual)) result.push(`实测=${actual} ${unit}`);
+      if (typeof threshold === "number" && Number.isFinite(threshold)) result.push(`阈值=${threshold} ${unit}`);
+    }
+  }
+  if (event.name === "compression.fallback") {
+    const stage = event.payload.stage;
+    if (stage === "auto_compact" || stage === "context_collapse") {
+      result.push(`压缩阶段=${stage === "auto_compact" ? "全量摘要" : "上下文折叠"}`);
+    }
+  }
   for (const key of SAFE_EVENT_KEYS) {
     const raw = event.payload[key];
     const value = typeof raw === "string" && raw.length > 0 && raw.length <= 80

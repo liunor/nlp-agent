@@ -25,7 +25,7 @@ _ENTRYPOINT_KEYS = (
     "operation",
     "request_name",
 )
-_ERROR_STATUSES = {"error", "timeout", "cancelled", "denied"}
+_ERROR_STATUSES = {"error", "timeout", "denied"}
 _SLOW_TRACE_MS = 1_000
 
 
@@ -79,8 +79,9 @@ def trace_chain_identity(row: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _is_error(row: dict[str, Any]) -> bool:
-    return str(row.get("status") or "").lower() in _ERROR_STATUSES or bool(row.get("error_kind"))
+def is_failure_record(row: dict[str, Any]) -> bool:
+    status = str(row.get("status") or "").lower()
+    return status != "cancelled" and (status in _ERROR_STATUSES or bool(row.get("error_kind")))
 
 
 def _sort_key(group: dict[str, Any]) -> tuple[int, int, int, str]:
@@ -125,7 +126,7 @@ def build_trace_group_page(
         completed_at = str(row.get("completed_at") or started_at)
         status = str(row.get("status") or "unknown")
         duration_ms = int(row.get("duration_ms") or 0)
-        is_error = _is_error(row)
+        is_error = is_failure_record(row)
         group = groups.get(chain_id)
         if group is None:
             group = {
@@ -189,13 +190,14 @@ def build_trace_group_page(
         group["span_count"] += 1
         span_duration_ms = int(span.get("duration_ms") or 0)
         group["slow_span_count"] += int(span_duration_ms >= _SLOW_TRACE_MS)
-        span_error = str(span.get("status") or "").lower() in _ERROR_STATUSES or bool(span.get("error_kind"))
+        span_error = is_failure_record(span)
         if span_error:
             if group["error_count"] == 0:
                 group["sample_trace_id"] = str(span.get("trace_id") or "")
             group["error_count"] += 1
             group["failed_span_count"] += 1
-            group["status"] = "error"
+            if group["status"] != "cancelled":
+                group["status"] = "error"
             group["error_kinds"].add(str(span.get("error_kind") or span.get("status") or "span_error"))
         attributes = span.get("attributes") or {}
         if not isinstance(attributes, dict):

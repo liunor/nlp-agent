@@ -1,8 +1,11 @@
 from datetime import datetime, timezone
+import json
 
+from sqlalchemy import create_engine, event
 from sqlalchemy.dialects import mysql
 
 from core.observability.mysql_repository import MySQLTelemetryRepository, _record_key
+from core.observability.summary import build_telemetry_overview
 
 
 def test_observability_record_key_keeps_siblings_in_one_trace_distinct():
@@ -12,6 +15,64 @@ def test_observability_record_key_keeps_siblings_in_one_trace_distinct():
     assert _record_key("span", trace) == "span-1"
     assert _record_key("event", trace) == "event-1"
     assert _record_key("span", {**trace, "span_id": "span-2"}) != _record_key("span", trace)
+
+
+def test_monitor_distinguishes_cancelled_claim_from_live_claim_failure():
+    engine = create_engine("sqlite://")
+
+    @event.listens_for(engine, "connect")
+    def register_json_unquote(connection, _):
+        # SQLite JSON_EXTRACT already returns unquoted JSON scalar strings.
+        connection.create_function("json_unquote", 1, lambda value: value)
+        connection.create_function("concat", -1, lambda *values: "".join(str(value) for value in values))
+        connection.create_collation("ascii_bin", lambda left, right: (left > right) - (left < right))
+
+    now = datetime.now(timezone.utc).isoformat()
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE nlp_turns (id TEXT PRIMARY KEY, status TEXT)")
+        connection.exec_driver_sql(
+            "CREATE TABLE nlp_observability_records "
+            "(kind TEXT, trace_id TEXT, turn_id TEXT, status TEXT, payload_json JSON, created_at TEXT)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO nlp_turns VALUES ('cancelled-turn','cancelled'), "
+            "('cancelled-only','cancelled'), ('failed-turn','failed')"
+        )
+        entries = []
+        for kind, trace_id, turn_id, error in (
+            ("trace", "cancelled-trace", "cancelled-turn", "LostTurnClaimError"),
+            ("trace", "failed-trace", "failed-turn", "LostTurnClaimError"),
+            ("trace", "cancelled-only", "cancelled-only", "LostTurnClaimError"),
+            ("span", "cancelled-trace", "cancelled-turn", "LostTurnClaimError"),
+            ("span", "cancelled-trace", "cancelled-turn", "tool_error"),
+        ):
+            payload = dict(trace_id=trace_id, turn_id=turn_id, chain_id=trace_id, started_at=now, completed_at=now,
+                           status="error", error_kind=error, kind="tool", name="tool.sandbox")
+            entries.append((kind, trace_id, turn_id, "error", json.dumps({"payload": payload}), now))
+        connection.exec_driver_sql("INSERT INTO nlp_observability_records VALUES (?,?,?,?,?,?)", entries)
+
+    repo = object.__new__(MySQLTelemetryRepository)
+    repo._engine = engine
+    cancelled_rows = {row["trace_id"]: row for row in repo.list_traces(status="cancelled")}
+    assert set(cancelled_rows) == {"cancelled-only", "cancelled-trace"}
+    cancelled = cancelled_rows["cancelled-trace"]
+    assert cancelled["error_kind"] is None
+    assert cancelled["attributes"]["execution_error_kind"] == "LostTurnClaimError"
+    assert [row["trace_id"] for row in repo.list_traces(status="error")] == ["failed-trace"]
+    spans = repo._rows("span")
+    assert {(row["status"], row["error_kind"]) for row in spans} == {
+        ("cancelled", None), ("error", "tool_error"),
+    }
+    overview = build_telemetry_overview(repo.list_traces(), spans, [], 7)
+    assert overview["errors"] == overview["failed_requests"] == 1
+    assert {row["error_kind"] for row in overview["error_groups"]} == {"tool_error"}
+    page = repo.trace_groups(days=7, focus="errors")
+    assert page["total"] == 2
+    groups = {row["chain_id"]: row for row in page["items"]}
+    assert set(groups) == {"failed-trace", "cancelled-trace"}
+    assert groups["cancelled-trace"]["status"] == "cancelled"
+    assert groups["cancelled-trace"]["error_kinds"] == ["tool_error"]
+    engine.dispose()
 
 
 def test_mysql_rows_applies_filters_and_window_in_sql():
@@ -61,6 +122,7 @@ def test_mysql_rows_applies_filters_and_window_in_sql():
     assert "trace_id" in sql
     assert "created_at" in sql
     assert "LIMIT %s, %s" in sql
+    assert "CHARACTER SET ascii" in sql
 
 
 def test_mysql_rows_denies_an_empty_workspace_scope_in_sql():

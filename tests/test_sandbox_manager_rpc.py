@@ -48,6 +48,37 @@ def test_manager_rpc_client_round_trips_signed_request() -> None:
     assert asyncio.run(exercise()) == {"status": "completed"}
 
 
+async def test_scratch_capacity_reason_survives_signed_rpc() -> None:
+    from server.sandbox.contracts import SandboxCapacityError
+    from server.sandbox.manager_rpc import RedisSandboxManagerRpcClient, RedisSandboxManagerRpcServer
+
+    class Manager:
+        async def run_scratch(self, **_kwargs):
+            raise SandboxCapacityError("sandbox_host_memory_reserve", actual=2750, threshold=3072)
+
+    class Redis:
+        async def xadd(self, stream, fields, **_kwargs):
+            if stream.startswith("nova:sandbox:manager:rpc:responses:"):
+                self.response = fields
+            else:
+                await server._handle(fields)
+
+        async def expire(self, *_args):
+            pass
+
+        async def xread(self, streams, **_kwargs):
+            return [(next(iter(streams)), [("1-0", self.response)])]
+
+    redis = Redis()
+    server = RedisSandboxManagerRpcServer(redis, manager=Manager(), secret="fixture")
+    client = RedisSandboxManagerRpcClient(redis, secret="fixture")
+    with pytest.raises(SandboxCapacityError) as denied:
+        await client.run_scratch(source="print(1)")
+    assert (denied.value.code, denied.value.actual, denied.value.threshold) == (
+        "sandbox_host_memory_reserve", 2750, 3072,
+    )
+
+
 def test_manager_rpc_scratch_timeout_requires_response_budget() -> None:
     from server.sandbox.manager_rpc import RedisSandboxManagerRpcClient
 

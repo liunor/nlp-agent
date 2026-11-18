@@ -14,6 +14,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AI
 from server.agent.compression.internal_context import (
     internal_context_metadata,
     invoke_internal_model,
+    record_compression_fallback,
 )
 from utils.tokens import rough_estimation_for_messages
 from utils.logger import get_logger
@@ -168,8 +169,9 @@ async def _commit_staged(messages: List[BaseMessage], store: CollapseStore, limi
 
         try:
             summary = await _generate_span_summary(span_msgs)
-        except Exception:
+        except Exception as error:
             logger.exception("Context Collapse 摘要生成失败，保留原始消息")
+            record_compression_fallback("context_collapse", error)
             continue
 
         commit = CollapseCommit(

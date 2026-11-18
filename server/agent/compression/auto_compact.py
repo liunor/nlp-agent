@@ -16,6 +16,7 @@ from server.agent.compression.internal_context import (
     internal_context_metadata,
     invoke_internal_model,
     is_internal_context_message,
+    record_compression_fallback,
 )
 from utils.tokens import rough_estimation_for_messages
 from utils.logger import get_logger
@@ -140,6 +141,7 @@ async def autocompact_if_needed(
     except Exception as e:
         _consecutive_failures[session_id] = failures + 1
         logger.exception("Auto-Compact 失败")
+        record_compression_fallback("auto_compact", e)
         return AutoCompactResult(was_compacted=False, messages=messages, error=str(e))
 
 

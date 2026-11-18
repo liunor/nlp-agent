@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from configs.settings import settings
 
-from .contracts import SandboxScope
+from .contracts import SandboxCapacityError, SandboxScope
 
 
 REQUEST_STREAM = "nova:sandbox:manager:rpc:requests"
@@ -159,6 +159,14 @@ class RedisSandboxManagerRpcClient:
                         # infrastructure 500/503 after crossing Redis RPC.
                         if message.startswith("PermissionError:"):
                             raise PermissionError("Sandbox runtime permission denied")
+                        if method == "run_scratch" and message.startswith("SandboxCapacityError:"):
+                            try:
+                                detail = json.loads(parsed.get("payload", "{}"))
+                                capacity_error = SandboxCapacityError(**detail)
+                            except (TypeError, ValueError, KeyError, OverflowError):
+                                pass
+                            else:
+                                raise capacity_error
                         raise RuntimeError(message)
                     try:
                         result = json.loads(parsed.get("payload", "{}"))
@@ -554,6 +562,10 @@ class RedisSandboxManagerRpcServer:
                     raise PermissionError("expired or invalid Sandbox Manager RPC request")
                 result = await self._dispatch(method, payload)
                 ok, encoded, error = "1", _json(result), ""
+            except SandboxCapacityError as exc:
+                ok = "0"
+                encoded = _json({"code": exc.code, "actual": exc.actual, "threshold": exc.threshold})
+                error = f"{type(exc).__name__}: {exc}"
             except Exception as exc:
                 ok, encoded, error = "0", "{}", f"{type(exc).__name__}: {exc}"[:500]
             if callable(dedupe):

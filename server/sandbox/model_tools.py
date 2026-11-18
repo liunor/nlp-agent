@@ -32,7 +32,7 @@ from server.infrastructure.mysql.models import (
     UserModel,
 )
 
-from .contracts import SandboxScope
+from .contracts import SandboxCapacityError, SandboxScope
 from .confirmation import SandboxConfirmationSigner, create_confirmation_replay_store
 from .events import default_sandbox_event_store
 from .execution_events import append_event_with_retry, execution_failure_payload
@@ -272,7 +272,10 @@ class SandboxModelToolService:
         result: dict[str, object] | None = None,
         emit_events: bool = True,
     ) -> BaseException | None:
-        reason = f"{type(error).__name__}: {error}"[:128] if error else None
+        if isinstance(error, SandboxCapacityError):
+            reason = error.code
+        else:
+            reason = f"{type(error).__name__}: {error}"[:128] if error else None
         failed = bool(error) or status.lower() in {"failed", "error", "timeout", "timed_out"}
         event_error: BaseException | None = None
         if self.session_factory is None:
@@ -426,13 +429,14 @@ class SandboxModelToolService:
         await self._confirmation_replay_store.close()
 
     @staticmethod
-    def _trace(name: str, *, config: RunnableConfig | None = None, **payload: object) -> None:
+    def _trace(name: str, *, config: RunnableConfig | None = None, level: str = "info", **payload: object) -> None:
         try:
             from core.observability.runtime import global_telemetry
             from core.observability.context import TelemetryContext
 
             global_telemetry.event(
                 name,
+                level=level,
                 payload=payload,
                 context=TelemetryContext.from_config(config),
             )
@@ -531,6 +535,13 @@ class SandboxModelToolService:
                     )
         except Exception as error:
             delivery_error = await self._finish_execution(execution_id, user_id=authorized.context.user_id, status="failed", error=error)
+            if isinstance(error, SandboxCapacityError):
+                self._trace(
+                    "sandbox.model.scratch.blocked", config=config, level="warning",
+                    code=error.code, actual=error.actual, threshold=error.threshold,
+                )
+                if delivery_error is None:
+                    return _error(error.code, str(error))
             self._trace("sandbox.model.scratch.failed", config=config, error=type(error).__name__)
             if delivery_error is not None:
                 return _error("sandbox_event_failed", str(delivery_error)[:500])

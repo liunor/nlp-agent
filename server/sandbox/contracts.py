@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import math
 from typing import TYPE_CHECKING
 
 from core.identity import AuthenticatedPrincipal
@@ -18,6 +19,22 @@ if TYPE_CHECKING:
 
 class SandboxScopeError(PermissionError):
     """Raised when authenticated identity cannot safely scope a sandbox call."""
+
+
+class SandboxCapacityError(RuntimeError):
+    messages = {
+        "sandbox_host_runtime_limit": "The sandbox host runtime limit has been reached.",
+        "sandbox_host_memory_reserve": "Available host memory is below the amount needed for another sandbox.",
+        "sandbox_host_disk_reserve": "Available host disk space is below the sandbox reserve.",
+    }
+
+    def __init__(self, code: str, *, actual: float | None, threshold: float) -> None:
+        super().__init__(self.messages[code])
+        self.code = code
+        self.actual = actual if type(actual) in (int, float) and math.isfinite(actual) else None
+        if type(threshold) not in (int, float) or not math.isfinite(threshold):
+            raise ValueError("sandbox capacity threshold must be numeric")
+        self.threshold = threshold
 
 
 @dataclass(frozen=True)
