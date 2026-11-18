@@ -205,7 +205,7 @@ def _register_compactable_tools() -> None:
     try:
         from server.agent.compression.micro_compact import register_compactable_tool
 
-        for tool in ALL_AVAILABLE_TOOLS:
+        for tool in (read_local_file, get_current_time, web_fetch):
             register_compactable_tool(tool.name)
     except Exception:
         pass
