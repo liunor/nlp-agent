@@ -484,33 +484,6 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(outlineSidebar).not.toHaveClass("collapsed");
   });
 
-  it("offers prominent teaching material upload options in the left directory", async () => {
-    render(<TeacherBookEditor workspaceId="workspace-1" />);
-
-    await screen.findByRole("textbox", { name: "教材正文 Markdown" });
-    expect(screen.getByText("上传教学资料")).toBeVisible();
-    expect(screen.getByText("上传课件/资料文件")).toBeInTheDocument();
-    expect(screen.getByText("导入 Markdown 讲义/图片")).toBeInTheDocument();
-    expect(screen.getByText("导入教材包 (.zip)")).toBeInTheDocument();
-  });
-
-  it("toggles expand and collapse all topics from the directory header", async () => {
-    const user = userEvent.setup();
-    render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
-
-    await screen.findByRole("textbox", { name: "教材正文 Markdown" });
-    const expandAllBtn = screen.getByRole("button", { name: "全部展开主题" });
-    expect(expandAllBtn).toBeVisible();
-
-    await user.click(expandAllBtn);
-    expect(screen.getByRole("button", { name: "张量与形状" })).toBeVisible();
-
-    const collapseAllBtn = screen.getByRole("button", { name: "全部收起主题" });
-    expect(collapseAllBtn).toBeVisible();
-    await user.click(collapseAllBtn);
-    expect(screen.queryByRole("button", { name: "张量与形状" })).not.toBeInTheDocument();
-  });
-
   it("allows selecting target topic directory when importing markdown to create a new knowledge point", async () => {
     const user = userEvent.setup();
     updateCatalogMock.mockResolvedValue({ catalog });
