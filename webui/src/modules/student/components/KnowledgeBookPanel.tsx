@@ -169,6 +169,7 @@ export const KnowledgeBookPanel = memo(function KnowledgeBookPanel({ workspaceId
   const onAskNovaRef = useRef(onAskNova);
   const onOpenInSandboxRef = useRef(onOpenInSandbox);
   const onViewWhiteboardRef = useRef(onViewWhiteboard);
+  const onOpenFilePreviewRef = useRef(onOpenFilePreview);
   const topicGroups = useMemo(() => groupNavigation(navigation), [navigation]);
   const orderedNavigation = useMemo(() => orderNavigation(navigation), [navigation]);
   const visiblePage = page?.knowledge_point_id === selectedId && (demoMode || page.workspace_id === workspaceId) ? page : null;
@@ -183,7 +184,13 @@ export const KnowledgeBookPanel = memo(function KnowledgeBookPanel({ workspaceId
     onAskNovaRef.current = onAskNova;
     onOpenInSandboxRef.current = onOpenInSandbox;
     onViewWhiteboardRef.current = onViewWhiteboard;
-  }, [activeHeadingId, headingIndex, onAskNova, onOpenInSandbox, onViewWhiteboard, visiblePage]);
+    onOpenFilePreviewRef.current = onOpenFilePreview;
+  }, [activeHeadingId, headingIndex, onAskNova, onOpenFilePreview, onOpenInSandbox, onViewWhiteboard, visiblePage]);
+  // Keep Markdown renderer inputs stable when unrelated workspace state changes.
+  // Recreating its component functions remounts the article's text and media.
+  const previewBookFile = useCallback((file: LearningBookFile) => {
+    onOpenFilePreviewRef.current?.(file);
+  }, []);
   const canAskNova = Boolean(onAskNova);
   const canOpenInSandbox = Boolean(onOpenInSandbox);
   const codeActions = useMemo<MarkdownCodeActions>(() => {
@@ -413,7 +420,7 @@ export const KnowledgeBookPanel = memo(function KnowledgeBookPanel({ workspaceId
   }, [rightOpen]);
 
   const selectedIndex = orderedNavigation.findIndex((item) => item.knowledge_point_id === selectedId);
-  const openWhiteboardReference = async (ref: { asset_id: string; asset_code?: string; name: string }) => {
+  const openWhiteboardReference = useCallback(async (ref: { asset_id: string; asset_code?: string; name: string }) => {
     const readerScrollTop = contentRef.current?.scrollTop ?? 0;
     const restoreReaderScroll = () => {
       const root = contentRef.current;
@@ -441,15 +448,15 @@ export const KnowledgeBookPanel = memo(function KnowledgeBookPanel({ workspaceId
     } catch {
       // Do not re-present a stale textbook reference when the library cannot be revalidated.
     }
-  };
-  const renderWhiteboardLink = (href: string, label: string): ReactNode => {
+  }, []);
+  const renderWhiteboardLink = useCallback((href: string, label: string): ReactNode => {
     const ref = parseKnowledgeBookWhiteboardHref(href);
     if (!ref) return <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true">{label}</span>;
     const item = whiteboardLibrary.find((candidate) => candidate.id === ref.asset_id || (ref.asset_code && candidate.asset_code === ref.asset_code));
     const name = item?.name?.trim() || ref.name;
     if (!item) return <button type="button" disabled className="knowledge-book-whiteboard-anchor unavailable" data-whiteboard-anchor="true" title={`素材不可用：${name}`} aria-label={`${name}（素材不可用）`}>图<span className="sr-only">素材不可用</span></button>;
     return <button type="button" className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true" title={`查看图画：${name}`} aria-label={`查看图画 ${name}`} onClick={() => void openWhiteboardReference(ref)}><span aria-hidden="true">图</span><span className="sr-only">查看图画{name}</span></button>;
-  };
+  }, [openWhiteboardReference, whiteboardLibrary]);
   const updateSelectionPrompt = () => {
     window.setTimeout(() => {
       if (!onAskNova || !visiblePage) return;
@@ -544,7 +551,7 @@ export const KnowledgeBookPanel = memo(function KnowledgeBookPanel({ workspaceId
         <div className="knowledge-book-page-scroll" ref={contentRef} onScroll={handlePageScroll}>
           {loadingPage ? <div className="knowledge-book-state"><span className="spin">⟳</span><p>正在打开知识点……</p></div> : visiblePage ? <article ref={articleRef} tabIndex={-1} className="knowledge-book-article" onPointerUp={updateSelectionPrompt} onKeyUp={updateSelectionPrompt}>
             {!markdownHasTitle && <header className="knowledge-book-fallback-title"><h1>{visiblePage.title}</h1></header>}
-            <MarkdownContent headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} codeActions={codeActions} bookFileLinks={bookFileLinks} onPreviewBookFile={onOpenFilePreview} whiteboardLink={renderWhiteboardLink}>{visibleMarkdown}</MarkdownContent>
+            <MarkdownContent headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} codeActions={codeActions} bookFileLinks={bookFileLinks} onPreviewBookFile={onOpenFilePreview ? previewBookFile : undefined} whiteboardLink={renderWhiteboardLink}>{visibleMarkdown}</MarkdownContent>
             <footer className="knowledge-book-page-nav">
               <button type="button" disabled={selectedIndex <= 0} onClick={() => selectKnowledgePoint(orderedNavigation[selectedIndex - 1].knowledge_point_id)}>上一节</button>
               <button type="button" disabled={selectedIndex < 0 || selectedIndex >= orderedNavigation.length - 1} onClick={() => selectKnowledgePoint(orderedNavigation[selectedIndex + 1].knowledge_point_id)}>下一节</button>

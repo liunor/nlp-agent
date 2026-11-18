@@ -225,6 +225,27 @@ describe("KnowledgeBookPanel", () => {
     expect(api.getLearningBookPage).toHaveBeenCalledWith("workspace-2", "point-1");
   });
 
+  it("keeps the selected article nodes mounted when the Nova action appears", async () => {
+    render(<KnowledgeBookPanel workspaceId="workspace-1" onAskNova={vi.fn()} />);
+    const paragraph = await screen.findByText("词元是文本处理的基本单位。");
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    fireEvent.pointerUp(paragraph);
+
+    await screen.findByRole("button", { name: "向 Nova 提问" });
+    expect(screen.getByText("词元是文本处理的基本单位。")).toBe(paragraph);
+    expect(window.getSelection()?.toString()).toBe("词元是文本处理的基本单位。");
+  });
+
+  it("keeps article nodes mounted when the workspace updates callback props", async () => {
+    const view = render(<KnowledgeBookPanel workspaceId="workspace-1" onAskNova={vi.fn()} onOpenFilePreview={vi.fn()} onViewWhiteboard={vi.fn()} />);
+    const paragraph = await screen.findByText("词元是文本处理的基本单位。");
+    view.rerender(<KnowledgeBookPanel workspaceId="workspace-1" onAskNova={vi.fn()} onOpenFilePreview={vi.fn()} onViewWhiteboard={vi.fn()} />);
+    expect(screen.getByText("词元是文本处理的基本单位。")).toBe(paragraph);
+  });
+
   it("offers an explicit Nova action for selected article text", async () => {
     const user = userEvent.setup();
     const askNova = vi.fn();
