@@ -202,3 +202,55 @@ async def test_distribute_file_direct_delivery_success(tmp_path: Path) -> None:
     assert result["file_name"] == "lesson.md"
     assert result["direct_delivery"] is True
     assert service._bump_notification_version.called
+
+
+@pytest.mark.asyncio
+async def test_distribute_file_defensive_record_persistence(tmp_path: Path) -> None:
+    principal = _teacher_principal()
+    db = AsyncMock()
+
+    source_file_row = SimpleNamespace(
+        id="file-1",
+        display_name="lesson.md",
+        mime_type="text/markdown",
+        size_bytes=100,
+        storage_key="workspace-1/teacher-1/file-1",
+    )
+    service = FileDistributionService(db, principal)
+    service._source = AsyncMock(return_value=source_file_row)
+
+    mock_student = SimpleNamespace(
+        id="student-1",
+        username="student_a",
+        display_name="学生甲",
+        identity_id="NV2STUDENT001",
+    )
+    service._resolve_recipients = AsyncMock(return_value=([mock_student], "全体学生"))
+    service._recipient_workspace = AsyncMock(return_value="workspace-student")
+
+    mock_quota = AsyncMock()
+    mock_quota.policy = SimpleNamespace(max_file_bytes=10_000, files_quota_bytes=100_000, max_items=50)
+    mock_quota.reconcile = AsyncMock()
+    mock_quota.reserve = AsyncMock(return_value=SimpleNamespace(id="res-1"))
+    mock_quota.finalize = AsyncMock()
+    service._recipient_quota = AsyncMock(return_value=mock_quota)
+    service._bump_notification_version = AsyncMock()
+
+    mock_account = SimpleNamespace(files_used_bytes=1000, files_reserved_bytes=0, files_reserved_items=0)
+    db.scalar = AsyncMock(side_effect=[mock_account, 5])
+    db.scalars = AsyncMock(return_value=SimpleNamespace(all=lambda: ["other.txt"]))
+
+    source_file_path = tmp_path / "source.md"
+    source_file_path.write_bytes(b"# Hello World")
+
+    with patch("server.storage.distribution_service.storage_path_for", return_value=source_file_path):
+        with patch("server.storage.distribution_service.storage_root", return_value=tmp_path):
+            result = await service.distribute_file(
+                source_file_id="file-1",
+                target_type="all_students",
+                direct_delivery=True,
+            )
+
+    assert result["total_targets"] == 1
+    assert result["success_count"] == 1
+    assert result["failed_count"] == 0
