@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from core.identity import AuthenticatedPrincipal
-from core.runtime_config import settings
+from configs.settings import settings
 from core.session_context import SessionContext
 from server.infrastructure.mysql import MySQLRuntime
 from server.infrastructure.mysql.models import RoleModel, UserFileModel, UserModel, UserRoleModel
