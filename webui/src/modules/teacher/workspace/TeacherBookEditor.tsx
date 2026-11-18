@@ -1,4 +1,4 @@
-import { AlertCircle, Bold, BookOpenText, ChevronDown, Code2, Eye, EyeOff, FileText, FileUp, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, Upload } from "lucide-react";
+import { AlertCircle, Bold, BookOpenText, ChevronDown, ChevronRight, Code2, Eye, EyeOff, FileText, FileUp, FoldVertical, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, Package, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, UnfoldVertical, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { api } from "@/platform/http/api";
@@ -158,6 +158,9 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
   const [whiteboardLibraryError, setWhiteboardLibraryError] = useState("");
   const [catalogDraft, setCatalogDraft] = useState<TeacherCatalog | null>(catalog ?? null);
   const [directoryCollapsed, setDirectoryCollapsed] = useState(false);
+  const [outlineCollapsed, setOutlineCollapsed] = useState(false);
+  const [filesCollapsed, setFilesCollapsed] = useState(false);
+  const [activeHeadingId, setActiveHeadingId] = useState("");
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [collapsedTopicIds, setCollapsedTopicIds] = useState<string[]>(() => (catalog?.topics ?? []).map((topic) => topic.id));
   const [directorySaving, setDirectorySaving] = useState(false);
@@ -190,6 +193,10 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
   }, [hasUnsavedChanges, onDirtyChange]);
 
   const requestSelect = (nextId: string) => {
+    const parentTopicId = navigation.find((item) => item.knowledge_point_id === nextId)?.topic_id;
+    if (parentTopicId) {
+      setCollapsedTopicIds((current) => current.filter((id) => id !== parentTopicId));
+    }
     if (nextId === selectedId || !hasUnsavedChanges) {
       setSelectedId(nextId);
       return;
@@ -490,11 +497,17 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     event.currentTarget.closest("details")?.removeAttribute("open");
   };
 
+  const closeOpenDropdowns = () => {
+    document.querySelectorAll<HTMLDetailsElement>(".teacher-book-tree-menu[open], .teacher-book-tree-upload-dropdown[open]").forEach((menu) => {
+      menu.open = false;
+    });
+  };
+
   useEffect(() => {
     const closeOpenMenus = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      document.querySelectorAll<HTMLDetailsElement>(".teacher-book-tree-menu[open]").forEach((menu) => {
+      document.querySelectorAll<HTMLDetailsElement>(".teacher-book-tree-menu[open], .teacher-book-tree-upload-dropdown[open]").forEach((menu) => {
         if (!menu.contains(target)) menu.open = false;
       });
     };
@@ -502,7 +515,41 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     return () => document.removeEventListener("pointerdown", closeOpenMenus);
   }, []);
 
+  const allTopicsExpanded = groups.length > 0 && groups.every((group) => !collapsedTopicIds.includes(group.topicId));
+
+  const toggleExpandAllTopics = () => {
+    if (allTopicsExpanded) {
+      setCollapsedTopicIds(groups.map((group) => group.topicId));
+    } else {
+      setCollapsedTopicIds([]);
+    }
+  };
+
   const headingIndex = useMemo(() => indexMarkdownHeadings(content), [content]);
+
+  const handleHeadingClick = (headingId: string) => {
+    setActiveHeadingId(headingId);
+    if (preview) {
+      const target = document.getElementById(headingId) || document.querySelector(`[data-knowledge-book-heading-id="${headingId}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    } else {
+      const editor = editorRef.current;
+      if (editor) {
+        const heading = headingIndex.headings.find((h) => h.id === headingId);
+        if (heading) {
+          const index = content.indexOf(heading.text);
+          if (index >= 0) {
+            editor.focus();
+            editor.setSelectionRange(index, index + heading.text.length);
+            const linesBefore = content.slice(0, index).split("\n").length;
+            editor.scrollTop = Math.max(0, (linesBefore - 3) * 26);
+          }
+        }
+      }
+    }
+  };
   const save = async () => {
     if (!page || !selectedId) return;
     setSaving(true);
@@ -706,18 +753,23 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     setMessage(`已插入“${file.display_name}”引用，保存草稿后会同步到学生教材。`);
   };
 
-  const uploadBookFile = async (file: File | undefined) => {
+  const uploadBookFile = async (file: File | undefined, targetKnowledgePointId?: string) => {
     if (!file) return;
-    if (!selectedId) {
+    const pointId = targetKnowledgePointId || selectedId;
+    if (!pointId) {
       setMessage("请先在左侧选择要上传教材文件的知识点。");
       return;
     }
     setFileBusy(true);
     setMessage("");
     try {
-      const result = await api.uploadTeacherBookFile(workspaceId, selectedId, file);
-      setBookFiles((current) => [...current, result.file]);
-      insertFileReference(result.file);
+      const result = await api.uploadTeacherBookFile(workspaceId, pointId, file);
+      if (pointId === selectedId) {
+        setBookFiles((current) => [...current, result.file]);
+        insertFileReference(result.file);
+      } else {
+        setMessage(`教材文件“${result.file.display_name}”已上传至指定知识点。`);
+      }
     } catch (reason) {
       setMessage(`教材文件上传失败：${reason instanceof Error ? reason.message : String(reason)}`);
     } finally {
@@ -971,10 +1023,60 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
         <div className="teacher-book-archive-actions"><button type="button" onClick={() => setArchivePreview(null)} disabled={saving}>取消</button><button type="button" onClick={() => void applyArchive()} disabled={saving || (archivePreview.items.every((item) => item.action === "unchanged") && archivePreview.asset_paths.length === 0)}><FileUp size={15} />确认应用到草稿</button></div>
         </section>}
       </div>
-      <div className={['teacher-book-layout', directoryCollapsed && 'directory-collapsed'].filter(Boolean).join(' ')}>
+      <div className={['teacher-book-layout', directoryCollapsed && 'directory-collapsed', outlineCollapsed && 'outline-collapsed'].filter(Boolean).join(' ')}>
         <aside className={['teacher-book-tree', directoryCollapsed && 'collapsed'].filter(Boolean).join(' ')} aria-label="教材目录">
           <button type="button" className="teacher-book-tree-collapsed-toggle" aria-label="展开教材目录" onClick={() => setDirectoryCollapsed(false)}><PanelLeftOpen size={16} /></button>
-          <div className="teacher-book-tree-heading"><div><strong>教材目录</strong><small>{groups.reduce((total, group) => total + group.items.length, 0)} 个知识点</small></div><div className="teacher-book-tree-actions"><button type="button" title="新建主题" aria-label="新建主题" onClick={() => void addTopic()} disabled={!catalogDraft || directorySaving}><FolderPlus size={15} /></button><details className="teacher-book-tree-menu"><summary aria-label="教材目录选项"><MoreHorizontal size={16} /></summary><div><button type="button" onClick={(event) => { closeTreeMenu(event); void addTopic(); }} disabled={!catalogDraft || directorySaving}><FolderPlus size={14} />新增主题</button></div></details><button type="button" aria-label="收起教材目录" onClick={() => setDirectoryCollapsed(true)}><PanelLeftClose size={15} /></button></div></div>
+          <div className="teacher-book-tree-heading">
+            <div><strong>教材目录</strong><small>{groups.reduce((total, group) => total + group.items.length, 0)} 个知识点</small></div>
+            <div className="teacher-book-tree-actions">
+              <button type="button" title={allTopicsExpanded ? "全部收起主题" : "全部展开主题"} aria-label={allTopicsExpanded ? "全部收起主题" : "全部展开主题"} onClick={toggleExpandAllTopics}>{allTopicsExpanded ? <FoldVertical size={14} /> : <UnfoldVertical size={14} />}</button>
+              <button type="button" title="新建主题" aria-label="新建主题" onClick={() => void addTopic()} disabled={!catalogDraft || directorySaving}><FolderPlus size={15} /></button>
+              <details className="teacher-book-tree-menu"><summary aria-label="教材目录选项"><MoreHorizontal size={16} /></summary><div><button type="button" onClick={(event) => { closeTreeMenu(event); void addTopic(); }} disabled={!catalogDraft || directorySaving}><FolderPlus size={14} />新增主题</button></div></details>
+              <button type="button" aria-label="收起教材目录" onClick={() => setDirectoryCollapsed(true)}><PanelLeftClose size={15} /></button>
+            </div>
+          </div>
+          <div className="teacher-book-tree-upload-bar">
+            <details className="teacher-book-tree-upload-dropdown">
+              <summary className="teacher-book-upload-primary-btn" aria-label="上传教学资料">
+                <Upload size={14} />
+                <span>上传教学资料</span>
+                <ChevronDown size={12} className="teacher-book-upload-arrow" />
+              </summary>
+              <div className="teacher-book-tree-upload-menu">
+                <label className="teacher-book-tree-upload-item">
+                  <FileText size={15} />
+                  <div>
+                    <strong>上传课件/资料文件</strong>
+                    <small>上传文档、代码或课件至当前知识点</small>
+                  </div>
+                  <input type="file" aria-label="左侧目录上传课件文件" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { closeOpenDropdowns(); void uploadBookFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+                </label>
+                <label className="teacher-book-tree-upload-item">
+                  <FileUp size={15} />
+                  <div>
+                    <strong>导入 Markdown 讲义/图片</strong>
+                    <small>导入 Markdown 正文并自动解析配图</small>
+                  </div>
+                  <input type="file" multiple accept=".md,text/markdown,image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { closeOpenDropdowns(); void handleFile(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
+                </label>
+                <label className="teacher-book-tree-upload-item">
+                  <Package size={15} />
+                  <div>
+                    <strong>导入教材包 (.zip)</strong>
+                    <small>批量导入多章节教材与配套素材</small>
+                  </div>
+                  <input type="file" accept=".zip,application/zip" onChange={(event) => { closeOpenDropdowns(); void handleArchiveFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+                </label>
+                <button type="button" className="teacher-book-tree-upload-item-btn" onClick={(event) => { closeTreeMenu(event); closeOpenDropdowns(); void addTopic(); }} disabled={!catalogDraft || directorySaving}>
+                  <FolderPlus size={15} />
+                  <div>
+                    <strong>新建教材主题</strong>
+                    <small>在左侧目录新增一级章节分类</small>
+                  </div>
+                </button>
+              </div>
+            </details>
+          </div>
           <label className="teacher-book-tree-search"><Search size={15} /><input type="search" aria-label="搜索教材目录" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="搜索主题或知识点" /></label>
           <div className="teacher-book-tree-groups">{filteredGroups.map((group) => {
             const topicExpanded = directoryQuery.trim().length > 0 || !collapsedTopicIds.includes(group.topicId);
@@ -995,6 +1097,11 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
                 {group.items.map((item) => { const pointDisabled = item.knowledge_point_status === "disabled"; return <div className={`teacher-book-tree-point ${selectedId === item.knowledge_point_id ? "active" : ""} ${pointDisabled ? "is-disabled" : ""}`} key={item.knowledge_point_id}>
                 <button className="teacher-book-tree-point-main" aria-label={`${item.title}${pointDisabled ? "（已停用）" : ""}`} type="button" onClick={() => requestSelect(item.knowledge_point_id)}><span>{item.title}</span></button>
                 <details className="teacher-book-tree-menu"><summary aria-label={`${item.title}选项`}><MoreHorizontal size={15} /></summary><div>
+                  <label className="teacher-book-menu-file-upload">
+                    <FileText size={14} />
+                    <span>上传资料到此知识点</span>
+                    <input type="file" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { closeOpenDropdowns(); void uploadBookFile(event.target.files?.[0], item.knowledge_point_id); event.currentTarget.value = ""; }} />
+                  </label>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void editKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}><Pencil size={14} />编辑知识点</button>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void toggleKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}>{item.knowledge_point_status === "enabled" ? <EyeOff size={14} /> : <Eye size={14} />}{item.knowledge_point_status === "enabled" ? "停用知识点" : "启用知识点"}</button>
                   <button type="button" className="danger" onClick={(event) => { closeTreeMenu(event); requestRemoveKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}><Trash2 size={14} />删除知识点</button>
@@ -1007,12 +1114,148 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
         </aside>
         <main className="teacher-book-workspace">
           {page ? <>
-            <header className="teacher-book-page-heading"><div className="teacher-book-page-heading-info"><div className="teacher-book-page-breadcrumb"><span className="teacher-book-page-topic">{page.topic_name}</span><span className="teacher-book-page-chevron" aria-hidden="true">›</span><h3>{page.title}</h3></div><span className="teacher-book-version"><strong>草稿 v{page.revision}</strong><span aria-hidden="true">·</span><span>{page.published_revision != null ? `已发布 v${page.published_revision}` : "尚未发布"}</span></span></div><div className="teacher-book-page-actions"><button type="button" className={preview ? "active" : ""} onClick={() => setPreview((current) => !current)}><Eye size={15} />{preview ? "返回编辑" : "预览正文"}</button><button type="button" onClick={() => void save()} disabled={saving}><Save size={15} />保存草稿</button><button type="button" className="teacher-book-publish" onClick={() => void publish()} disabled={saving || !content.trim()}><Send size={15} />发布给学生</button></div></header>
-            <nav className="teacher-book-heading-outline" aria-label="本页小标题"><strong>本页小标题</strong>{headingIndex.headings.length ? <div>{headingIndex.headings.map((heading) => <a className={`level-${heading.level}`} key={heading.id} href={`#${heading.id}`} onClick={() => setPreview(true)}>{heading.text}</a>)}</div> : <small>使用 Markdown 的 ## / ### 标题，学生页面右侧目录会自动同步。</small>}</nav>
-            <section className="teacher-book-files" aria-label="教材文件"><div className="teacher-book-files-heading"><div><strong>教材文件</strong><small>上传后插入引用，保存并发布后学生可预览和下载。</small></div><div className="teacher-book-files-heading-actions"><span>{bookFiles.length} 个文件</span><label className="teacher-book-files-upload-btn" title="上传教材文件到当前知识点"><Upload size={13} />上传文件<input type="file" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { void uploadBookFile(event.target.files?.[0]); event.currentTarget.value = ""; }} /></label></div></div>{bookFiles.length ? <ul>{bookFiles.map((file) => <li key={file.id}><FileText size={17} aria-hidden="true" /><div className="teacher-book-file-info"><strong>{file.display_name}</strong><small>{file.media_type} · {formatTeacherBookFileSize(file.size_bytes)}</small></div><div className="teacher-book-file-actions"><button type="button" onClick={() => insertFileReference(file)} disabled={fileBusy} aria-label={`插入教材文件：${file.display_name}`}>插入引用</button><button type="button" onClick={() => setFileRenameTarget(file)} disabled={fileBusy} aria-label={`重命名教材文件：${file.display_name}`}><Pencil size={14} /></button><label className="teacher-book-file-replace" title="替换文件内容"><Upload size={14} /><input type="file" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { void replaceBookFile(file.id, event.target.files?.[0]); event.currentTarget.value = ""; }} aria-label={`替换教材文件：${file.display_name}`} /></label><button type="button" onClick={() => setFileDeleteTarget(file)} disabled={fileBusy} aria-label={`删除教材文件：${file.display_name}`}><Trash2 size={14} /></button></div></li>)}</ul> : <p>当前知识点还没有教材文件，点击上方“上传教材文件”即可添加。</p>}</section>
-            {preview ? <div className="teacher-book-preview"><MarkdownContent allowDataImages headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} whiteboardLink={(_href, label) => <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true" title={label}>图</span>}>{renderKnowledgeBookWhiteboardRefs(replaceLocalAssetReferences(content || "暂无内容", editorAssetPreviews))}</MarkdownContent></div> : <div className="teacher-book-source"><div className="teacher-book-markdown-toolbar" aria-label="Markdown 快捷工具栏"><span>Markdown 源码</span><div>{markdownTools.map(({ format, label, icon: Icon, shortcut }) => <button key={format} type="button" title={shortcut ? `${label}（${shortcut}）` : label} aria-label={label} onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat(format)}><Icon size={14} />{label}</button>)}</div><small>支持 Ctrl/Cmd+B、I、K、S、Z、Y（撤销/重做） · 图片可写标题参数控制宽度，例如 <code>![图注](assets/figure.png "width=320px")</code></small></div><textarea ref={editorRef} className="teacher-book-textarea" aria-label="教材正文 Markdown" value={content} onChange={(event) => setEditorContent(event.target.value)} onKeyDown={handleEditorKeyDown} placeholder="# 知识点标题\n\n在这里编写面向学生的长篇教材正文。代码块建议使用 ```python，并只保留 PyTorch 示例。" /></div>}
+            <header className="teacher-book-page-heading">
+              <div className="teacher-book-page-heading-info">
+                <div className="teacher-book-page-breadcrumb">
+                  <span className="teacher-book-page-topic">{page.topic_name}</span>
+                  <span className="teacher-book-page-chevron" aria-hidden="true">›</span>
+                  <h3>{page.title}</h3>
+                </div>
+                <span className="teacher-book-version">
+                  <strong>草稿 v{page.revision}</strong>
+                  <span aria-hidden="true">·</span>
+                  <span>{page.published_revision != null ? `已发布 v${page.published_revision}` : "尚未发布"}</span>
+                </span>
+              </div>
+              <div className="teacher-book-page-actions">
+                <button type="button" className={!outlineCollapsed ? "active" : ""} onClick={() => setOutlineCollapsed((c) => !c)} title="切换本页目录大纲">
+                  <List size={15} />
+                  <span>本页目录</span>
+                </button>
+                <button type="button" className={preview ? "active" : ""} onClick={() => setPreview((current) => !current)}>
+                  <Eye size={15} />
+                  {preview ? "返回编辑" : "预览正文"}
+                </button>
+                <button type="button" onClick={() => void save()} disabled={saving}>
+                  <Save size={15} />
+                  保存草稿
+                </button>
+                <button type="button" className="teacher-book-publish" onClick={() => void publish()} disabled={saving || !content.trim()}>
+                  <Send size={15} />
+                  发布给学生
+                </button>
+              </div>
+            </header>
+            <nav className="teacher-book-heading-outline" aria-label="本页小标题">
+              <strong>本页小标题</strong>
+              {headingIndex.headings.length ? <div>{headingIndex.headings.map((heading) => <a className={`level-${heading.level}`} key={heading.id} href={`#${heading.id}`} onClick={() => { setPreview(true); handleHeadingClick(heading.id); }}>{heading.text}</a>)}</div> : <small>使用 Markdown 的 ## / ### 标题，学生页面与右侧本页目录会自动同步。</small>}
+            </nav>
+            <section className="teacher-book-files" aria-label="教材文件">
+              <div className="teacher-book-files-heading">
+                <div>
+                  <strong>教材文件</strong>
+                  <span className="teacher-book-files-count-badge">{bookFiles.length} 个文件</span>
+                  <small>上传后插入引用，保存发布后学生可预览和下载</small>
+                </div>
+                <div className="teacher-book-files-header-actions">
+                  <label className="teacher-book-files-upload-btn" title="上传课件文件">
+                    <FileText size={13} />
+                    <span>上传课件文件</span>
+                    <input type="file" aria-label="上传课件文件" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { void uploadBookFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+                  </label>
+                  <button
+                    type="button"
+                    className="teacher-book-files-toggle-btn"
+                    aria-label={filesCollapsed ? "展开教材文件列表" : "收起教材文件列表"}
+                    title={filesCollapsed ? "展开文件列表" : "收起文件列表"}
+                    onClick={() => setFilesCollapsed((c) => !c)}
+                  >
+                    {filesCollapsed ? <ChevronDown size={15} /> : <ChevronRight size={15} style={{ transform: "rotate(90deg)" }} />}
+                  </button>
+                </div>
+              </div>
+              {!filesCollapsed && (
+                bookFiles.length ? (
+                  <div className="teacher-book-files-list-wrapper">
+                    <ul>
+                      {bookFiles.map((file) => (
+                        <li key={file.id}>
+                          <FileText size={17} aria-hidden="true" />
+                          <div className="teacher-book-file-info">
+                            <strong>{file.display_name}</strong>
+                            <small>{file.media_type} · {formatTeacherBookFileSize(file.size_bytes)}</small>
+                          </div>
+                          <div className="teacher-book-file-actions">
+                            <button type="button" onClick={() => insertFileReference(file)} disabled={fileBusy} aria-label={`插入教材文件：${file.display_name}`}>插入引用</button>
+                            <button type="button" onClick={() => setFileRenameTarget(file)} disabled={fileBusy} aria-label={`重命名教材文件：${file.display_name}`}><Pencil size={14} /></button>
+                            <label className="teacher-book-file-replace" title="替换文件内容"><Upload size={14} /><input type="file" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { void replaceBookFile(file.id, event.target.files?.[0]); event.currentTarget.value = ""; }} aria-label={`替换教材文件：${file.display_name}`} /></label>
+                            <button type="button" onClick={() => setFileDeleteTarget(file)} disabled={fileBusy} aria-label={`删除教材文件：${file.display_name}`}><Trash2 size={14} /></button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p>当前知识点还没有教材文件，点击上方“上传教材文件”即可添加。</p>
+                )
+              )}
+            </section>
+            {preview ? (
+              <div className="teacher-book-preview">
+                <MarkdownContent allowDataImages headingIds={headingIndex.headingIds} headingIdsByLine={headingIndex.headingIdsByLine} whiteboardLink={(_href, label) => <span className="knowledge-book-whiteboard-anchor" data-whiteboard-anchor="true" title={label}>图</span>}>
+                  {renderKnowledgeBookWhiteboardRefs(replaceLocalAssetReferences(content || "暂无内容", editorAssetPreviews))}
+                </MarkdownContent>
+              </div>
+            ) : (
+              <div className="teacher-book-source">
+                <div className="teacher-book-markdown-toolbar" aria-label="Markdown 快捷工具栏">
+                  <span>Markdown 源码</span>
+                  <div>{markdownTools.map(({ format, label, icon: Icon, shortcut }) => <button key={format} type="button" title={shortcut ? `${label}（${shortcut}）` : label} aria-label={label} onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat(format)}><Icon size={14} />{label}</button>)}</div>
+                  <small>支持 Ctrl/Cmd+B、I、K、S、Z、Y（撤销/重做） · 图片可写标题参数控制宽度，例如 <code>![图注](assets/figure.png "width=320px")</code></small>
+                </div>
+                <textarea ref={editorRef} className="teacher-book-textarea" aria-label="教材正文 Markdown" value={content} onChange={(event) => setEditorContent(event.target.value)} onKeyDown={handleEditorKeyDown} placeholder="# 知识点标题\n\n在这里编写面向学生的长篇教材正文。代码块建议使用 ```python，并只保留 PyTorch 示例。" />
+              </div>
+            )}
           </> : <div className="teacher-state"><BookOpenText /><p>选择一个知识点开始编写教材。</p></div>}
         </main>
+        <aside className={['teacher-book-outline-sidebar', outlineCollapsed && 'collapsed'].filter(Boolean).join(' ')} aria-label="本页目录">
+          <button type="button" className="teacher-book-outline-collapsed-toggle" aria-label="展开本页目录" title="展开本页目录" onClick={() => setOutlineCollapsed(false)}>
+            <PanelRightOpen size={16} />
+          </button>
+          <div className="teacher-book-outline-heading">
+            <div>
+              <strong>本页目录</strong>
+              <small>{headingIndex.headings.length} 个小标题</small>
+            </div>
+            <button type="button" className="teacher-book-outline-close-btn" aria-label="收起本页目录" title="收起本页目录" onClick={() => setOutlineCollapsed(true)}>
+              <PanelRightClose size={15} />
+            </button>
+          </div>
+          <div className="teacher-book-outline-body">
+            {headingIndex.headings.length ? (
+              <nav className="teacher-book-outline-nav">
+                {headingIndex.headings.map((heading) => (
+                  <button
+                    key={heading.id}
+                    type="button"
+                    className={`teacher-book-outline-link level-${heading.level} ${activeHeadingId === heading.id ? "active" : ""}`}
+                    style={{ paddingLeft: `${10 + (heading.level - 2) * 12}px` }}
+                    onClick={() => handleHeadingClick(heading.id)}
+                    title={heading.text}
+                  >
+                    <span>{heading.text}</span>
+                  </button>
+                ))}
+              </nav>
+            ) : (
+              <div className="teacher-book-outline-empty">
+                <List size={22} />
+                <p>本页暂无小标题</p>
+                <small>使用 Markdown 的 ## / ### 标题，此处将自动同步大纲，方便随时定位与浏览。</small>
+              </div>
+            )}
+          </div>
+        </aside>
       </div>
       <WhiteboardLibraryManager items={whiteboardLibrary} onItemsChange={handleWhiteboardLibraryChange} initialExpanded={false} />
       {catalogInput && <TextInputDialog key={`${catalogInput.kind}-${catalogInput.topicId ?? ""}-${catalogInput.pointId ?? ""}`} open title={catalogInput.title} description={catalogInput.description} label={catalogInput.label} initialValue={catalogInput.value} placeholder={catalogInput.placeholder} confirmLabel={catalogInput.confirmLabel} onClose={() => setCatalogInput(null)} onConfirm={(value) => { void submitCatalogInput(value); }} />}

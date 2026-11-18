@@ -3,7 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ChangeEvent } from "react";
 import { createPortal } from "react-dom";
 
-import { api, storageFileDownloadUrl, type FileTransfer, type FileTransferRecipient, type StorageFile, type StorageUsage, type StorageUsageBucket } from "@/platform/http/api";
+import {
+  api,
+  storageFileDownloadUrl,
+  type DistributionTargetsResponse,
+  type FileTransfer,
+  type FileTransferRecipient,
+  type StorageFile,
+  type StorageUsage,
+  type StorageUsageBucket,
+} from "@/platform/http/api";
 import { createUuid } from "@/shared/utils/uuid";
 import { DocumentCodeView } from "./DocumentCodeView";
 import { MarkdownContent } from "./MarkdownContent";
@@ -338,6 +347,17 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
   const [sendBusy, setSendBusy] = useState(false);
   const [sendMessage, setSendMessage] = useState("");
   const [sendIdempotencyKey, setSendIdempotencyKey] = useState("");
+  const [currentUserRoles, setCurrentUserRoles] = useState<string[]>([]);
+  const isTeacher = useMemo(
+    () => currentUserRoles.some((role) => ["teacher", "developer", "admin"].includes(role)),
+    [currentUserRoles]
+  );
+  const [distributeTargetType, setDistributeTargetType] = useState<"all_students" | "all_guests" | "all_admins" | "all_users" | "role" | "classroom" | "user">("all_students");
+  const [distributeRole, setDistributeRole] = useState("student");
+  const [distributeClassroomId, setDistributeClassroomId] = useState("");
+  const [directDelivery, setDirectDelivery] = useState(true);
+  const [distributionTargets, setDistributionTargets] = useState<DistributionTargetsResponse | null>(null);
+  const [distributionDone, setDistributionDone] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(false);
   const [messageBox, setMessageBox] = useState<"incoming" | "outgoing">("incoming");
   const [transfers, setTransfers] = useState<FileTransfer[]>([]);
@@ -361,6 +381,16 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     const handle = window.setTimeout(refresh, 0);
     return () => window.clearTimeout(handle);
   }, [refresh]);
+
+  useEffect(() => {
+    let active = true;
+    if (typeof api.getCurrentUser === "function") {
+      void api.getCurrentUser().then((u) => {
+        if (active && u?.roles) setCurrentUserRoles(u.roles);
+      }).catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const listener = () => { refresh(); onRefreshUsage(); };
@@ -462,12 +492,58 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     setSendMessage("");
     setSendIdempotencyKey("");
     setSendBusy(false);
+    setDistributionDone(false);
   };
 
   const beginSend = (item: StorageFile) => {
     setSendFile(item);
     setSendIdempotencyKey(createUuid());
     setSendMessage("");
+    setDistributionDone(false);
+    if (isTeacher && typeof api.getDistributionTargets === "function") {
+      void api.getDistributionTargets().then((res) => {
+        setDistributionTargets(res);
+        if (res?.classrooms && res.classrooms.length > 0 && !distributeClassroomId) {
+          setDistributeClassroomId(res.classrooms[0].id);
+        }
+      }).catch(() => undefined);
+    }
+  };
+
+  const distributeAsTeacher = async () => {
+    if (!sendFile || sendBusy) return;
+    setSendBusy(true);
+    setSendMessage("");
+    try {
+      let targetValue: string | null = null;
+      if (distributeTargetType === "role") targetValue = distributeRole;
+      else if (distributeTargetType === "classroom") targetValue = distributeClassroomId;
+      else if (distributeTargetType === "user") {
+        targetValue = recipient?.identity_id || recipientIdentityId.trim();
+        if (!targetValue) {
+          setSendMessage("请输入指定用户的身份 ID 或用户名");
+          setSendBusy(false);
+          return;
+        }
+      }
+      const res = await api.distributeFile({
+        source_file_id: sendFile.id,
+        target_type: distributeTargetType,
+        target_value: targetValue,
+        direct_delivery: directDelivery,
+        workspace_id: workspaceId,
+      });
+      setDistributionDone(true);
+      setSendMessage(`分发完成！已向 ${res.target_label} 发送文件，成功 ${res.success_count} 人${res.failed_count > 0 ? `，失败 ${res.failed_count} 人` : ""}。`);
+      window.dispatchEvent(new Event("file-transfers:changed"));
+      window.setTimeout(() => {
+        closeSend();
+      }, 1800);
+    } catch (reason: unknown) {
+      setSendMessage(reason instanceof Error ? reason.message : "文件分发失败");
+    } finally {
+      setSendBusy(false);
+    }
   };
 
   const lookupRecipient = async () => {
@@ -550,7 +626,333 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
       </div>)}
     </div>}
     {messagesOpen && <section className="file-transfer-messages" aria-label="文件消息"><header><div><span className="file-transfer-heading-icon"><Mail size={17} /></span><div><strong>文件消息</strong><small>收到与发送的文件请求</small></div></div><button type="button" aria-label="关闭消息" onClick={() => setMessagesOpen(false)}><X size={15} /></button></header><div className="file-transfer-retention"><CalendarClock size={14} />消息记录自动保留 7 天，文件本身不会因此删除。</div><nav aria-label="消息分类"><button type="button" className={messageBox === "incoming" ? "active" : ""} onClick={() => { setMessageBox("incoming"); refreshTransfers("incoming"); }}><span>收到的</span>{messageBox === "incoming" && pendingTransfers > 0 && <em>{pendingTransfers}</em>}</button><button type="button" className={messageBox === "outgoing" ? "active" : ""} onClick={() => { setMessageBox("outgoing"); refreshTransfers("outgoing"); }}>已发送</button></nav>{messagesLoading ? <div className="storage-empty" role="status">正在读取消息…</div> : transfers.length === 0 ? <div className="storage-empty"><Mail size={24} /><strong>暂无文件消息</strong><span>新的文件请求会显示在这里。</span></div> : <div className="file-transfer-list">{transfers.map((transfer) => { const peer = messageBox === "incoming" ? transfer.sender : transfer.recipient; return <article key={transfer.id}><div className="file-transfer-item-main"><span className="file-transfer-file-icon"><FileText size={16} /></span><div><strong>{transfer.file_name ?? "未命名文件"}</strong><span><UserRound size={12} />{messageBox === "incoming" ? "来自" : "发送给"} {peer?.display_name ?? "已注销用户"}</span><small>{formatBytes(transfer.size_bytes ?? 0)} · {transfer.created_at ? `发送于 ${formatModifiedAt(transfer.created_at)}` : "发送时间未知"}{peer?.identity_id ? ` · ${peer.identity_id}` : ""}</small></div></div><span className={`transfer-status ${transfer.status}`}>{({ pending: "待处理", accepted: "已接收", rejected: "已拒绝", cancelled: "已撤回", expired: "已过期", failed: "失败" } as const)[transfer.status]}</span>{transfer.status === "pending" && (messageBox === "incoming" ? <footer><button type="button" aria-label={`拒绝 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "reject")}>拒绝</button><button type="button" className="primary" aria-label={`同意 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "accept")}>同意</button></footer> : <footer><button type="button" aria-label={`撤回 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "cancel")}>撤回</button></footer>)}</article>; })}</div>}</section>}
-    {sendFile && createPortal(<div className="file-transfer-overlay" role="presentation"><section className="file-transfer-dialog" role="dialog" aria-modal="true" aria-labelledby="file-transfer-title"><button type="button" className="file-transfer-close" aria-label="关闭发送窗口" onClick={closeSend}><X size={16} /></button><h3 id="file-transfer-title">发送文件</h3><p>发送 <strong>{sendFile.name}</strong></p><label htmlFor="file-transfer-recipient-id">接收人身份 ID</label><div className="file-transfer-search"><input id="file-transfer-recipient-id" autoFocus value={recipientIdentityId} onChange={(event) => { setRecipientIdentityId(event.target.value); setRecipient(null); setSendMessage(""); }} onKeyDown={(event) => { if (event.key === "Enter") void lookupRecipient(); }} /><button type="button" onClick={() => void lookupRecipient()} disabled={sendBusy || !recipientIdentityId.trim()}>查询接收人</button></div>{recipient && <div className="file-transfer-recipient"><span>接收人</span><strong>{recipient.display_name}</strong><small>{recipient.identity_id}</small></div>}{sendMessage && <div className="files-panel-error" role="alert">{sendMessage}</div>}<footer><button type="button" onClick={closeSend}>取消</button><button type="button" className="primary" disabled={!recipient || sendBusy} onClick={() => void sendToRecipient()}>确认发送</button></footer></section></div>, document.body)}
+    {sendFile && createPortal(
+      <div className="file-transfer-overlay" role="presentation">
+        <section
+          className="file-transfer-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="file-transfer-title"
+          style={isTeacher ? { maxWidth: 520, width: "95%" } : undefined}
+        >
+          <button type="button" className="file-transfer-close" aria-label="关闭发送窗口" onClick={closeSend}>
+            <X size={16} />
+          </button>
+          <h3 id="file-transfer-title">{isTeacher ? "分发发送文件" : "发送文件"}</h3>
+          <p>发送 <strong>{sendFile.name}</strong> ({formatBytes(sendFile.size_bytes)})</p>
+
+          {isTeacher ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, margin: "14px 0" }}>
+              <div>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                  发送目标对象
+                </label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-color, #ddd)",
+                      background: distributeTargetType === "all_students" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="distTarget"
+                      checked={distributeTargetType === "all_students"}
+                      onChange={() => setDistributeTargetType("all_students")}
+                    />
+                    <span>全体学生 ({distributionTargets?.summary.student_count ?? 0}人)</span>
+                  </label>
+
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-color, #ddd)",
+                      background: distributeTargetType === "all_guests" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="distTarget"
+                      checked={distributeTargetType === "all_guests"}
+                      onChange={() => setDistributeTargetType("all_guests")}
+                    />
+                    <span>全体游客 ({distributionTargets?.summary.guest_count ?? 0}人)</span>
+                  </label>
+
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-color, #ddd)",
+                      background: distributeTargetType === "all_admins" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="distTarget"
+                      checked={distributeTargetType === "all_admins"}
+                      onChange={() => setDistributeTargetType("all_admins")}
+                    />
+                    <span>全体管理员 ({distributionTargets?.summary.admin_count ?? 0}人)</span>
+                  </label>
+
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-color, #ddd)",
+                      background: distributeTargetType === "all_users" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="distTarget"
+                      checked={distributeTargetType === "all_users"}
+                      onChange={() => setDistributeTargetType("all_users")}
+                    />
+                    <span>全体用户 ({distributionTargets?.summary.total_user_count ?? 0}人)</span>
+                  </label>
+
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-color, #ddd)",
+                      background: distributeTargetType === "classroom" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="distTarget"
+                      checked={distributeTargetType === "classroom"}
+                      onChange={() => setDistributeTargetType("classroom")}
+                    />
+                    <span>指定班级</span>
+                  </label>
+
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-color, #ddd)",
+                      background: distributeTargetType === "role" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="distTarget"
+                      checked={distributeTargetType === "role"}
+                      onChange={() => setDistributeTargetType("role")}
+                    />
+                    <span>某一角色类别</span>
+                  </label>
+
+                  <label
+                    style={{
+                      gridColumn: "span 2",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-color, #ddd)",
+                      background: distributeTargetType === "user" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                      cursor: "pointer",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="distTarget"
+                      checked={distributeTargetType === "user"}
+                      onChange={() => setDistributeTargetType("user")}
+                    />
+                    <span>指定单个用户（输入身份 ID / 用户名）</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* 针对不同分类的子选择 */}
+              {distributeTargetType === "classroom" && (
+                <div>
+                  <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>选择班级：</label>
+                  <select
+                    value={distributeClassroomId}
+                    onChange={(e) => setDistributeClassroomId(e.target.value)}
+                    style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+                  >
+                    {distributionTargets?.classrooms.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.student_count}人)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {distributeTargetType === "role" && (
+                <div>
+                  <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>选择角色类别：</label>
+                  <select
+                    value={distributeRole}
+                    onChange={(e) => setDistributeRole(e.target.value)}
+                    style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+                  >
+                    {distributionTargets?.roles.map((r) => (
+                      <option key={r.code} value={r.code}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {distributeTargetType === "user" && (
+                <div>
+                  <label htmlFor="file-transfer-recipient-id">接收人身份 ID</label>
+                  <div className="file-transfer-search">
+                    <input
+                      id="file-transfer-recipient-id"
+                      autoFocus
+                      value={recipientIdentityId}
+                      onChange={(event) => {
+                        setRecipientIdentityId(event.target.value);
+                        setRecipient(null);
+                        setSendMessage("");
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void lookupRecipient();
+                      }}
+                    />
+                    <button type="button" onClick={() => void lookupRecipient()} disabled={sendBusy || !recipientIdentityId.trim()}>
+                      查询接收人
+                    </button>
+                  </div>
+                  {recipient && (
+                    <div className="file-transfer-recipient" style={{ marginTop: 6 }}>
+                      <span>接收人</span>
+                      <strong>{recipient.display_name}</strong>
+                      <small>{recipient.identity_id}</small>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 发送模式选择 */}
+              <div style={{ marginTop: 4 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={directDelivery}
+                    onChange={(e) => setDirectDelivery(e.target.checked)}
+                  />
+                  <span>
+                    <strong>直接存入接收方文件列表</strong> (无需对方确认，即刻可用)
+                  </span>
+                </label>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label htmlFor="file-transfer-recipient-id">接收人身份 ID</label>
+              <div className="file-transfer-search">
+                <input
+                  id="file-transfer-recipient-id"
+                  autoFocus
+                  value={recipientIdentityId}
+                  onChange={(event) => {
+                    setRecipientIdentityId(event.target.value);
+                    setRecipient(null);
+                    setSendMessage("");
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void lookupRecipient();
+                  }}
+                />
+                <button type="button" onClick={() => void lookupRecipient()} disabled={sendBusy || !recipientIdentityId.trim()}>
+                  查询接收人
+                </button>
+              </div>
+              {recipient && (
+                <div className="file-transfer-recipient">
+                  <span>接收人</span>
+                  <strong>{recipient.display_name}</strong>
+                  <small>{recipient.identity_id}</small>
+                </div>
+              )}
+            </>
+          )}
+
+          {sendMessage && (
+            <div
+              className={distributionDone ? "files-panel-notice" : "files-panel-error"}
+              role="alert"
+              style={
+                distributionDone
+                  ? { background: "rgba(16, 185, 129, 0.1)", color: "#059669", padding: "8px 12px", borderRadius: 6 }
+                  : undefined
+              }
+            >
+              {sendMessage}
+            </div>
+          )}
+
+          <footer>
+            <button type="button" onClick={closeSend}>
+              {distributionDone ? "关闭" : "取消"}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={
+                sendBusy ||
+                distributionDone ||
+                (isTeacher
+                  ? distributeTargetType === "user" && !recipientIdentityId.trim()
+                  : !recipient)
+              }
+              onClick={() => void (isTeacher ? distributeAsTeacher() : sendToRecipient())}
+            >
+              {sendBusy ? "正在发送…" : isTeacher ? "确认分发发送" : "确认发送"}
+            </button>
+          </footer>
+        </section>
+      </div>,
+      document.body
+    )}
   </div>;
 }
 

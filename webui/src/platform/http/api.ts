@@ -248,6 +248,78 @@ export interface FileTransfer {
   expires_at?: string;
 }
 
+export interface DistributionTargetRole {
+  code: string;
+  name: string;
+  description: string;
+}
+
+export interface DistributionTargetClassroom {
+  id: string;
+  name: string;
+  workspace_id: string;
+  student_count: number;
+}
+
+export interface DistributionTargetsResponse {
+  summary: {
+    student_count: number;
+    guest_count?: number;
+    admin_count?: number;
+    total_user_count: number;
+  };
+  roles: DistributionTargetRole[];
+  classrooms: DistributionTargetClassroom[];
+}
+
+export interface FileDistributionRequest {
+  source_file_id: string;
+  target_type: "all_students" | "all_users" | "all_guests" | "all_admins" | "role" | "classroom" | "user" | string;
+  target_value?: string | null;
+  direct_delivery?: boolean;
+  workspace_id?: string;
+}
+
+export interface FileDistributionFailure {
+  user_id: string;
+  display_name: string;
+  identity_id: string;
+  reason: string;
+}
+
+export interface FileDistributionResponse {
+  distribution_id: string;
+  source_file_id: string;
+  file_name: string;
+  size_bytes: number;
+  target_type: string;
+  target_value?: string | null;
+  target_label: string;
+  direct_delivery: boolean;
+  total_targets: number;
+  success_count: number;
+  failed_count: number;
+  failures: FileDistributionFailure[];
+  created_at: string;
+}
+
+export interface FileDistributionHistoryItem {
+  id: string;
+  file_name: string;
+  size_bytes: number;
+  target_type: string;
+  target_value?: string | null;
+  target_label: string;
+  direct_delivery: boolean;
+  total_count: number;
+  success_count: number;
+  failed_count: number;
+  status: string;
+  details: FileDistributionFailure[];
+  created_at: string;
+}
+
+
 export interface SandboxRuntimeProfile {
   id: string;
   runtime: string;
@@ -360,6 +432,14 @@ export const api = {
   acceptFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/accept`, { method: "POST", body: "{}" }),
   rejectFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/reject`, { method: "POST", body: "{}" }),
   cancelFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/cancel`, { method: "POST", body: "{}" }),
+  getDistributionTargets: () => request<DistributionTargetsResponse>("/storage/distribution-targets"),
+  distributeFile: (input: FileDistributionRequest) =>
+    request<FileDistributionResponse>("/storage/transfers/distribute", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  listDistributionHistory: (limit = 50) =>
+    request<{ items: FileDistributionHistoryItem[] }>(`/storage/distribution-history?limit=${limit}`),
   ensureSandboxLease: () => request<{
     phase: number;
       runtime_available: boolean;

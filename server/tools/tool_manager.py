@@ -2,6 +2,7 @@ from server.tools.api.academic_search_tool import academic_search
 from server.tools.api.file_read_tool import read_local_file
 from server.tools.api.image_analyze_tool import image_analyze
 from server.tools.api.knowledge_book_tool import get_knowledge_book_context
+from server.tools.api.teacher_distribute_tool import teacher_distribute_file
 from server.tools.api.time_tool import get_current_time
 from server.tools.api.web_fetch_tool import web_fetch
 from server.sandbox.model_tools import MODEL_SANDBOX_TOOLS
@@ -22,6 +23,7 @@ ALL_AVAILABLE_TOOLS = [
     read_local_file,
     get_current_time,
     web_fetch,
+    teacher_distribute_file,
 ]
 
 
@@ -96,6 +98,20 @@ def register_builtin_tools(catalog: ToolCatalog | None = None) -> list[str]:
             max_concurrency=4,
             retry=ToolRetryPolicy(max_attempts=1),
             factory=lambda: academic_search.model_copy(deep=True),
+        ),
+        ToolDescriptor(
+            name=teacher_distribute_file.name,
+            description=teacher_distribute_file.description,
+            source=ToolSource.BUILTIN,
+            provider="teacher-file-distribution",
+            scopes=frozenset({ToolScope.COORDINATOR}),
+            capabilities=frozenset({"teacher.file_distribution"}),
+            risk=ToolRisk.MEDIUM,
+            read_only=False,
+            concurrency_safe=False,
+            timeout_s=30,
+            retry=ToolRetryPolicy(max_attempts=1),
+            factory=lambda: teacher_distribute_file.model_copy(deep=True),
         ),
         ToolDescriptor(
             name=image_analyze.name,
@@ -189,7 +205,7 @@ def _register_compactable_tools() -> None:
     try:
         from server.agent.compression.micro_compact import register_compactable_tool
 
-        for tool in ALL_AVAILABLE_TOOLS:
+        for tool in (read_local_file, get_current_time, web_fetch):
             register_compactable_tool(tool.name)
     except Exception:
         pass

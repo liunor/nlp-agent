@@ -227,7 +227,13 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
         <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
           <h2 className="mb-3 text-sm font-semibold text-gray-700">加入申请</h2>
           {selectedId && <div className="mb-4 rounded-md bg-blue-50 p-3 text-sm text-blue-900">
-            <div className="flex items-center justify-between gap-3"><span>班级码：<strong className="tracking-widest">{joinCode || "加载中…"}</strong></span><button type="button" disabled={!joinCode} onClick={() => void copyJoinCode()} className="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium hover:bg-blue-100">复制班级码</button></div>
+            <div className="flex items-center justify-between gap-3">
+              <span>班级码：<strong className="tracking-widest">{joinCode || "加载中…"}</strong></span>
+              <div className="flex items-center gap-2">
+                <button type="button" disabled={!joinCode} onClick={() => void copyJoinCode()} className="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium hover:bg-blue-100">复制班级码</button>
+                <a href="/teacher/distribute" className="rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700">向本班发送文件</a>
+              </div>
+            </div>
             {copyMessage && <p className="mt-1 text-xs text-blue-700" role="status">{copyMessage}</p>}
           </div>}
           {!selectedId ? (

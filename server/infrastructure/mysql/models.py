@@ -1135,6 +1135,35 @@ class FileTransferModel(TimestampedModel, Base):
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class FileDistributionModel(TimestampedModel, Base):
+    """Teacher file distribution batches to all students, all users, or targeted groups."""
+
+    __tablename__ = "nlp_file_distributions"
+    __table_args__ = (
+        Index("ix_nlp_file_distributions_teacher_created", "teacher_user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID, primary_key=True)
+    teacher_user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False
+    )
+    source_file_id: Mapped[str | None] = mapped_column(
+        UUID, ForeignKey("nlp_user_files.id", ondelete="SET NULL")
+    )
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BIGINT(unsigned=True), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_value: Mapped[str | None] = mapped_column(String(128))
+    target_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    direct_delivery: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="1")
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="completed")
+    details_json: Mapped[str | None] = mapped_column(Text)
+
+
+
 class MemoryDocumentModel(TimestampedModel, Base):
     __tablename__ = "nlp_memory_documents"
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
