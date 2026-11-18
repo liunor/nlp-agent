@@ -68,6 +68,26 @@ def sanitize_public_output(content: Any) -> str:
     return "" if looks_like_internal_output(text) else text
 
 
+def record_compression_fallback(stage: str, error: Exception) -> None:
+    try:
+        from core.observability.context import current_telemetry_context
+
+        context = current_telemetry_context()
+        if context is None:
+            return
+        from core.observability.runtime import global_telemetry
+
+        global_telemetry.event(
+            "compression.fallback",
+            level="warning",
+            context=context,
+            payload={"stage": stage, "error_kind": type(error).__name__},
+        )
+    except Exception:
+        # Telemetry must not prevent the caller from falling back to its current messages.
+        return
+
+
 async def invoke_internal_model(model: Any, messages: list[BaseMessage]) -> Any:
     """Invoke a compaction model with metadata that prevents public streaming.
 

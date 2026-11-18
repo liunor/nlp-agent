@@ -39,6 +39,20 @@ describe("LiveDiagnosticsPage", () => {
     expect(groups.find((group) => !group.traceId)?.events).toHaveLength(2);
   });
 
+  it("shows the sandbox reserve and compression fallback only as safe diagnostic context", () => {
+    const blocked = event("blocked", {
+      name: "sandbox.model.scratch.blocked",
+      payload: { code: "sandbox_host_memory_reserve", actual: 2750, threshold: 3072, source: "private" },
+    });
+    const fallback = event("fallback", {
+      name: "compression.fallback",
+      payload: { stage: "auto_compact", error_kind: "TimeoutError", summary: "private" },
+    });
+    expect(filterDiagnosticEvents([blocked, fallback], "warnings", "").map((item) => item.event_id)).toEqual(["blocked", "fallback"]);
+    expect(safeEventContext(blocked)).toEqual(["Worker=worker-1", "拦截=内存预留", "实测=2750 MiB", "阈值=3072 MiB"]);
+    expect(safeEventContext(fallback)).toEqual(["Worker=worker-1", "压缩阶段=全量摘要", "错误类型=TimeoutError"]);
+  });
+
   it("only exposes safe diagnostic context and never renders raw payload secrets", () => {
     const item = event("safe", { payload: { provider: "openai", model: "gpt-5.4", prompt: "private", api_key: "secret" } });
 

@@ -21,10 +21,10 @@ from configs.settings import settings
 
 from server.infrastructure.mysql.models import SandboxEnvironmentModel, SandboxLeaseModel, SandboxRuntimeInstanceModel, SessionModel, UserModel
 
-from .contracts import SandboxScope
+from .contracts import SandboxCapacityError, SandboxScope
 from .faults import SandboxFaultInjector
 from .host_budget import host_budget_lock
-from .optimization import AdaptivePoolPolicy, host_capacity_allows_create, refill_count
+from .optimization import AdaptivePoolPolicy, host_capacity_blocker, refill_count
 from .runtime_adapters import SandboxRuntimeAdapter
 from .runtime_profile import DEFAULT_SANDBOX_RUNTIME_LIMITS
 from .warm_pool import claim_nonce_hash, RuntimeClaim, RuntimeState, reconcile_runtime_ids, runtime_container_name, warm_pool_service
@@ -505,6 +505,11 @@ class WarmPoolManager:
             return None
 
     async def _host_allows_create(self, *, total_count: int, reserved_count: int = 0) -> bool:
+        return await self._host_capacity_blocker(total_count=total_count, reserved_count=reserved_count) is None
+
+    async def _host_capacity_blocker(
+        self, *, total_count: int, reserved_count: int = 0
+    ) -> tuple[str, float, float] | None:
         runtime_memory_mb = getattr(self._docker, "memory_limit_mb", DEFAULT_SANDBOX_RUNTIME_LIMITS.memory_mb)
         if isinstance(runtime_memory_mb, bool) or not isinstance(runtime_memory_mb, (int, float)) or not math.isfinite(runtime_memory_mb) or runtime_memory_mb <= 0:
             raise ValueError("sandbox runtime memory budget must be finite and positive")
@@ -516,30 +521,19 @@ class WarmPoolManager:
         effective_total_count = total_count
         if host_runtime_count is not None:
             effective_total_count = max(effective_total_count, host_runtime_count + reserved_count)
-        resources = await self._host_resources()
-        if resources is None:
-            # Non-Docker adapters may not expose host telemetry. Docker's
-            # cross-Compose count still protects the shared host budget.
-            total_max = host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX
-            return effective_total_count < total_max
+        resources = await self._host_resources() or {}
         available_memory = resources.get("available_memory_mb")
         disk_free = resources.get("disk_free_gb")
-        if available_memory is not None and disk_free is not None:
-            return host_capacity_allows_create(
-                total_count=effective_total_count,
-                total_max=host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX,
-                available_memory_mb=float(available_memory),
-                memory_reserve_mb=settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB,
-                runtime_memory_mb=required_new_memory_mb,
-                disk_free_gb=float(disk_free),
-                disk_reserve_gb=settings.NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB,
-            )
-        if disk_free is not None and float(disk_free) < settings.NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB:
-            return False
-        if available_memory is not None and float(available_memory) < settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB + required_new_memory_mb:
-            return False
         total_max = host_total_max if host_runtime_count is not None else settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX
-        return effective_total_count < total_max
+        return host_capacity_blocker(
+            total_count=effective_total_count,
+            total_max=total_max,
+            available_memory_mb=float(available_memory) if available_memory is not None else None,
+            memory_reserve_mb=settings.NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB,
+            runtime_memory_mb=required_new_memory_mb,
+            disk_free_gb=float(disk_free) if disk_free is not None else None,
+            disk_reserve_gb=settings.NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB,
+        )
 
     async def capacity_snapshot(self) -> dict[str, object]:
         """Management-plane capacity data for dashboards and alert thresholds."""
@@ -867,8 +861,10 @@ class WarmPoolManager:
                     counts = await self._counts(session)
                 if counts.total_count >= settings.NLP_AGENT_SANDBOX_RUNTIME_TOTAL_MAX:
                     raise RuntimeError("Sandbox runtime capacity is full; release an environment before retrying.")
-                if not await self._host_allows_create(total_count=counts.total_count):
-                    raise RuntimeError("Sandbox host capacity or resource reserve blocks a new runtime.")
+                blocker = await self._host_capacity_blocker(total_count=counts.total_count)
+                if blocker is not None:
+                    code, actual, threshold = blocker
+                    raise SandboxCapacityError(code, actual=actual, threshold=threshold)
                 # Scratch has no runtime row. Keep the shared host reservation
                 # until its --rm process (or cancellation cleanup) has ended.
                 # Reconcile uses the same lock and cannot mistake a running

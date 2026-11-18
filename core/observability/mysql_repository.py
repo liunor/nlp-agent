@@ -10,7 +10,7 @@ from typing import Any
 
 from sqlalchemy import Integer, String, and_, case, cast, delete, false, func, or_, select, text
 from server.infrastructure.mysql.sync_engine import configured_engine, release_engine
-from sqlalchemy.dialects.mysql import insert
+from sqlalchemy.dialects.mysql import CHAR, insert
 from sqlalchemy.orm import aliased
 
 from core.observability.models import TelemetryEnvelope
@@ -22,7 +22,7 @@ from core.observability.summary import (
 )
 from core.observability.redaction import redact_telemetry_mapping
 from core.observability.traces import build_trace_group_page
-from server.infrastructure.mysql.models import ObservabilityRecordModel
+from server.infrastructure.mysql.models import ObservabilityRecordModel, TurnModel
 
 
 MAX_ANALYSIS_ROWS = 50_000
@@ -157,6 +157,32 @@ class MySQLTelemetryRepository:
             output.append(item)
         return output
 
+    @classmethod
+    def _effective_status(cls, record):
+        turn_cancelled = select(TurnModel.id).where(
+            TurnModel.id == cast(record.turn_id, CHAR(charset="ascii")).collate("ascii_bin"),
+            TurnModel.status == "cancelled",
+        ).exists()
+        return case(
+            (and_(
+                record.status == "error",
+                cls._payload_text(record.payload_json, "$.payload.error_kind") == "LostTurnClaimError",
+                turn_cancelled,
+            ), "cancelled"),
+            else_=record.status,
+        )
+
+    @classmethod
+    def _has_failure(cls, record):
+        status = cls._effective_status(record)
+        return and_(
+            or_(status.is_(None), status != "cancelled"),
+            or_(
+                status.in_(("error", "timeout", "denied")),
+                cls._payload_text(record.payload_json, "$.payload.error_kind").is_not(None),
+            ),
+        )
+
     def _rows(
         self,
         kind: str,
@@ -175,9 +201,9 @@ class MySQLTelemetryRepository:
         chain_ids: Sequence[str] | None = None,
         ascending: bool = False,
     ) -> list[dict[str, Any]]:
-        statement = select(ObservabilityRecordModel.payload_json).where(
-            ObservabilityRecordModel.kind == kind
-        )
+        record = ObservabilityRecordModel
+        status_expression = self._effective_status(record) if kind in {"trace", "span"} else record.status
+        statement = select(record.payload_json, status_expression).where(record.kind == kind)
         if since is not None:
             statement = statement.where(ObservabilityRecordModel.created_at >= since)
         if trace_id is not None:
@@ -189,7 +215,7 @@ class MySQLTelemetryRepository:
         if session_id is not None:
             statement = statement.where(ObservabilityRecordModel.session_id == session_id)
         if status is not None:
-            statement = statement.where(ObservabilityRecordModel.status == status)
+            statement = statement.where(status_expression == status)
         if user_id is not None:
             statement = statement.where(
                 self._payload_text(
@@ -229,8 +255,20 @@ class MySQLTelemetryRepository:
         if limit is not None:
             statement = statement.limit(min(max(1, limit), MAX_ANALYSIS_ROWS)).offset(max(0, offset))
         with self._engine.connect() as connection:
-            rows = connection.execute(statement).scalars().all()
-        return self._decode_payloads(rows, kind)
+            rows = connection.execute(statement).all()
+        items = self._decode_payloads((payload for payload, _ in rows), kind)
+        if kind in {"trace", "span"}:
+            for item, (_, effective_status) in zip(items, rows, strict=True):
+                if effective_status == "cancelled" and item.get("error_kind") == "LostTurnClaimError":
+                    attributes = item.get("attributes")
+                    item["attributes"] = {
+                        **(attributes if isinstance(attributes, dict) else {}),
+                        "execution_status": item.get("status"),
+                        "execution_error_kind": item["error_kind"],
+                    }
+                    item["status"] = "cancelled"
+                    item["error_kind"] = None
+        return items
 
     def overview(self, days: int = 30) -> dict[str, Any]:
         since = datetime.now(timezone.utc) - timedelta(days=max(1, days))
@@ -378,20 +416,7 @@ class MySQLTelemetryRepository:
             )
             .where(trace_table.kind == "trace", trace_table.created_at >= since)
         )
-        failure = or_(
-            trace_table.status.in_(
-                ("error", "timeout", "cancelled", "denied")
-            ),
-            self._payload_text(
-                trace_table.payload_json, "$.payload.error_kind"
-            ).is_not(None),
-            span_table.status.in_(
-                ("error", "timeout", "cancelled", "denied")
-            ),
-            self._payload_text(
-                span_table.payload_json, "$.payload.error_kind"
-            ).is_not(None),
-        )
+        failure = or_(self._has_failure(trace_table), self._has_failure(span_table))
         slow = or_(
             cast(
                 self._payload_text(

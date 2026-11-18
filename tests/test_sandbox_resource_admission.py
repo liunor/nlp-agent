@@ -25,7 +25,9 @@ def _scratch_manager(monkeypatch, *, count=0, headroom=True, work=None):
     manager = WarmPoolManager(session_factory=_session, docker=docker,
                               resource_profile_id="python-base", ready_target=1)
     manager._counts = AsyncMock(return_value=SimpleNamespace(total_count=count))
-    manager._host_allows_create = AsyncMock(return_value=headroom)
+    manager._host_capacity_blocker = AsyncMock(
+        return_value=None if headroom else ("sandbox_host_runtime_limit", 6, 6)
+    )
     return manager, docker
 
 
@@ -40,6 +42,35 @@ def test_scratch_cannot_bypass_capacity_or_required_host_lock(monkeypatch, reaso
         manager._require_host_lock = True
     with pytest.raises(RuntimeError):
         asyncio.run(manager.run_scratch(source="print(1)"))
+    docker.run_scratch.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("resources", "host_count", "code", "actual", "threshold"), [
+    ({"available_memory_mb": 4096, "disk_free_gb": 20}, 6, "sandbox_host_runtime_limit", 6, 6),
+    ({"available_memory_mb": 3071, "disk_free_gb": 20}, 0, "sandbox_host_memory_reserve", 3071, 3072),
+    ({"available_memory_mb": 4096, "disk_free_gb": 14}, 0, "sandbox_host_disk_reserve", 14, 15),
+])
+async def test_scratch_reports_the_host_protection_that_blocked_it(
+    monkeypatch, resources, host_count, code, actual, threshold,
+):
+    from configs.settings import settings
+    from server.sandbox.contracts import SandboxCapacityError
+    from server.sandbox.manager import WarmPoolManager
+
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_LOCK_FILE", "")
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_RUNTIME_TOTAL_MAX", 6)
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_MEMORY_RESERVE_MB", 2560)
+    monkeypatch.setattr(settings, "NLP_AGENT_SANDBOX_HOST_DISK_RESERVE_GB", 15)
+    docker = SimpleNamespace(
+        runtime_kind="docker", memory_limit_mb=512, run_scratch=AsyncMock(),
+        host_resources=lambda: resources, host_managed_runtime_count=lambda: host_count,
+    )
+    manager = WarmPoolManager(session_factory=_session, docker=docker,
+                              resource_profile_id="python-base", ready_target=1)
+    manager._counts = AsyncMock(return_value=SimpleNamespace(total_count=0))
+    with pytest.raises(SandboxCapacityError) as denied:
+        await manager.run_scratch(source="print(1)")
+    assert (denied.value.code, denied.value.actual, denied.value.threshold) == (code, actual, threshold)
     docker.run_scratch.assert_not_awaited()
 
 

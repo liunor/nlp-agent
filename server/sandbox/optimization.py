@@ -79,13 +79,34 @@ def host_capacity_allows_create(
     disk_reserve_gb: int,
 ) -> bool:
     """Check the host safety gate before starting one more Runtime."""
+    return host_capacity_blocker(
+        total_count=total_count, total_max=total_max,
+        available_memory_mb=available_memory_mb, memory_reserve_mb=memory_reserve_mb,
+        runtime_memory_mb=runtime_memory_mb, disk_free_gb=disk_free_gb,
+        disk_reserve_gb=disk_reserve_gb,
+    ) is None
+
+
+def host_capacity_blocker(
+    *,
+    total_count: int,
+    total_max: int,
+    available_memory_mb: float | None,
+    memory_reserve_mb: int,
+    runtime_memory_mb: float,
+    disk_free_gb: float | None,
+    disk_reserve_gb: int,
+) -> tuple[str, float, float] | None:
     if min(total_count, total_max, memory_reserve_mb, runtime_memory_mb, disk_reserve_gb) < 0:
         raise ValueError("resource limits must be non-negative")
-    return bool(
-        total_count < total_max
-        and available_memory_mb >= memory_reserve_mb + runtime_memory_mb
-        and disk_free_gb >= disk_reserve_gb
-    )
+    if total_count >= total_max:
+        return "sandbox_host_runtime_limit", total_count, total_max
+    required_memory_mb = memory_reserve_mb + runtime_memory_mb
+    if available_memory_mb is not None and not available_memory_mb >= required_memory_mb:
+        return "sandbox_host_memory_reserve", available_memory_mb, required_memory_mb
+    if disk_free_gb is not None and not disk_free_gb >= disk_reserve_gb:
+        return "sandbox_host_disk_reserve", disk_free_gb, disk_reserve_gb
+    return None
 
 
 def _percentile(values: list[float], quantile: float) -> float:

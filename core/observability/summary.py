@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from math import ceil
 from typing import Any, Iterable
 
-from core.observability.traces import trace_chain_identity
+from core.observability.traces import is_failure_record, trace_chain_identity
 
 
 LEGACY_TOKEN_FIELDS = (
@@ -19,7 +19,7 @@ LEGACY_TOKEN_FIELDS = (
     "total_tokens",
 )
 
-_FAILURE_STATUSES = {"error", "timeout", "cancelled", "denied"}
+_FAILURE_STATUSES = {"error", "timeout", "denied"}
 _ERROR_STATUSES = {"error", "timeout"}
 # Summary endpoints are dashboards, not export endpoints. Keep every response
 # bounded even when an installation has many providers, models, components, or
@@ -326,7 +326,7 @@ def _health_dimensions(
         timestamp = _parse_datetime(row.get("completed_at") or row.get("started_at"))
         group["requests"] += 1
         group["successes"] += int(status == "ok")
-        group["errors"] += int(status in _FAILURE_STATUSES or bool(row.get("error_kind")))
+        group["errors"] += int(is_failure_record(row))
         group["failed_requests"] += int(status in _FAILURE_STATUSES)
         group["retries"] += int(int(row.get("attempt") or 1) > 1)
         group["total_tokens"] += _usage_value(row, "total_tokens")
@@ -339,7 +339,7 @@ def _health_dimensions(
         group["_workspaces"].add(
             str(row.get("_workspace_id") or row.get("workspace_id") or "unknown")
         )
-        if status in _FAILURE_STATUSES or row.get("error_kind"):
+        if is_failure_record(row):
             group["_error_kinds"].add(str(row.get("error_kind") or status))
         if timestamp is not None:
             if group["_first_seen"] is None or timestamp < group["_first_seen"]:
@@ -449,8 +449,7 @@ def _operational_trend(
     failed_span_trace_ids = {
         str(row.get("trace_id") or "")
         for row in spans
-        if str(row.get("status") or "").lower() in _FAILURE_STATUSES
-        or bool(row.get("error_kind"))
+        if is_failure_record(row)
     }
 
     def bucket_for(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -468,9 +467,7 @@ def _operational_trend(
         bucket["requests"] += 1
         trace_id = str(row.get("trace_id") or "")
         bucket["errors"] += int(
-            status in _FAILURE_STATUSES
-            or bool(row.get("error_kind"))
-            or trace_id in failed_span_trace_ids
+            status != "cancelled" and (is_failure_record(row) or trace_id in failed_span_trace_ids)
         )
         bucket["total_tokens"] += _usage_value(row, "total_tokens")
         bucket["_users"].add(str(row.get("user_id") or "unknown"))
@@ -483,9 +480,8 @@ def _operational_trend(
         bucket = bucket_for(row)
         if bucket is None:
             continue
-        status = str(row.get("status") or "unknown").lower()
         bucket["component_calls"] += 1
-        bucket["component_errors"] += int(status in _FAILURE_STATUSES or bool(row.get("error_kind")))
+        bucket["component_errors"] += int(is_failure_record(row))
         bucket["retries"] += int(int(row.get("attempt") or 1) > 1)
         bucket["component_tokens"] += _usage_value(row, "total_tokens")
         if row.get("duration_ms") is not None:
@@ -548,13 +544,11 @@ def build_dependency_health(
     failed_span_trace_ids = {
         str(row.get("_trace_id") or "")
         for row in context_spans
-        if str(row.get("status") or "").lower() in _FAILURE_STATUSES
-        or bool(row.get("error_kind"))
+        if is_failure_record(row)
     }
     errors = sum(
-        str(row.get("status") or "").lower() in _FAILURE_STATUSES
-        or bool(row.get("error_kind"))
-        or str(row.get("trace_id") or "") in failed_span_trace_ids
+        row.get("status") != "cancelled"
+        and (is_failure_record(row) or str(row.get("trace_id") or "") in failed_span_trace_ids)
         for row in trace_rows
     )
     anomalies = []
@@ -583,7 +577,7 @@ def build_dependency_health(
             "component_calls": len(context_spans),
             "errors": errors,
             "component_errors": sum(
-                str(row.get("status") or "").lower() in _FAILURE_STATUSES or bool(row.get("error_kind"))
+                is_failure_record(row)
                 for row in context_spans
             ),
             "error_rate": errors / len(trace_rows) if trace_rows else 0.0,
@@ -635,8 +629,7 @@ def build_error_analysis(
     span_failure_trace_ids = {
         str(row.get("_trace_id") or "")
         for row in context_spans
-        if str(row.get("status") or "").lower() in _FAILURE_STATUSES
-        or row.get("error_kind")
+        if is_failure_record(row)
     }
 
     def add_success(kind: str, name: str, row: dict[str, Any]) -> None:
@@ -706,7 +699,7 @@ def build_error_analysis(
         kind = "trace"
         name = str(attributes.get("entrypoint") or row.get("source") or "request")
         trace_id = str(row.get("trace_id") or "")
-        if (status in _FAILURE_STATUSES or row.get("error_kind")) and trace_id not in span_failure_trace_ids:
+        if is_failure_record(row) and trace_id not in span_failure_trace_ids:
             add_occurrence(
                 row,
                 kind=kind,
@@ -723,7 +716,7 @@ def build_error_analysis(
         status = str(row.get("status") or "unknown").lower()
         kind = str(row.get("kind") or "unknown")
         name = str(row.get("name") or "unknown")
-        if status in _FAILURE_STATUSES or row.get("error_kind"):
+        if is_failure_record(row):
             provider = row.get("_provider")
             model = row.get("_provider_model")
             provider_model = None
