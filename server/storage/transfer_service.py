@@ -7,7 +7,7 @@ import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -54,30 +54,38 @@ class FileTransferService:
             raise StorageValidationError("无权访问该工作空间")
 
     async def lookup_recipient(self, identity_id: str) -> dict:
-        normalized = normalize_public_identity_id(identity_id)
+        raw = identity_id.strip()
+        normalized = normalize_public_identity_id(raw)
         user = await self.db.scalar(
             select(UserModel).where(
-                UserModel.identity_id == normalized,
+                or_(
+                    UserModel.identity_id == normalized,
+                    UserModel.username == raw,
+                ),
                 UserModel.status == "active",
                 UserModel.deleted_at.is_(None),
                 UserModel.id != self.principal.user_id,
             )
         )
         if user is None:
-            raise TransferNotFound("未找到该身份 ID 对应的有效用户")
+            raise TransferNotFound("未找到该身份 ID 或用户名对应的有效用户")
         return {"identity_id": user.identity_id, "display_name": user.display_name}
 
     async def _recipient(self, identity_id: str) -> UserModel:
-        normalized = normalize_public_identity_id(identity_id)
+        raw = identity_id.strip()
+        normalized = normalize_public_identity_id(raw)
         user = await self.db.scalar(
             select(UserModel).where(
-                UserModel.identity_id == normalized,
+                or_(
+                    UserModel.identity_id == normalized,
+                    UserModel.username == raw,
+                ),
                 UserModel.status == "active",
                 UserModel.deleted_at.is_(None),
             )
         )
         if user is None:
-            raise TransferNotFound("未找到该身份 ID 对应的有效用户")
+            raise TransferNotFound("未找到该身份 ID 或用户名对应的有效用户")
         if user.id == self.principal.user_id:
             raise StorageValidationError("不能给自己发送文件")
         return user
