@@ -591,6 +591,18 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(await screen.findByRole("heading", { name: "班级管理" })).toBeVisible();
     expect(screen.getByRole("button", { name: "创建班级" })).toBeVisible();
   });
+
+  it("exposes file distribution through the ordinary teacher route", async () => {
+    render(
+      <MemoryRouter initialEntries={["/teacher/distribute"]}>
+        <Routes>
+          <Route path="/teacher/*" element={<TeacherRoutes />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "教师文件分发" })).toBeVisible();
+  });
 });
 
 describe("LearningAnalysisPage teacher annotations", () => {
