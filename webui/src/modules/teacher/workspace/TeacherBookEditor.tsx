@@ -1,4 +1,4 @@
-import { AlertCircle, Bold, BookOpenText, ChevronDown, ChevronRight, Code2, Eye, EyeOff, FileText, FileUp, FoldVertical, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, Package, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, UnfoldVertical, Upload } from "lucide-react";
+import { AlertCircle, Bold, BookOpenText, ChevronDown, ChevronRight, Code2, Eye, EyeOff, FileText, FileUp, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { api } from "@/platform/http/api";
@@ -497,17 +497,11 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     event.currentTarget.closest("details")?.removeAttribute("open");
   };
 
-  const closeOpenDropdowns = () => {
-    document.querySelectorAll<HTMLDetailsElement>(".teacher-book-tree-menu[open], .teacher-book-tree-upload-dropdown[open]").forEach((menu) => {
-      menu.open = false;
-    });
-  };
-
   useEffect(() => {
     const closeOpenMenus = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      document.querySelectorAll<HTMLDetailsElement>(".teacher-book-tree-menu[open], .teacher-book-tree-upload-dropdown[open]").forEach((menu) => {
+      document.querySelectorAll<HTMLDetailsElement>(".teacher-book-tree-menu[open]").forEach((menu) => {
         if (!menu.contains(target)) menu.open = false;
       });
     };
@@ -515,15 +509,6 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
     return () => document.removeEventListener("pointerdown", closeOpenMenus);
   }, []);
 
-  const allTopicsExpanded = groups.length > 0 && groups.every((group) => !collapsedTopicIds.includes(group.topicId));
-
-  const toggleExpandAllTopics = () => {
-    if (allTopicsExpanded) {
-      setCollapsedTopicIds(groups.map((group) => group.topicId));
-    } else {
-      setCollapsedTopicIds([]);
-    }
-  };
 
   const headingIndex = useMemo(() => indexMarkdownHeadings(content), [content]);
 
@@ -1026,57 +1011,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
       <div className={['teacher-book-layout', directoryCollapsed && 'directory-collapsed', outlineCollapsed && 'outline-collapsed'].filter(Boolean).join(' ')}>
         <aside className={['teacher-book-tree', directoryCollapsed && 'collapsed'].filter(Boolean).join(' ')} aria-label="教材目录">
           <button type="button" className="teacher-book-tree-collapsed-toggle" aria-label="展开教材目录" onClick={() => setDirectoryCollapsed(false)}><PanelLeftOpen size={16} /></button>
-          <div className="teacher-book-tree-heading">
-            <div><strong>教材目录</strong><small>{groups.reduce((total, group) => total + group.items.length, 0)} 个知识点</small></div>
-            <div className="teacher-book-tree-actions">
-              <button type="button" title={allTopicsExpanded ? "全部收起主题" : "全部展开主题"} aria-label={allTopicsExpanded ? "全部收起主题" : "全部展开主题"} onClick={toggleExpandAllTopics}>{allTopicsExpanded ? <FoldVertical size={14} /> : <UnfoldVertical size={14} />}</button>
-              <button type="button" title="新建主题" aria-label="新建主题" onClick={() => void addTopic()} disabled={!catalogDraft || directorySaving}><FolderPlus size={15} /></button>
-              <details className="teacher-book-tree-menu"><summary aria-label="教材目录选项"><MoreHorizontal size={16} /></summary><div><button type="button" onClick={(event) => { closeTreeMenu(event); void addTopic(); }} disabled={!catalogDraft || directorySaving}><FolderPlus size={14} />新增主题</button></div></details>
-              <button type="button" aria-label="收起教材目录" onClick={() => setDirectoryCollapsed(true)}><PanelLeftClose size={15} /></button>
-            </div>
-          </div>
-          <div className="teacher-book-tree-upload-bar">
-            <details className="teacher-book-tree-upload-dropdown">
-              <summary className="teacher-book-upload-primary-btn" aria-label="上传教学资料">
-                <Upload size={14} />
-                <span>上传教学资料</span>
-                <ChevronDown size={12} className="teacher-book-upload-arrow" />
-              </summary>
-              <div className="teacher-book-tree-upload-menu">
-                <label className="teacher-book-tree-upload-item">
-                  <FileText size={15} />
-                  <div>
-                    <strong>上传课件/资料文件</strong>
-                    <small>上传文档、代码或课件至当前知识点</small>
-                  </div>
-                  <input type="file" aria-label="左侧目录上传课件文件" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { closeOpenDropdowns(); void uploadBookFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-                </label>
-                <label className="teacher-book-tree-upload-item">
-                  <FileUp size={15} />
-                  <div>
-                    <strong>导入 Markdown 讲义/图片</strong>
-                    <small>导入 Markdown 正文并自动解析配图</small>
-                  </div>
-                  <input type="file" multiple accept=".md,text/markdown,image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { closeOpenDropdowns(); void handleFile(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
-                </label>
-                <label className="teacher-book-tree-upload-item">
-                  <Package size={15} />
-                  <div>
-                    <strong>导入教材包 (.zip)</strong>
-                    <small>批量导入多章节教材与配套素材</small>
-                  </div>
-                  <input type="file" accept=".zip,application/zip" onChange={(event) => { closeOpenDropdowns(); void handleArchiveFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-                </label>
-                <button type="button" className="teacher-book-tree-upload-item-btn" onClick={(event) => { closeTreeMenu(event); closeOpenDropdowns(); void addTopic(); }} disabled={!catalogDraft || directorySaving}>
-                  <FolderPlus size={15} />
-                  <div>
-                    <strong>新建教材主题</strong>
-                    <small>在左侧目录新增一级章节分类</small>
-                  </div>
-                </button>
-              </div>
-            </details>
-          </div>
+          <div className="teacher-book-tree-heading"><div><strong>教材目录</strong><small>{groups.reduce((total, group) => total + group.items.length, 0)} 个知识点</small></div><div className="teacher-book-tree-actions"><button type="button" title="新建主题" aria-label="新建主题" onClick={() => void addTopic()} disabled={!catalogDraft || directorySaving}><FolderPlus size={15} /></button><details className="teacher-book-tree-menu"><summary aria-label="教材目录选项"><MoreHorizontal size={16} /></summary><div><button type="button" onClick={(event) => { closeTreeMenu(event); void addTopic(); }} disabled={!catalogDraft || directorySaving}><FolderPlus size={14} />新增主题</button></div></details><button type="button" aria-label="收起教材目录" onClick={() => setDirectoryCollapsed(true)}><PanelLeftClose size={15} /></button></div></div>
           <label className="teacher-book-tree-search"><Search size={15} /><input type="search" aria-label="搜索教材目录" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="搜索主题或知识点" /></label>
           <div className="teacher-book-tree-groups">{filteredGroups.map((group) => {
             const topicExpanded = directoryQuery.trim().length > 0 || !collapsedTopicIds.includes(group.topicId);
@@ -1097,11 +1032,6 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
                 {group.items.map((item) => { const pointDisabled = item.knowledge_point_status === "disabled"; return <div className={`teacher-book-tree-point ${selectedId === item.knowledge_point_id ? "active" : ""} ${pointDisabled ? "is-disabled" : ""}`} key={item.knowledge_point_id}>
                 <button className="teacher-book-tree-point-main" aria-label={`${item.title}${pointDisabled ? "（已停用）" : ""}`} type="button" onClick={() => requestSelect(item.knowledge_point_id)}><span>{item.title}</span></button>
                 <details className="teacher-book-tree-menu"><summary aria-label={`${item.title}选项`}><MoreHorizontal size={15} /></summary><div>
-                  <label className="teacher-book-menu-file-upload">
-                    <FileText size={14} />
-                    <span>上传资料到此知识点</span>
-                    <input type="file" accept=".md,.markdown,.txt,.csv,.json,.py,.js,.ts,.tsx,.jsx,.css,.scss,.html,.xml,.yaml,.yml,.sql,.java,.c,.cpp,.h,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,text/*,application/json,application/xml" onChange={(event) => { closeOpenDropdowns(); void uploadBookFile(event.target.files?.[0], item.knowledge_point_id); event.currentTarget.value = ""; }} />
-                  </label>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void editKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}><Pencil size={14} />编辑知识点</button>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void toggleKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}>{item.knowledge_point_status === "enabled" ? <EyeOff size={14} /> : <Eye size={14} />}{item.knowledge_point_status === "enabled" ? "停用知识点" : "启用知识点"}</button>
                   <button type="button" className="danger" onClick={(event) => { closeTreeMenu(event); requestRemoveKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}><Trash2 size={14} />删除知识点</button>
