@@ -426,16 +426,16 @@ export function StudentWorkspace({
   const thinkingSelectionAvailable =
     supportedThinkingLevels.length === 0 ||
     supportedThinkingLevels.includes(workspace.settings.thinking_level);
-  const thinkingControl = supportedThinkingLevels.length > 0 ? (
+  const thinkingControl = (
     <ThinkingLevelControl
       modelLabel={selectedProfile?.label ?? workspace.settings.model_profile}
       value={workspace.settings.thinking_level}
       supportedLevels={supportedThinkingLevels}
-      disabled={!statusOnline || workspace.isRunning || workspace.selectionSaving}
+      disabled={!statusOnline || workspace.isRunning || workspace.selectionSaving || supportedThinkingLevels.length === 0}
       onPreviewChange={workspace.setSelectionPreview}
       onChange={(thinking_level) => void workspace.patchSettings({ thinking_level })}
     />
-  ) : null;
+  );
   const composer = (centered = false) => (
     <Composer
       key={workspace.composerRevision}
