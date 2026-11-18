@@ -47,8 +47,6 @@ export function FileDistributionPage({
 
   // Load teacher's files and distribution targets
   const loadData = useCallback(async () => {
-    setLoading(true);
-    setErrorMessage("");
     try {
       const [storageRes, targetsRes] = await Promise.all([
         api.listStorageFiles(workspaceId),
@@ -56,22 +54,17 @@ export function FileDistributionPage({
       ]);
       const availableFiles = storageRes.items.filter((item) => item.kind === "file");
       setFiles(availableFiles);
-      if (availableFiles.length > 0 && !selectedFileId) {
-        setSelectedFileId(availableFiles[0].id);
-      }
+      setSelectedFileId((prev) => prev || (availableFiles[0]?.id ?? ""));
       setTargetsMeta(targetsRes);
-      if (!selectedClassroomId && targetsRes.classrooms.length > 0) {
-        setSelectedClassroomId(targetsRes.classrooms[0].id);
-      }
+      setSelectedClassroomId((prev) => prev || (targetsRes.classrooms[0]?.id ?? ""));
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "加载数据失败");
     } finally {
       setLoading(false);
     }
-  }, [selectedClassroomId, selectedFileId, workspaceId]);
+  }, [workspaceId]);
 
   const loadHistory = useCallback(async () => {
-    setHistoryLoading(true);
     try {
       const res = await api.listDistributionHistory(30);
       setHistory(res.items);
@@ -83,11 +76,10 @@ export function FileDistributionPage({
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
+    queueMicrotask(() => {
       void loadData();
       void loadHistory();
-    }, 0);
-    return () => window.clearTimeout(timer);
+    });
   }, [loadData, loadHistory]);
 
   // Upload a new file from disk to teacher's storage directly
