@@ -460,28 +460,19 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(screen.queryByText(/教师教材/)).not.toBeInTheDocument();
   });
 
-  it("renders a dedicated right outline sidebar and toggles with the header button", async () => {
-    const user = userEvent.setup();
+  it("renders the full-height catalog tree without an outline sidebar and provides topic settings menu", async () => {
     getPageMock.mockResolvedValueOnce({
       page: {
         workspace_id: "workspace-1", topic_id: "pytorch", topic_name: "PyTorch 基础", knowledge_point_id: "tensor", title: "张量与形状",
         draft_markdown: "# 张量与形状\n\n## 基础概念\n\n### 维度定义\n\n正文内容", published_markdown: "", revision: 1, published_revision: null, updated_at: null,
       },
     });
-    render(<TeacherBookEditor workspaceId="workspace-1" />);
+    render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
-    const outlineSidebar = screen.getByRole("complementary", { name: "本页目录" });
-    expect(outlineSidebar).toBeVisible();
-    expect(within(outlineSidebar).getByText("基础概念")).toBeVisible();
-    expect(within(outlineSidebar).getByText("维度定义")).toBeVisible();
-
-    const toggleButton = screen.getByRole("button", { name: "本页目录" });
-    expect(toggleButton).toHaveClass("active");
-    await user.click(toggleButton);
-    expect(outlineSidebar).toHaveClass("collapsed");
-    await user.click(toggleButton);
-    expect(outlineSidebar).not.toHaveClass("collapsed");
+    expect(screen.queryByRole("complementary", { name: "本页目录" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "教材目录" })).toBeVisible();
+    expect(screen.getByLabelText("PyTorch 基础目录选项")).toBeInTheDocument();
   });
 
   it("allows selecting target topic directory when importing markdown to create a new knowledge point", async () => {

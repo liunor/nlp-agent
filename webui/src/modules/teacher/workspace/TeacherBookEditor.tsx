@@ -1,4 +1,4 @@
-import { AlertCircle, Bold, BookOpenText, ChevronDown, ChevronRight, Code2, Eye, EyeOff, FileText, FileUp, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, Upload } from "lucide-react";
+import { AlertCircle, Bold, BookOpenText, ChevronDown, ChevronRight, Code2, Eye, EyeOff, FileText, FileUp, FolderPlus, Heading2, Italic, Link2, List, MessageSquareQuote, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Save, Search, Send, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import { api } from "@/platform/http/api";
@@ -158,9 +158,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
   const [whiteboardLibraryError, setWhiteboardLibraryError] = useState("");
   const [catalogDraft, setCatalogDraft] = useState<TeacherCatalog | null>(catalog ?? null);
   const [directoryCollapsed, setDirectoryCollapsed] = useState(false);
-  const [outlineCollapsed, setOutlineCollapsed] = useState(false);
   const [filesCollapsed, setFilesCollapsed] = useState(false);
-  const [activeHeadingId, setActiveHeadingId] = useState("");
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [collapsedTopicIds, setCollapsedTopicIds] = useState<string[]>(() => (catalog?.topics ?? []).map((topic) => topic.id));
   const [directorySaving, setDirectorySaving] = useState(false);
@@ -513,7 +511,6 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
   const headingIndex = useMemo(() => indexMarkdownHeadings(content), [content]);
 
   const handleHeadingClick = (headingId: string) => {
-    setActiveHeadingId(headingId);
     if (preview) {
       const target = document.getElementById(headingId) || document.querySelector(`[data-knowledge-book-heading-id="${headingId}"]`);
       if (target) {
@@ -1008,7 +1005,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
         <div className="teacher-book-archive-actions"><button type="button" onClick={() => setArchivePreview(null)} disabled={saving}>取消</button><button type="button" onClick={() => void applyArchive()} disabled={saving || (archivePreview.items.every((item) => item.action === "unchanged") && archivePreview.asset_paths.length === 0)}><FileUp size={15} />确认应用到草稿</button></div>
         </section>}
       </div>
-      <div className={['teacher-book-layout', directoryCollapsed && 'directory-collapsed', outlineCollapsed && 'outline-collapsed'].filter(Boolean).join(' ')}>
+      <div className={['teacher-book-layout', directoryCollapsed && 'directory-collapsed'].filter(Boolean).join(' ')}>
         <aside className={['teacher-book-tree', directoryCollapsed && 'collapsed'].filter(Boolean).join(' ')} aria-label="教材目录">
           <button type="button" className="teacher-book-tree-collapsed-toggle" aria-label="展开教材目录" onClick={() => setDirectoryCollapsed(false)}><PanelLeftOpen size={16} /></button>
           <div className="teacher-book-tree-heading"><div><strong>教材目录</strong><small>{groups.reduce((total, group) => total + group.items.length, 0)} 个知识点</small></div><div className="teacher-book-tree-actions"><button type="button" title="新建主题" aria-label="新建主题" onClick={() => void addTopic()} disabled={!catalogDraft || directorySaving}><FolderPlus size={15} /></button><details className="teacher-book-tree-menu"><summary aria-label="教材目录选项"><MoreHorizontal size={16} /></summary><div><button type="button" onClick={(event) => { closeTreeMenu(event); void addTopic(); }} disabled={!catalogDraft || directorySaving}><FolderPlus size={14} />新增主题</button></div></details><button type="button" aria-label="收起教材目录" onClick={() => setDirectoryCollapsed(true)}><PanelLeftClose size={15} /></button></div></div>
@@ -1020,7 +1017,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
               <div className="teacher-book-tree-topic-heading">
                 <button type="button" className={`teacher-book-topic-toggle ${topicDisabled ? "is-disabled" : ""}`} aria-label={`${topicExpanded ? "折叠" : "展开"}主题 ${group.topicName}${topicDisabled ? "（已停用）" : ""}`} aria-expanded={topicExpanded} onClick={() => setCollapsedTopicIds((current) => topicExpanded ? [...current, group.topicId] : current.filter((id) => id !== group.topicId))}><ChevronDown size={14} /><span>{group.topicName}</span><small className="teacher-book-tree-count">{group.items.length}</small></button>
                 <button type="button" className="teacher-book-tree-quick-add" title={`在“${group.topicName}”目录下新增知识点`} aria-label={`在“${group.topicName}”目录下新增知识点`} onClick={(event) => { event.stopPropagation(); void addKnowledgePoint(group.topicId); }} disabled={!catalogDraft || directorySaving}><Plus size={14} /></button>
-                <details className="teacher-book-tree-menu"><summary aria-label={`${group.topicName}目录选项`}><MoreHorizontal size={16} /></summary><div>
+                <details className="teacher-book-tree-menu"><summary aria-label={`${group.topicName}目录选项`} title="目录设置"><MoreHorizontal size={16} /></summary><div>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void addKnowledgePoint(group.topicId); }} disabled={!catalogDraft || directorySaving}><Plus size={14} />新增知识点</button>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void editTopic(group.topicId); }} disabled={!catalogDraft || directorySaving}><Pencil size={14} />编辑主题</button>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void toggleTopic(group.topicId); }} disabled={!catalogDraft || directorySaving}>{group.topicStatus === "enabled" ? <EyeOff size={14} /> : <Eye size={14} />}{group.topicStatus === "enabled" ? "停用主题" : "启用主题"}</button>
@@ -1031,7 +1028,7 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
                 {group.items.length === 0 && <div className="teacher-book-tree-topic-empty"><button type="button" onClick={() => void addKnowledgePoint(group.topicId)} disabled={!catalogDraft || directorySaving}><Plus size={12} /><span>在此目录下添加知识点</span></button></div>}
                 {group.items.map((item) => { const pointDisabled = item.knowledge_point_status === "disabled"; return <div className={`teacher-book-tree-point ${selectedId === item.knowledge_point_id ? "active" : ""} ${pointDisabled ? "is-disabled" : ""}`} key={item.knowledge_point_id}>
                 <button className="teacher-book-tree-point-main" aria-label={`${item.title}${pointDisabled ? "（已停用）" : ""}`} type="button" onClick={() => requestSelect(item.knowledge_point_id)}><span>{item.title}</span></button>
-                <details className="teacher-book-tree-menu"><summary aria-label={`${item.title}选项`}><MoreHorizontal size={15} /></summary><div>
+                <details className="teacher-book-tree-menu"><summary aria-label={`${item.title}选项`} title="知识点设置"><MoreHorizontal size={15} /></summary><div>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void editKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}><Pencil size={14} />编辑知识点</button>
                   <button type="button" onClick={(event) => { closeTreeMenu(event); void toggleKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}>{item.knowledge_point_status === "enabled" ? <EyeOff size={14} /> : <Eye size={14} />}{item.knowledge_point_status === "enabled" ? "停用知识点" : "启用知识点"}</button>
                   <button type="button" className="danger" onClick={(event) => { closeTreeMenu(event); requestRemoveKnowledgePoint(group.topicId, item.knowledge_point_id); }} disabled={!catalogDraft || directorySaving}><Trash2 size={14} />删除知识点</button>
@@ -1058,10 +1055,6 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
                 </span>
               </div>
               <div className="teacher-book-page-actions">
-                <button type="button" className={!outlineCollapsed ? "active" : ""} onClick={() => setOutlineCollapsed((c) => !c)} title="切换本页目录大纲">
-                  <List size={15} />
-                  <span>本页目录</span>
-                </button>
                 <button type="button" className={preview ? "active" : ""} onClick={() => setPreview((current) => !current)}>
                   <Eye size={15} />
                   {preview ? "返回编辑" : "预览正文"}
@@ -1148,44 +1141,6 @@ export function TeacherBookEditor({ workspaceId, catalog, onCatalogChange, onDir
             )}
           </> : <div className="teacher-state"><BookOpenText /><p>选择一个知识点开始编写教材。</p></div>}
         </main>
-        <aside className={['teacher-book-outline-sidebar', outlineCollapsed && 'collapsed'].filter(Boolean).join(' ')} aria-label="本页目录">
-          <button type="button" className="teacher-book-outline-collapsed-toggle" aria-label="展开本页目录" title="展开本页目录" onClick={() => setOutlineCollapsed(false)}>
-            <PanelRightOpen size={16} />
-          </button>
-          <div className="teacher-book-outline-heading">
-            <div>
-              <strong>本页目录</strong>
-              <small>{headingIndex.headings.length} 个小标题</small>
-            </div>
-            <button type="button" className="teacher-book-outline-close-btn" aria-label="收起本页目录" title="收起本页目录" onClick={() => setOutlineCollapsed(true)}>
-              <PanelRightClose size={15} />
-            </button>
-          </div>
-          <div className="teacher-book-outline-body">
-            {headingIndex.headings.length ? (
-              <nav className="teacher-book-outline-nav">
-                {headingIndex.headings.map((heading) => (
-                  <button
-                    key={heading.id}
-                    type="button"
-                    className={`teacher-book-outline-link level-${heading.level} ${activeHeadingId === heading.id ? "active" : ""}`}
-                    style={{ paddingLeft: `${10 + (heading.level - 2) * 12}px` }}
-                    onClick={() => handleHeadingClick(heading.id)}
-                    title={heading.text}
-                  >
-                    <span>{heading.text}</span>
-                  </button>
-                ))}
-              </nav>
-            ) : (
-              <div className="teacher-book-outline-empty">
-                <List size={22} />
-                <p>本页暂无小标题</p>
-                <small>使用 Markdown 的 ## / ### 标题，此处将自动同步大纲，方便随时定位与浏览。</small>
-              </div>
-            )}
-          </div>
-        </aside>
       </div>
       <WhiteboardLibraryManager items={whiteboardLibrary} onItemsChange={handleWhiteboardLibraryChange} initialExpanded={false} />
       {catalogInput && <TextInputDialog key={`${catalogInput.kind}-${catalogInput.topicId ?? ""}-${catalogInput.pointId ?? ""}`} open title={catalogInput.title} description={catalogInput.description} label={catalogInput.label} initialValue={catalogInput.value} placeholder={catalogInput.placeholder} confirmLabel={catalogInput.confirmLabel} onClose={() => setCatalogInput(null)} onConfirm={(value) => { void submitCatalogInput(value); }} />}
