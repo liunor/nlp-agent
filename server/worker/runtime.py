@@ -119,6 +119,59 @@ async def close_worker_execution(worker, engine, usage_reporter) -> None:
         raise asyncio.CancelledError
 
 
+async def _replay_terminal_events(repository, publish, on_completed, task) -> bool:
+    turn = await asyncio.to_thread(repository.get_turn, task.turn_id)
+    if turn is None:
+        raise LookupError(f"turn state is unavailable: {task.turn_id}")
+    if turn.status == TurnStatus.COMPLETED:
+        terminal_events = (
+            (GatewayEventType.MESSAGE_COMPLETED, {"content": turn.final_text or ""}),
+            (
+                GatewayEventType.TURN_COMPLETED,
+                {"status": TurnStatus.COMPLETED.value, "content": turn.final_text or ""},
+            ),
+        )
+        # If the previous Worker stopped after committing the Turn, re-arm the
+        # idempotent title summarizer before acknowledging this delivery.
+        on_completed(task.context.session_id)
+    elif turn.status == TurnStatus.CANCELLED:
+        billing = task.model_snapshot.billing if task.model_snapshot is not None else None
+        quota_service = getattr(repository, "quota_service", None)
+        # Fixed Credits are settled in the same transaction as cancellation.
+        # Reservations from legacy metered turns still need the idempotent release.
+        if billing is None and quota_service is not None and task.reservation_id is not None:
+            await asyncio.to_thread(
+                quota_service.release_reservation,
+                task.reservation_id,
+                turn_id=task.turn_id,
+                idempotency_key=f"worker-cancelled:{task.turn_id}",
+            )
+        terminal_events = ((GatewayEventType.TURN_CANCELLED, {"status": turn.status.value}),)
+    elif turn.status in {TurnStatus.FAILED, TurnStatus.INTERRUPTED}:
+        terminal_events = (
+            (
+                GatewayEventType.TURN_FAILED,
+                {
+                    "status": turn.status.value,
+                    "error_kind": turn.error_kind or "worker_interrupted",
+                    "message": turn.error_message or "",
+                },
+            ),
+        )
+    else:
+        return False
+    for event_type, payload in terminal_events:
+        event = await asyncio.to_thread(
+            repository.ensure_event,
+            turn_id=task.turn_id,
+            session_id=task.context.session_id,
+            event_type=event_type,
+            payload=payload,
+        )
+        await publish(event)
+    return True
+
+
 async def run_worker() -> None:
     from redis.asyncio import Redis
     from server.quota.bootstrap import (
@@ -174,93 +227,13 @@ async def run_worker() -> None:
         event = await asyncio.to_thread((repository.ensure_event if event_type in {GatewayEventType.MESSAGE_COMPLETED, GatewayEventType.TURN_COMPLETED, GatewayEventType.TURN_FAILED, GatewayEventType.TURN_CANCELLED} else repository.append_event), **event_arguments)
         await publisher.publish(event)
 
-    async def cancel_pending(task) -> None:
-        turn = await asyncio.to_thread(repository.get_turn, task.turn_id)
-        if turn is None:
-            raise LookupError(f"turn state is unavailable: {task.turn_id}")
-        if turn.status in {
-            TurnStatus.COMPLETED,
-            TurnStatus.FAILED,
-            TurnStatus.INTERRUPTED,
-        }:
-            return
-        if turn.status != TurnStatus.CANCELLED:
-            # A Redis hint is not authority to mutate a newer generation.
-            # The Web command persists cancellation before sending that hint.
-            return
-        event = await asyncio.to_thread(
-            repository.ensure_event,
-            turn_id=task.turn_id,
-            session_id=task.context.session_id,
-            event_type=GatewayEventType.TURN_CANCELLED,
-            payload={"status": TurnStatus.CANCELLED.value},
-        )
-        await publisher.publish(event)
-        quota_service = getattr(repository, "quota_service", None)
-        if quota_service is not None and task.reservation_id is not None:
-            await asyncio.to_thread(
-                quota_service.release_reservation,
-                task.reservation_id,
-                turn_id=task.turn_id,
-                idempotency_key=f"worker-cancelled:{task.turn_id}",
-            )
-
-    async def is_terminal(task) -> bool:
-        turn = await asyncio.to_thread(repository.get_turn, task.turn_id)
-        if turn is None:
-            raise LookupError(f"turn state is unavailable: {task.turn_id}")
-        if turn.status == TurnStatus.COMPLETED:
-            terminal_events = (
-                (GatewayEventType.MESSAGE_COMPLETED, {"content": turn.final_text or ""}),
-                (
-                    GatewayEventType.TURN_COMPLETED,
-                    {
-                        "status": TurnStatus.COMPLETED.value,
-                        "content": turn.final_text or "",
-                    },
-                ),
-            )
-            # The turn is already durable as completed, but the original worker
-            # may have died after the DB write and before on_turn_completed
-            # re-armed the summarizer.  schedule_summary is idempotent, so
-            # re-arm it here on the retry path instead of losing the title.
-            schedule_summary(database_runtime.session_factory, task.context.session_id)
-        elif turn.status == TurnStatus.CANCELLED:
-            # Cancellation needs the finalizer below to publish the durable
-            # event and release quota before Redis ACKs the delivery. Returning
-            # False sends the delivery through the claim/finalization path,
-            # including after a worker crash between the DB write and ACK.
-            return False
-        elif turn.status in {TurnStatus.FAILED, TurnStatus.INTERRUPTED}:
-            terminal_events = ((
-                GatewayEventType.TURN_FAILED,
-                {
-                    "status": turn.status.value,
-                    "error_kind": turn.error_kind or "worker_interrupted",
-                    "message": turn.error_message or "",
-                },
-            ),)
-        else:
-            return False
-        for event_type, payload in terminal_events:
-            event = await asyncio.to_thread(
-                repository.ensure_event,
-                turn_id=task.turn_id,
-                session_id=task.context.session_id,
-                event_type=event_type,
-                payload=payload,
-            )
-            await publisher.publish(event)
-        return True
-
+    on_completed = partial(schedule_summary, database_runtime.session_factory)
     await engine.start(emit)
     executor = InProcessTurnExecutor(
         engine,
         repository,
         emit,
-        on_turn_completed=partial(
-            schedule_summary, database_runtime.session_factory
-        ),
+        on_turn_completed=on_completed,
     )
     fenced_executor = FencedTurnExecutor(
         database_runtime.uow,
@@ -275,8 +248,7 @@ async def run_worker() -> None:
         fenced_executor,
         consumer_name=worker_id,
         inject=engine.inject,
-        cancel_pending=cancel_pending,
-        is_terminal=is_terminal,
+        is_terminal=partial(_replay_terminal_events, repository, publisher.publish, on_completed),
     )
     quota_reaper = create_worker_quota_reaper(repository, gateway_config)
     if quota_reaper is not None:

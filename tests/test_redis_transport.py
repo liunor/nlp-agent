@@ -1,4 +1,6 @@
 import asyncio
+from functools import partial
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import json
 import pytest
@@ -6,7 +8,7 @@ import pytest
 from core.session_context import SessionContext
 from core.learning import TeachingMaterials
 from gateway.dispatch import ExecutionAuthorizationContext, TurnTask
-from gateway.contracts import GatewayEvent, GatewayEventType
+from gateway.contracts import GatewayEvent, GatewayEventType, TurnStatus
 from gateway.redis_transport import RedisEventPublisher, RedisTransportConfig, RedisTurnDispatcher, RedisWorkerRuntime, TurnTaskCodec
 from server.application.turn_reliability import CancelledTurnClaim
 from server.worker.fencing import FencedTurnExecutor
@@ -611,6 +613,44 @@ async def test_worker_acknowledges_terminal_redelivery_without_reexecution():
     assert await worker.run_once(block_ms=0) == 1
     assert executed == []
     assert redis.acks == [("turns", "workers", "1-0")]
+
+
+@pytest.mark.parametrize("has_hint", [False, True])
+async def test_production_worker_acknowledges_durable_cancelled_redelivery(has_hint):
+    from server.worker.runtime import _replay_terminal_events
+
+    redis = FakeRedis()
+    config = RedisTransportConfig(task_stream="turns", task_group="workers", cancel_key_prefix="cancel:")
+    task = TurnTask(
+        context=SessionContext(session_id="session-1"), turn_id="turn-1", content="hello",
+        learning_context=None, learning_progress=None, exercise_state=None,
+        teaching_materials=TeachingMaterials(), guided_session_id=None, exercise_session_id=None,
+        reservation_id="legacy-credits",
+    )
+    if has_hint:
+        redis.values["cancel:turn-1"] = "1"
+    redis.reads.append([("turns", [("1-0", {"payload": TurnTaskCodec.dumps(task)})])])
+    repository = SimpleNamespace(
+        get_turn=MagicMock(return_value=SimpleNamespace(status=TurnStatus.CANCELLED)),
+        ensure_event=MagicMock(return_value="durable-event"),
+        quota_service=SimpleNamespace(release_reservation=MagicMock()),
+    )
+    publish = AsyncMock()
+    worker = RedisWorkerRuntime.for_fenced_mysql(
+        redis, config, lambda _task: pytest.fail("cancelled delivery must not execute"),
+        consumer_name="worker", is_terminal=partial(_replay_terminal_events, repository, publish, MagicMock()),
+    )
+
+    assert await worker.run_once(block_ms=0) == 1
+    assert redis.acks == [("turns", "workers", "1-0")]
+    repository.quota_service.release_reservation.assert_called_once_with(
+        "legacy-credits", turn_id="turn-1", idempotency_key="worker-cancelled:turn-1",
+    )
+    repository.ensure_event.assert_called_once_with(
+        turn_id="turn-1", session_id="session-1", event_type=GatewayEventType.TURN_CANCELLED,
+        payload={"status": "cancelled"},
+    )
+    publish.assert_awaited_once_with("durable-event")
 
 
 async def test_worker_runs_only_available_slots_concurrently_without_overfetch():

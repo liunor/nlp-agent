@@ -3426,10 +3426,7 @@ def create_app(
 
     @app.get("/api/v1/learning/catalog/{workspace_id}", tags=["learning"])
     async def get_learning_catalog(workspace_id: str, request: Request, principal: Principal):
-        if not principal.has_permission(Permission.LEARNING_CONTENT_READ_PUBLIC):
-            authorization_service.require(
-                principal, Permission.LEARNING_CONTENT_READ_WORKSPACE, workspace_id=workspace_id
-            )
+        teacher_service.require_learning_book_read(principal, workspace_id)
         catalog_result = await request.app.state.gateway.get_published_teaching_catalog(
             principal, workspace_id
         )

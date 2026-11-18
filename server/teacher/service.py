@@ -334,6 +334,9 @@ class TeacherService:
     def require_learning_book_read(
         principal: AuthenticatedPrincipal, workspace_id: str
     ) -> None:
+        # A public textbook can be selected as the fallback for the caller's
+        # workspace. The workspace passed by the caller is still scoped.
+        principal.require_workspace(workspace_id)
         if principal.has_permission(Permission.LEARNING_CONTENT_READ_PUBLIC):
             return
         authorization_service.require(

@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -258,6 +259,16 @@ class DurableQuotaUsageReporter:
                 replayed += 1
             except FileNotFoundError:
                 continue  # Another Worker acknowledged this shared-volume fact.
+            except UsageEventConflictError:
+                try:
+                    target = await asyncio.to_thread(self.journal.quarantine_conflict, path)
+                except FileNotFoundError:
+                    continue  # Another Worker already moved the disputed fact.
+                except OSError:
+                    logger.exception("unable to quarantine conflicting usage fact %s", path.name)
+                else:
+                    logger.error("conflicting usage fact retained for review: %s", target.name)
+                failed += 1
             except Exception:
                 failed += 1
                 logger.exception("usage outbox replay failed for %s", path.name)
@@ -324,7 +335,13 @@ class DurableQuotaUsageReporter:
 
             intent = await session.get(ModelUsageIntentModel, invocation.operation_id, with_for_update=True)
             if intent is not None and intent.invocation_json != invocation.model_dump(mode="json"):
-                raise UsageEventConflictError("usage does not match the prepared Provider operation")
+                try:
+                    prepared_invocation = ModelInvocation.model_validate(intent.invocation_json)
+                except ValidationError as error:
+                    raise UsageEventConflictError("invalid prepared Provider operation") from error
+                # An older intent may omit fields that now have defaults.
+                if prepared_invocation != invocation:
+                    raise UsageEventConflictError("usage does not match the prepared Provider operation")
             values = dict(payload)
             values.update(
                 provider_response_id=(usage.provider_response_id or "")[:256] or None,

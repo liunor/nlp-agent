@@ -42,7 +42,7 @@ class UsageJournal:
             except FileExistsError:
                 if path.read_bytes() != encoded:
                     raise UsageEventConflictError(f"Conflicting journal fact: {invocation.operation_id}")
-            self._sync_directory()
+            self._sync_directory(self.directory)
         finally:
             temporary.unlink(missing_ok=True)
         return path
@@ -61,13 +61,24 @@ class UsageJournal:
 
     def acknowledge(self, path: Path) -> None:
         path.unlink(missing_ok=True)
-        self._sync_directory()
+        self._sync_directory(self.directory)
 
-    def _sync_directory(self) -> None:
+    def quarantine_conflict(self, path: Path) -> Path:
+        """Preserve a disputed fact outside the automatic replay queue."""
+        directory = self.directory / "conflicts"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        target = directory / f"{path.stem}.{uuid.uuid4().hex}.json"
+        path.rename(target)
+        self._sync_directory(directory)
+        self._sync_directory(self.directory)
+        return target
+
+    @staticmethod
+    def _sync_directory(directory: Path) -> None:
         # Windows does not expose fsync for directories; file contents are
         # fsynced before the atomic hard-link publication on both platforms.
         if os.name != "nt":
-            descriptor = os.open(self.directory, os.O_RDONLY)
+            descriptor = os.open(directory, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
             finally:

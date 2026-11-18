@@ -479,34 +479,67 @@ class SyncStorageQuota:
             text("SELECT id FROM nlp_storage_pool_lock WHERE id=1 FOR UPDATE")
         )
 
-    def _sum(self, expression: str, from_sql: str, where_sql: str = "") -> int:
-        value = self.connection.execute(text(f"SELECT COALESCE(SUM({expression}),0) FROM {from_sql} {where_sql}"), {"owner": self.owner_user_id}).scalar()
-        return int(value or 0)
-
     def _reconcile(self) -> tuple[int, int]:
-        core = self._sum("OCTET_LENGTH(COALESCE(title,''))+OCTET_LENGTH(id)", "nlp_conversations", "WHERE owner_user_id=:owner")
-        core += self._sum("OCTET_LENGTH(COALESCE(input_text,''))+OCTET_LENGTH(COALESCE(result_text,''))+OCTET_LENGTH(COALESCE(error_message,''))+COALESCE(OCTET_LENGTH(CAST(learning_state_json AS CHAR)),0)", "nlp_turns", "WHERE user_id=:owner")
-        core += self._sum("OCTET_LENGTH(COALESCE(m.content,''))", "nlp_conversation_messages m JOIN nlp_conversations c ON c.id=m.conversation_id", "WHERE c.owner_user_id=:owner")
-        core += self._sum("COALESCE(OCTET_LENGTH(CAST(e.payload_json AS CHAR)),0)", "nlp_turn_events e JOIN nlp_turns t ON t.id=e.turn_id", "WHERE t.user_id=:owner")
-        core += self._sum("COALESCE(OCTET_LENGTH(CAST(t.content_json AS CHAR)),0)+COALESCE(OCTET_LENGTH(CAST(t.tool_json AS CHAR)),0)+COALESCE(OCTET_LENGTH(CAST(t.usage_json AS CHAR)),0)", "nlp_conversation_transcripts t JOIN nlp_conversations c ON c.id=t.session_id", "WHERE c.owner_user_id=:owner")
-        core += self._sum("COALESCE(OCTET_LENGTH(CAST(content_json AS CHAR)),0)", "nlp_memory_documents", "WHERE user_id=:owner")
-        core += self._sum("COALESCE(OCTET_LENGTH(CAST(payload_json AS CHAR)),0)", "nlp_memory_archives", "WHERE user_id=:owner")
-        core += self._sum("COALESCE(OCTET_LENGTH(CAST(checkpoint_json AS CHAR)),0)+COALESCE(OCTET_LENGTH(CAST(metadata_json AS CHAR)),0)", "nlp_agent_checkpoints", "WHERE owner_user_id=:owner")
-        core += self._sum("OCTET_LENGTH(checkpoint_blob)+OCTET_LENGTH(metadata_blob)", "nlp_langgraph_checkpoints", "WHERE owner_user_id=:owner")
-        core += self._sum("OCTET_LENGTH(value_blob)", "nlp_langgraph_checkpoint_blobs", "WHERE owner_user_id=:owner")
-        core += self._sum("OCTET_LENGTH(value_blob)", "nlp_langgraph_checkpoint_writes", "WHERE owner_user_id=:owner")
-        core += self._sum(
-            "OCTET_LENGTH(CAST(COALESCE(tc.request_json,'') AS CHAR))"
-            "+OCTET_LENGTH(CAST(COALESCE(tc.result_json,'') AS CHAR))",
-            "nlp_tool_calls tc JOIN nlp_turns t ON t.id=tc.turn_id",
-            "WHERE t.user_id=:owner",
-        )
-        core += _uploaded_image_bytes(self.owner_user_id)
-        files = self.connection.execute(
-            text("SELECT COALESCE(SUM(size_bytes),0) FROM nlp_user_files WHERE owner_user_id=:owner AND kind='file' AND status IN ('active','trashed')"),
+        # Keep exact reconciliation while the shared pool is locked, but use
+        # one round trip. Each branch produces one row even for a large account.
+        core, files = self.connection.execute(
+            text("""
+                SELECT COALESCE(SUM(core_bytes), 0), (
+                    SELECT COALESCE(SUM(size_bytes), 0)
+                    FROM nlp_user_files
+                    WHERE owner_user_id=:owner AND kind='file' AND status IN ('active','trashed')
+                )
+                FROM (
+                    SELECT SUM(OCTET_LENGTH(COALESCE(title,'')) + OCTET_LENGTH(id)) AS core_bytes
+                    FROM nlp_conversations WHERE owner_user_id=:owner
+                    UNION ALL
+                    SELECT SUM(OCTET_LENGTH(COALESCE(input_text,'')) + OCTET_LENGTH(COALESCE(result_text,''))
+                        + OCTET_LENGTH(COALESCE(error_message,''))
+                        + COALESCE(OCTET_LENGTH(CAST(learning_state_json AS CHAR)),0))
+                    FROM nlp_turns WHERE user_id=:owner
+                    UNION ALL
+                    SELECT SUM(OCTET_LENGTH(COALESCE(m.content,'')))
+                    FROM nlp_conversation_messages m JOIN nlp_conversations c ON c.id=m.conversation_id
+                    WHERE c.owner_user_id=:owner
+                    UNION ALL
+                    SELECT SUM(COALESCE(OCTET_LENGTH(CAST(e.payload_json AS CHAR)),0))
+                    FROM nlp_turn_events e JOIN nlp_turns t ON t.id=e.turn_id
+                    WHERE t.user_id=:owner
+                    UNION ALL
+                    SELECT SUM(COALESCE(OCTET_LENGTH(CAST(t.content_json AS CHAR)),0)
+                        + COALESCE(OCTET_LENGTH(CAST(t.tool_json AS CHAR)),0)
+                        + COALESCE(OCTET_LENGTH(CAST(t.usage_json AS CHAR)),0))
+                    FROM nlp_conversation_transcripts t JOIN nlp_conversations c ON c.id=t.session_id
+                    WHERE c.owner_user_id=:owner
+                    UNION ALL
+                    SELECT SUM(COALESCE(OCTET_LENGTH(CAST(content_json AS CHAR)),0))
+                    FROM nlp_memory_documents WHERE user_id=:owner
+                    UNION ALL
+                    SELECT SUM(COALESCE(OCTET_LENGTH(CAST(payload_json AS CHAR)),0))
+                    FROM nlp_memory_archives WHERE user_id=:owner
+                    UNION ALL
+                    SELECT SUM(COALESCE(OCTET_LENGTH(CAST(checkpoint_json AS CHAR)),0)
+                        + COALESCE(OCTET_LENGTH(CAST(metadata_json AS CHAR)),0))
+                    FROM nlp_agent_checkpoints WHERE owner_user_id=:owner
+                    UNION ALL
+                    SELECT SUM(OCTET_LENGTH(checkpoint_blob) + OCTET_LENGTH(metadata_blob))
+                    FROM nlp_langgraph_checkpoints WHERE owner_user_id=:owner
+                    UNION ALL
+                    SELECT SUM(OCTET_LENGTH(value_blob))
+                    FROM nlp_langgraph_checkpoint_blobs WHERE owner_user_id=:owner
+                    UNION ALL
+                    SELECT SUM(OCTET_LENGTH(value_blob))
+                    FROM nlp_langgraph_checkpoint_writes WHERE owner_user_id=:owner
+                    UNION ALL
+                    SELECT SUM(OCTET_LENGTH(CAST(COALESCE(tc.request_json,'') AS CHAR))
+                        + OCTET_LENGTH(CAST(COALESCE(tc.result_json,'') AS CHAR)))
+                    FROM nlp_tool_calls tc JOIN nlp_turns t ON t.id=tc.turn_id
+                    WHERE t.user_id=:owner
+                ) AS core_totals
+            """),
             {"owner": self.owner_user_id},
-        ).scalar()
-        return core, int(files or 0)
+        ).one()
+        return int(core) + _uploaded_image_bytes(self.owner_user_id), int(files)
 
     def reserve(self, bucket: StorageBucket, amount_bytes: int, *, resource_type: str, resource_key: str | None = None) -> QuotaReservation | None:
         amount = max(0, int(amount_bytes))
