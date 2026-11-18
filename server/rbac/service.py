@@ -113,7 +113,7 @@ class RbacService:
         permission_scopes: dict[str, frozenset[str]] = {}
         for code, scope in scope_rows:
             permission_scopes[code] = permission_scopes.get(code, frozenset()) | {scope}
-        workspaces = frozenset(
+        workspace_list = list(
             (
                 await session.scalars(
                     select(WorkspaceMemberModel.workspace_id).where(
@@ -123,6 +123,19 @@ class RbacService:
                 )
             ).all()
         )
+        classroom_ws_rows = (
+            await session.scalars(
+                select(ClassroomModel.workspace_id)
+                .join(ClassroomMemberModel, ClassroomModel.id == ClassroomMemberModel.classroom_id)
+                .where(
+                    ClassroomMemberModel.user_id == user.id,
+                    ClassroomMemberModel.status == "active",
+                    ClassroomModel.status == "active",
+                )
+            )
+        ).all()
+        workspace_list.extend(w for w in classroom_ws_rows if w)
+        workspaces = frozenset(workspace_list)
         classrooms = frozenset((await session.scalars(
             select(ClassroomMemberModel.classroom_id)
             .join(ClassroomModel, ClassroomModel.id == ClassroomMemberModel.classroom_id)
@@ -260,8 +273,8 @@ class RbacService:
         return user_ids
 
     async def create_classroom(self, session: AsyncSession, *, workspace_id: str, name: str, actor_user_id: str) -> ClassroomModel:
-        if await session.scalar(select(ClassroomModel.id).where(ClassroomModel.workspace_id == workspace_id).with_for_update()):
-            raise ValueError("workspace already has a classroom")
+        # if await session.scalar(select(ClassroomModel.id).where(ClassroomModel.workspace_id == workspace_id).with_for_update()):
+        #     raise ValueError("workspace already has a classroom")
         classroom: ClassroomModel | None = None
         for _attempt in range(5):
             candidate = ClassroomModel(

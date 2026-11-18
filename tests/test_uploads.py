@@ -15,6 +15,7 @@ from PIL import Image
 
 from core.identity import AuthenticatedPrincipal
 from core.session_context import SessionContext
+from server.storage.errors import StorageQuotaExceeded, StorageQuotaReason
 from server.uploads.controller import (
     get_current_principal,
     get_write_access,
@@ -166,6 +167,25 @@ def test_upload_image_success(test_app: FastAPI) -> None:
     assert get_res.status_code == 200
     assert get_res.headers.get("x-content-type-options") == "nosniff"
     assert get_res.content == img_data
+
+
+@pytest.mark.parametrize("reason", [StorageQuotaReason.CORE, StorageQuotaReason.GLOBAL_DATA, StorageQuotaReason.DISK])
+def test_upload_quota_error_explains_the_actual_limit(test_app: FastAPI, monkeypatch, reason) -> None:
+    test_app.state.gateway.authorization_session_factory = FakeAuthorizationSessionFactory()
+    quota = AsyncMock(spec=uploads_controller.AsyncStorageQuota)
+    error = StorageQuotaExceeded("private storage diagnostic", reason=reason)
+    quota.reserve.side_effect = error
+    monkeypatch.setattr(uploads_controller, "AsyncStorageQuota", Mock(return_value=quota))
+
+    response = TestClient(test_app).post(
+        "/api/v1/uploads", data={"session_id": "sess_123"},
+        files={"file": ("image.png", _make_test_image_bytes(), "image/png")},
+    )
+    assert response.status_code == 413
+    assert response.json()["detail"] == error.public_message
+    assert "private storage diagnostic" not in response.text
+    quota.finalize.assert_not_awaited()
+    assert not test_app.state.test_uploads_root.exists()
 
 
 def test_database_authenticated_upload_uses_database_session_dependencies(

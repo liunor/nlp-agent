@@ -18,6 +18,8 @@ vi.mock("@/platform/http/api", () => {
     ensureAuth: vi.fn().mockRejectedValue(new ApiError("Authentication required", 401)),
     api: {
       login: vi.fn(),
+      getUnreadReleaseNote: vi.fn().mockResolvedValue({ item: null }),
+      markReleaseNoteRead: vi.fn().mockResolvedValue({ ok: true }),
       listSessions: vi.fn().mockResolvedValue({ items: [] }),
       getSettings: vi.fn().mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } }),
       getLearningCatalog: vi.fn().mockResolvedValue({ catalog: { topics: [] } }),

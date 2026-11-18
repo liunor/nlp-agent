@@ -160,7 +160,7 @@ async def upload_image(
     except StorageQuotaExceeded as exc:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="通用空间已达到配额，无法继续保存聊天图片",
+            detail=exc.public_message,
         ) from exc
 
     return UploadResponse(

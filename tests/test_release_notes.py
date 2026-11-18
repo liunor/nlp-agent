@@ -11,6 +11,18 @@ from server.release_notes.service import (
 )
 
 
+def test_read_receipt_migration_comment_matches_model(monkeypatch) -> None:
+    import importlib
+    from unittest.mock import Mock
+    from server.infrastructure.mysql.models import ReleaseNoteReadModel
+
+    migration = importlib.import_module("migrations.versions.20261117_release_note_reads")
+    create_table = Mock()
+    monkeypatch.setattr(migration.op, "create_table", create_table)
+    migration.upgrade()
+    assert create_table.call_args.kwargs["comment"] == ReleaseNoteReadModel.__table__.comment
+
+
 def _service_with(crud: AsyncMock) -> ReleaseNoteService:
     return ReleaseNoteService(lambda _session: crud)
 
@@ -23,6 +35,44 @@ def _note(note_id: str = "note-1", version: str = "1.0.0", status: str = "publis
         notes_json=["说明"],
         status=status,
     )
+
+
+@pytest.mark.asyncio
+async def test_announcement_checks_only_latest_release_for_this_account() -> None:
+    crud = AsyncMock(spec=ReleaseNoteCrud)
+    newest = _note("new", "2.2.0")
+    crud.list.return_value = [_note("old", "2.1.0"), newest]
+    crud.has_read.return_value = False
+    service = _service_with(crud)
+    assert await service.latest_unread(AsyncMock(), user_id="alice") is newest
+    crud.has_read.assert_awaited_once_with("alice", "new")
+    crud.has_read.return_value = True
+    assert await service.latest_unread(AsyncMock(), user_id="alice") is None
+    crud.list.return_value = []
+    assert await service.latest_unread(AsyncMock(), user_id="bob") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", [None, _note(status="draft")])
+async def test_receipt_rejects_missing_or_draft_note(row) -> None:
+    crud = AsyncMock(spec=ReleaseNoteCrud)
+    crud.get.return_value = row
+    with pytest.raises(ReleaseNoteNotFoundError):
+        await _service_with(crud).mark_read(AsyncMock(), user_id="alice", note_id="note-1")
+    crud.mark_read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_receipt_is_account_scoped_and_uses_idempotent_insert() -> None:
+    from sqlalchemy.dialects import mysql
+    session = AsyncMock()
+    crud = ReleaseNoteCrud(session)
+    await crud.mark_read("alice", "note-1")
+    statement = session.execute.call_args.args[0]
+    compiled = statement.compile(dialect=mysql.dialect())
+    assert "ON DUPLICATE KEY UPDATE" in str(compiled)
+    assert compiled.params["user_id"] == "alice"
+    assert compiled.params["release_note_id"] == "note-1"
 
 
 @pytest.mark.asyncio

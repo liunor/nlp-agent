@@ -8,12 +8,14 @@ the single source of truth for the accompanying changelog copy.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.mysql import insert
 
-from server.infrastructure.mysql.models import ReleaseNoteModel
+from server.infrastructure.mysql.models import ReleaseNoteModel, ReleaseNoteReadModel
 
 VALID_STATUSES = ("draft", "published")
 
@@ -69,6 +71,15 @@ class ReleaseNoteCrud:
     async def delete(self, note: ReleaseNoteModel) -> None:
         await self._session.delete(note)
 
+    async def has_read(self, user_id: str, note_id: str) -> bool:
+        return await self._session.get(ReleaseNoteReadModel, (user_id, note_id)) is not None
+
+    async def mark_read(self, user_id: str, note_id: str) -> None:
+        statement = insert(ReleaseNoteReadModel).values(
+            user_id=user_id, release_note_id=note_id, read_at=datetime.now(UTC)
+        )
+        await self._session.execute(statement.on_duplicate_key_update(user_id=user_id))
+
 
 class ReleaseNoteService:
     def __init__(
@@ -109,6 +120,19 @@ class ReleaseNoteService:
         )
         await crud.add(note)
         return note
+
+    async def latest_unread(self, session: AsyncSession, *, user_id: str) -> ReleaseNoteModel | None:
+        rows = await self.list(session)
+        if not rows or await self._crud_factory(session).has_read(user_id, rows[0].id):
+            return None
+        return rows[0]
+
+    async def mark_read(self, session: AsyncSession, *, user_id: str, note_id: str) -> None:
+        crud = self._crud_factory(session)
+        note = await crud.get(note_id)
+        if note is None or note.status != "published":
+            raise ReleaseNoteNotFoundError(note_id)
+        await crud.mark_read(user_id, note_id)
 
     async def update(
         self,

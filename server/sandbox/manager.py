@@ -683,7 +683,12 @@ class WarmPoolManager:
                     session.add(SandboxRuntimeInstanceModel(id=runtime_id,
                         runtime_kind=self._runtime_kind, image_digest=self._docker.image_digest,
                         resource_profile_id=self._resource_profile_id, environment_id=environment_id, state="creating"))
-                await self._create_one(runtime_id=runtime_id, files_mount=mount_path)
+                create_options = {}
+                if os.getenv("SANDBOX_FILES_BRIDGE_WRITABLE", "false").lower() == "true":
+                    from server.storage.bridge_writes import BridgeWrites
+                    create_options["files_max_bytes"] = await BridgeWrites(
+                        scope.owner_user_id, scope.workspace_id, self._session_factory).max_file_bytes()
+                await self._create_one(runtime_id=runtime_id, files_mount=mount_path, **create_options)
                 async with self._session_factory.begin() as session:
                     context = await self._files_claim_context(session, scope, lease_id)
                     runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
@@ -1227,7 +1232,7 @@ class WarmPoolManager:
             runtime.state = RuntimeState.FAILED
             runtime.failure_reason = "pool.create.timeout"
 
-    async def _create_one(self, *, runtime_id: str | None = None,files_mount: str | None = None) -> None:
+    async def _create_one(self, *, runtime_id: str | None = None,files_mount: str | None = None, files_max_bytes: int | None = None) -> None:
         if runtime_id is None:
             runtime_id = str(uuid4())
             async with self._session_factory.begin() as session:
@@ -1243,8 +1248,11 @@ class WarmPoolManager:
         try:
             self._faults.fail_if_configured("docker.create")
             name = runtime_container_name(runtime_id)
+            files_options = {"files_mount": files_mount} if files_mount else {}
+            if files_max_bytes is not None:
+                files_options["files_max_bytes"] = files_max_bytes
             if await self._docker.image_cached():
-                external_id = await self._docker.create_l1(name=name, **({"files_mount": files_mount} if files_mount else {}))
+                external_id = await self._docker.create_l1(name=name, **files_options)
                 async with self._session_factory.begin() as session:
                     runtime = await session.get(SandboxRuntimeInstanceModel, runtime_id, with_for_update=True)
                     if runtime is not None:
@@ -1254,7 +1262,7 @@ class WarmPoolManager:
             else:
                 # L0 fallback: Docker resolves the pinned digest, then this
                 # slot proceeds through the same L3 readiness gate.
-                external_id = await self._docker.create_ready(name=name, claim_nonce="", **({"files_mount": files_mount} if files_mount else {}))
+                external_id = await self._docker.create_ready(name=name, claim_nonce="", **files_options)
             readiness = await wait_for_kernel_ready(self._docker, external_id)
             if not readiness:
                 self._trace(

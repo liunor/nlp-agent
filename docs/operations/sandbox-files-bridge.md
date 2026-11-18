@@ -1,8 +1,26 @@
 # Sandbox personal files bridge
 
 This opt-in feature exposes the current user's current workspace files at
-`/files`. Both the FUSE filesystem and the sandbox bind mount are read-only.
+`/files`. The test bridge overlay enables scoped read/write access; without
+`SANDBOX_FILES_BRIDGE_WRITABLE=true`, FUSE and the sandbox bind remain read-only.
 The default Compose deployment keeps the bridge disabled.
+
+The test CD workflow explicitly includes `compose.files-bridge.yaml` in every
+Compose operation, including the application recreation helper. Before parsing
+Compose it runs `.github/scripts/prepare-files-bridge.sh` to provision the fixed
+test directory `/var/lib/nova/test/files-bridge` and its shared mount. The runner
+needs passwordless sudo for these mount operations. A missing device or failed
+shared mount stops the deployment before application recreation. Production
+remains opt-in; this change does not enable the production bridge.
+
+After host reboot, run the preparation script before starting the Manager (or
+redeploy through test CD); a plain directory does not replace the shared mount.
+For a bounded diagnostic using an existing file, run
+`scripts/probe_sandbox_files_bridge.py` in a disposable bridge-enabled container
+with the test database environment, read-only platform storage, Docker socket,
+and `BRIDGE_PROBE_IMAGE` set to the pinned runtime image. It reads at most 64 bytes
+without printing file contents, checks a different owner's lookup is denied,
+and checks runsc cannot open the file for writing. It creates no database rows.
 
 ## Linux deployment
 
@@ -20,18 +38,54 @@ sandbox containers retain their original capability and network restrictions.
 The directory must have the same absolute path inside the Manager and on the
 Docker daemon host, because Docker resolves bind sources on the host.
 
-The overlay mounts `nova-data` read-only into the Manager at `/app/.data`, the
+The overlay mounts `nova-data` read/write into the Manager at `/app/.data`, the
 same volume used by Web and Worker. If `NLP_AGENT_USER_FILES_ROOT` points outside
 that volume, mount the actual storage directory at that configured path as well.
 Non-root Manager deployments additionally need FUSE `user_allow_other` enabled.
+
+## Writable file semantics
+
+Python `open(..., 'w'/'a'/'r+')`, directory creation, rename/move, and atomic
+save through `os.replace` operate on the current user's current workspace.
+Deletion moves items to platform trash; non-empty directories require their
+children to be removed first. Replacing a file preserves the previous item in
+trash. Links, device nodes, arbitrary ownership and permission changes are not
+supported: platform files use UID/GID 10001 and modes 0644/0755.
+
+Every write checks the current database-backed role/quota, reserves growth,
+fsyncs a new blob, and commits its metadata pointer, size and SHA256 together.
+Transaction failure preserves the previous blob. The retired blob is removed
+only after commit; a failed cleanup can leave an unreferenced blob, never a
+metadata pointer to a removed new blob. Writers are serialized by the account
+quota lock, including other Manager processes. Each completed write is visible
+to the platform; large sequential writes currently copy the existing blob for
+each FUSE chunk and should be benchmarked before heavy bulk workloads.
+
+Writable runtimes additionally get a hard RLIMIT_FSIZE from the account's
+single-file policy. This is needed because shared-mode SetStat in the deployed
+runsc can discard a remote truncate error; the kernel limit rejects oversized
+truncation before reaching FUSE. Live quota checks remain authoritative for all
+writes. Reset a runtime after increasing its per-file policy to apply the new
+kernel ceiling. Runsc's existing shared-mode attribute error caveat remains for
+changes to a lower quota while a runtime is already running: storage rejects the
+operation, but an old runtime may not surface a truncate error reliably.
+
+After sandbox execution, the visible file panel and quota summary refresh.
+The writable acceptance probe creates only uniquely named test directories,
+checks writes, append, truncate, quota, replacement, move, trash, metadata and
+rollback, and permanently removes only its own generated fixtures.
 
 The Manager starts one FUSE mount per active user/workspace and waits for it
 without blocking its database event loop. Metadata queries run on the same loop
 as its pooled database connections. Failed mounts never fall back to an empty,
 writable directory. Reconciliation removes mounts without live runtimes; normal
 Manager shutdown detaches its mounts. A hard-killed Manager may leave a
-disconnected FUSE endpoint: detach that deployment's stale mount with
-`umount -l <mountpoint>` before restarting it.
+disconnected FUSE endpoint. The next scoped claim checks mountinfo (because
+`ismount()` alone hides ENOTCONN roots), probes the endpoint, and detaches it
+only when the kernel reports ENOTCONN. It then mounts a fresh filesystem.
+Healthy mounts belonging to another Manager and hung probes are preserved.
+If automatic recovery fails, inspect that exact deployment mount before any
+manual `umount -l`; never detach mounts across deployment namespaces.
 
 ## Upgrade and rollback
 

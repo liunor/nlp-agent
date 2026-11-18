@@ -1,3 +1,4 @@
+import { SHOW_STUDENT_SCHOOL_BRANDING } from "@/shared/branding";
 import {
   Maximize2,
   Minimize2,
@@ -29,6 +30,7 @@ import { readKnowledgeBookUrl } from "@/modules/student/components/knowledgeBook
 import { LoginDialog } from "@/modules/student/components/LoginDialog";
 import { MessageList } from "@/modules/student/components/MessageList";
 import { SettingsDialog } from "@/modules/student/components/SettingsDialog";
+import { ReleaseUpdateNotice } from "@/modules/student/components/ReleaseUpdateNotice";
 import { FileTransferNotifier } from "@/modules/student/components/FileTransferNotifier";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { Sidebar, SidebarToggle } from "@/modules/student/components/Sidebar";
@@ -426,9 +428,10 @@ export function StudentWorkspace({
     supportedThinkingLevels.includes(workspace.settings.thinking_level);
   const thinkingControl = (
     <ThinkingLevelControl
+      modelLabel={selectedProfile?.label ?? workspace.settings.model_profile}
       value={workspace.settings.thinking_level}
       supportedLevels={supportedThinkingLevels}
-      disabled={!statusOnline || workspace.isRunning || workspace.selectionSaving}
+      disabled={!statusOnline || workspace.isRunning || workspace.selectionSaving || supportedThinkingLevels.length === 0}
       onPreviewChange={workspace.setSelectionPreview}
       onChange={(thinking_level) => void workspace.patchSettings({ thinking_level })}
     />
@@ -713,9 +716,11 @@ export function StudentWorkspace({
             : null
         }
       />
-      <div className="student-school-logo">
-        <SchoolLogo />
-      </div>
+      {SHOW_STUDENT_SCHOOL_BRANDING && (
+        <div className="student-school-logo">
+          <SchoolLogo />
+        </div>
+      )}
       {workspace.authSession?.user_id && (
         <FileTransferNotifier
           userId={workspace.authSession.user_id}
@@ -728,6 +733,11 @@ export function StudentWorkspace({
           }}
         />
       )}
+      <ReleaseUpdateNotice
+        key={workspace.authSession?.user_id ?? "anonymous"}
+        userId={workspace.authSession?.user_id}
+        paused={settingsOpen || accountOpen || loginOpen || !!deleteTarget}
+      />
       <SettingsDialog
         open={settingsOpen}
         settings={workspace.settings}

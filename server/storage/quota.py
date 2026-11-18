@@ -15,10 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import cast, delete, func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.sqltypes import Text as SqlText
 
 from configs.settings import settings
 from server.infrastructure.mysql.models import (
@@ -40,15 +39,9 @@ from server.infrastructure.mysql.models import (
 )
 from server.tools.vision.input_resolver import DEFAULT_UPLOADS_ROOT
 
+from .accounting import storage_bytes_expr as _bytes_expr
+from .errors import StorageError, StorageQuotaExceeded, StorageQuotaReason
 from .policy import StorageBucket, StoragePolicy, fits_item_quota, fits_quota, policy_for_roles, policy_with_overrides
-
-
-class StorageError(Exception):
-    """Base error for storage operations."""
-
-
-class StorageQuotaExceeded(StorageError):
-    """Raised before a write would exceed the account's logical quota."""
 
 
 def validate_final_usage(
@@ -70,14 +63,16 @@ def validate_final_usage(
 
     if core_used_bytes > core_quota_bytes:
         raise StorageQuotaExceeded(
-            f"core storage quota exceeded after write: {core_used_bytes} > {core_quota_bytes} bytes"
+            f"core storage quota exceeded after write: {core_used_bytes} > {core_quota_bytes} bytes",
+            reason=StorageQuotaReason.CORE,
         )
     if files_used_bytes > files_quota_bytes:
         raise StorageQuotaExceeded(
-            f"files storage quota exceeded after write: {files_used_bytes} > {files_quota_bytes} bytes"
+            f"files storage quota exceeded after write: {files_used_bytes} > {files_quota_bytes} bytes",
+            reason=StorageQuotaReason.FILES,
         )
     if global_used_bytes > global_limit_bytes:
-        raise StorageQuotaExceeded("服务器账户数据池已达到系统上限")
+        raise StorageQuotaExceeded("服务器账户数据池已达到系统上限", reason=StorageQuotaReason.GLOBAL_DATA)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +83,6 @@ class QuotaReservation:
     amount_bytes: int
     resource_type: str
     amount_items: int = 0
-
-
-def _bytes_expr(column):
-    return func.coalesce(func.length(cast(column, SqlText)), 0)
 
 
 def _uploaded_image_bytes(owner_user_id: str) -> int:
@@ -254,7 +245,8 @@ class AsyncStorageQuota:
         account = await self._locked_account()
         if bucket is StorageBucket.FILES and amount > self.policy.max_file_bytes:
             raise StorageQuotaExceeded(
-                f"file size exceeds the configured per-file limit: {amount} > {self.policy.max_file_bytes} bytes"
+                f"file size exceeds the configured per-file limit: {amount} > {self.policy.max_file_bytes} bytes",
+                reason=StorageQuotaReason.FILE_SIZE,
             )
         if bucket is StorageBucket.FILES and items:
             active_items = int(
@@ -273,11 +265,12 @@ class AsyncStorageQuota:
                 incoming_items=items,
                 max_items=self.policy.max_items,
             ):
-                raise StorageQuotaExceeded("文件数量已达到配额")
+                raise StorageQuotaExceeded("文件数量已达到配额", reason=StorageQuotaReason.FILE_COUNT)
         used, reserved = self._used_and_reserved(account, bucket)
         if not fits_quota(used, reserved, amount, self.policy.quota_for(bucket)):
             raise StorageQuotaExceeded(
-                f"{bucket.value} storage quota exceeded: {used + reserved + amount} > {self.policy.quota_for(bucket)} bytes"
+                f"{bucket.value} storage quota exceeded: {used + reserved + amount} > {self.policy.quota_for(bucket)} bytes",
+                reason=StorageQuotaReason.CORE if bucket is StorageBucket.CORE else StorageQuotaReason.FILES,
             )
         global_bytes = await self.db.scalar(
             select(
@@ -293,9 +286,9 @@ class AsyncStorageQuota:
             )
         )
         if int(global_bytes or 0) + amount > settings.NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES:
-            raise StorageQuotaExceeded("服务器账户数据池已达到系统上限")
+            raise StorageQuotaExceeded("服务器账户数据池已达到系统上限", reason=StorageQuotaReason.GLOBAL_DATA)
         if not _disk_has_floor(amount):
-            raise StorageQuotaExceeded("服务器需要保留的系统空间不足")
+            raise StorageQuotaExceeded("服务器需要保留的系统空间不足", reason=StorageQuotaReason.DISK)
         reservation = QuotaReservation(
             id=str(uuid.uuid4()),
             owner_user_id=self.owner_user_id,
@@ -492,13 +485,13 @@ class SyncStorageQuota:
 
     def _reconcile(self) -> tuple[int, int]:
         core = self._sum("OCTET_LENGTH(COALESCE(title,''))+OCTET_LENGTH(id)", "nlp_conversations", "WHERE owner_user_id=:owner")
-        core += self._sum("OCTET_LENGTH(COALESCE(input_text,''))+OCTET_LENGTH(COALESCE(result_text,''))+OCTET_LENGTH(COALESCE(error_message,''))+OCTET_LENGTH(CAST(COALESCE(learning_state_json,'{}') AS CHAR))", "nlp_turns", "WHERE user_id=:owner")
+        core += self._sum("OCTET_LENGTH(COALESCE(input_text,''))+OCTET_LENGTH(COALESCE(result_text,''))+OCTET_LENGTH(COALESCE(error_message,''))+COALESCE(OCTET_LENGTH(CAST(learning_state_json AS CHAR)),0)", "nlp_turns", "WHERE user_id=:owner")
         core += self._sum("OCTET_LENGTH(COALESCE(m.content,''))", "nlp_conversation_messages m JOIN nlp_conversations c ON c.id=m.conversation_id", "WHERE c.owner_user_id=:owner")
-        core += self._sum("OCTET_LENGTH(CAST(COALESCE(e.payload_json,'{}') AS CHAR))", "nlp_turn_events e JOIN nlp_turns t ON t.id=e.turn_id", "WHERE t.user_id=:owner")
-        core += self._sum("OCTET_LENGTH(CAST(COALESCE(t.content_json,'{}') AS CHAR))+OCTET_LENGTH(CAST(COALESCE(t.tool_json,'{}') AS CHAR))+OCTET_LENGTH(CAST(COALESCE(t.usage_json,'{}') AS CHAR))", "nlp_conversation_transcripts t JOIN nlp_conversations c ON c.id=t.session_id", "WHERE c.owner_user_id=:owner")
-        core += self._sum("OCTET_LENGTH(CAST(COALESCE(content_json,'{}') AS CHAR))", "nlp_memory_documents", "WHERE user_id=:owner")
-        core += self._sum("OCTET_LENGTH(CAST(COALESCE(payload_json,'{}') AS CHAR))", "nlp_memory_archives", "WHERE user_id=:owner")
-        core += self._sum("OCTET_LENGTH(CAST(COALESCE(checkpoint_json,'{}') AS CHAR))+OCTET_LENGTH(CAST(COALESCE(metadata_json,'{}') AS CHAR))", "nlp_agent_checkpoints", "WHERE owner_user_id=:owner")
+        core += self._sum("COALESCE(OCTET_LENGTH(CAST(e.payload_json AS CHAR)),0)", "nlp_turn_events e JOIN nlp_turns t ON t.id=e.turn_id", "WHERE t.user_id=:owner")
+        core += self._sum("COALESCE(OCTET_LENGTH(CAST(t.content_json AS CHAR)),0)+COALESCE(OCTET_LENGTH(CAST(t.tool_json AS CHAR)),0)+COALESCE(OCTET_LENGTH(CAST(t.usage_json AS CHAR)),0)", "nlp_conversation_transcripts t JOIN nlp_conversations c ON c.id=t.session_id", "WHERE c.owner_user_id=:owner")
+        core += self._sum("COALESCE(OCTET_LENGTH(CAST(content_json AS CHAR)),0)", "nlp_memory_documents", "WHERE user_id=:owner")
+        core += self._sum("COALESCE(OCTET_LENGTH(CAST(payload_json AS CHAR)),0)", "nlp_memory_archives", "WHERE user_id=:owner")
+        core += self._sum("COALESCE(OCTET_LENGTH(CAST(checkpoint_json AS CHAR)),0)+COALESCE(OCTET_LENGTH(CAST(metadata_json AS CHAR)),0)", "nlp_agent_checkpoints", "WHERE owner_user_id=:owner")
         core += self._sum("OCTET_LENGTH(checkpoint_blob)+OCTET_LENGTH(metadata_blob)", "nlp_langgraph_checkpoints", "WHERE owner_user_id=:owner")
         core += self._sum("OCTET_LENGTH(value_blob)", "nlp_langgraph_checkpoint_blobs", "WHERE owner_user_id=:owner")
         core += self._sum("OCTET_LENGTH(value_blob)", "nlp_langgraph_checkpoint_writes", "WHERE owner_user_id=:owner")
@@ -525,7 +518,10 @@ class SyncStorageQuota:
         reserved = int(account["core_reserved_bytes"] if bucket is StorageBucket.CORE else account["files_reserved_bytes"])
         quota = self.policy.quota_for(bucket)
         if not fits_quota(used, reserved, amount, quota):
-            raise StorageQuotaExceeded(f"{bucket.value} storage quota exceeded: {used + reserved + amount} > {quota} bytes")
+            raise StorageQuotaExceeded(
+                f"{bucket.value} storage quota exceeded: {used + reserved + amount} > {quota} bytes",
+                reason=StorageQuotaReason.CORE if bucket is StorageBucket.CORE else StorageQuotaReason.FILES,
+            )
         global_bytes = self.connection.execute(
             text(
                 "SELECT COALESCE(SUM(core_used_bytes+files_used_bytes+"
@@ -533,9 +529,9 @@ class SyncStorageQuota:
             )
         ).scalar()
         if int(global_bytes or 0) + amount > settings.NLP_AGENT_STORAGE_GLOBAL_DATA_LIMIT_BYTES:
-            raise StorageQuotaExceeded("服务器账户数据池已达到系统上限")
+            raise StorageQuotaExceeded("服务器账户数据池已达到系统上限", reason=StorageQuotaReason.GLOBAL_DATA)
         if not _disk_has_floor(amount):
-            raise StorageQuotaExceeded("服务器需要保留的系统空间不足")
+            raise StorageQuotaExceeded("服务器需要保留的系统空间不足", reason=StorageQuotaReason.DISK)
         reservation = QuotaReservation(str(uuid.uuid4()), self.owner_user_id, bucket, amount, resource_type)
         self.connection.execute(
             text("INSERT INTO nlp_storage_reservations(id,owner_user_id,bucket,amount_bytes,resource_type,resource_key,status) VALUES(:id,:owner,:bucket,:amount,:type,:key,'reserved')"),

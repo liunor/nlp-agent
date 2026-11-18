@@ -245,6 +245,32 @@ def test_facade_applies_level_to_ordinary_worker_only(factory, monkeypatch):
             llm_factory.get_worker_llm(tool_specified_model="worker-qwen-web")
 
 
+@pytest.mark.parametrize("levels", [
+    ("light", "deep", "extreme", "quick", "extreme"),
+    ("extreme", "light", "deep", "quick", "light"),
+])
+def test_coordinator_tool_binding_cache_preserves_each_turn_effort(factory, monkeypatch, levels):
+    from core.model_runtime.selection import bind_model_snapshot, bind_thinking_enabled
+    from core.model_runtime.runtime import ResilientChatModel
+    from server.agent import llm_factory
+    from server.agent.node import coordinator
+
+    monkeypatch.setattr(llm_factory, "get_global_model_factory", lambda: factory)
+    monkeypatch.setattr(coordinator, "get_coordinator_toolset", lambda _config: SimpleNamespace(names=(), tools=[]))
+    # The fixture adapters do not implement tool binding; keep the real factory
+    # and coordinator caches while isolating that downstream interface.
+    monkeypatch.setattr(ResilientChatModel, "bind_tools", lambda self, _tools: self)
+    monkeypatch.setattr(coordinator, "_CACHED_LLM_WITH_TOOLS", None)
+    monkeypatch.setattr(coordinator, "_CACHED_TOOLSET_KEY", None)
+    expected = {"quick": "none", "light": "low", "deep": "high", "extreme": "max"}
+    config = {"configurable": {"model_profile": "deepseek"}}
+    for level in levels:
+        with bind_model_snapshot(snapshot(factory, level)), bind_thinking_enabled(level != "quick"):
+            bound = coordinator._get_llm_with_tools(config)
+            assert bound.candidates[0].preset.thinking.effort.value == expected[level]
+            assert coordinator._get_llm_with_tools(config) is bound
+
+
 @pytest.mark.parametrize(
     "level,effort", [("light", "low"), ("deep", "high"), ("extreme", "max")]
 )

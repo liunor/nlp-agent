@@ -236,7 +236,7 @@ describe("MessageList session updates", () => {
     expect(screen.getByRole("button", { name: /已处理 5s/ })).toBeVisible();
   });
 
-  it("continues queue wait from the latest server snapshot without double-counting task age", () => {
+  it("keeps accepted messages free of queue details while waiting", () => {
     vi.useFakeTimers();
     const observedAt = new Date("2026-10-17T12:00:10.000Z");
     vi.setSystemTime(observedAt);
@@ -263,9 +263,9 @@ describe("MessageList session updates", () => {
           onFollowUp={vi.fn()}
         />,
       );
-      expect(screen.getByRole("status")).toHaveTextContent("已等待 12 秒");
+      expect(screen.queryByText(/排队中|前方 .*任务|已等待/)).not.toBeInTheDocument();
       act(() => vi.advanceTimersByTime(3_000));
-      expect(screen.getByRole("status")).toHaveTextContent("已等待 15 秒");
+      expect(screen.queryByText(/排队中|前方 .*任务|已等待/)).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

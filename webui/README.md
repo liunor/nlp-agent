@@ -62,6 +62,13 @@ Remove only the demo rows with:
 uv run python scripts/seed_monitor_demo.py --clear
 ```
 
+## Composer UI preview
+
+With `npm run dev` running, open `/preview.html` to inspect the topic/model menu
+and thinking slider without a backend. The preview uses sample models and topics;
+choices stay in page memory and sending is disabled. The standard production build
+uses `index.html` and does not include this separate preview entry.
+
 ## Verification
 
 ```powershell

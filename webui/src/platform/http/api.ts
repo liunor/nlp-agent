@@ -604,6 +604,8 @@ export const api = {
     request<ReleaseNoteEntry>(`/developer/release-notes/${encodeURIComponent(noteId)}`, { method: "PUT", body: JSON.stringify(note) }),
   deleteReleaseNote: (noteId: string) => request<void>(`/developer/release-notes/${encodeURIComponent(noteId)}`, { method: "DELETE" }),
   listPublishedReleaseNotes: () => request<{ items: ReleaseNoteEntry[] }>("/learning/release-notes"),
+  getUnreadReleaseNote: () => request<{ item: ReleaseNoteEntry | null }>("/learning/release-notes/unread"),
+  markReleaseNoteRead: (noteId: string) => request<{ ok: boolean }>(`/learning/release-notes/${encodeURIComponent(noteId)}/read`, { method: "POST" }),
   getTeacherOverview: (workspaceId = "default", days = 30) =>
     request<TeacherOverview>(`/teacher/overview?workspace_id=${encodeURIComponent(workspaceId)}&days=${days}`),
   generateTeacherAIAnalysis: (workspaceId: string, body: { course_id: string; content_scope: string; start_date?: string; end_date?: string; period_days?: number; force_refresh?: boolean }) =>
@@ -709,6 +711,22 @@ export const api = {
     request<ClassroomJoinCodeResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-code`),
   listJoinRequests: (classroomId: string) =>
     request<JoinRequestListResponse>(`/classrooms/${encodeURIComponent(classroomId)}/join-requests`),
+  listClassroomMembers: (classroomId: string) =>
+     request<{
+      items: Array<{
+        user_id: string;
+        username: string;
+        display_name: string;
+        member_role: string;
+        status: string;
+        joined_at?: string;
+      }>;
+    }>(`/classrooms/${encodeURIComponent(classroomId)}/members`),
+  removeClassroomMember: (classroomId: string, userId: string) =>
+    request<void>(`/classrooms/${encodeURIComponent(classroomId)}/members/${encodeURIComponent(userId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ member_role: "student", status: "inactive" }), 
+    }),
   approveJoinRequest: (classroomId: string, requestId: string) =>
     request<JoinRequest>(
       `/classrooms/${encodeURIComponent(classroomId)}/join-requests/${encodeURIComponent(requestId)}/approve`,

@@ -14,6 +14,8 @@ describe("Sidebar delete requests", () => {
   it("uses the Nova brand mark", () => {
     const { container } = render(<Sidebar {...props} />);
 
+    expect(screen.getByText("NLP Learning Agent")).toBeVisible();
+    expect(screen.queryByText(/LSNU/)).not.toBeInTheDocument();
     expect(container.querySelector(".brand-mark img")).toHaveAttribute("src", expect.stringContaining("nova-remove"));
   });
 

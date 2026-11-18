@@ -261,7 +261,7 @@ class ClassroomModel(TimestampedModel, Base):
 
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     workspace_id: Mapped[str] = mapped_column(
-        UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), unique=True, nullable=False
+        UUID, ForeignKey("nlp_workspaces.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     join_code: Mapped[str] = mapped_column(String(12), nullable=False)
@@ -283,7 +283,7 @@ class ClassroomMemberModel(TimestampedModel, Base):
     )
     member_role: Mapped[str] = mapped_column(String(16), nullable=False, server_default="student")
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
-
+    user: Mapped["UserModel"] = relationship(lazy="selectin")
 
 class MenuModel(TimestampedModel, Base):
     __tablename__ = "nlp_menus"
@@ -1189,6 +1189,19 @@ class ReleaseNoteModel(TimestampedModel, Base):
     released_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
     notes_json: Mapped[list] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="published")
+
+
+class ReleaseNoteReadModel(Base):
+    """Account-scoped receipts, shared across devices and workspaces."""
+
+    __tablename__ = "nlp_release_note_reads"
+    user_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    release_note_id: Mapped[str] = mapped_column(
+        UUID, ForeignKey("nlp_release_notes.id", ondelete="CASCADE"), primary_key=True
+    )
+    read_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), nullable=False)
 
 
 class MemoryArchiveModel(TimestampedModel, Base):

@@ -206,3 +206,18 @@ async def get_user_join_requests(db: AsyncSession, user_id: str) -> list[ClassJo
         .order_by(ClassJoinRequestModel.requested_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def list_active_classroom_members(
+    db: AsyncSession, class_id: str
+) -> list[ClassroomMemberModel]:
+    result = await db.execute(
+        select(ClassroomMemberModel)
+        .where(
+            ClassroomMemberModel.classroom_id == class_id,
+            ClassroomMemberModel.status == "active",
+        )
+        .options(selectinload(ClassroomMemberModel.user))
+        .order_by(ClassroomMemberModel.created_at)
+    )
+    return list(result.scalars().all())

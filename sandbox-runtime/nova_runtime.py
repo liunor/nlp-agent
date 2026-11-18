@@ -10,6 +10,7 @@ import argparse
 import base64
 import json
 import mimetypes
+import re
 from pathlib import Path
 import signal
 import sys
@@ -22,14 +23,18 @@ ARTIFACT_DIRECTORY = Path("/workspace/artifacts")
 MAX_ARTIFACT_FILES = 16
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 EXPECTED_TORCH_VERSION = "2.7.1"
+TERMINAL_ESCAPE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)|(?:\x1b\[|\x9b)[0-?]*[ -/]*(?:[@-~]|$)|\x1b[@-_]"
+)
 
 
 def verify_runtime_dependencies() -> None:
     """Fail readiness when the image does not contain the promised CPU runtime."""
     try:
+        import numpy as np
         import torch
     except ImportError as error:
-        raise RuntimeError("required runtime dependency torch is unavailable") from error
+        raise RuntimeError("required runtime dependencies numpy/torch are unavailable") from error
     installed_version = str(torch.__version__).split("+", 1)[0]
     if installed_version != EXPECTED_TORCH_VERSION:
         raise RuntimeError(
@@ -37,6 +42,8 @@ def verify_runtime_dependencies() -> None:
         )
     if torch.cuda.is_available():
         raise RuntimeError("CPU-only PyTorch runtime unexpectedly exposes CUDA")
+    if torch.from_numpy(np.ones(1, dtype=np.float32)).numpy()[0] != 1:
+        raise RuntimeError("PyTorch/NumPy interoperability failed")
 
 
 class OutputCollector:
@@ -62,8 +69,8 @@ class OutputCollector:
 
     def to_payload(self, *, status: str | None = None) -> dict[str, object]:
         payload: dict[str, object] = {
-            "stdout": "".join(self._stdout),
-            "stderr": "".join(self._stderr),
+            "stdout": TERMINAL_ESCAPE.sub("", "".join(self._stdout)),
+            "stderr": TERMINAL_ESCAPE.sub("", "".join(self._stderr)),
             "truncated": self._truncated,
         }
         if status is not None:

@@ -1,3 +1,4 @@
+import { SHOW_STUDENT_SCHOOL_BRANDING } from "@/shared/branding";
 import { ArrowRight, BadgeInfo, BookOpenCheck, ChevronDown, ChevronRight, CircleHelp, Clock3, Coins, Database, Gauge, Github, Globe2, Info, MessageSquarePlus, MonitorCog, Moon, Settings2, Sun, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -302,7 +303,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
               </SettingGroup>
             </>}
             {section === "about" && <div className="settings-about-page">
-              <SettingGroup title="项目与团队">
+              {SHOW_STUDENT_SCHOOL_BRANDING && <SettingGroup title="项目与团队">
                 <div className="settings-about-team-card">
                   <div className="settings-about-school"><strong>乐山师范学院</strong><span>人工智能与机器人学院</span></div>
                   <div className="settings-about-labs">
@@ -310,7 +311,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
                     <article><strong>四川省高校重点实验室</strong><span>互联网自然语言智能处理</span></article>
                   </div>
                 </div>
-              </SettingGroup>
+              </SettingGroup>}
 
               <SettingGroup title="加入我们" description="对 NLP、AI Agent 或软件开发感兴趣？">
                 <p className="settings-about-copy">Nova 仍在持续成长，期待与你一起完善更好的 NLP 学习体验。</p>
