@@ -42,7 +42,7 @@ def upgrade() -> None:
             sa.Column('updated_at', DATETIME(fsp=6), nullable=False, server_default=sa.text('UTC_TIMESTAMP(6)')),
             sa.ForeignKeyConstraint(['teacher_user_id'], ['nlp_users.id'], ondelete='CASCADE'),
             sa.ForeignKeyConstraint(['source_file_id'], ['nlp_user_files.id'], ondelete='SET NULL'),
-            comment='教师文件分发批次记录',
+            comment='教师向学生、班级或角色批量分发文件的记录与执行状态。',
         )
         op.create_index(
             'ix_nlp_file_distributions_teacher_created',
