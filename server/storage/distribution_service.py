@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
@@ -41,6 +42,21 @@ from .service import (
 from .transfer_domain import next_available_file_name
 
 logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def _safe_nested(session: AsyncSession):
+    """Safely enter a nested transaction savepoint if supported by the session."""
+    if hasattr(session, "begin_nested"):
+        try:
+            nested = session.begin_nested()
+            if hasattr(nested, "__aenter__"):
+                async with nested:
+                    yield
+                return
+        except (TypeError, AttributeError):
+            pass
+    yield
+
 
 TRANSFER_TTL_DAYS = 7
 
@@ -480,192 +496,193 @@ class FileDistributionService:
 
         for recipient in recipients:
             try:
-                recipient_workspace_id = await self._recipient_workspace(recipient.id)
-                quota = await self._recipient_quota(recipient.id)
-                await quota.reconcile()
+                async with _safe_nested(self.db):
+                    recipient_workspace_id = await self._recipient_workspace(recipient.id)
+                    quota = await self._recipient_quota(recipient.id)
+                    await quota.reconcile()
 
-                account = await self.db.scalar(
-                    select(StorageAccountModel).where(
-                        StorageAccountModel.owner_user_id == recipient.id
-                    )
-                )
-                if account is None:
-                    failures.append(
-                        {
-                            "user_id": recipient.id,
-                            "display_name": recipient.display_name,
-                            "identity_id": recipient.identity_id,
-                            "reason": "目标用户未初始化存储账户",
-                        }
-                    )
-                    continue
-
-                active_items = int(
-                    await self.db.scalar(
-                        select(func.count())
-                        .select_from(UserFileModel)
-                        .where(
-                            UserFileModel.owner_user_id == recipient.id,
-                            UserFileModel.kind == "file",
-                            UserFileModel.status == "active",
+                    account = await self.db.scalar(
+                        select(StorageAccountModel).where(
+                            StorageAccountModel.owner_user_id == recipient.id
                         )
                     )
-                    or 0
-                )
+                    if account is None:
+                        failures.append(
+                            {
+                                "user_id": recipient.id,
+                                "display_name": recipient.display_name,
+                                "identity_id": recipient.identity_id,
+                                "reason": "目标用户未初始化存储账户",
+                            }
+                        )
+                        continue
 
-                if source.size_bytes > quota.policy.max_file_bytes:
-                    failures.append(
-                        {
-                            "user_id": recipient.id,
-                            "display_name": recipient.display_name,
-                            "identity_id": recipient.identity_id,
-                            "reason": "文件超过接收方的单文件大小限制",
-                        }
-                    )
-                    continue
-
-                if not fits_quota(
-                    account.files_used_bytes,
-                    account.files_reserved_bytes,
-                    source.size_bytes,
-                    quota.policy.files_quota_bytes,
-                ):
-                    failures.append(
-                        {
-                            "user_id": recipient.id,
-                            "display_name": recipient.display_name,
-                            "identity_id": recipient.identity_id,
-                            "reason": "接收方存储空间不足",
-                        }
-                    )
-                    continue
-
-                if not fits_item_quota(
-                    active_items=active_items,
-                    reserved_items=account.files_reserved_items,
-                    incoming_items=1,
-                    max_items=quota.policy.max_items,
-                ):
-                    failures.append(
-                        {
-                            "user_id": recipient.id,
-                            "display_name": recipient.display_name,
-                            "identity_id": recipient.identity_id,
-                            "reason": "接收方文件数量已达到上限",
-                        }
-                    )
-                    continue
-
-                transfer_id = str(uuid.uuid4())
-                reservation = await quota.reserve(
-                    StorageBucket.FILES,
-                    int(source.size_bytes),
-                    resource_type="file_transfer",
-                    resource_key=transfer_id,
-                    amount_items=1,
-                )
-                if reservation is None:
-                    failures.append(
-                        {
-                            "user_id": recipient.id,
-                            "display_name": recipient.display_name,
-                            "identity_id": recipient.identity_id,
-                            "reason": "无法建立空间预留",
-                        }
-                    )
-                    continue
-
-                staging_key = f".transfers/{transfer_id}"
-                staging_path = storage_root() / staging_key
-                staging_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, staging_path)
-
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-                if direct_delivery:
-                    # Direct delivery: write directly into recipient's files and mark transfer as accepted
-                    existing_names = set(
-                        (
-                            await self.db.scalars(
-                                select(UserFileModel.display_name).where(
-                                    UserFileModel.owner_user_id == recipient.id,
-                                    UserFileModel.workspace_id == recipient_workspace_id,
-                                    UserFileModel.parent_id.is_(None),
-                                    UserFileModel.status == "active",
-                                )
+                    active_items = int(
+                        await self.db.scalar(
+                            select(func.count())
+                            .select_from(UserFileModel)
+                            .where(
+                                UserFileModel.owner_user_id == recipient.id,
+                                UserFileModel.kind == "file",
+                                UserFileModel.status == "active",
                             )
-                        ).all()
+                        )
+                        or 0
                     )
-                    dest_file_name = next_available_file_name(source.display_name, existing_names)
-                    target_file_id = str(uuid.uuid4())
-                    target_storage_key = f"{recipient_workspace_id}/{recipient.id}/{target_file_id}"
-                    target_path = storage_root() / target_storage_key
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_path, target_path)
 
-                    target_file_row = UserFileModel(
-                        id=target_file_id,
-                        owner_user_id=recipient.id,
-                        workspace_id=recipient_workspace_id,
-                        parent_id=None,
-                        kind="file",
-                        display_name=dest_file_name,
-                        storage_key=target_storage_key,
-                        mime_type=source.mime_type,
-                        size_bytes=source.size_bytes,
-                        sha256=file_digest,
+                    if source.size_bytes > quota.policy.max_file_bytes:
+                        failures.append(
+                            {
+                                "user_id": recipient.id,
+                                "display_name": recipient.display_name,
+                                "identity_id": recipient.identity_id,
+                                "reason": "文件超过接收方的单文件大小限制",
+                            }
+                        )
+                        continue
+
+                    if not fits_quota(
+                        account.files_used_bytes,
+                        account.files_reserved_bytes,
+                        source.size_bytes,
+                        quota.policy.files_quota_bytes,
+                    ):
+                        failures.append(
+                            {
+                                "user_id": recipient.id,
+                                "display_name": recipient.display_name,
+                                "identity_id": recipient.identity_id,
+                                "reason": "接收方存储空间不足",
+                            }
+                        )
+                        continue
+
+                    if not fits_item_quota(
+                        active_items=active_items,
+                        reserved_items=account.files_reserved_items,
+                        incoming_items=1,
+                        max_items=quota.policy.max_items,
+                    ):
+                        failures.append(
+                            {
+                                "user_id": recipient.id,
+                                "display_name": recipient.display_name,
+                                "identity_id": recipient.identity_id,
+                                "reason": "接收方文件数量已达到上限",
+                            }
+                        )
+                        continue
+
+                    transfer_id = str(uuid.uuid4())
+                    reservation = await quota.reserve(
+                        StorageBucket.FILES,
+                        int(source.size_bytes),
+                        resource_type="file_transfer",
+                        resource_key=transfer_id,
+                        amount_items=1,
                     )
-                    self.db.add(target_file_row)
+                    if reservation is None:
+                        failures.append(
+                            {
+                                "user_id": recipient.id,
+                                "display_name": recipient.display_name,
+                                "identity_id": recipient.identity_id,
+                                "reason": "无法建立空间预留",
+                            }
+                        )
+                        continue
+
+                    staging_key = f".transfers/{transfer_id}"
+                    staging_path = storage_root() / staging_key
+                    staging_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, staging_path)
+
+                    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+                    if direct_delivery:
+                        # Direct delivery: write directly into recipient's files and mark transfer as accepted
+                        existing_names = set(
+                            (
+                                await self.db.scalars(
+                                    select(UserFileModel.display_name).where(
+                                        UserFileModel.owner_user_id == recipient.id,
+                                        UserFileModel.workspace_id == recipient_workspace_id,
+                                        UserFileModel.parent_id.is_(None),
+                                        UserFileModel.status == "active",
+                                    )
+                                )
+                            ).all()
+                        )
+                        dest_file_name = next_available_file_name(source.display_name, existing_names)
+                        target_file_id = str(uuid.uuid4())
+                        target_storage_key = f"{recipient_workspace_id}/{recipient.id}/{target_file_id}"
+                        target_path = storage_root() / target_storage_key
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source_path, target_path)
+
+                        target_file_row = UserFileModel(
+                            id=target_file_id,
+                            owner_user_id=recipient.id,
+                            workspace_id=recipient_workspace_id,
+                            parent_id=None,
+                            kind="file",
+                            display_name=dest_file_name,
+                            storage_key=target_storage_key,
+                            mime_type=source.mime_type,
+                            size_bytes=source.size_bytes,
+                            sha256=file_digest,
+                        )
+                        self.db.add(target_file_row)
+                        await self.db.flush()
+
+                        await quota.finalize(
+                            self._reservation_object(reservation.id, recipient.id, source.size_bytes),
+                            reconcile=True,
+                        )
+
+                        transfer = FileTransferModel(
+                            id=transfer_id,
+                            sender_user_id=self.principal.user_id,
+                            recipient_user_id=recipient.id,
+                            source_workspace_id=self.workspace_id,
+                            recipient_workspace_id=recipient_workspace_id,
+                            source_file_id=source.id,
+                            original_name=source.display_name,
+                            mime_type=source.mime_type,
+                            size_bytes=source.size_bytes,
+                            sha256=file_digest,
+                            staging_key=staging_key,
+                            quota_reservation_id=reservation.id,
+                            status="accepted",
+                            accepted_file_id=target_file_id,
+                            responded_at=func.utc_timestamp(6),
+                            expires_at=now,
+                            idempotency_key=f"dist_{distribution_id}_{recipient.id}",
+                        )
+                    else:
+                        # Consent request mode
+                        transfer = FileTransferModel(
+                            id=transfer_id,
+                            sender_user_id=self.principal.user_id,
+                            recipient_user_id=recipient.id,
+                            source_workspace_id=self.workspace_id,
+                            recipient_workspace_id=recipient_workspace_id,
+                            source_file_id=source.id,
+                            original_name=source.display_name,
+                            mime_type=source.mime_type,
+                            size_bytes=source.size_bytes,
+                            sha256=file_digest,
+                            staging_key=staging_key,
+                            quota_reservation_id=reservation.id,
+                            status="pending",
+                            expires_at=now + datetime.resolution * (TRANSFER_TTL_DAYS * 86400 * 1_000_000),
+                            idempotency_key=f"dist_{distribution_id}_{recipient.id}",
+                        )
+
+                    self.db.add(transfer)
                     await self.db.flush()
-
-                    await quota.finalize(
-                        self._reservation_object(reservation.id, recipient.id, source.size_bytes),
-                        reconcile=True,
-                    )
-
-                    transfer = FileTransferModel(
-                        id=transfer_id,
-                        sender_user_id=self.principal.user_id,
-                        recipient_user_id=recipient.id,
-                        source_workspace_id=self.workspace_id,
-                        recipient_workspace_id=recipient_workspace_id,
-                        source_file_id=source.id,
-                        original_name=source.display_name,
-                        mime_type=source.mime_type,
-                        size_bytes=source.size_bytes,
-                        sha256=file_digest,
-                        staging_key=staging_key,
-                        quota_reservation_id=reservation.id,
-                        status="accepted",
-                        accepted_file_id=target_file_id,
-                        responded_at=func.utc_timestamp(6),
-                        expires_at=now,
-                        idempotency_key=f"dist_{distribution_id}_{recipient.id}",
-                    )
-                else:
-                    # Consent request mode
-                    transfer = FileTransferModel(
-                        id=transfer_id,
-                        sender_user_id=self.principal.user_id,
-                        recipient_user_id=recipient.id,
-                        source_workspace_id=self.workspace_id,
-                        recipient_workspace_id=recipient_workspace_id,
-                        source_file_id=source.id,
-                        original_name=source.display_name,
-                        mime_type=source.mime_type,
-                        size_bytes=source.size_bytes,
-                        sha256=file_digest,
-                        staging_key=staging_key,
-                        quota_reservation_id=reservation.id,
-                        status="pending",
-                        expires_at=now + datetime.resolution * (TRANSFER_TTL_DAYS * 86400 * 1_000_000),
-                        idempotency_key=f"dist_{distribution_id}_{recipient.id}",
-                    )
-
-                self.db.add(transfer)
-                await self.db.flush()
-                await self._bump_notification_version(recipient.id)
-                success_count += 1
+                    await self._bump_notification_version(recipient.id)
+                    success_count += 1
 
             except Exception as err:
                 logger.warning(
@@ -713,63 +730,65 @@ class FileDistributionService:
         )
 
     async def _persist_distribution_record(self, record: dict[str, Any]) -> None:
-        """Persist distribution record defensively."""
+        """Persist distribution record defensively without breaking the outer transaction."""
         try:
-            from server.infrastructure.mysql.models import FileDistributionModel
-            model = FileDistributionModel(
-                id=record["distribution_id"],
-                teacher_user_id=self.principal.user_id,
-                source_file_id=record["source_file_id"],
-                file_name=record["file_name"],
-                size_bytes=record["size_bytes"],
-                target_type=record["target_type"],
-                target_value=record["target_value"],
-                target_label=record["target_label"],
-                direct_delivery=record["direct_delivery"],
-                total_count=record["total_targets"],
-                success_count=record["success_count"],
-                failed_count=record["failed_count"],
-                status="completed" if record["failed_count"] == 0 else "partial_failure",
-                details_json=json.dumps(record.get("failures", []), ensure_ascii=False),
-            )
-            self.db.add(model)
-            await self.db.flush()
-        except (ImportError, OperationalError, ProgrammingError, DBAPIError) as err:
+            async with _safe_nested(self.db):
+                from server.infrastructure.mysql.models import FileDistributionModel
+                model = FileDistributionModel(
+                    id=record["distribution_id"],
+                    teacher_user_id=self.principal.user_id,
+                    source_file_id=record["source_file_id"],
+                    file_name=record["file_name"],
+                    size_bytes=record["size_bytes"],
+                    target_type=record["target_type"],
+                    target_value=record["target_value"],
+                    target_label=record["target_label"],
+                    direct_delivery=record["direct_delivery"],
+                    total_count=record["total_targets"],
+                    success_count=record["success_count"],
+                    failed_count=record["failed_count"],
+                    status="completed" if record["failed_count"] == 0 else "partial_failure",
+                    details_json=json.dumps(record.get("failures", []), ensure_ascii=False),
+                )
+                self.db.add(model)
+                await self.db.flush()
+        except Exception as err:
             logger.info("FileDistributionModel table not ready yet, skipping record table insertion: %s", err)
 
     async def list_distribution_history(self, limit: int = 50) -> list[dict[str, Any]]:
         """List distribution history for current teacher."""
         try:
-            from server.infrastructure.mysql.models import FileDistributionModel
-            rows = list(
-                (
-                    await self.db.scalars(
-                        select(FileDistributionModel)
-                        .where(FileDistributionModel.teacher_user_id == self.principal.user_id)
-                        .order_by(FileDistributionModel.created_at.desc())
-                        .limit(limit)
-                    )
-                ).all()
-            )
-            return [
-                {
-                    "id": r.id,
-                    "file_name": r.file_name,
-                    "size_bytes": int(r.size_bytes),
-                    "target_type": r.target_type,
-                    "target_value": r.target_value,
-                    "target_label": r.target_label,
-                    "direct_delivery": r.direct_delivery,
-                    "total_count": r.total_count,
-                    "success_count": r.success_count,
-                    "failed_count": r.failed_count,
-                    "status": r.status,
-                    "details": json.loads(r.details_json) if r.details_json else [],
-                    "created_at": utc_isoformat(r.created_at),
-                }
-                for r in rows
-            ]
-        except (ImportError, OperationalError, ProgrammingError, DBAPIError):
+            async with _safe_nested(self.db):
+                from server.infrastructure.mysql.models import FileDistributionModel
+                rows = list(
+                    (
+                        await self.db.scalars(
+                            select(FileDistributionModel)
+                            .where(FileDistributionModel.teacher_user_id == self.principal.user_id)
+                            .order_by(FileDistributionModel.created_at.desc())
+                            .limit(limit)
+                        )
+                    ).all()
+                )
+                return [
+                    {
+                        "id": r.id,
+                        "file_name": r.file_name,
+                        "size_bytes": int(r.size_bytes),
+                        "target_type": r.target_type,
+                        "target_value": r.target_value,
+                        "target_label": r.target_label,
+                        "direct_delivery": r.direct_delivery,
+                        "total_count": r.total_count,
+                        "success_count": r.success_count,
+                        "failed_count": r.failed_count,
+                        "status": r.status,
+                        "details": json.loads(r.details_json) if r.details_json else [],
+                        "created_at": utc_isoformat(r.created_at),
+                    }
+                    for r in rows
+                ]
+        except Exception:
             # Fallback to aggregations from FileTransferModel
             transfers = list(
                 (
