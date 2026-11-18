@@ -136,6 +136,9 @@ async def test_guest_can_read_published_knowledge_book(test_setup):
     assert len(pub_cat["catalog"]["topics"]) == 1
     assert pub_cat["catalog"]["topics"][0]["id"] == "topic-1"
 
+    with pytest.raises(AccessDeniedError, match="another-workspace"):
+        await teacher_service.learning_book_navigation(guest, gateway, "another-workspace")
+
     # 6. Direct teaching catalog query on gateway still rejects guest
     with pytest.raises(AccessDeniedError, match="learning:content:read_workspace"):
         await gateway.get_teaching_catalog(guest, "guest-ws")

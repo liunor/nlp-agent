@@ -769,6 +769,14 @@ def test_learning_catalog_only_exposes_enabled_topics_and_enabled_knowledge_poin
         ]
 
 
+def test_learning_catalog_and_book_reject_an_unrelated_workspace(student_web_app):
+    app, _engine = student_web_app
+    with TestClient(app) as client:
+        authenticate(client)
+        assert client.get("/api/v1/learning/catalog/another-workspace").status_code == 403
+        assert client.get("/api/v1/learning/book/another-workspace/navigation").status_code == 403
+
+
 def test_whiteboard_library_is_global_and_teacher_managed(web_app, student_web_app):
     app, _engine = web_app
     with TestClient(app) as teacher_client:

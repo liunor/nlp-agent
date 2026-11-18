@@ -12,6 +12,7 @@ import pytest
 from ..support.http import json_response
 from ..support.resources import (
     add_workspace_member,
+    create_classroom,
     create_workspace,
     create_session,
     create_user,
@@ -315,6 +316,21 @@ def test_teacher_ai_analysis_uses_deterministic_stub_and_fallbacks(
         user_id=second_student.user_id,
     )
     second_student_client = authenticated_client_for(second_student)
+    classroom = create_classroom(
+        teacher, workspace_id=workspace["id"], name="Phase 4 Teacher Analysis Class",
+    )
+    for learner in (student, second_student_client):
+        request = json_response(
+            learner.post(f"/api/v1/classrooms/{classroom['id']}/join-requests", json={}),
+            201,
+        )
+        json_response(
+            teacher.post(
+                f"/api/v1/classrooms/{classroom['id']}/join-requests/{request['id']}/approve",
+                json={},
+            ),
+            200,
+        )
     first_session = create_session(student, workspace_id=workspace["id"])
     second_session = create_session(
         second_student_client,

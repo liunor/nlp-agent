@@ -186,6 +186,39 @@ async def test_lost_journal_acknowledgement_replays_without_double_charge(tmp_pa
     assert reservation.pending_invocations == 0
 
 
+async def test_replay_settles_intents_written_before_optional_fields_were_added(tmp_path):
+    factory, reservation, account, intents, _ = ledger()
+    reporter = DurableQuotaUsageReporter(factory, journal_directory=tmp_path)
+    call, result = invocation(), outcome()
+    await reporter.prepare(call)
+    stored = intents[call.operation_id].invocation_json
+    del stored["feature_usage"]
+    del stored["attribution"]["token_reservation_id"]
+    reporter.journal.put(call, CanonicalTokenUsage(source="provider", input_tokens=100, total_tokens=100), result)
+
+    assert await reporter.replay_pending() == {"replayed": 1, "failed": 0}
+    assert account.used_tokens == 100
+    assert reservation.pending_invocations == 0
+    assert not reporter.journal.pending()
+
+
+async def test_conflicting_replay_preserves_fact_without_retrying_or_charging(tmp_path):
+    factory, reservation, account, intents, _ = ledger()
+    reporter = DurableQuotaUsageReporter(factory, journal_directory=tmp_path)
+    call, result = invocation(), outcome()
+    await reporter.prepare(call)
+    intents[call.operation_id].invocation_json["identity"]["provider_model"] = "other-model"
+    usage = CanonicalTokenUsage(source="provider", input_tokens=100, total_tokens=100)
+    reporter.journal.put(call, usage, result)
+
+    assert await reporter.replay_pending() == {"replayed": 0, "failed": 1}
+    assert account.used_tokens == 0
+    assert reservation.pending_invocations == 1
+    assert await reporter.replay_pending() == {"replayed": 0, "failed": 0}
+    (preserved,) = (tmp_path / "conflicts").glob("*.json")
+    assert reporter.journal.read(preserved) == (call, usage, result)
+
+
 @pytest.mark.asyncio
 async def test_unknown_provider_cost_remains_protected_after_cancellation(tmp_path):
     factory, reservation, account, _, _ = ledger()
