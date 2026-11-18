@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.mysql import BIGINT, DATETIME
 
 revision = '20261118_add_file_distributions'
-down_revision = '20261102_add_workspace_id'
+down_revision = '20261117_release_note_reads'
 branch_labels = None
 depends_on = None
 
