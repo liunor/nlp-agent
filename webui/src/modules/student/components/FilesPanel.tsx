@@ -7,6 +7,7 @@ import {
   api,
   storageFileDownloadUrl,
   type DistributionTargetsResponse,
+  type FileDistributionRequest,
   type FileTransfer,
   type FileTransferRecipient,
   type StorageFile,
@@ -352,7 +353,8 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     () => currentUserRoles.some((role) => ["teacher", "developer", "admin"].includes(role)),
     [currentUserRoles]
   );
-  const [distributeTargetType, setDistributeTargetType] = useState<"all_students" | "all_guests" | "all_admins" | "all_users" | "role" | "classroom" | "user">("all_students");
+  const [teacherSendMode, setTeacherSendMode] = useState<"single" | "group">("single");
+  const [distributeTargetType, setDistributeTargetType] = useState<"all_students" | "all_guests" | "all_admins" | "all_users" | "role" | "classroom">("all_students");
   const [distributeRole, setDistributeRole] = useState("student");
   const [distributeClassroomId, setDistributeClassroomId] = useState("");
   const [directDelivery, setDirectDelivery] = useState(true);
@@ -497,6 +499,9 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
 
   const beginSend = (item: StorageFile) => {
     setSendFile(item);
+    setRecipient(null);
+    setRecipientIdentityId("");
+    setTeacherSendMode("single");
     setSendIdempotencyKey(createUuid());
     setSendMessage("");
     setDistributionDone(false);
@@ -515,32 +520,36 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     setSendBusy(true);
     setSendMessage("");
     try {
+      let targetType: FileDistributionRequest["target_type"];
       let targetValue: string | null = null;
-      if (distributeTargetType === "role") targetValue = distributeRole;
-      else if (distributeTargetType === "classroom") targetValue = distributeClassroomId;
-      else if (distributeTargetType === "user") {
+      if (teacherSendMode === "single") {
+        targetType = "user";
         targetValue = recipient?.identity_id || recipientIdentityId.trim();
         if (!targetValue) {
           setSendMessage("请输入指定用户的身份 ID 或用户名");
           setSendBusy(false);
           return;
         }
+      } else {
+        targetType = distributeTargetType;
+        if (distributeTargetType === "role") targetValue = distributeRole;
+        else if (distributeTargetType === "classroom") targetValue = distributeClassroomId;
       }
       const res = await api.distributeFile({
         source_file_id: sendFile.id,
-        target_type: distributeTargetType,
+        target_type: targetType,
         target_value: targetValue,
         direct_delivery: directDelivery,
         workspace_id: workspaceId,
       });
       setDistributionDone(true);
-      setSendMessage(`分发完成！已向 ${res.target_label} 发送文件，成功 ${res.success_count} 人${res.failed_count > 0 ? `，失败 ${res.failed_count} 人` : ""}。`);
+      setSendMessage(`发送完成！已向 ${res.target_label} 发送文件，成功 ${res.success_count} 人${res.failed_count > 0 ? `，失败 ${res.failed_count} 人` : ""}。`);
       window.dispatchEvent(new Event("file-transfers:changed"));
       window.setTimeout(() => {
         closeSend();
       }, 1800);
     } catch (reason: unknown) {
-      setSendMessage(reason instanceof Error ? reason.message : "文件分发失败");
+      setSendMessage(reason instanceof Error ? reason.message : "文件发送失败");
     } finally {
       setSendBusy(false);
     }
@@ -633,220 +642,66 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
           role="dialog"
           aria-modal="true"
           aria-labelledby="file-transfer-title"
-          style={isTeacher ? { maxWidth: 520, width: "95%" } : undefined}
+          style={isTeacher ? { maxWidth: 540, width: "95%" } : undefined}
         >
           <button type="button" className="file-transfer-close" aria-label="关闭发送窗口" onClick={closeSend}>
             <X size={16} />
           </button>
-          <h3 id="file-transfer-title">{isTeacher ? "分发发送文件" : "发送文件"}</h3>
+          <h3 id="file-transfer-title">{isTeacher ? "发送文件" : "发送文件"}</h3>
           <p>发送 <strong>{sendFile.name}</strong> ({formatBytes(sendFile.size_bytes)})</p>
 
           {isTeacher ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 14, margin: "14px 0" }}>
-              <div>
-                <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
-                  发送目标对象
-                </label>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border-color, #ddd)",
-                      background: distributeTargetType === "all_students" ? "rgba(59, 130, 246, 0.08)" : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="distTarget"
-                      checked={distributeTargetType === "all_students"}
-                      onChange={() => setDistributeTargetType("all_students")}
-                    />
-                    <span>全体学生 ({distributionTargets?.summary.student_count ?? 0}人)</span>
-                  </label>
-
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border-color, #ddd)",
-                      background: distributeTargetType === "all_guests" ? "rgba(59, 130, 246, 0.08)" : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="distTarget"
-                      checked={distributeTargetType === "all_guests"}
-                      onChange={() => setDistributeTargetType("all_guests")}
-                    />
-                    <span>全体游客 ({distributionTargets?.summary.guest_count ?? 0}人)</span>
-                  </label>
-
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border-color, #ddd)",
-                      background: distributeTargetType === "all_admins" ? "rgba(59, 130, 246, 0.08)" : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="distTarget"
-                      checked={distributeTargetType === "all_admins"}
-                      onChange={() => setDistributeTargetType("all_admins")}
-                    />
-                    <span>全体管理员 ({distributionTargets?.summary.admin_count ?? 0}人)</span>
-                  </label>
-
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border-color, #ddd)",
-                      background: distributeTargetType === "all_users" ? "rgba(59, 130, 246, 0.08)" : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="distTarget"
-                      checked={distributeTargetType === "all_users"}
-                      onChange={() => setDistributeTargetType("all_users")}
-                    />
-                    <span>全体用户 ({distributionTargets?.summary.total_user_count ?? 0}人)</span>
-                  </label>
-
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border-color, #ddd)",
-                      background: distributeTargetType === "classroom" ? "rgba(59, 130, 246, 0.08)" : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="distTarget"
-                      checked={distributeTargetType === "classroom"}
-                      onChange={() => setDistributeTargetType("classroom")}
-                    />
-                    <span>指定班级</span>
-                  </label>
-
-                  <label
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border-color, #ddd)",
-                      background: distributeTargetType === "role" ? "rgba(59, 130, 246, 0.08)" : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="distTarget"
-                      checked={distributeTargetType === "role"}
-                      onChange={() => setDistributeTargetType("role")}
-                    />
-                    <span>某一角色类别</span>
-                  </label>
-
-                  <label
-                    style={{
-                      gridColumn: "span 2",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: "1px solid var(--border-color, #ddd)",
-                      background: distributeTargetType === "user" ? "rgba(59, 130, 246, 0.08)" : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="distTarget"
-                      checked={distributeTargetType === "user"}
-                      onChange={() => setDistributeTargetType("user")}
-                    />
-                    <span>指定单个用户（输入身份 ID / 用户名）</span>
-                  </label>
-                </div>
+              {/* 单发 vs 群发 模式切换 */}
+              <div style={{ display: "flex", gap: 8, padding: 3, background: "rgba(0, 0, 0, 0.05)", borderRadius: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => { setTeacherSendMode("single"); setSendMessage(""); }}
+                  style={{
+                    flex: 1,
+                    padding: "8px 12px",
+                    borderRadius: 7,
+                    border: "none",
+                    fontWeight: 600,
+                    fontSize: 13,
+                    cursor: "pointer",
+                    background: teacherSendMode === "single" ? "var(--bg, #fff)" : "transparent",
+                    color: teacherSendMode === "single" ? "var(--fg, #111)" : "var(--muted, #666)",
+                    boxShadow: teacherSendMode === "single" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                  }}
+                >
+                  单发（指定用户）
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setTeacherSendMode("group"); setSendMessage(""); }}
+                  style={{
+                    flex: 1,
+                    padding: "8px 12px",
+                    borderRadius: 7,
+                    border: "none",
+                    fontWeight: 600,
+                    fontSize: 13,
+                    cursor: "pointer",
+                    background: teacherSendMode === "group" ? "var(--bg, #fff)" : "transparent",
+                    color: teacherSendMode === "group" ? "var(--fg, #111)" : "var(--muted, #666)",
+                    boxShadow: teacherSendMode === "group" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                  }}
+                >
+                  群发（选择对象 / 用户类型）
+                </button>
               </div>
 
-              {/* 针对不同分类的子选择 */}
-              {distributeTargetType === "classroom" && (
+              {teacherSendMode === "single" ? (
                 <div>
-                  <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>选择班级：</label>
-                  <select
-                    value={distributeClassroomId}
-                    onChange={(e) => setDistributeClassroomId(e.target.value)}
-                    style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #ccc" }}
-                  >
-                    {distributionTargets?.classrooms.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({c.student_count}人)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {distributeTargetType === "role" && (
-                <div>
-                  <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>选择角色类别：</label>
-                  <select
-                    value={distributeRole}
-                    onChange={(e) => setDistributeRole(e.target.value)}
-                    style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #ccc" }}
-                  >
-                    {distributionTargets?.roles.map((r) => (
-                      <option key={r.code} value={r.code}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {distributeTargetType === "user" && (
-                <div>
-                  <label htmlFor="file-transfer-recipient-id">接收人身份 ID</label>
+                  <label htmlFor="file-transfer-recipient-id" style={{ display: "block", fontSize: 12, fontWeight: 650, marginBottom: 4 }}>
+                    接收人身份 ID 或用户名
+                  </label>
                   <div className="file-transfer-search">
                     <input
                       id="file-transfer-recipient-id"
                       autoFocus
+                      placeholder="输入学号/身份 ID 或用户名"
                       value={recipientIdentityId}
                       onChange={(event) => {
                         setRecipientIdentityId(event.target.value);
@@ -866,6 +721,179 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
                       <span>接收人</span>
                       <strong>{recipient.display_name}</strong>
                       <small>{recipient.identity_id}</small>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 650, marginBottom: 6 }}>
+                    选择对象与用户类型
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-color, #ddd)",
+                        background: distributeTargetType === "all_students" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                        cursor: "pointer",
+                        fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="distTarget"
+                        checked={distributeTargetType === "all_students"}
+                        onChange={() => setDistributeTargetType("all_students")}
+                      />
+                      <span>全体学生 ({distributionTargets?.summary.student_count ?? 0}人)</span>
+                    </label>
+
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-color, #ddd)",
+                        background: distributeTargetType === "classroom" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                        cursor: "pointer",
+                        fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="distTarget"
+                        checked={distributeTargetType === "classroom"}
+                        onChange={() => setDistributeTargetType("classroom")}
+                      />
+                      <span>指定班级</span>
+                    </label>
+
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-color, #ddd)",
+                        background: distributeTargetType === "role" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                        cursor: "pointer",
+                        fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="distTarget"
+                        checked={distributeTargetType === "role"}
+                        onChange={() => setDistributeTargetType("role")}
+                      />
+                      <span>某一角色类别</span>
+                    </label>
+
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-color, #ddd)",
+                        background: distributeTargetType === "all_guests" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                        cursor: "pointer",
+                        fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="distTarget"
+                        checked={distributeTargetType === "all_guests"}
+                        onChange={() => setDistributeTargetType("all_guests")}
+                      />
+                      <span>全体游客 ({distributionTargets?.summary.guest_count ?? 0}人)</span>
+                    </label>
+
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-color, #ddd)",
+                        background: distributeTargetType === "all_admins" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                        cursor: "pointer",
+                        fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="distTarget"
+                        checked={distributeTargetType === "all_admins"}
+                        onChange={() => setDistributeTargetType("all_admins")}
+                      />
+                      <span>全体管理员 ({distributionTargets?.summary.admin_count ?? 0}人)</span>
+                    </label>
+
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "8px 10px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border-color, #ddd)",
+                        background: distributeTargetType === "all_users" ? "rgba(59, 130, 246, 0.08)" : "transparent",
+                        cursor: "pointer",
+                        fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="distTarget"
+                        checked={distributeTargetType === "all_users"}
+                        onChange={() => setDistributeTargetType("all_users")}
+                      />
+                      <span>全体用户 ({distributionTargets?.summary.total_user_count ?? 0}人)</span>
+                    </label>
+                  </div>
+
+                  {distributeTargetType === "classroom" && (
+                    <div style={{ marginTop: 8 }}>
+                      <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>选择班级：</label>
+                      <select
+                        value={distributeClassroomId}
+                        onChange={(e) => setDistributeClassroomId(e.target.value)}
+                        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+                      >
+                        {distributionTargets?.classrooms.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.student_count}人)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {distributeTargetType === "role" && (
+                    <div style={{ marginTop: 8 }}>
+                      <label style={{ display: "block", fontSize: 12, marginBottom: 4 }}>选择角色类别：</label>
+                      <select
+                        value={distributeRole}
+                        onChange={(e) => setDistributeRole(e.target.value)}
+                        style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+                      >
+                        {distributionTargets?.roles.map((r) => (
+                          <option key={r.code} value={r.code}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   )}
                 </div>
@@ -941,12 +969,12 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
                 sendBusy ||
                 distributionDone ||
                 (isTeacher
-                  ? distributeTargetType === "user" && !recipientIdentityId.trim()
+                  ? teacherSendMode === "single" && !recipientIdentityId.trim()
                   : !recipient)
               }
               onClick={() => void (isTeacher ? distributeAsTeacher() : sendToRecipient())}
             >
-              {sendBusy ? "正在发送…" : isTeacher ? "确认分发发送" : "确认发送"}
+              {sendBusy ? "正在发送…" : isTeacher ? (teacherSendMode === "single" ? "确认发送" : "确认群发") : "确认发送"}
             </button>
           </footer>
         </section>

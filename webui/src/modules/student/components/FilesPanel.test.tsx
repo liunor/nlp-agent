@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/platform/http/api";
+import type { UserProfile } from "@/shared/types";
 
 import { FilesPanel, parseUtcTimestamp } from "./FilesPanel";
 
@@ -26,6 +27,9 @@ vi.mock("@/platform/http/api", () => ({
     acceptFileTransfer: vi.fn(),
     rejectFileTransfer: vi.fn(),
     cancelFileTransfer: vi.fn(),
+    getCurrentUser: vi.fn(),
+    getDistributionTargets: vi.fn(),
+    distributeFile: vi.fn(),
   },
   storageFileDownloadUrl: (fileId: string) => `/api/v1/storage/files/${fileId}/download`,
 }));
@@ -46,6 +50,17 @@ const usage = {
   max_items: 500,
 };
 
+const mockUser = (roles: string[] = ["student"]): UserProfile => ({
+  id: "user-1",
+  identity_id: "NV1234567890123",
+  username: "test_user",
+  display_name: "Test User",
+  status: "active",
+  created_at: "2026-03-24T00:00:00Z",
+  updated_at: "2026-03-24T00:00:00Z",
+  roles,
+});
+
 describe("FilesPanel", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -54,6 +69,12 @@ describe("FilesPanel", () => {
     vi.mocked(api.listStorageTrash).mockResolvedValue({ items: [] });
     vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 0, notification_version: 0 });
     vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [] });
+    vi.mocked(api.getCurrentUser).mockResolvedValue(mockUser(["student"]));
+    vi.mocked(api.getDistributionTargets).mockResolvedValue({
+      summary: { student_count: 42, guest_count: 5, admin_count: 2, total_user_count: 50 },
+      roles: [{ code: "student", name: "全体学生", description: "" }],
+      classrooms: [{ id: "class-1", name: "NLP自然语言处理1班", workspace_id: "ws-1", student_count: 30 }],
+    });
   });
 
   afterEach(() => {
@@ -366,5 +387,105 @@ function upload(files: File[]) {
     expect(screen.getByText(/来自 乙/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "同意 a.md" }));
     await waitFor(() => expect(api.acceptFileTransfer).toHaveBeenCalledWith("transfer-1"));
+  });
+
+  it("allows teacher to single send file to recipient with direct delivery", async () => {
+    vi.mocked(api.getCurrentUser).mockResolvedValue(mockUser(["teacher"]));
+    vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [{
+      id: "file-1",
+      name: "lesson.md",
+      kind: "file",
+      mime_type: "text/markdown",
+      size_bytes: 42,
+      created_at: null,
+      updated_at: null,
+    }] });
+    vi.mocked(api.lookupTransferRecipient).mockResolvedValue({ identity_id: "NV7ABC234DEF567", display_name: "小明" });
+    vi.mocked(api.preflightFileTransfer).mockResolvedValue({ can_receive: true, reason: "" });
+    vi.mocked(api.distributeFile).mockResolvedValue({
+      distribution_id: "dist-1",
+      source_file_id: "file-1",
+      file_name: "lesson.md",
+      size_bytes: 42,
+      target_type: "user",
+      target_label: "用户：小明",
+      direct_delivery: true,
+      total_targets: 1,
+      success_count: 1,
+      failed_count: 0,
+      failures: [],
+      created_at: "2026-03-24T00:00:00Z",
+    });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "发送 lesson.md" }));
+    expect(await screen.findByRole("button", { name: "单发（指定用户）" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "群发（选择对象 / 用户类型）" })).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("接收人身份 ID 或用户名"), { target: { value: "nv7abc234def567" } });
+    fireEvent.click(screen.getByRole("button", { name: "查询接收人" }));
+
+    await waitFor(() => expect(api.lookupTransferRecipient).toHaveBeenCalledWith("nv7abc234def567"));
+    expect(await screen.findByText("小明")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认发送" }));
+
+    await waitFor(() => expect(api.distributeFile).toHaveBeenCalledWith({
+      source_file_id: "file-1",
+      target_type: "user",
+      target_value: "NV7ABC234DEF567",
+      direct_delivery: true,
+      workspace_id: "workspace-1",
+    }));
+  });
+
+  it("allows teacher to group send file to all students or class", async () => {
+    vi.mocked(api.getCurrentUser).mockResolvedValue(mockUser(["teacher"]));
+    vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [{
+      id: "file-1",
+      name: "lesson.md",
+      kind: "file",
+      mime_type: "text/markdown",
+      size_bytes: 42,
+      created_at: null,
+      updated_at: null,
+    }] });
+    vi.mocked(api.distributeFile).mockResolvedValue({
+      distribution_id: "dist-2",
+      source_file_id: "file-1",
+      file_name: "lesson.md",
+      size_bytes: 42,
+      target_type: "classroom",
+      target_label: "班级：NLP自然语言处理1班",
+      direct_delivery: true,
+      total_targets: 30,
+      success_count: 30,
+      failed_count: 0,
+      failures: [],
+      created_at: "2026-03-24T00:00:00Z",
+    });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "发送 lesson.md" }));
+    expect(await screen.findByRole("button", { name: "群发（选择对象 / 用户类型）" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "群发（选择对象 / 用户类型）" }));
+    expect(await screen.findByText("全体学生 (42人)")).toBeVisible();
+    expect(screen.getByText("指定班级")).toBeVisible();
+
+    fireEvent.click(screen.getByLabelText("指定班级"));
+    expect(screen.getByText("NLP自然语言处理1班 (30人)")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认群发" }));
+
+    await waitFor(() => expect(api.distributeFile).toHaveBeenCalledWith({
+      source_file_id: "file-1",
+      target_type: "classroom",
+      target_value: "class-1",
+      direct_delivery: true,
+      workspace_id: "workspace-1",
+    }));
   });
 });

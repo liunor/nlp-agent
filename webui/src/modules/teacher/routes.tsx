@@ -17,7 +17,6 @@ export function TeacherRoutes() {
       <Route path="questions" element={<TeacherWorkspace page="questions" onNavigate={page} />} />
       <Route path="reports" element={<TeacherWorkspace page="reports" onNavigate={page} />} />
       <Route path="classrooms" element={<TeacherWorkspace page="classrooms" onNavigate={page} />} />
-      <Route path="distribute" element={<TeacherWorkspace page="distribute" onNavigate={page} />} />
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
