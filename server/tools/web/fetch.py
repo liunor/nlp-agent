@@ -177,9 +177,18 @@ class WebFetchService:
                 await resolve_and_check(current, blocked_cidrs=blocked_cidrs)
             async with self._build_client(proxy_url) as client:
                 client.cookies.clear()
+                request_headers: dict[str, str] = {}
+                if as_markdown:
+                    request_headers["Accept"] = (
+                        "text/markdown;q=1.0, text/x-markdown;q=0.9, "
+                        "text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"
+                    )
                 try:
                     response = await client.send(
-                        client.build_request("GET", current.normalized), stream=True
+                        client.build_request(
+                            "GET", current.normalized, headers=request_headers
+                        ),
+                        stream=True,
                     )
                 except httpx.TimeoutException as error:
                     raise TimeoutError(f"读取 {current.host} 超时: {error}") from error
@@ -202,6 +211,15 @@ class WebFetchService:
                         next_url = str(response.url.join(location))
                         current = validate_url(next_url)
                         continue
+                    if (
+                        response.status_code == 403
+                        and response.headers.get("cf-mitigated", "").strip().lower()
+                        == "challenge"
+                    ):
+                        raise WebAccessError(
+                            "cloudflare_challenge",
+                            "目标站点启用了 Cloudflare 人机验证，无法直接抓取，请改用搜索摘要或其他来源",
+                        )
                     if response.status_code == 429:
                         raise TransientHttpError(
                             429, f"HTTP 429 rate limit from {current.host}"

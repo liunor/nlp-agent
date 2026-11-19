@@ -41,6 +41,9 @@ EngineEventSink = Callable[
 _CHECKPOINT_READ_TIMEOUT_S = 0.5
 _TRANSCRIPT_PERSIST_TIMEOUT_S = 1.0
 _BACKGROUND_CANCEL_DRAIN_TIMEOUT_S = 0.25
+_INTERNAL_ORCHESTRATION_TOOLS = frozenset(
+    {"spawn_worker", "send_message", "TaskStop", "SnipTool"}
+)
 logger = logging.getLogger(__name__)
 
 
@@ -65,9 +68,11 @@ class LangGraphAgentEngine:
         self._started = False
         self._session_model_profiles: dict[str, str | None] = {}
         self._foreground_outputs: dict[str, list[str]] = {}
+        self._public_text_started: set[str] = set()
         self._abandoned_tasks: set[asyncio.Task[Any]] = set()
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._session_thinking_enabled: dict[str, bool] = {}
+        self._worker_progress_sub_id: str | None = None
 
     def set_model_task_loader(self, loader):
         self._model_task_loader = loader
@@ -82,7 +87,17 @@ class LangGraphAgentEngine:
         self._app, self._connection = await build_agent()
         init_snip_tool(self._app)
         self._runtime = CoordinatorRuntime(global_worker_event_bus, self._invoke)
+        self._worker_progress_sub_id = global_worker_event_bus.subscribe_progress(
+            self._on_worker_progress
+        )
         self._started = True
+
+    async def _on_worker_progress(
+        self, session_id: str, turn_id: str, payload: dict[str, Any]
+    ) -> None:
+        if turn_id in self._public_text_started and payload.get("phase") == "heartbeat":
+            return
+        await self._emit(turn_id, session_id, GatewayEventType.WORKER_UPDATE, payload)
 
     async def _emit(
         self,
@@ -235,6 +250,7 @@ class LangGraphAgentEngine:
                                 anonymous_suppressed_model_stream = True
                             continue
                         if not background and isinstance(chunk.content, str):
+                            self._public_text_started.add(turn_id)
                             self._foreground_outputs.setdefault(turn_id, []).append(
                                 chunk.content
                             )
@@ -259,26 +275,29 @@ class LangGraphAgentEngine:
                     tool_id = str(event.get("run_id") or event.get("name") or uuid.uuid4())
                     tool_name = str(event.get("name") or "工具")
                     active_tools[tool_id] = tool_name
-                    await deltas.emit(
-                        GatewayEventType.TOOL_STARTED,
-                        {"name": tool_name},
-                    )
+                    if tool_name not in _INTERNAL_ORCHESTRATION_TOOLS:
+                        await deltas.emit(
+                            GatewayEventType.TOOL_STARTED,
+                            {"name": tool_name},
+                        )
                 elif event_name == "on_tool_end":
                     observed_tool_events = True
                     tool_id = str(event.get("run_id") or event.get("name") or "")
                     tool_name = active_tools.pop(tool_id, str(event.get("name") or "工具"))
-                    await deltas.emit(
-                        GatewayEventType.TOOL_COMPLETED,
-                        {"name": tool_name},
-                    )
+                    if tool_name not in _INTERNAL_ORCHESTRATION_TOOLS:
+                        await deltas.emit(
+                            GatewayEventType.TOOL_COMPLETED,
+                            {"name": tool_name},
+                        )
                 elif event_name == "on_tool_error":
                     observed_tool_events = True
                     tool_id = str(event.get("run_id") or event.get("name") or "")
                     tool_name = active_tools.pop(tool_id, str(event.get("name") or "工具"))
-                    await deltas.emit(
-                        GatewayEventType.TOOL_FAILED,
-                        {"name": tool_name},
-                    )
+                    if tool_name not in _INTERNAL_ORCHESTRATION_TOOLS:
+                        await deltas.emit(
+                            GatewayEventType.TOOL_FAILED,
+                            {"name": tool_name},
+                        )
                 elif event_name == "on_chain_end" and node == "tools" and active_tool_node:
                     active_tool_node = False
                     if not observed_tool_events:
@@ -326,6 +345,7 @@ class LangGraphAgentEngine:
                 )
         finally:
             self._foreground_outputs.pop(turn_id, None)
+            self._public_text_started.discard(turn_id)
 
     async def _run_selected_turn(self, context: SessionContext, turn_id: str, content: str, *, learning_context: LearningContext | None = None, learning_progress: LearningProgress | None = None, exercise_state: ExerciseState | None = None, teaching_materials: TeachingMaterials | None = None, knowledge_book_context: KnowledgeBookContext | None = None) -> str:
         if self._runtime is None or self._app is None:
@@ -567,6 +587,9 @@ class LangGraphAgentEngine:
     async def close(self) -> None:
         if not self._started:
             return
+        if self._worker_progress_sub_id is not None:
+            global_worker_event_bus.unsubscribe_progress(self._worker_progress_sub_id)
+            self._worker_progress_sub_id = None
         background_tasks = list(self._background_tasks)
         for task in background_tasks:
             task.cancel()

@@ -66,9 +66,11 @@ const AssistantMessage = memo(function AssistantMessage({ message, showReasoning
       <div className="assistant-body">
         <ActivityPanel
           activities={message.activities ?? []}
+          summary={message.activitySummary}
           reasoning={message.reasoning}
           showReasoning={showReasoning}
           running={streaming}
+          hasContent={Boolean(message.content.trim())}
           startedAt={message.startedAt}
           completedAt={message.completedAt}
         />

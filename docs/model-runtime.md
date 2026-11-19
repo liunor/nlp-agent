@@ -34,7 +34,7 @@ Qwen 使用专用 `qwen` Adapter，而不是把兼容接口直接当作通用 Op
 
 Qwen 原生联网搜索是 preset 级的显式能力，不会随 Qwen Provider 全局开启。只有 `worker-qwen-web` 设置 `native_search.enabled=true`；Adapter 才会在 `extra_body` 中写入 `enable_search=true` 和 `search_options`。普通 `coordinator-qwen-max`、`worker-qwen-plus` 与 `utility-qwen-plus` 的请求保持不联网。
 
-Coordinator 仅把最新、实时、新闻、价格、政策、版本或用户明确要求联网检索的问题路由到 `web_researcher`。该 Worker 固定使用 `qwen3.7-plus`、`forced_search=true` 和 `turbo` 策略；运行时禁止模型覆盖及其他 Profile 借用该 preset。它采用 one-shot 执行（单轮、无工具、无 Provider/Worker 重试、预算耗尽不再调用模型），从服务端限制单任务最多一次原生搜索。用户提供明确 URL 时改用 `web_reader`；它继承当前普通 Worker 模型且只获授 `web_fetch`，不会触发 Qwen 原生搜索。两个内建 Web Profile 不继承全局 Worker 工具授权，也不能被 Developer UI 覆盖。兼容模式的模型回答不保证包含结构化来源 URL，因此运行时不得补造引用。
+Coordinator 把最新、实时、新闻、价格、政策、版本、技术文档或用户明确要求联网检索的问题路由到 `web_researcher`。该 Worker 运行在预算受控的 ReAct 模式下（默认 `max_turns=5`、`max_tool_calls=6`，显式上限 `<=8`），默认跟随当前模型档案的 `system_worker`（如 `deepseek-v4-flash`），获授 `web_search`（调用 DeepSeek 独立 Search API `POST /v1/tools/search`）与 `web_fetch` 形成两阶段闭环。`worker-qwen-web` 保留为可选的原生联网兜底 preset（仅允许 `requires_native_search=true` 的显式 Profile 使用）。用户直接提供明确 URL 时改用 `web_reader`；它只获授 `web_fetch`，不扩大为全网检索。两个内建 Web Profile 不继承全局 Worker 工具授权，也不能被 Developer UI 覆盖。
 
 ## Kimi 适配
 
@@ -161,8 +161,8 @@ model.stream_interrupted
 
 - 识图优先读取 Provider 返回的视觉 Token；缺失时按实际送入 VLM 的图片像素和任务复杂度换算为 1/2/3 个 `image_units`。二者只计一种，并继续计模型输出 Token。
 - 原生搜索按 Provider 返回的搜索次数计量；当前强制搜索 preset 在 Provider 不返回次数时按一次调用记录。搜索结果不另建 Token 字段，进入模型的内容只通过现有 `input_tokens` 计价一次。
-- `web_fetch` 每次成功、非缓存的页面读取记录一个 `link_pages`；缓存命中不收页面读取费。页面正文进入后续模型调用时，只通过该模型调用的 `input_tokens` 计价。
-- 单价只来自版本化 PricingRule。模型规则可配置视觉 Token、图片单位和搜索调用价格；纯 OCR 使用 `feature/image-understanding`，链接读取使用 `feature/link-read`。缺少对应价格时 UsageEvent 保持 `pending`，不会按零价结算。
+- `web_search` 每次非缓存、HTTP 200 且返回非空结果的调用按 `feature/web-search` 记录一个 `search_calls`（5,000 micro credits / 次，即 5 元 / 1,000 次）；缓存命中、报错或空结果不收费。`web_fetch` 每次成功、非缓存的页面读取记录一个 `link_pages`；缓存命中不收页面读取费。搜索摘要与页面正文进入后续模型调用时，只通过该模型调用的 `input_tokens` 计价。
+- 单价只来自版本化 PricingRule。模型规则可配置视觉 Token、图片单位和搜索调用价格；纯 OCR 使用 `feature/image-understanding`，独立联网搜索使用 `feature/web-search`，链接读取使用 `feature/link-read`。缺少对应价格时 UsageEvent 保持 `pending`，不会按零价结算。
 - `qwen3-vl-plus` 的图片分析在模型请求前会预留 `image_units`，响应后改用 Provider 返回的 `prompt_tokens_details.image_tokens` 精确结算。`python main.py bootstrap-db` 会自动安装并验证这条视觉规则；`scripts/seed_extended_model_pricing.py` 仅作为预览或人工修复入口。
 - 图片输入不直接发送给 Coordinator、普通 Worker、Kimi 或 GLM。所有聊天 profile 统一调用 `image_analyze`，再由固定的 `vision-worker -> vision-qwen-plus -> qwen3-vl-plus` 路由处理。
 

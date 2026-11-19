@@ -21,6 +21,7 @@ def test_only_generic_replayable_tools_are_registered():
     assert get_compactable_tool_names() == {
         "read_local_file",
         "get_current_time",
+        "web_search",
         "web_fetch",
     }
 

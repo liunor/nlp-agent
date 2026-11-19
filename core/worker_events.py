@@ -8,7 +8,7 @@ import time
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from schemas.models import WorkerExecutionResultSpec
 from utils.logger import get_logger
@@ -16,6 +16,7 @@ from utils.logger import get_logger
 
 logger = get_logger("nlp_agent.worker_events")
 SessionNotifier = Callable[[str], Awaitable[None] | None]
+WorkerProgressListener = Callable[[str, str, dict[str, Any]], Awaitable[None] | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +85,7 @@ class WorkerEventBus:
         # matching turn instead of being injected into the wrong Coordinator run.
         self._deferred: dict[str, deque[WorkerCompletedEvent]] = defaultdict(deque)
         self._subscribers: dict[str, tuple[str | None, SessionNotifier]] = {}
+        self._progress_listeners: dict[str, WorkerProgressListener] = {}
         self._seen_ids: dict[str, set[str]] = defaultdict(set)
         self._seen_order: dict[str, deque[str]] = defaultdict(deque)
         self.metrics = WorkerEventMetrics()
@@ -95,6 +97,39 @@ class WorkerEventBus:
 
     def unsubscribe(self, subscription_id: str) -> None:
         self._subscribers.pop(subscription_id, None)
+
+    def subscribe_progress(self, listener: WorkerProgressListener) -> str:
+        subscription_id = str(uuid.uuid4())
+        self._progress_listeners[subscription_id] = listener
+        return subscription_id
+
+    def unsubscribe_progress(self, subscription_id: str) -> None:
+        self._progress_listeners.pop(subscription_id, None)
+
+    async def publish_progress(
+        self,
+        *,
+        session_id: str,
+        parent_turn_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Broadcast non-terminal Worker progress to the active Gateway turn."""
+        if not session_id or not parent_turn_id or not self._progress_listeners:
+            return
+        for listener in list(self._progress_listeners.values()):
+            try:
+                outcome = listener(session_id, parent_turn_id, dict(payload))
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Worker progress listener failed",
+                    session_id=session_id,
+                    turn_id=parent_turn_id,
+                    exc_info=True,
+                )
 
     async def publish(self, event: WorkerCompletedEvent) -> bool:
         seen = self._seen_ids[event.session_id]

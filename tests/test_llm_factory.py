@@ -183,18 +183,48 @@ def test_model_factory_reload_applies_updated_thinking_preset(monkeypatch):
     assert after.candidates[0].model.reasoning_effort == "low"
 
 
-def test_native_search_profile_model_is_locked_and_exclusive(monkeypatch):
+def test_web_researcher_follows_active_profile_and_native_search_remains_exclusive(
+    monkeypatch,
+):
+    from core.skill_loader import ResolvedWorkerProfile
+
     monkeypatch.setattr(llm_factory.settings, "NLP_AGENT_WORKER_MODEL", "")
     loader = SkillLoader()
     researcher = loader.resolve_profile("web_researcher")
     reader = loader.resolve_profile("web_reader")
+    pinned_native = ResolvedWorkerProfile(
+        name="custom_qwen_native",
+        model="worker-qwen-web",
+        execution_mode="one_shot",
+        requires_native_search=True,
+        inherit_tool_policy=False,
+    )
 
-    assert worker_tool._resolve_profile_worker_model(
-        researcher, model_profile="deepseek"
-    ) == "worker-qwen-web"
+    assert (
+        worker_tool._resolve_profile_worker_model(
+            researcher, model_profile="deepseek"
+        )
+        == "worker-flash"
+    )
+    assert (
+        worker_tool._resolve_profile_worker_model(
+            researcher, model_profile="qwen"
+        )
+        == "worker-qwen-plus"
+    )
+    assert (
+        worker_tool._resolve_profile_worker_model(
+            pinned_native, model_profile="deepseek"
+        )
+        == "worker-qwen-web"
+    )
     with pytest.raises(ValueError, match="pins model 'worker-qwen-web'"):
         worker_tool._resolve_profile_worker_model(
-            researcher, requested_model="worker-flash", model_profile="deepseek"
+            pinned_native, requested_model="worker-flash", model_profile="deepseek"
+        )
+    with pytest.raises(ValueError, match="not authorized to use native-search"):
+        worker_tool._resolve_profile_worker_model(
+            researcher, requested_model="worker-qwen-web", model_profile="deepseek"
         )
     with pytest.raises(ValueError, match="not authorized to use native-search"):
         worker_tool._resolve_profile_worker_model(
@@ -203,7 +233,15 @@ def test_native_search_profile_model_is_locked_and_exclusive(monkeypatch):
 
 
 def test_native_search_profile_rejects_a_conflicting_global_override(monkeypatch):
-    profile = SkillLoader().resolve_profile("web_researcher")
+    from core.skill_loader import ResolvedWorkerProfile
+
+    profile = ResolvedWorkerProfile(
+        name="custom_qwen_native",
+        model="worker-qwen-web",
+        execution_mode="one_shot",
+        requires_native_search=True,
+        inherit_tool_policy=False,
+    )
     monkeypatch.setattr(
         llm_factory.settings, "NLP_AGENT_WORKER_MODEL", "worker-flash"
     )
@@ -212,10 +250,72 @@ def test_native_search_profile_rejects_a_conflicting_global_override(monkeypatch
         worker_tool._resolve_profile_worker_model(profile, model_profile="deepseek")
 
 
-def test_native_search_profile_forces_one_shot_execution_policy():
-    profile = SkillLoader().resolve_profile("web_researcher")
+def test_web_researcher_caps_react_budget_and_native_search_forces_one_shot():
+    from core.skill_loader import ResolvedWorkerProfile
+
+    researcher = SkillLoader().resolve_profile("web_researcher")
+    search_budget, search_retry = worker_tool._build_profile_execution_policies(
+        researcher,
+        runtime_settings={
+            "max_injections": 15,
+            "injection_batch_size": 3,
+            "max_tool_result_chars": 50_000,
+            "finalize_on_exhaustion": True,
+        },
+        max_turns=6,
+        max_duration_s=60,
+        max_tokens=32_000,
+        max_tool_calls=12,
+        max_attempts=3,
+    )
+    assert search_budget.max_turns == 5
+    assert search_budget.max_tool_calls == 6
+    assert search_budget.finalize_on_exhaustion is True
+    assert search_retry.max_attempts == 3
+
+    explicit_budget, _ = worker_tool._build_profile_execution_policies(
+        researcher,
+        runtime_settings={
+            "max_injections": 15,
+            "injection_batch_size": 3,
+            "max_tool_result_chars": 50_000,
+            "finalize_on_exhaustion": True,
+        },
+        max_turns=10,
+        max_duration_s=60,
+        max_tokens=32_000,
+        max_tool_calls=10,
+        max_attempts=3,
+    )
+    assert explicit_budget.max_turns == 8
+    assert explicit_budget.max_tool_calls == 8
+
+    tight_budget, _ = worker_tool._build_profile_execution_policies(
+        researcher,
+        runtime_settings={
+            "max_injections": 15,
+            "injection_batch_size": 3,
+            "max_tool_result_chars": 50_000,
+            "finalize_on_exhaustion": True,
+        },
+        max_turns=3,
+        max_duration_s=60,
+        max_tokens=32_000,
+        max_tool_calls=3,
+        max_attempts=3,
+    )
+    assert tight_budget.max_turns == 3
+    assert tight_budget.max_tool_calls == 3
+
+    one_shot_profile = ResolvedWorkerProfile(
+        name="custom_qwen_native",
+        model="worker-qwen-web",
+        execution_mode="one_shot",
+        requires_native_search=True,
+        inherit_tool_policy=False,
+    )
     budget, retry = worker_tool._build_profile_execution_policies(
-        profile,
+        one_shot_profile,
         runtime_settings={
             "max_injections": 15,
             "injection_batch_size": 3,

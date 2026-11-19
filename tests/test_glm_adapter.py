@@ -238,7 +238,11 @@ def test_project_glm_profile_is_valid_without_changing_defaults_or_routes():
     assert config.model_routes["worker"].primary == "worker-flash"
     assert config.model_routes["utility"].primary == "utility-flash"
     assert config.model_routes["vision-worker"].primary == "vision-qwen-plus"
-    assert raw["worker_profiles"]["web_researcher"]["model"] == "worker-qwen-web"
+    assert raw["worker_profiles"]["web_researcher"]["execution_mode"] == "react"
+    assert set(raw["worker_profiles"]["web_researcher"]["allowed_tools"]) == {
+        "web_search",
+        "web_fetch",
+    }
 
 
 @pytest.mark.parametrize(

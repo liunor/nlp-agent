@@ -22,6 +22,26 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 BASE_CONFIG_PATH = BASE_DIR / "configs" / "agent_config.yaml"
 OVERRIDE_PATH = BASE_DIR / ".data" / "developer" / "runtime-overrides.yaml"
 RESERVED_WORKER_PROFILES = frozenset({"web_researcher", "web_reader"})
+_VALID_WEB_SEARCH_OVERRIDE_KEYS = frozenset(
+    {
+        "enabled",
+        "provider",
+        "base_url",
+        "api_key_env",
+        "timeout_s",
+        "default_count",
+        "raw_fetch_count",
+        "min_rerank_score",
+        "top_summary_count",
+        "cache_ttl_s",
+        "circuit_failure_threshold",
+        "circuit_cooldown_s",
+        "redis_enabled",
+        "redis_url_env",
+        "redis_key_prefix",
+        "redis_operation_timeout_s",
+    }
+)
 _RUNTIME_OVERRIDE_THREAD_LOCK = threading.Lock()
 
 
@@ -40,8 +60,20 @@ def _compatible_overrides(value: dict[str, Any]) -> dict[str, Any]:
     tools = override.get("tools")
     web = tools.get("web") if isinstance(tools, dict) else None
     if isinstance(web, dict):
-        for key in ("search", "allow_provider_override", "trusted_service_hosts"):
+        for key in ("allow_provider_override", "trusted_service_hosts"):
             web.pop(key, None)
+        search = web.get("search")
+        if isinstance(search, dict):
+            cleaned_search = {
+                key: item
+                for key, item in search.items()
+                if key in _VALID_WEB_SEARCH_OVERRIDE_KEYS
+                and not (key == "provider" and item != "deepseek")
+            }
+            if cleaned_search:
+                web["search"] = cleaned_search
+            else:
+                web.pop("search", None)
         fetch = web.get("fetch")
         if isinstance(fetch, dict):
             fetch.pop("remote_reader", None)

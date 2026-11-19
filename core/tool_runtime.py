@@ -86,6 +86,48 @@ def _academic_result_urls(output: Any) -> tuple[str, ...]:
     return tuple(sorted(urls))
 
 
+def _web_search_telemetry(output: Any) -> tuple[tuple[str, ...], bool]:
+    """Extract ordered public citation URLs and cache status from web_search output."""
+    if isinstance(output, str):
+        try:
+            payload = json.loads(output)
+        except (TypeError, json.JSONDecodeError):
+            return (), False
+    elif isinstance(output, Mapping):
+        payload = output
+    else:
+        return (), False
+    if not isinstance(payload, Mapping):
+        return (), False
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        return (), bool(payload.get("cache_hit", False))
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in raw_results:
+        if not isinstance(item, Mapping):
+            continue
+        candidate = item.get("url")
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        try:
+            parsed = urlsplit(candidate.strip())
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                continue
+        except ValueError:
+            continue
+        normalized = urlunsplit(parsed)
+        if normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized)
+    return tuple(urls), bool(payload.get("cache_hit", False))
+
+
 class ToolSource(str, Enum):
     BUILTIN = "builtin"
     CUSTOM = "custom"
@@ -880,6 +922,13 @@ class ToolSet:
                 span.annotate(
                     result_urls=list(_academic_result_urls(result.output)),
                     billable_charges=0,
+                )
+            elif name == "web_search" and result.ok:
+                web_urls, cache_hit = _web_search_telemetry(result.output)
+                span.annotate(
+                    result_urls=list(web_urls),
+                    result_count=len(web_urls),
+                    cache_hit=cache_hit,
                 )
             if not result.ok:
                 kind = result.error.kind if result.error else "tool_error"

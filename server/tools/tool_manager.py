@@ -5,6 +5,7 @@ from server.tools.api.knowledge_book_tool import get_knowledge_book_context
 from server.tools.api.teacher_distribute_tool import teacher_distribute_file
 from server.tools.api.time_tool import get_current_time
 from server.tools.api.web_fetch_tool import web_fetch
+from server.tools.api.web_search_tool import web_search
 from server.sandbox.model_tools import MODEL_SANDBOX_TOOLS
 from core.vision_execution import IMAGE_TOOL_CONCURRENCY, IMAGE_TOOL_TIMEOUT_S
 from core.tool_runtime import (
@@ -22,6 +23,7 @@ from core.tool_runtime import (
 ALL_AVAILABLE_TOOLS = [
     read_local_file,
     get_current_time,
+    web_search,
     web_fetch,
     teacher_distribute_file,
 ]
@@ -68,6 +70,21 @@ def register_builtin_tools(catalog: ToolCatalog | None = None) -> list[str]:
             timeout_s=5,
             retry=ToolRetryPolicy(max_attempts=1),
             factory=lambda: get_knowledge_book_context.model_copy(deep=True),
+        ),
+        ToolDescriptor(
+            name=web_search.name,
+            description=web_search.description,
+            source=ToolSource.BUILTIN,
+            provider="web-access",
+            scopes=frozenset({ToolScope.WORKER}),
+            capabilities=frozenset({"web.search"}),
+            risk=ToolRisk.MEDIUM,
+            read_only=True,
+            concurrency_safe=True,
+            timeout_s=25,
+            max_concurrency=4,
+            retry=ToolRetryPolicy(max_attempts=2),
+            factory=lambda: web_search.model_copy(deep=True),
         ),
         ToolDescriptor(
             name=web_fetch.name,
@@ -205,7 +222,7 @@ def _register_compactable_tools() -> None:
     try:
         from server.agent.compression.micro_compact import register_compactable_tool
 
-        for tool in (read_local_file, get_current_time, web_fetch):
+        for tool in (read_local_file, get_current_time, web_search, web_fetch):
             register_compactable_tool(tool.name)
     except Exception:
         pass

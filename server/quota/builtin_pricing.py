@@ -137,6 +137,15 @@ BUILTIN_PRICING_RULES: tuple[PricingRule, ...] = (
         output=0,
         link_page=0,
     ),
+    # DeepSeek standalone Search API: CNY 5 / 1,000 non-empty HTTP 200 calls.
+    _rule(
+        "feature/web-search",
+        ordinary_input=0,
+        cached_input=0,
+        cache_write=0,
+        output=0,
+        search_call=5_000,
+    ),
 )
 
 UNVERIFIED_PRICING_KEYS: tuple[str, ...] = ()

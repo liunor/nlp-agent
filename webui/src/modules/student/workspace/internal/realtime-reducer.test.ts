@@ -231,4 +231,89 @@ describe("realtime acknowledgement reconciliation", () => {
       message: "3cee3f82-03fd-4c58-b523-370d21c175c4",
     });
   });
+
+  it("accumulates multi-step search progress, updates heartbeats in place, and suppresses spawn_worker", () => {
+    let messages: ChatMessage[] = [];
+    const handler = createRealtimeEventHandler({
+      socketRef: { current: null },
+      activeSessionRef: { current: "session-1" },
+      pendingRequests: { current: new Map() },
+      inFlightTurnIds: { current: new Set(["turn-search"]) },
+      setMessages: (update) => {
+        messages = typeof update === "function" ? update(messages) : update;
+      },
+      setActiveSessionId: vi.fn(),
+      setRequestError: vi.fn(),
+      persistPreferences: vi.fn(),
+      updateSessionMeta: vi.fn(),
+      loadSessions: vi.fn(async () => []),
+      loadTurns: vi.fn(async () => undefined),
+    });
+    const emit = (type: string, payload: Record<string, unknown>, timestamp = "2026-11-19T03:00:01Z") =>
+      handler({
+        v: "1",
+        type,
+        session_id: "session-1",
+        turn_id: "turn-search",
+        timestamp,
+        payload,
+      });
+
+    emit("chat.started", {});
+    emit("tool.started", { name: "spawn_worker" });
+    emit("tool.completed", { name: "spawn_worker" });
+    expect(messages[0].activities).toEqual([]);
+
+    emit("worker.progress", {
+      phase: "step",
+      step_id: "w1:commentary:1",
+      step_kind: "commentary",
+      step_status: "completed",
+      label: "正在检索 2026 深圳 APEC 最新会议议程",
+    });
+    emit("worker.progress", {
+      phase: "step",
+      step_id: "w1:call:c1",
+      step_kind: "search",
+      step_status: "running",
+      label: "正在搜索「APEC 2026 深圳」",
+    });
+    expect(messages[0].activitySummary).toBe("正在搜索「APEC 2026 深圳」");
+    expect(messages[0].activities).toHaveLength(2);
+
+    emit("worker.progress", {
+      phase: "heartbeat",
+      step_id: "w1:call:c1",
+      step_kind: "search",
+      step_status: "running",
+      summary: "正在检索「APEC 2026 深圳」相关来源（已用时 4s）…",
+    });
+    expect(messages[0].activitySummary).toContain("已用时 4s");
+    expect(messages[0].activities).toHaveLength(2);
+
+    emit("worker.progress", {
+      phase: "step",
+      step_id: "w1:call:c1",
+      step_kind: "search",
+      step_status: "completed",
+      label: "联网搜索：「APEC 2026 深圳」",
+      detail: "命中 6 条 · sz.gov.cn, cctv.com",
+    });
+    emit("worker.progress", {
+      phase: "step",
+      step_id: "turn-search:coordinator_synthesis",
+      step_kind: "synthesis",
+      step_status: "running",
+      label: "已完成资料检索与核验，正在整理最终回答…",
+    });
+    expect(messages[0].activities).toHaveLength(3);
+    expect(messages[0].activities?.[1]).toMatchObject({
+      status: "completed",
+      detail: "命中 6 条 · sz.gov.cn, cctv.com",
+    });
+
+    emit("chat.delta", { delta: "2026 年 APEC 会议在深圳举行。" }, "2026-11-19T03:00:08Z");
+    expect(messages[0].activitySummary).toBeUndefined();
+    expect(messages[0].activities?.[2].status).toBe("completed");
+  });
 });

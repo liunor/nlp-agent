@@ -108,6 +108,9 @@ def pricing_requirements(
     web = tools.get("web", {})
     if isinstance(web, Mapping) and bool(web.get("enabled", False)):
         required["feature/link-read"].add("link_page_credits_micro")
+        search_cfg = web.get("search", {})
+        if not isinstance(search_cfg, Mapping) or bool(search_cfg.get("enabled", True)):
+            required["feature/web-search"].add("search_call_credits_micro")
     return {key: frozenset(fields) for key, fields in required.items()}
 
 

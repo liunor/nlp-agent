@@ -23,8 +23,8 @@ def test_verified_extended_model_prices_are_versioned_and_idempotent() -> None:
     assert CREDITS_MICRO_PER_CNY == 1_000_000
     assert {item["status"] for item in first["rules"]} == {"created"}
     assert {item["status"] for item in second["rules"]} == {"already_present"}
-    assert len(first["rules"]) == 10
-    assert len(second["rules"]) == 10
+    assert len(first["rules"]) == 11
+    assert len(second["rules"]) == 11
     assert first["unverified_pricing_keys"] == []
     assert UNVERIFIED_PRICING_KEYS == ()
 
@@ -44,6 +44,7 @@ def test_verified_extended_model_prices_are_versioned_and_idempotent() -> None:
         "glm/glm-5.2",
         "feature/image-understanding",
         "feature/link-read",
+        "feature/web-search",
     }
     assert rows["qwen/qwen3-vl-plus"]["version"] == PRICING_VERSION
     assert rows["qwen/qwen3-vl-plus"][
@@ -102,5 +103,6 @@ def test_verified_extended_model_prices_are_versioned_and_idempotent() -> None:
     assert rows["qwen/qwen3.7-plus"]["search_call_credits_micro"] == 3_000
     assert rows["feature/image-understanding"]["image_unit_credits_micro"] == 0
     assert rows["feature/link-read"]["link_page_credits_micro"] == 0
+    assert rows["feature/web-search"]["search_call_credits_micro"] == 5_000
 
     engine.dispose()

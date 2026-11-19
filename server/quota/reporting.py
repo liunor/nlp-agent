@@ -38,6 +38,7 @@ from server.quota.pricing import (
 
 _IMAGE_ANALYZE_PRICING_KEY = "feature/image-understanding"
 _LINK_READ_PRICING_KEY = "feature/link-read"
+_WEB_SEARCH_PRICING_KEY = "feature/web-search"
 _PROVIDER_RESPONSE_ID_MAX_LENGTH = 255
 
 
@@ -428,6 +429,16 @@ class DurableModelUsageReporter(ModelUsageReporter):
 
 
 def _tool_identity(tool_name: str) -> tuple[ModelIdentity, str]:
+    if tool_name == "web_search":
+        return (
+            ModelIdentity(
+                provider="deepseek",
+                provider_model="web_search",
+                preset="web_search",
+                pricing_key=_WEB_SEARCH_PRICING_KEY,
+            ),
+            "worker",
+        )
     if tool_name == "web_fetch":
         return (
             ModelIdentity(
