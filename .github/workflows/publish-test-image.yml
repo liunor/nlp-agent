@@ -78,7 +78,7 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
-      runtime_digest: ${{ steps.build_runtime.outputs.digest }}
+      runtime_digest: ${{ steps.runtime.outputs.digest }}
       current_source: ${{ steps.source.outputs.current }}
       revision: ${{ steps.source.outputs.revision }}
     runs-on: ubuntu-latest
@@ -120,7 +120,9 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            io.nova.image.lifecycle.scope=${{ (github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop')) && 'nova-test' || 'unmanaged' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - uses: docker/metadata-action@v5
@@ -133,16 +135,34 @@ jobs:
             type=raw,value=develop,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
             type=sha,prefix=develop-,enable=${{ github.ref_name == 'develop' || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'develop') }}
             type=raw,value=release-candidate-${{ github.sha }},enable=${{ github.ref_name == 'main' }}
+      - name: Check for an existing runtime with the same build inputs
+        id: runtime_cache
+        if: steps.source.outputs.current == 'true'
+        env:
+          SOURCE_BRANCH: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref_name }}
+        run: bash .github/scripts/sandbox-runtime-image.sh lookup
       - uses: docker/build-push-action@v6
         id: build_runtime
-        if: steps.source.outputs.current == 'true'
+        if: steps.source.outputs.current == 'true' && steps.runtime_cache.outputs.digest == ''
         with:
           context: sandbox-runtime
           push: true
-          tags: ${{ steps.meta_runtime.outputs.tags }}
-          labels: ${{ steps.meta_runtime.outputs.labels }}
+          tags: |
+            ${{ steps.meta_runtime.outputs.tags }}
+            ${{ steps.runtime_cache.outputs.cache_ref }}
+          labels: |
+            ${{ steps.meta_runtime.outputs.labels }}
+            io.nova.image.lifecycle.scope=${{ steps.runtime_cache.outputs.cache_ref != '' && 'nova-test' || 'unmanaged' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Resolve the immutable sandbox runtime digest
+        id: runtime
+        if: steps.source.outputs.current == 'true'
+        env:
+          REUSED_DIGEST: ${{ steps.runtime_cache.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.build_runtime.outputs.digest }}
+          RUNTIME_TAGS: ${{ steps.meta_runtime.outputs.tags }}
+        run: bash .github/scripts/sandbox-runtime-image.sh publish
 
   deploy:
     name: Deploy Test Environment (${{ github.ref_name }})
@@ -384,6 +404,12 @@ jobs:
               python3 "$AUTH_DEPLOY_SOURCE_DIR/.github/scripts/prepare-auth-release.py" verify \
                 --project "$COMPOSE_PROJECT_NAME" --deploy-dir "$DEPLOY_DIR" --image "$NOVA_IMAGE_REF" \
                 --override "$AUTH_PROXY_OVERRIDE"
+              if [ "$SOURCE_BRANCH" = develop ]; then
+                python3 .github/scripts/record-test-image-release.py \
+                  --deploy-dir "$DEPLOY_DIR" --override "$AUTH_PROXY_OVERRIDE" \
+                  --app "$NOVA_IMAGE_REF" --runtime "$SANDBOX_RUNTIME_REF" \
+                  || echo '::warning::Could not record this successful release for deferred image cleanup.'
+              fi
               exit 0
             fi
             sleep 5
