@@ -1350,7 +1350,7 @@ button { color: inherit; }
    height down to the source/preview pane. */
 .teacher-main.teacher-book-main { display: grid; height: 100vh; min-height: 0; grid-template-rows: 58px minmax(0,1fr); overflow: hidden; }
 .teacher-content-book { display: flex; width: 100%; max-width: none; height: 100%; min-height: 0; margin: 0; box-sizing: border-box; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
-.teacher-content-book .teacher-book-editor { display: grid; height: 100%; min-height: 0; flex: 1 1 auto; grid-template-rows: minmax(0,1fr) auto; }
+.teacher-content-book .teacher-book-editor { position: relative; display: grid; height: 100%; min-height: 0; flex: 1 1 auto; grid-template-rows: minmax(0,1fr); gap: 0; }
 .teacher-content-book .teacher-book-import-states { display: grid; min-height: 0; gap: 15px; }
 .teacher-content-book .teacher-book-layout { min-height: 0; height: 100%; flex: 1 1 auto; overflow: hidden; grid-template-columns: 280px minmax(0, 1fr); }
 .teacher-content-book .teacher-book-layout.directory-collapsed { grid-template-columns: 46px minmax(0, 1fr) !important; }
@@ -3617,7 +3617,6 @@ button { color: inherit; }
 .teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline > small { display: none; }
 .teacher-content-book .teacher-book-page-actions button { min-height: 30px; padding: 0 8px; }
 /* The library rests at the bottom edge without reserving an editor row. */
-.teacher-content-book .teacher-book-editor { position: relative; grid-template-rows: minmax(0, 1fr); gap: 0; }
 .teacher-content-book .teacher-whiteboard-library.is-drawer { position: absolute; bottom: 0; left: 50%; z-index: 12; transform: translateX(-50%); margin: 0; box-sizing: border-box; }
 .teacher-content-book .teacher-whiteboard-library.is-drawer.is-collapsed { width: 72px; height: 36px; min-height: 0; padding: 0; border-radius: 72px 72px 0 0; border-bottom: 0; background: #fff; box-shadow: 0 -3px 12px rgb(55 40 110 / 9%); }
 .is-drawer.is-collapsed .teacher-whiteboard-library-toggle-copy,.is-drawer.is-collapsed .teacher-whiteboard-library-toggle-state { display: none; }
