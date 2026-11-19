@@ -1,3 +1,5 @@
+import { createPortal } from "react-dom";
+import { ChevronUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/platform/http/api";
@@ -33,16 +35,18 @@ function previewPosition(row: HTMLElement): { top: number; left: number } {
   return { top, left };
 }
 
-export function WhiteboardLibraryManager({ items, onItemsChange, initialExpanded = true }: {
+export function WhiteboardLibraryManager({ items, onItemsChange, initialExpanded = true, compactDrawer = false }: {
   items: WhiteboardLibraryItem[];
   onItemsChange: (items: WhiteboardLibraryItem[]) => void;
   initialExpanded?: boolean;
+  compactDrawer?: boolean;
 }) {
   const [expanded, setExpanded] = useState(initialExpanded);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [renameTarget, setRenameTarget] = useState<WhiteboardLibraryItem | null>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previewId = preview?.id;
 
@@ -105,11 +109,14 @@ export function WhiteboardLibraryManager({ items, onItemsChange, initialExpanded
     }
   };
 
-  return <section className={`teacher-whiteboard-library${expanded ? " is-expanded" : " is-collapsed"}`} aria-label="白板素材库管理">
+  return <section className={`teacher-whiteboard-library${expanded ? " is-expanded" : " is-collapsed"}${compactDrawer ? " is-drawer" : ""}`} aria-label="白板素材库管理" onKeyDown={(event) => { if (compactDrawer && !renameTarget && event.key === "Escape") { setExpanded(false); setPreview(null); toggleRef.current?.focus(); } }}>
     <div className="teacher-whiteboard-library-heading">
       <button
         type="button"
+        ref={toggleRef}
         className="teacher-whiteboard-library-toggle"
+        aria-label={compactDrawer ? `${expanded ? "收起" : "展开"}白板素材库` : undefined}
+        title={compactDrawer ? `${expanded ? "收起" : "展开"}白板素材库（${items.length} 个素材）` : undefined}
         aria-expanded={expanded}
         aria-controls="teacher-whiteboard-library-content"
         onClick={() => {
@@ -119,6 +126,7 @@ export function WhiteboardLibraryManager({ items, onItemsChange, initialExpanded
           });
         }}
       >
+        {compactDrawer && <ChevronUp className="teacher-whiteboard-drawer-arrow" size={20} aria-hidden="true" />}
         <span className="teacher-whiteboard-library-toggle-copy"><strong>白板素材库</strong><small>素材代号用于教材按钮和白板图画的精确对应。</small></span>
         <span className="teacher-whiteboard-library-toggle-state"><span>{items.length} 个素材</span><span aria-hidden="true">{expanded ? "收起 ↑" : "展开 ↓"}</span></span>
       </button>
@@ -150,10 +158,10 @@ export function WhiteboardLibraryManager({ items, onItemsChange, initialExpanded
       {preview && (() => {
         const item = items.find((candidate) => candidate.id === preview.id);
         if (!item) return null;
-        return <div className="teacher-whiteboard-library-preview" style={{ position: "fixed", top: preview.top, left: preview.left }}><WhiteboardAssetThumbnail elements={item.elements} label={item.name || "白板图画"} /></div>;
+        return createPortal(<div className="teacher-whiteboard-library-preview" style={{ position: "fixed", top: preview.top, left: preview.left }}><WhiteboardAssetThumbnail elements={item.elements} label={item.name || "白板图画"} /></div>, document.body);
       })()}
     </div>}
-    {renameTarget && <TextInputDialog
+    {renameTarget && createPortal(<TextInputDialog
       open
       title="重命名白板素材"
       description="素材名称会同步显示在教材按钮和白板素材库中。"
@@ -167,6 +175,6 @@ export function WhiteboardLibraryManager({ items, onItemsChange, initialExpanded
         setRenameTarget(null);
         void rename(target, value);
       }}
-    />}
+    />, document.body)}
   </section>;
 }

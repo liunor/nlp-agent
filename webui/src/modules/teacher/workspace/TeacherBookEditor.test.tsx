@@ -217,7 +217,13 @@ describe("TeacherBookEditor Markdown authoring", () => {
 
     await waitFor(() => expect(uploadFileMock).toHaveBeenCalledWith("workspace-1", "tensor", file));
     expect(editor).toHaveValue("张量\n\n[演示代码.py](book-file:file-1)");
+    expect(screen.queryByRole("region", { name: "教材附件" })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "附件（1）" }));
     expect(screen.getByText("演示代码.py")).toBeVisible();
+    expect(screen.queryByLabelText("上传课件文件")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重命名教材文件：演示代码.py" })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "附件（1）" }));
+    expect(screen.queryByRole("region", { name: "教材附件" })).not.toBeInTheDocument();
   });
 
   it("does not delete an uploaded file while the unsaved draft still references it", async () => {
@@ -240,7 +246,8 @@ describe("TeacherBookEditor Markdown authoring", () => {
     const editor = await screen.findByRole("textbox", { name: "教材正文 Markdown" }) as HTMLTextAreaElement;
     editor.setSelectionRange(editor.value.length, editor.value.length);
     fireEvent.change(screen.getByLabelText("上传教材文件"), { target: { files: [new File(["print(1)\n"], "demo.py", { type: "text/x-python" })] } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "删除教材文件：演示代码.py" })).toBeVisible());
+    await userEvent.setup().click(await screen.findByRole("button", { name: "附件（1）" }));
+    expect(screen.getByRole("button", { name: "删除教材文件：演示代码.py" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "删除教材文件：演示代码.py" }));
     fireEvent.click(screen.getByRole("button", { name: "删除文件" }));
@@ -329,12 +336,12 @@ describe("TeacherBookEditor Markdown authoring", () => {
     render(<TeacherBookEditor workspaceId="workspace-1" />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
-    const editor = document.querySelector(".teacher-book-editor");
+    const editor = screen.getByRole("region", { name: "教材编辑工作台" });
     const children = Array.from(editor?.children ?? []);
 
     expect(editor?.querySelector(".teacher-book-import-states")).toBeTruthy();
-    expect(children[2]).toHaveClass("teacher-book-import-states");
-    expect(children[3]).toHaveClass("teacher-book-layout");
+    expect(children[1]).toHaveClass("teacher-book-import-states");
+    expect(children[2]).toHaveClass("teacher-book-layout");
   });
 
   it("manages catalog entries from inline menus and persists topic changes", async () => {
@@ -457,6 +464,7 @@ describe("TeacherBookEditor Markdown authoring", () => {
     const heading = document.querySelector(".teacher-book-page-heading");
     expect(heading?.querySelector(".teacher-book-page-heading-info")).toBeTruthy();
     expect(heading?.querySelector(".teacher-book-page-actions")).toBeTruthy();
+    expect(heading).toContainElement(screen.getByRole("navigation", { name: "本页小标题" }));
     expect(screen.queryByText(/教师教材/)).not.toBeInTheDocument();
   });
 
@@ -504,14 +512,17 @@ describe("TeacherBookEditor Markdown authoring", () => {
     expect(applyImportMock).toHaveBeenCalledWith("workspace-1", expect.any(String), "05-hmm.md", "# 隐马尔可夫模型\n\nHMM 核心概念", 0, []);
   });
 
-  it("allows quick-adding a knowledge point to a topic via the topic quick-add button", async () => {
+  it("creates a knowledge point from the topic menu without duplicate add buttons", async () => {
     const user = userEvent.setup();
     updateCatalogMock.mockResolvedValue({ catalog });
     render(<TeacherBookEditor workspaceId="workspace-1" catalog={catalog} onCatalogChange={vi.fn()} />);
 
     await screen.findByRole("textbox", { name: "教材正文 Markdown" });
-    const quickAddButton = screen.getByRole("button", { name: "在“PyTorch 基础”目录下新增知识点" });
-    await user.click(quickAddButton);
+    expect(screen.queryByRole("button", { name: "新建主题" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "在“PyTorch 基础”目录下新增知识点" })).not.toBeInTheDocument();
+    const menu = screen.getByLabelText("PyTorch 基础目录选项");
+    await user.click(menu);
+    await user.click(within(menu.parentElement!).getByRole("button", { name: "新增知识点" }));
 
     await waitFor(() => expect(updateCatalogMock).toHaveBeenCalledWith("workspace-1", expect.objectContaining({
       topics: expect.arrayContaining([expect.objectContaining({

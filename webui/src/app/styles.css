@@ -1204,8 +1204,6 @@ button { color: inherit; }
 /* Teacher knowledge book editor: navigation stays bounded while the writing
    surface keeps the dominant width for long Markdown lessons. */
 .teacher-book-editor { display: grid; gap: 15px; }
-.teacher-book-summary { min-height: 112px; padding-block: 20px; }
-.teacher-book-summary h2 { font-size: 21px; }
 .teacher-book-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .teacher-book-toolbar > button,.teacher-book-toolbar > select,.teacher-book-import,.teacher-book-page-heading button,.teacher-book-import-preview button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--teacher-border); border-radius: 8px; background: #fff; color: #4b4d5c; font: inherit; font-size: 11px; cursor: pointer; }
 .teacher-book-toolbar > button:hover,.teacher-book-toolbar > select:hover,.teacher-book-import:hover,.teacher-book-page-heading button:hover,.teacher-book-import-preview button:hover { border-color: #a69ee6; color: var(--teacher-accent); }
@@ -1339,8 +1337,7 @@ button { color: inherit; }
 .teacher-book-file-replace input { position: absolute; inset: 0; width: 100%; cursor: pointer; opacity: 0; }
 .teacher-book-files > p { margin: 4px 0 0; color: var(--teacher-muted); font-size: 10px; }
 .teacher-content-book { width: auto; max-width: none; height: calc(100vh - 58px); box-sizing: border-box; padding: 18px 22px 22px; overflow: hidden; }
-.teacher-content-book .teacher-book-editor { height: 100%; min-height: 0; grid-template-rows: auto auto auto minmax(0, 1fr); }
-.teacher-content-book .teacher-book-summary { min-height: 86px; }
+.teacher-content-book .teacher-book-editor { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
 .teacher-content-book .teacher-book-layout { min-height: 0; height: 100%; }
 .teacher-content-book .teacher-book-workspace,.teacher-content-book .teacher-book-source,.teacher-content-book .teacher-book-preview { min-height: 0; }
 .teacher-content-book .teacher-book-textarea { min-height: 0; resize: none; }
@@ -1353,7 +1350,7 @@ button { color: inherit; }
    height down to the source/preview pane. */
 .teacher-main.teacher-book-main { display: grid; height: 100vh; min-height: 0; grid-template-rows: 58px minmax(0,1fr); overflow: hidden; }
 .teacher-content-book { display: flex; width: 100%; max-width: none; height: 100%; min-height: 0; margin: 0; box-sizing: border-box; flex: 1 1 auto; flex-direction: column; overflow: hidden; }
-.teacher-content-book .teacher-book-editor { display: grid; height: 100%; min-height: 0; flex: 1 1 auto; grid-template-rows: auto auto auto minmax(0,1fr); }
+.teacher-content-book .teacher-book-editor { position: relative; display: grid; height: 100%; min-height: 0; flex: 1 1 auto; grid-template-rows: minmax(0,1fr); gap: 0; }
 .teacher-content-book .teacher-book-import-states { display: grid; min-height: 0; gap: 15px; }
 .teacher-content-book .teacher-book-layout { min-height: 0; height: 100%; flex: 1 1 auto; overflow: hidden; grid-template-columns: 280px minmax(0, 1fr); }
 .teacher-content-book .teacher-book-layout.directory-collapsed { grid-template-columns: 46px minmax(0, 1fr) !important; }
@@ -2159,14 +2156,15 @@ button { color: inherit; }
   box-shadow: 0 5px 16px rgb(35 35 72 / 4%);
 }
 .teacher-content-book .teacher-book-heading-outline > div { max-height: 46px; overflow: auto; }
+/* Source and preview share the workbench surface without a nested card. */
 .teacher-content-book .teacher-book-source,
 .teacher-content-book .teacher-book-preview {
   min-height: 0;
-  margin: 14px 18px 18px;
-  border: 1px solid #e1def1;
-  border-radius: 14px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
   background: #fff;
-  box-shadow: 0 7px 22px rgb(35 35 72 / 6%);
+  box-shadow: none;
   overflow: hidden;
 }
 .teacher-content-book .teacher-book-source { flex: 1 1 auto; }
@@ -2177,7 +2175,7 @@ button { color: inherit; }
   .teacher-content-catalog .teacher-catalog-directory.collapsed .teacher-book-tree-collapsed-toggle { width: 100%; }
   .teacher-content-book .teacher-book-heading-outline { margin: 10px 10px 0; }
   .teacher-content-book .teacher-book-source,
-  .teacher-content-book .teacher-book-preview { margin: 10px 10px 12px; }
+  .teacher-content-book .teacher-book-preview { margin: 0; }
 }
 
 /* Keep the book and blueprint workbenches aligned on desktop. */
@@ -3578,3 +3576,75 @@ button { color: inherit; }
 .teacher-data-scope { display:grid; gap:7px; padding:14px 16px; border:1px solid var(--border); border-radius:10px; color:var(--fg); font-size:13px; }
 .teacher-data-scope > span,.teacher-data-scope p { margin:0; color:var(--muted); line-height:1.6; }
 .teacher-data-scope button { justify-self:start; border:1px solid var(--border); border-radius:7px; padding:6px 10px; background:var(--soft-bg); color:var(--fg); cursor:pointer; }
+
+/* Import and insert tools belong to the same surface as the lesson editor. */
+.teacher-book-workbench { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--teacher-border); border-radius: 14px; background: #fff; box-shadow: 0 4px 18px rgb(30 32 48 / 5%); }
+.teacher-book-workbench > .teacher-book-toolbar { gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--teacher-border); background: color-mix(in srgb, #fff 80%, var(--teacher-accent-soft)); }
+.teacher-book-tool-group { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px; }
+.teacher-book-insert-tools { padding-left: 10px; border-left: 1px solid var(--teacher-border); }
+.teacher-book-tool-group > button,.teacher-book-tool-group > select { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; max-width: 100%; padding: 0 10px; border: 1px solid var(--teacher-border); border-radius: 8px; background: #fff; color: #4b4d5c; font: inherit; font-size: 11px; cursor: pointer; }
+.teacher-book-tool-group > select { width: 190px; min-width: 0; }
+.teacher-book-tool-group > button:hover,.teacher-book-tool-group > select:hover { border-color: var(--teacher-accent); color: var(--teacher-accent); }
+.teacher-book-tool-group > button:disabled,.teacher-book-tool-group > select:disabled { opacity: .55; cursor: not-allowed; }
+.teacher-book-toolbar > .teacher-book-refresh { margin-left: auto; background: transparent; border-color: transparent; }
+.teacher-book-import { position: relative; }
+.teacher-book-import:focus-within { outline: 2px solid var(--teacher-accent); outline-offset: 2px; }
+.teacher-book-import input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.teacher-content-book .teacher-book-workbench > .teacher-book-layout { border: 0; border-radius: 0; box-shadow: none; }
+.teacher-book-workbench > .teacher-book-import-states:not(:empty) { padding: 12px 14px; border-bottom: 1px solid var(--teacher-border); max-height: 35vh; overflow: auto; }
+@media (max-width: 820px) { .teacher-book-insert-tools { padding-left: 0; border-left: 0; }.teacher-book-workbench > .teacher-book-toolbar { gap: 8px; padding: 8px 10px; } }
+
+.teacher-book-attachments { flex: 1 0 100%; min-width: 0; padding-top: 8px; border-top: 1px solid var(--teacher-border); }
+.teacher-book-attachments p { margin: 0 0 8px; color: var(--teacher-muted); font-size: 11px; }
+.teacher-book-attachments ul { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.teacher-book-attachments li { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--teacher-border); border-radius: 8px; background: #fff; }
+.teacher-book-attachment-info { display: flex; flex: 1; min-width: 0; align-items: baseline; gap: 10px; }
+.teacher-book-attachment-info strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.teacher-book-attachment-info small { flex-shrink: 0; color: var(--teacher-muted); font-size: 11px; }
+.teacher-book-attachments button { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; flex-shrink: 0; padding: 0 8px; border: 1px solid var(--teacher-border); border-radius: 6px; background: #fff; color: var(--teacher-accent); font: inherit; font-size: 11px; cursor: pointer; }
+.teacher-book-attachments button:disabled { opacity: .55; cursor: not-allowed; }
+
+/* Compact lesson identity and inline section navigation. */
+.teacher-content-book .teacher-book-page-heading { padding: 10px 16px; gap: 12px; }
+.teacher-content-book .teacher-book-page-heading-info { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; align-items: center; }
+.teacher-content-book .teacher-book-page-breadcrumb { gap: 7px; }
+.teacher-content-book .teacher-book-page-breadcrumb h3 { font-size: 16px; line-height: 1.4; letter-spacing: -.015em; }
+.teacher-content-book .teacher-book-page-topic { max-width: 180px; overflow: hidden; text-overflow: ellipsis; padding: 3px 7px; font-size: 10px; }
+.teacher-content-book .teacher-book-version { padding: 0; border: 0; background: transparent; font-size: 10px; }
+.teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline { grid-column: 1 / -1; min-height: 0; margin: 0; padding: 0; gap: 9px; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-size: 11px; }
+.teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline > div { flex-wrap: nowrap; max-height: none; overflow-x: auto; gap: 12px; }
+.teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline a { flex-shrink: 0; }
+.teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline > small { display: none; }
+.teacher-content-book .teacher-book-page-actions button { min-height: 30px; padding: 0 8px; }
+/* The library rests at the bottom edge without reserving an editor row. */
+.teacher-content-book .teacher-whiteboard-library.is-drawer { position: absolute; bottom: 0; left: 50%; z-index: 12; transform: translateX(-50%); margin: 0; box-sizing: border-box; }
+.teacher-content-book .teacher-whiteboard-library.is-drawer.is-collapsed { width: 72px; height: 36px; min-height: 0; padding: 0; border-radius: 72px 72px 0 0; border-bottom: 0; background: #fff; box-shadow: 0 -3px 12px rgb(55 40 110 / 9%); }
+.is-drawer.is-collapsed .teacher-whiteboard-library-toggle-copy,.is-drawer.is-collapsed .teacher-whiteboard-library-toggle-state { display: none; }
+.is-drawer.is-collapsed .teacher-whiteboard-library-toggle { position: relative; justify-content: center; height: 36px; color: var(--teacher-accent); border-radius: 72px 72px 0 0; }
+.is-drawer.is-collapsed .teacher-whiteboard-library-toggle::before { content: ""; position: absolute; inset: -8px 0 0; }
+.teacher-whiteboard-drawer-arrow { flex-shrink: 0; transition: transform 180ms ease; }
+.is-drawer.is-collapsed .teacher-whiteboard-drawer-arrow { animation: teacher-library-nudge 2.8s ease-in-out 3; }
+.is-drawer.is-collapsed .teacher-whiteboard-library-toggle:hover .teacher-whiteboard-drawer-arrow { transform: translateY(-3px); }
+.teacher-content-book .teacher-whiteboard-library.is-drawer.is-expanded { width: min(760px, calc(100% - 24px)); max-height: min(45vh, 420px); padding: 14px 16px; border-radius: 16px 16px 0 0; background: #fff; box-shadow: 0 -8px 30px rgb(35 30 70 / 14%); animation: teacher-library-reveal 180ms ease-out; }
+.is-drawer.is-expanded .teacher-whiteboard-drawer-arrow { transform: rotate(180deg); }
+.is-drawer.is-expanded #teacher-whiteboard-library-content { min-height: 0; overflow-y: auto; }
+.is-drawer .teacher-whiteboard-library-toggle:focus-visible { outline: 2px solid var(--teacher-accent); outline-offset: 2px; }
+@keyframes teacher-library-nudge { 0%, 75%, 100% { translate: 0 0; } 85% { translate: 0 -3px; } }
+@keyframes teacher-library-reveal { from { opacity: 0; margin-bottom: -10px; } to { opacity: 1; margin-bottom: 0; } }
+@media (prefers-reduced-motion: reduce) { .teacher-whiteboard-drawer-arrow,.teacher-content-book .teacher-whiteboard-library.is-drawer.is-expanded { animation: none !important; transition: none; } }
+@media (max-width: 820px) { .teacher-content-book .teacher-book-page-heading { flex-direction: row; flex-wrap: wrap; }.teacher-content-book .teacher-book-page-heading-info { flex-basis: 100%; }.teacher-content-book .teacher-book-page-actions { width: auto; }.teacher-content-book .teacher-book-page-topic { max-width: 120px; } }
+
+/* Bound long heading lists inside the header rather than widening the workbench. */
+.teacher-content-book .teacher-book-page-heading-info { overflow: hidden; }
+.teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline { min-width: 0; max-width: 100%; overflow: hidden; }
+.teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline > div { flex: 1 1 0; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.teacher-content-book .teacher-book-page-heading .teacher-book-heading-outline a { max-width: 240px; }
+
+/* The entire collapsed catalog rail is one keyboard-accessible expand button. */
+.teacher-content-book .teacher-book-tree.collapsed { position: relative; }
+.teacher-content-book .teacher-book-tree.collapsed .teacher-book-tree-collapsed-toggle { position: absolute; inset: 0; display: flex; width: 100%; height: 100%; align-items: flex-start; justify-content: center; padding: 15px 0 0; box-sizing: border-box; }
+.teacher-content-book .teacher-book-tree.collapsed .teacher-book-tree-collapsed-toggle:focus-visible { outline: 2px solid var(--teacher-accent); outline-offset: -2px; }
+
+/* Leave the final line above the floating library handle and its hit area. */
+.teacher-content-book .teacher-book-source .teacher-book-textarea,
+.teacher-content-book .teacher-book-preview { padding-bottom: 60px; }
