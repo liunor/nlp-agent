@@ -11,8 +11,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
+from server.teacher.ai_analysis import build_question_evidence
 from configs.settings import settings
-from core.identity import AuthenticatedPrincipal
+from core.identity import AccessDeniedError, AuthenticatedPrincipal
 from core.rbac import Permission, authorization_service
 from gateway.analytics_time import analytics_today
 from server.teacher.archive import (
@@ -862,6 +863,38 @@ class TeacherService:
         )
         return await self.update_catalog(principal, gateway, workspace_id, body)
 
+    async def analytics_population(self, principal, gateway, workspace_id, classroom_id=None):
+        self.require_teacher(principal, workspace_id, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
+        scope_reader = getattr(gateway.repository, "teacher_analytics_scope", None)
+        if classroom_id and not callable(scope_reader):
+            raise AccessDeniedError("当前数据源不支持班级筛选")
+        if callable(scope_reader):
+            if classroom_id == "everyone":
+                if not principal.is_admin:
+                    raise AccessDeniedError("Only developers can view everyone")
+                student_user_ids = await asyncio.to_thread(gateway.repository.list_active_user_ids)
+                data_scope = {"mode": "all_users", "label": "所有人", "classroom_count": None}
+                scope_message = "所有有效账号的学习数据。"
+            else:
+                try:
+                    selected = await asyncio.to_thread(scope_reader, principal.user_id, classroom_id=classroom_id, all_classrooms=principal.is_admin)
+                except ValueError as error:
+                    raise AccessDeniedError("无权查看该班级的统计") from error
+                student_user_ids = set(selected["student_user_ids"])
+                classrooms = int(selected["classroom_count"])
+                data_scope = {"mode": "classroom_students", "label": "所选班级的学生" if classroom_id else "所有班级的学生" if principal.is_admin else "我所任教班级的学生", "classroom_count": classrooms}
+                scope_message = ("你还没有关联任教班级。请先在班级管理中建班或加入任教班级。" if classrooms == 0
+                                 else "任教班级还没有有效学生成员，审核学生入班后再刷新统计。" if not student_user_ids else "")
+            read_scope = {"workspace_id": None, "analytics_student_ids": student_user_ids}
+        else:
+            # The local SQLite preview retains its explicit workspace boundary.
+            student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
+            data_scope = {"mode": "workspace", "label": "当前学习空间", "classroom_count": None}
+            scope_message = ""
+            read_scope = {"workspace_id": workspace_id}
+        data_scope.update(student_count=len(student_user_ids), update_policy="on_refresh", message=scope_message)
+        return student_user_ids, read_scope, data_scope
+
     async def analytics(
         self,
         principal: AuthenticatedPrincipal,
@@ -869,6 +902,7 @@ class TeacherService:
         workspace_id: str,
         days: int = 30,
         *,
+        classroom_id: str | None = None,
         period_start=None,
         period_end=None,
     ) -> dict[str, Any]:
@@ -887,27 +921,7 @@ class TeacherService:
         monthly_since = datetime.combine(analytics_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         since = datetime.combine(period_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         catalog = (await asyncio.to_thread(gateway.repository.get_teaching_catalog, workspace_id))["catalog"]
-        scope_reader = getattr(gateway.repository, "teacher_analytics_scope", None)
-        if callable(scope_reader):
-            if principal.is_admin:
-                student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
-                data_scope = {"mode": "all_students", "label": "全站学生", "classroom_count": None}
-                scope_message = "" if student_user_ids else "当前没有有效学生账号。"
-            else:
-                selected = await asyncio.to_thread(scope_reader, principal.user_id)
-                student_user_ids = set(selected["student_user_ids"])
-                classrooms = int(selected["classroom_count"])
-                data_scope = {"mode": "classroom_students", "label": "我所任教班级的学生", "classroom_count": classrooms}
-                scope_message = ("你还没有关联任教班级。请先在班级管理中建班或加入任教班级。" if classrooms == 0
-                                 else "任教班级还没有有效学生成员，审核学生入班后再刷新统计。" if not student_user_ids else "")
-            read_scope = {"workspace_id": None, "analytics_student_ids": student_user_ids}
-        else:
-            # The local SQLite preview retains its explicit workspace boundary.
-            student_user_ids = await asyncio.to_thread(gateway.repository.list_student_user_ids)
-            data_scope = {"mode": "workspace", "label": "当前学习空间", "classroom_count": None}
-            scope_message = ""
-            read_scope = {"workspace_id": workspace_id}
-        data_scope.update(student_count=len(student_user_ids), update_policy="on_refresh", message=scope_message)
+        student_user_ids, read_scope, data_scope = await self.analytics_population(principal, gateway, workspace_id, classroom_id)
         monthly_question_rows = await asyncio.to_thread(gateway.repository.list_question_turns, **read_scope, since=monthly_since, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE)
         question_rows = [
             row for row in monthly_question_rows
@@ -996,6 +1010,7 @@ class TeacherService:
             gateway,
             workspace_id,
             max(1, (end - start).days + 1),
+            classroom_id=body.classroom_id,
             period_start=start,
             period_end=end,
         )
@@ -1004,6 +1019,15 @@ class TeacherService:
             course_id=body.course_id,
             content_scope=body.content_scope,
         )
+        repository = getattr(gateway, "repository", None)
+        question_reader = getattr(repository, "question_activity", None)
+        if callable(question_reader):
+            users, _, _ = await self.analytics_population(principal, gateway, workspace_id, body.classroom_id)
+            activity = await asyncio.to_thread(question_reader, student_user_ids=users,
+                start_date=body.question_start_date or start, end_date=body.question_end_date or end,
+                timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE, page_size=20, search=body.question_search.strip())
+            activity["search"] = body.question_search.strip()
+            material["question_evidence"] = build_question_evidence(activity)
         data_version = hashlib.sha256(
             json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:16]
@@ -1012,6 +1036,7 @@ class TeacherService:
                 principal.user_id,
                 str(overview.get("data_scope", {}).get("mode", "workspace")),
                 workspace_id,
+                body.classroom_id or "merged",
                 body.course_id,
                 body.content_scope,
                 start.isoformat(),
@@ -1044,6 +1069,7 @@ class TeacherService:
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
             "data_version": data_version,
+            "question_scope": {key: value for key, value in (material.get("question_evidence") or {}).items() if key != "sources"},
         }
         if generated.get("status") == "completed":
             learning_analysis_ai_cache.set(cache_key, response)

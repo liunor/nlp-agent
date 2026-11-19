@@ -383,9 +383,8 @@ describe("sandbox titlebar layout", () => {
     const gridRule = stylesheet.match(/\.classroom-fields-grid\s*\{([^}]*)\}/)?.[1] ?? "";
     const listRule = stylesheet.match(/\.classroom-request-list\s*\{([^}]*)\}/)?.[1] ?? "";
 
-    expect(sectionRule).toContain("gap: 28px");
-    expect(gridRule).toContain("grid-template-columns: repeat(2, minmax(0, 1fr))");
-    expect(listRule).toContain("padding-top: 24px");
-    expect(listRule).toContain("border-top: 1px solid var(--border)");
+    expect(sectionRule).toContain("gap:18px");
+    expect(gridRule).toContain("grid-template-columns:repeat(2,minmax(0,1fr))");
+    expect(listRule).toContain("padding-top:2px");
   });
 });

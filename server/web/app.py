@@ -42,6 +42,7 @@ from gateway.contracts import (
     WhiteboardLibraryInUseError,
 )
 from gateway.core import BackendGateway
+from gateway.question_activity import MAX_QUERY_DATE, MIN_QUERY_DATE
 from server.infrastructure.mysql.models import ClassroomModel
 from server.web.auth import (
     AuthenticationError,
@@ -2537,7 +2538,10 @@ def create_app(
     async def list_classrooms(request: Request, principal: Principal):
         authorization_service.require(principal, Permission.LEARNING_PROGRESS_READ_CLASSROOM)
         async with authorization_session_factory(request)() as session:
-            rows = await rbac_service.classrooms_for_user(session, principal.user_id)
+            if principal.is_admin:
+                rows = list((await session.scalars(select(ClassroomModel).where(ClassroomModel.status == "active").order_by(ClassroomModel.name))).all())
+            else:
+                rows = await rbac_service.classrooms_for_user(session, principal.user_id, member_role="teacher")
         return {"items": [{"id": row.id, "workspace_id": row.workspace_id, "name": row.name, "status": row.status} for row in rows]}
 
     @app.post("/api/v1/classrooms", status_code=status.HTTP_201_CREATED, tags=["rbac"])
@@ -2552,8 +2556,7 @@ def create_app(
     async def replace_classroom_member(classroom_id: str, user_id: str, body: ReplaceClassroomMemberBody, request: Request, principal: Principal, _claims: WriteClaims):
         async with authorization_session_factory(request)() as session:
             async with session.begin():
-                classroom = await rbac_service.classroom(session, classroom_id)
-                authorization_service.require_resource(principal, Permission.CLASSROOM_MEMBER_MANAGE, ResourceRef("classroom", workspace_id=classroom.workspace_id, classroom_id=classroom.id))
+                await rbac_service.require_classroom_manager(session, principal, classroom_id)
                 await rbac_service.replace_classroom_member(session, classroom_id=classroom_id, user_id=user_id, member_role=body.member_role, status=body.status, actor_user_id=principal.user_id)
         await hub.close_user(user_id)
         return {"classroom_id": classroom_id, "user_id": user_id, "member_role": body.member_role, "status": body.status}
@@ -3330,9 +3333,10 @@ def create_app(
         principal: Principal,
         workspace_id: str = Query(default="default", min_length=1, max_length=128),
         days: int = Query(default=30, ge=1, le=365),
+        classroom_id: str | None = Query(default=None, min_length=1, max_length=128),
     ):
         analytics = await teacher_service.analytics(
-            principal, request.app.state.gateway, workspace_id, days
+            principal, request.app.state.gateway, workspace_id, days, classroom_id=classroom_id
         )
         goals = await teacher_service.goals(
             principal, request.app.state.gateway, workspace_id
@@ -3869,10 +3873,36 @@ def create_app(
         principal: Principal,
         workspace_id: str = Query(default="default", min_length=1, max_length=128),
         days: int = Query(default=30, ge=1, le=365),
+        classroom_id: str | None = Query(default=None, min_length=1, max_length=128),
     ):
         return await teacher_service.analytics(
-            principal, request.app.state.gateway, workspace_id, days
+            principal, request.app.state.gateway, workspace_id, days, classroom_id=classroom_id
         )
+
+    @app.get("/api/v1/teacher/questions", tags=["teacher"])
+    async def teacher_question_activity(
+        request: Request, principal: Principal,
+        start_date: date, end_date: date,
+        workspace_id: str = Query(default="default", min_length=1, max_length=128),
+        classroom_id: str | None = Query(default=None, min_length=1, max_length=128),
+        page: int = Query(default=1, ge=1), frequent_page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=10, ge=1, le=50),
+        search: str = Query(default="", max_length=200),
+        student_id: str | None = Query(default=None, max_length=128),
+        group_id: str | None = Query(default=None, pattern="^[a-f0-9]{64}$"),
+    ):
+        if start_date > end_date or (end_date-start_date).days >= 365:
+            raise HTTPException(status_code=422, detail="请选择不超过365天的有效时间段")
+        if start_date < MIN_QUERY_DATE or end_date > MAX_QUERY_DATE:
+            raise HTTPException(status_code=422, detail="请选择 1900-01-01 至 2100-12-31 之间的有效时间段")
+        gateway = request.app.state.gateway
+        users, _, scope = await teacher_service.analytics_population(principal, gateway, workspace_id, classroom_id)
+        if student_id and student_id not in users:
+            raise HTTPException(status_code=403, detail="无权查看该用户的提问")
+        result = await asyncio.to_thread(gateway.repository.question_activity, student_user_ids=users,
+            start_date=start_date, end_date=end_date, timezone_name=settings.NLP_AGENT_ANALYTICS_TIMEZONE,
+            page=page, frequent_page=frequent_page, page_size=page_size, search=search.strip(), student_id=student_id, group_id=group_id)
+        return {**result, "data_scope": scope}
 
     @app.get("/api/v1/teacher/{resource}", tags=["teacher"])
     async def teacher_placeholder(

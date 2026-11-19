@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.rbac import Permission, ResourceRef, authorization_service
+from core.rbac import Permission, authorization_service
 from server.auth.dependencies import Principal, WriteClaims, get_db_session
 from server.classroom_join import service
 from server.classroom_join.schemas import (
@@ -57,15 +57,8 @@ def _to_response(req: ClassJoinRequestModel) -> JoinRequestResponse:
 
 
 async def _require_classroom_manager(principal: Principal, db: AsyncSession, classroom_id: str) -> None:
-    """资源级权限：当前用户须对该班级拥有 CLASSROOM_MEMBER_MANAGE。"""
-    classroom = await rbac_service.classroom(db, classroom_id)
-    if classroom is None:
-        raise HTTPException(status_code=404, detail="班级不存在")
-    authorization_service.require_resource(
-        principal,
-        Permission.CLASSROOM_MEMBER_MANAGE,
-        ResourceRef("classroom", workspace_id=classroom.workspace_id, classroom_id=classroom.id),
-    )  
+    """Use the same teaching-assignment boundary as member writes."""
+    await rbac_service.require_classroom_manager(db, principal, classroom_id)
 
 
 async def _submit_pending_request(
@@ -135,6 +128,13 @@ async def my_join_requests(principal: Principal, db: DbSession):
     authorization_service.require(principal, Permission.CLASSROOM_JOIN_REQUEST_SUBMIT)
     requests = await service.get_user_join_requests(db, principal.user_id)
     return JoinRequestListResponse(items=[_to_response(r) for r in requests], total=len(requests))
+
+@router.get("/my-memberships")
+async def my_memberships(principal: Principal, db: DbSession):
+    authorization_service.require(principal, Permission.CLASSROOM_JOIN_REQUEST_SUBMIT)
+    rows = await rbac_service.classrooms_for_user(db, principal.user_id)
+    return {"items": [{"id": row.id, "name": row.name, "workspace_id": row.workspace_id, "status": row.status} for row in rows]}
+
 
 @router.post(
     "/{classroom_id}/join-requests",

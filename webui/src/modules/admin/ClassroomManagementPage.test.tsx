@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { ClassroomManagementPage } from "./ClassroomManagementPage";
 
@@ -47,6 +47,102 @@ describe("ClassroomManagementPage", () => {
   });
 
   afterEach(() => vi.unstubAllGlobals());
+
+  it("waits for approval roster refresh before allowing removal", async () => {
+    let finishRoster!: (value: object) => void;
+    mocks.listClassroomMembers.mockResolvedValueOnce({ items: [{ user_id: "student-1", username: "student1", display_name: "张三", member_role: "student", status: "active" }] })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishRoster = resolve; }));
+    render(<ClassroomManagementPage workspaceId="w1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "通过" }));
+    await waitFor(() => expect(mocks.listClassroomMembers).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "移除" })).toBeDisabled();
+    await act(async () => finishRoster({ items: [{ user_id: "student-1", username: "student1", display_name: "张三", member_role: "student", status: "active" }] }));
+    fireEvent.click(screen.getByRole("button", { name: "移除" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
+    await waitFor(() => expect(screen.queryByText("张三")).not.toBeInTheDocument());
+  });
+
+  it("recovers the roster after approval retries a failed member load", async () => {
+    mocks.listClassroomMembers.mockRejectedValueOnce(new Error("暂时读取失败"));
+    render(<ClassroomManagementPage workspaceId="w1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    expect(await screen.findByText("学生名单读取失败，请重新选择班级重试。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "通过" }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    expect(screen.queryByText("学生名单读取失败，请重新选择班级重试。")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂时读取失败")).not.toBeInTheDocument();
+  });
+
+  it("paginates the roster like the student participation table", async () => {
+    mocks.listClassroomMembers.mockResolvedValue({ items: Array.from({ length: 9 }, (_, index) => ({
+      user_id: String(index), username: `student${index}`, display_name: `学生${index}`, member_role: "student", status: "active",
+    })) });
+    render(<ClassroomManagementPage workspaceId="w1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    expect(await screen.findByText("学生0")).toBeVisible();
+    expect(screen.queryByText("学生8")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(screen.getByText("学生8")).toBeVisible();
+    expect(screen.getByText("显示 9–9 / 共 9 名学生")).toBeVisible();
+  });
+
+  it("keeps available details when one classroom endpoint fails", async () => {
+    mocks.listJoinRequests.mockRejectedValue(new Error("申请加载失败"));
+    render(<ClassroomManagementPage workspaceId="w1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    expect(await screen.findByText("ABCD2345")).toBeVisible();
+  });
+
+  it("excludes teachers and keeps the total while searching", async () => {
+    mocks.listClassroomMembers.mockResolvedValue({ items: [
+      { user_id: "t", username: "teacher", display_name: "任课教师", member_role: "teacher", status: "active" },
+      { user_id: "a", username: "a", display_name: "张三", member_role: "student", status: "active" },
+      { user_id: "b", username: "b", display_name: "李四", member_role: "student", status: "active" },
+    ] });
+    render(<ClassroomManagementPage workspaceId="w1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    expect(screen.queryByText("任课教师")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("搜索姓名或账号..."), { target: { value: "李四" } });
+    expect(screen.getByText("共 2 人")).toBeVisible();
+  });
+
+  it("prevents repeated approval while a review is pending", async () => {
+    let complete!: (value: object) => void;
+    mocks.approveJoinRequest.mockReturnValue(new Promise((resolve) => { complete = resolve; }));
+    render(<ClassroomManagementPage workspaceId="w1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
+    const approve = await screen.findByRole("button", { name: "通过" });
+    fireEvent.click(approve);
+    expect(approve).toBeDisabled();
+    fireEvent.click(approve);
+    expect(mocks.approveJoinRequest).toHaveBeenCalledTimes(1);
+    complete({});
+    expect(await screen.findByText("申请已通过")).toBeVisible();
+  });
+
+  it("keeps another class intact when a removal completes after switching", async () => {
+    mocks.listClassrooms.mockResolvedValue({ items: [
+      { id: "class-1", workspace_id: "w1", name: "班级 A", status: "active" },
+      { id: "class-2", workspace_id: "w1", name: "班级 B", status: "active" },
+    ] });
+    let complete!: (value: undefined) => void;
+    mocks.removeClassroomMember.mockReturnValue(new Promise((resolve) => { complete = resolve; }));
+    render(<ClassroomManagementPage workspaceId="w1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /班级 A/ }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "移除" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
+    fireEvent.click(screen.getByRole("button", { name: /班级 B/ }));
+    expect(await screen.findByText("张三")).toBeVisible();
+    complete(undefined);
+    await waitFor(() => expect(screen.getByRole("button", { name: "移除" })).not.toBeDisabled());
+    expect(screen.getByText("张三")).toBeVisible();
+    expect(screen.queryByText("学生已移出班级")).not.toBeInTheDocument();
+  });
 
   it("shows and copies a class code, then refreshes after approval", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -131,14 +227,12 @@ describe("ClassroomManagementPage", () => {
   });
 
   it("calls remove API and drops the row when a student is removed", async () => {
-    const confirmSpy = vi.fn().mockReturnValue(true);
-    window.confirm = confirmSpy;
 
     render(<ClassroomManagementPage />);
     fireEvent.click(await screen.findByRole("button", { name: /高一语文/ }));
     expect(await screen.findByText("张三")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "移除" }));
-    expect(confirmSpy).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认移除" }));
     await waitFor(() => expect(mocks.removeClassroomMember).toHaveBeenCalledWith("class-1", "student-1"));
     await waitFor(() => expect(screen.queryByText("张三")).not.toBeInTheDocument());
   });

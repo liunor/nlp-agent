@@ -1,7 +1,9 @@
 import json
+from datetime import date
 
 import pytest
 from langchain_core.messages import AIMessage
+from pydantic import ValidationError
 from core.identity import AuthenticatedPrincipal
 
 from server.teacher.ai_analysis import (
@@ -359,3 +361,71 @@ def test_ai_cache_evicts_oldest_entry_once_bounded():
     assert cache.get("a") is None
     assert cache.get("b") == {"n": 2}
     assert cache.get("c") == {"n": 3}
+
+
+def test_everyone_ai_material_does_not_claim_student_only_scope():
+    material = build_ai_analysis_material({"data_scope": {"mode": "all_users"}, "learning_analysis": {"scope": {}, "diagnoses": []}}, course_id="all", content_scope="all")
+    assert material["student_role"] == "所有有效用户"
+
+
+@pytest.mark.asyncio
+async def test_unassigned_questions_allow_ai_without_mastery_diagnoses():
+    class QuestionModel:
+        async def ainvoke(self, messages):
+            assert "自注意力" in messages[-1].content
+            return AIMessage(content=json.dumps({"summary":"学生集中询问注意力概念。", "diagnoses":[], "question_insights":[{"title":"注意力概念答疑","observation":"多位用户提出了同一问题，建议安排集中答疑。","source_refs":["F1"],"suggestions":["用一个短句例子解释注意力权重。"]}]},ensure_ascii=False))
+    material={"contents":[],"question_evidence":{"question_count":4,"user_count":3,"sources":[{"ref":"F1","kind":"frequent","question":"什么是自注意力？","question_count":3,"user_count":3}]}}
+    result=await generate_ai_analysis(material,model=QuestionModel())
+    assert result["status"]=="completed"
+    assert result["diagnoses"]==[]
+    assert result["question_insights"][0]["sources"][0]["user_count"]==3
+
+
+def test_question_insights_reject_unknown_evidence_references():
+    with pytest.raises(ValueError):
+        validate_ai_analysis_response({"summary":"测试", "diagnoses":[],"question_insights":[{"title":"测试","observation":"测试","source_refs":["invented"],"suggestions":["测试建议"]}]},[],[{"ref":"F1","question":"实际问题"}])
+
+
+@pytest.mark.asyncio
+async def test_question_material_redacts_identity_and_uses_question_period(monkeypatch):
+    from datetime import date
+    from types import SimpleNamespace
+    service = TeacherService()
+    service.require_teacher = lambda *args, **kwargs: None
+    async def analytics(*args, **kwargs):
+        return {"learning_analysis":{"scope":{"period_label":"近30天"},"diagnoses":[]}}
+    async def population(*args):
+        assert args[-1] == "class-one"
+        return {"allowed-user"}, {}, {}
+    captured = {}
+    def questions(**options):
+        captured.update(options)
+        return {"summary":{"question_count":1,"user_count":1},"total":1,"items":[{"question":"我的邮箱 test@example.com，手机号13812345678，请解释注意力", "username":"secret-name"}],"frequent":[],"frequent_total":0,"start_date":options["start_date"],"end_date":options["end_date"]}
+    class Model:
+        async def ainvoke(self,messages):
+            assert "secret-name" not in messages[-1].content and "test@example.com" not in messages[-1].content
+            return AIMessage(content=json.dumps({"summary":"提问内容解读", "diagnoses":[],"question_insights":[{"title":"概念答疑","observation":"样例询问注意力概念","source_refs":["Q1"],"suggestions":["给出示例"]}]}))
+    monkeypatch.setattr(service,"analytics",analytics)
+    monkeypatch.setattr(service,"analytics_population",population)
+    body=TeacherAIAnalysisRequest(classroom_id="class-one",question_start_date=date(2026,11,1),question_end_date=date(2026,11,19),question_search="注意力",force_refresh=True)
+    result=await service.ai_analysis(AuthenticatedPrincipal(user_id="teacher",roles=frozenset({"teacher"})),SimpleNamespace(repository=SimpleNamespace(question_activity=questions)),"default",body,model_factory=lambda _: Model())
+    assert result["status"]=="completed"
+    assert captured["student_user_ids"]=={"allowed-user"}
+    assert captured["start_date"]==date(2026,11,1) and captured["search"]=="注意力"
+    assert "[手机号]" in result["question_insights"][0]["sources"][0]["question"]
+
+
+def test_ai_request_rejects_dates_outside_the_queryable_range():
+    for overrides in (
+        {"start_date": date.min, "end_date": date.min},
+        {"start_date": date.max, "end_date": date.max},
+        {"question_start_date": date.min, "question_end_date": date.max},
+    ):
+        with pytest.raises(ValidationError, match="1900-01-01 至 2100-12-31"):
+            TeacherAIAnalysisRequest(**overrides)
+
+
+def test_question_search_identity_is_redacted_too():
+    from server.teacher.ai_analysis import build_question_evidence
+    evidence=build_question_evidence({"search":"test@example.com 13812345678"})
+    assert evidence["search"]=="[邮箱] [手机号]"

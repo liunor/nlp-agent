@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { PaginatedStudentTable } from "@/shared/ui/PaginatedStudentTable";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   AlertCircle,
@@ -6,8 +7,6 @@ import {
   BookOpen,
   CalendarDays,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   Clock3,
   FileQuestion,
   Gauge,
@@ -301,30 +300,20 @@ function WeekdayQuestions({ data }: { data: TeacherOverview }) {
   </section>;
 }
 
-function StudentActivity({ items }: { items: TeacherStudentActivity[] }) {
-  const pageSize = 8;
-  const [page, setPage] = useState(0);
-  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
-  const activePage = Math.min(page, pageCount - 1);
-  const pageItems = items.slice(activePage * pageSize, (activePage + 1) * pageSize);
-  const first = items.length ? activePage * pageSize + 1 : 0;
-  const last = Math.min((activePage + 1) * pageSize, items.length);
+function StudentActivity({ items, personLabel = "学生" }: { items: TeacherStudentActivity[]; personLabel?: "学生" | "用户" }) {
   return <section className="teacher-panel teacher-question-panel teacher-question-activity-panel">
-    <header><div><h2>学生参与度</h2><p>仅统计 RBAC=学生的账号，分页查看问题量、会话和异常情况</p></div><Users size={17} /></header>
-    {items.length ? <>
-      <div className="teacher-question-activity-table"><table><thead><tr><th>学生</th><th>问题量</th><th>会话</th><th>活跃天数</th><th>异常问题</th><th>最近活跃</th><th>主要主题</th></tr></thead><tbody>{pageItems.map((item) => <tr key={item.user_id}>
-        <td><strong>{item.display_name}</strong>{item.username && <small>@{item.username}</small>}</td>
-        <td><strong>{item.questions}</strong><small>每会话 {formatNumber(item.questions_per_session)}</small></td>
-        <td>{item.sessions}</td><td>{item.active_days}</td>
-        <td className={item.error_questions ? "is-warning" : ""}><strong>{item.error_questions}</strong><small>{formatPercent(item.error_rate)}</small></td>
-        <td>{item.last_active ?? "—"}</td><td>{item.top_topic}</td>
-      </tr>)}</tbody></table></div>
-      <footer className="teacher-question-pagination"><span>显示 {first}–{last} / 共 {items.length} 名学生</span><div><button type="button" aria-label="上一页" disabled={activePage === 0} onClick={() => setPage(Math.max(0, activePage - 1))}><ChevronLeft size={15} /></button><strong>{activePage + 1} / {pageCount}</strong><button type="button" aria-label="下一页" disabled={activePage >= pageCount - 1} onClick={() => setPage(Math.min(pageCount - 1, activePage + 1))}><ChevronRight size={15} /></button></div></footer>
-    </> : <p className="teacher-empty-state">暂无学生问题记录。</p>}
+    <header><div><h2>{personLabel}参与度</h2><p>按当前统计范围，分页查看问题量、会话和异常情况</p></div><Users size={17} /></header>
+    {items.length ? <PaginatedStudentTable personLabel={personLabel} headers={[personLabel, "问题量", "会话", "活跃天数", "异常问题", "最近活跃", "主要主题"]} rows={items.map((item) => ({ id: item.user_id, cells: [
+      <><strong>{item.display_name}</strong>{item.username && <small>@{item.username}</small>}</>,
+      <><strong>{item.questions}</strong><small>每会话 {formatNumber(item.questions_per_session)}</small></>,
+      item.sessions, item.active_days,
+      <span className={item.error_questions ? "is-warning" : ""}><strong>{item.error_questions}</strong><small>{formatPercent(item.error_rate)}</small></span>,
+      item.last_active ?? "—", item.top_topic,
+    ] }))} /> : <p className="teacher-empty-state">暂无{personLabel}问题记录。</p>}
   </section>;
 }
 
-export function StudentQuestionsPage({ data }: { data: TeacherOverview }) {
+export function StudentQuestionsPage({ data, headerControls }: { data: TeacherOverview; headerControls?: ReactNode }) {
   const demo = import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "1";
   const displayData = useMemo(() => demo ? createLocalDemoData(data) : data, [data, demo]);
   const monthlyStatistics = useMemo(() => {
@@ -345,13 +334,13 @@ export function StudentQuestionsPage({ data }: { data: TeacherOverview }) {
   const selectedMonthData = monthlyStatistics.find((item) => item.month === activeMonth) ?? monthlyStatistics.at(-1);
   const { summary } = displayData;
   return <div className="teacher-stack teacher-question-stack">
-    <section className="teacher-page-summary teacher-question-hero"><div><h2>学生问题全景</h2><p>只统计 RBAC=学生的账号，从问题量、学习上下文、时间分布和参与度判断班级学习信号。</p>{demo && <span className="teacher-question-demo-badge">本地演示数据 · 仅用于布局验收</span>}</div><MessageCircleQuestion size={46} /></section>
+    <section className="teacher-page-summary teacher-question-hero"><div><h2>学生问题全景</h2><p>按所选范围，从问题量、学习上下文、时间分布和参与度判断学习信号。</p>{demo && <span className="teacher-question-demo-badge">本地演示数据 · 仅用于布局验收</span>}</div>{headerControls ?? <MessageCircleQuestion size={46} />}</section>
 
     <section className="teacher-question-metrics" aria-label="问题量概览">
       <MetricCard icon={MessageCircleQuestion} label="问题总数" value={formatNumber(summary.questions)} detail={`近 ${displayData.period_days} 天`} />
-      <MetricCard icon={Users} label="提问学生" value={formatNumber(summary.students)} detail="仅统计 RBAC=学生账号" tone="blue" />
+      <MetricCard icon={Users} label={data.data_scope?.mode === "all_users" ? "提问用户" : "提问学生"} value={formatNumber(summary.students)} detail={data.data_scope?.mode === "all_users" ? "所选范围内的有效账号" : "所选班级内的学生账号"} tone="blue" />
       <MetricCard icon={Layers3} label="活跃会话" value={formatNumber(summary.sessions)} detail={`平均每会话 ${formatNumber(summary.questions_per_session)} 个问题`} tone="blue" />
-      <MetricCard icon={Gauge} label="人均问题" value={formatNumber(summary.questions_per_student)} detail="按有提问记录的学生计算" tone="green" />
+      <MetricCard icon={Gauge} label="人均问题" value={formatNumber(summary.questions_per_student)} detail={data.data_scope?.mode === "all_users" ? "按有提问记录的用户计算" : "按有提问记录的学生计算"} tone="green" />
       <MetricCard icon={CalendarDays} label="活跃天数" value={formatNumber(summary.active_days)} detail={`占统计周期 ${formatPercent(displayData.period_days ? summary.active_days / displayData.period_days * 100 : 0)}`} tone="green" />
       <MetricCard icon={BookOpen} label="上下文完整度" value={formatPercent(summary.context_coverage_rate)} detail={`${summary.contextualized_questions} 个问题已关联主题`} tone="purple" />
       <MetricCard icon={AlertCircle} label="异常问题" value={formatNumber(summary.error_questions)} detail={`异常率 ${formatPercent(summary.error_rate)}`} tone="orange" />
@@ -364,6 +353,6 @@ export function StudentQuestionsPage({ data }: { data: TeacherOverview }) {
     <div className="teacher-question-grid teacher-question-grid-three"><DistributionPanel title="主题分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.topic_distribution ?? []} /><DistributionPanel title="难度分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.difficulty_distribution ?? []} tone="blue" /><DistributionPanel title="模式分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.mode_distribution ?? []} tone="green" /></div>
     <div className="teacher-question-grid teacher-question-grid-trend"><MonthlyDailyQuestions months={monthlyStatistics} /><MonthlyHourlyQuestions months={monthlyStatistics} /></div>
     <div className="teacher-question-grid teacher-question-grid-weekday"><WeekdayQuestions data={displayData} /></div>
-    <StudentActivity items={displayData.student_activity} />
+    <StudentActivity personLabel={data.data_scope?.mode === "all_users" ? "用户" : "学生"} items={displayData.student_activity} />
   </div>;
 }

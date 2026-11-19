@@ -390,6 +390,8 @@ export interface TeacherAIAnalysisResult {
   message: string;
   summary: string;
   diagnoses: TeacherAIDiagnosis[];
+  question_insights?: Array<{ title: string; observation: string; suggestions: string[]; sources: Array<{ ref: string; kind: string; question: string; question_count?: number; user_count?: number }> }>;
+  question_scope?: { start_date?: string; end_date?: string; question_count?: number; user_count?: number; sampled?: boolean; search?: string };
   generated_at: string;
   model: string;
   model_id: string | null;
@@ -404,7 +406,7 @@ export interface TeacherAIAnalysisResult {
 
 export interface TeacherOverview {
   data_scope?: {
-    mode: "all_students" | "classroom_students" | "workspace";
+    mode: "all_users" | "all_students" | "classroom_students" | "workspace";
     label: string;
     classroom_count: number | null;
     student_count: number;
@@ -990,4 +992,12 @@ export interface JoinRequest {
 export interface JoinRequestListResponse {
   items: JoinRequest[];
   total: number;
+}
+
+export interface TeacherQuestionActivity {
+  summary: { question_count: number; user_count: number };
+  items: Array<{ id: string; user_id: string; username: string; display_name: string; question: string; created_at: string }>;
+  total: number; page: number; page_size: number;
+  frequent: Array<{ group_id: string; question: string; question_count: number; user_count: number; last_asked: string }>;
+  frequent_total: number; frequent_page: number; start_date: string; end_date: string; timezone: string;
 }

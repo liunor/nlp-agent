@@ -13,6 +13,13 @@ from gateway.mysql_repository import MySQLGatewayRepository
 from server.teacher.service import TeacherService
 
 
+@pytest.fixture(autouse=True)
+def isolated_analytics_runtime(monkeypatch):
+    # Authorization is exercised normally; only external audit writes are isolated.
+    monkeypatch.setattr("core.rbac.record_authorization_decision", lambda *args, **kwargs: None)
+    monkeypatch.setattr("server.teacher.service.settings", SimpleNamespace(NLP_AGENT_ANALYTICS_TIMEZONE="UTC"))
+
+
 @pytest.fixture
 def repository():
     engine = create_engine('sqlite://', poolclass=StaticPool, connect_args={'check_same_thread': False})
@@ -100,7 +107,7 @@ def test_unscoped_reads_are_rejected(repository):
 
 @pytest.mark.parametrize(('role','user','expected','mode'), [
     ('teacher','ta',2,'classroom_students'),('teacher','unknown',0,'classroom_students'),
-    ('developer','dev',3,'all_students'),
+    ('developer','dev',3,'classroom_students'),
 ])
 def test_service_selects_scope_on_the_server(repository, role, user, expected, mode):
     principal = AuthenticatedPrincipal(user_id=user,roles=frozenset({role}),workspace_ids=frozenset({'teacher-personal'}))
@@ -108,6 +115,7 @@ def test_service_selects_scope_on_the_server(repository, role, user, expected, m
         period_start=date(2026,10,1), period_end=date(2026,10,25)))
     assert result['summary']['questions'] == expected
     assert result['data_scope']['mode'] == mode
+    assert result['learning_analysis']['scope']['attempt_count'] == (2 if role == 'developer' else 1 if user == 'ta' else 0)
     if user == 'unknown':
         assert result['data_scope']['classroom_count'] == 0
         assert '任教班级' in result['data_scope']['message']
@@ -117,3 +125,31 @@ def test_guest_cannot_invoke_teacher_statistics(repository):
     principal = AuthenticatedPrincipal(user_id='guest',roles=frozenset({'guest'}),workspace_ids=frozenset({'teacher-personal'}))
     with pytest.raises(AccessDeniedError):
         asyncio.run(TeacherService().analytics(principal, SimpleNamespace(repository=repository), 'teacher-personal'))
+
+
+def test_membership_changes_update_teacher_scope_without_other_class_students(repository):
+    with repository._engine.begin() as connection:
+        connection.execute(text("UPDATE nlp_classroom_members SET status='disabled' WHERE classroom_id='ca' AND user_id='a'"))
+    scope = repository.teacher_analytics_scope('ta')
+    assert scope['student_user_ids'] == {'shared'}
+    rows = repository.list_question_turns(workspace_id=None, analytics_student_ids=scope['student_user_ids'], since='2026-10-01')
+    assert {row['user_id'] for row in rows} == {'shared'}
+    assert repository.teacher_analytics_scope('tb')['student_user_ids'] == {'b', 'shared'}
+
+
+def test_selected_classroom_is_authorized_and_filtered(repository):
+    assert repository.teacher_analytics_scope('ta', classroom_id='ca')['student_user_ids'] == {'a', 'shared'}
+    with pytest.raises(ValueError):
+        repository.teacher_analytics_scope('ta', classroom_id='cb')
+    assert repository.teacher_analytics_scope('dev', classroom_id='cb', all_classrooms=True)['student_user_ids'] == {'b', 'shared'}
+
+
+def test_everyone_is_developer_only_and_includes_nonstudents(repository):
+    gateway = SimpleNamespace(repository=repository)
+    teacher = AuthenticatedPrincipal(user_id='ta', roles=frozenset({'teacher'}), workspace_ids=frozenset({'teacher-personal'}))
+    with pytest.raises(AccessDeniedError):
+        asyncio.run(TeacherService().analytics(teacher, gateway, 'teacher-personal', classroom_id='everyone'))
+    developer = AuthenticatedPrincipal(user_id='dev', roles=frozenset({'developer'}), workspace_ids=frozenset({'teacher-personal'}))
+    result = asyncio.run(TeacherService().analytics(developer, gateway, 'teacher-personal', classroom_id='everyone', period_start=date(2026,10,1), period_end=date(2026,10,25)))
+    assert result['data_scope']['mode'] == 'all_users'
+    assert result['summary']['questions'] == 4

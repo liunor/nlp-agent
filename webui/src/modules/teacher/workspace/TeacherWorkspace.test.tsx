@@ -1,5 +1,6 @@
+import { StudentQuestionsPage } from "./StudentQuestionsPage";
 import { useState } from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -25,7 +26,7 @@ const { ensureAuthMock, generateTeacherAIAnalysisMock, getSettingsMock, getTeach
 }));
 vi.mock("@/platform/http/api", () => ({
   ensureAuth: ensureAuthMock,
-  api: { getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog, generateTeacherAIAnalysis: generateTeacherAIAnalysisMock, updateTeacherAnalysisAnnotations: updateTeacherAnalysisAnnotationsMock, listClassrooms: listClassroomsMock, listJoinRequests: listJoinRequestsMock, getClassroomJoinCode: getClassroomJoinCodeMock, createClassroom: createClassroomMock },
+  api: { getTeacherQuestionActivity: vi.fn().mockResolvedValue({ summary: { question_count: 0, user_count: 0 }, items: [], total: 0, frequent: [], frequent_total: 0, page_size: 10 }), getSettings: getSettingsMock, getTeacherOverview: getTeacherOverviewMock, getTeacherCatalog, updateTeacherCatalog, generateTeacherAIAnalysis: generateTeacherAIAnalysisMock, updateTeacherAnalysisAnnotations: updateTeacherAnalysisAnnotationsMock, listClassroomMembers: vi.fn().mockResolvedValue({ items: [], total: 0 }), listClassrooms: listClassroomsMock, listJoinRequests: listJoinRequestsMock, getClassroomJoinCode: getClassroomJoinCodeMock, createClassroom: createClassroomMock },
 }));
 
 describe("TeacherWorkspace catalog CRUD", () => {
@@ -42,27 +43,43 @@ describe("TeacherWorkspace catalog CRUD", () => {
     getSettingsMock.mockResolvedValue({ preferences: { settings: {} }, runtime: { default_model_profile: "deepseek", model_profiles: {} } });
   });
 
-  it("explains the developer's all-student statistics scope", async () => {
+  it("uses user labels throughout everyone analytics", async () => {
     const original = await getTeacherOverviewMock();
-    ensureAuthMock.mockResolvedValue({ roles: ["developer"], workspace_ids: ["default"] });
-    getTeacherOverviewMock.mockResolvedValueOnce({ ...original, data_scope: { mode: "all_students", label: "全站学生", student_count: 44, classroom_count: null, update_policy: "on_refresh", message: "" } });
-    history.replaceState({}, "", "/teacher/questions");
-    render(<TeacherWorkspace />);
-    const scope = await screen.findByRole("region", { name: "学生统计范围" });
-    expect(scope).toHaveTextContent("统计范围：全站学生");
-    expect(scope).toHaveTextContent("44 名有效学生");
-    expect(scope).toHaveTextContent("刷新页面时更新");
+    const data = { ...original, data_scope: { mode: "all_users", label: "所有人", student_count: 9 } };
+    render(<><StudentQuestionsPage data={data} /><LearningAnalysisPage data={data} /></>);
+    expect(screen.getByText("显示 1–8 / 共 9 名用户")).toBeVisible();
+    const filters = screen.getByRole("region", { name: "学习分析筛选条件" });
+    expect(within(filters).getByText("所有有效用户")).toBeVisible();
+    expect(within(filters).queryByText("学生角色")).not.toBeInTheDocument();
   });
 
-  it("explains why a teacher with no class has no student statistics", async () => {
-    const original = await getTeacherOverviewMock();
-    getTeacherOverviewMock.mockResolvedValueOnce({ ...original, summary: { ...original.summary, questions: 0, students: 0 }, data_scope: { mode: "classroom_students", label: "我所任教班级的学生", student_count: 0, classroom_count: 0, update_policy: "on_refresh", message: "你还没有关联任教班级。请先在班级管理中建班或加入任教班级。" } });
-    history.replaceState({}, "", "/teacher/questions");
-    render(<TeacherWorkspace />);
-    const scope = await screen.findByRole("region", { name: "学生统计范围" });
-    expect(scope).toHaveTextContent("还没有关联任教班级");
-    fireEvent.click(within(scope).getByRole("button", { name: "前往班级管理" }));
-    expect((await screen.findAllByRole("heading", { name: "班级管理" }))[0]).toBeVisible();
+  it.each(["success", "failure"])("ignores an old classroom list %s after refresh", async (outcome) => {
+    let resolveOld!: (value: object) => void;
+    let rejectOld!: (reason: Error) => void;
+    listClassroomsMock.mockImplementationOnce(() => new Promise((resolve, reject) => { resolveOld = resolve; rejectOld = reject; }));
+    listClassroomsMock.mockResolvedValueOnce({ items: [{ id: "new", name: "新班级" }] });
+    render(<TeacherWorkspace page="questions" />);
+    expect(await screen.findByRole("heading", { name: "学生问题全景" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(listClassroomsMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("heading", { name: "学生问题全景" })).toBeVisible();
+    await act(async () => {
+      if (outcome === "success") resolveOld({ items: [{ id: "old", name: "过期班级" }] });
+      else rejectOld(new Error("旧请求失败"));
+    });
+    const selector = screen.getByRole("button", { name: "统计班级" });
+    expect(selector).not.toHaveAttribute("title", "班级列表读取失败，可刷新重试。");
+    fireEvent.pointerDown(selector, { button: 0, ctrlKey: false });
+    expect(await screen.findByRole("menuitemradio", { name: "新班级" })).toBeVisible();
+    expect(screen.queryByRole("menuitemradio", { name: "过期班级" })).not.toBeInTheDocument();
+  });
+
+  it("shows only a compact classroom selector without scope banners", async () => {
+    render(<TeacherWorkspace page="questions" />);
+    expect(await screen.findByRole("button", { name: "统计班级" })).toBeVisible();
+    expect(screen.queryByText("统计说明")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "前往班级管理" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "学生统计范围" })).not.toBeInTheDocument();
   });
 
   it("loads and saves the teacher catalog in the authorized default workspace", async () => {
@@ -121,6 +138,23 @@ describe("TeacherWorkspace catalog CRUD", () => {
     const topics = screen.getByRole("button", { name: "主题与知识点" });
     expect(home.compareDocumentPosition(book) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(book.compareDocumentPosition(topics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("places classroom selection inside the questions panorama card", async () => {
+    render(<TeacherWorkspace page="questions" />);
+    const heading = await screen.findByRole("heading", { name: "学生问题全景" });
+    const card = heading.closest("section");
+    expect(card).not.toBeNull();
+    expect(within(card!).getByRole("button", { name: "统计班级" })).toBeVisible();
+  });
+
+  it("passes the selected classroom to the overview API", async () => {
+    history.replaceState({}, "", "/teacher/questions");
+    render(<TeacherWorkspace page="questions" />);
+    const selector = await screen.findByRole("button", { name: "统计班级" });
+    fireEvent.pointerDown(selector, { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "高一语文" }));
+    await waitFor(() => expect(getTeacherOverviewMock).toHaveBeenCalledWith("default", 30, "class-1"));
   });
 
   it("lets an ordinary teacher enter classroom management and create a class", async () => {
@@ -387,7 +421,7 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(screen.getByText("主题分布")).toBeVisible();
     expect(screen.getByText("模式分布")).toBeVisible();
     expect(screen.queryByText("RBAC 角色分布")).not.toBeInTheDocument();
-    expect(screen.getByText(/仅统计 RBAC=学生的账号/)).toBeVisible();
+    expect(screen.getByText(/按当前统计范围，分页查看/)).toBeVisible();
     expect(screen.getByText("学生参与度")).toBeVisible();
     expect(screen.getByText("张三")).toBeVisible();
     expect(screen.getByText("小时分布")).toBeVisible();
@@ -516,6 +550,47 @@ describe("TeacherWorkspace catalog CRUD", () => {
     expect(document.querySelector(".teacher-analysis-insufficient-list")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "展开 7 个数据不足知识点" }));
     expect(document.querySelector(".teacher-analysis-insufficient-list")).toHaveTextContent("待补充知识点 1");
+  });
+
+  it("connects applied question dates to AI and shows insights without exercise diagnoses", async () => {
+    generateTeacherAIAnalysisMock.mockResolvedValue({ status:"completed",source:"deepseek",summary:"集中解答注意力概念。",diagnoses:[],question_scope:{start_date:"2026-11-01",end_date:"2026-11-19",question_count:8,user_count:3},question_insights:[{title:"注意力答疑",observation:"不同用户提出了共同问题。",suggestions:["结合短句解释权重。"],sources:[{ref:"F1",kind:"frequent",question:"什么是自注意力？",question_count:3,user_count:3}]}] });
+    render(<LearningAnalysisPage data={await getTeacherOverviewMock()} />);
+    await waitFor(() => expect(screen.getByRole("button",{name:"查询"})).not.toBeDisabled());
+    fireEvent.change(screen.getByLabelText("提问开始日期"),{target:{value:"2026-11-01"}});
+    fireEvent.change(screen.getByLabelText("提问结束日期"),{target:{value:"2026-11-19"}});
+    fireEvent.click(screen.getByRole("button",{name:"查询"}));
+    fireEvent.click(screen.getByRole("button",{name:"生成 AI 内容分析"}));
+    expect(await screen.findByRole("region",{name:"提问内容解读"})).toHaveTextContent("什么是自注意力？");
+    expect(generateTeacherAIAnalysisMock).toHaveBeenCalledWith("default",expect.objectContaining({question_start_date:"2026-11-01",question_end_date:"2026-11-19"}));
+    expect(screen.getByText(/暂无足够练习证据判断知识掌握程度/)).toBeVisible();
+  });
+
+  it("does not restore an expired report when regeneration fails", async () => {
+    generateTeacherAIAnalysisMock.mockResolvedValueOnce({status:"completed",source:"deepseek",summary:"上一个范围的报告",diagnoses:[]}).mockRejectedValueOnce(new Error("网络失败"));
+    render(<LearningAnalysisPage data={await getTeacherOverviewMock()} />);
+    fireEvent.click(screen.getByRole("button",{name:"生成 AI 内容分析"}));
+    expect(await screen.findByText("上一个范围的报告")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button",{name:"查询"})).not.toBeDisabled());
+    fireEvent.change(screen.getByLabelText("提问开始日期"),{target:{value:"2026-11-01"}});
+    fireEvent.change(screen.getByLabelText("提问结束日期"),{target:{value:"2026-11-19"}});
+    fireEvent.click(screen.getByRole("button",{name:"查询"}));
+    fireEvent.click(screen.getAllByRole("button",{name:"重新生成分析"})[0]);
+    expect(await screen.findByText("网络失败")).toBeVisible();
+    expect(screen.queryByText("上一个范围的报告")).not.toBeInTheDocument();
+  });
+
+  it("does not display an old AI result after question dates change", async () => {
+    let complete!: (value: object) => void;
+    generateTeacherAIAnalysisMock.mockReturnValue(new Promise((resolve) => {complete=resolve;}));
+    render(<LearningAnalysisPage data={await getTeacherOverviewMock()} />);
+    await waitFor(() => expect(screen.getByRole("button",{name:"查询"})).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button",{name:"生成 AI 内容分析"}));
+    fireEvent.change(screen.getByLabelText("提问开始日期"),{target:{value:"2026-11-01"}});
+    fireEvent.change(screen.getByLabelText("提问结束日期"),{target:{value:"2026-11-19"}});
+    fireEvent.click(screen.getByRole("button",{name:"查询"}));
+    await act(async () => complete({status:"completed",source:"deepseek",summary:"旧时间段结论",diagnoses:[]}));
+    expect(screen.queryByText("旧时间段结论")).not.toBeInTheDocument();
+    expect(screen.getByText("当前筛选条件已变化，请重新生成分析")).toBeVisible();
   });
 
   it("generates AI analysis only after a teacher action and expires it when filters change", async () => {

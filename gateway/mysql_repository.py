@@ -679,13 +679,23 @@ class MySQLGatewayRepository:
             ))
         return statement
 
-    def teacher_analytics_scope(self, teacher_user_id: str) -> dict[str, Any]:
+    def question_activity(self, **options):
+        from gateway.question_activity import read_question_activity
+        return read_question_activity(self._engine, **options)
+
+    def teacher_analytics_scope(self, teacher_user_id: str, *, classroom_id: str | None = None, all_classrooms: bool = False) -> dict[str, Any]:
         """Read active class assignments rather than trusting a client roster."""
         with self._engine.connect() as connection:
             classrooms = set(connection.execute(text(
                 "SELECT c.id FROM nlp_classrooms c JOIN nlp_classroom_members m ON m.classroom_id=c.id "
                 "WHERE c.status='active' AND m.user_id=:teacher AND m.member_role='teacher' AND m.status='active'"
             ), {"teacher": teacher_user_id}).scalars())
+            if all_classrooms:
+                classrooms = set(connection.execute(text("SELECT id FROM nlp_classrooms WHERE status='active'")).scalars())
+            if classroom_id:
+                if classroom_id not in classrooms:
+                    raise ValueError("classroom is outside the authorized teaching scope")
+                classrooms = {classroom_id}
             students: set[str] = set()
             if classrooms:
                 rows = connection.execute(text(
@@ -769,6 +779,12 @@ class MySQLGatewayRepository:
                 }
             )
         return result
+
+    def list_active_user_ids(self) -> set[str]:
+        with self._engine.connect() as connection:
+            return {str(value) for value in connection.execute(text(
+                "SELECT id FROM nlp_users WHERE status='active' AND deleted_at IS NULL"
+            )).scalars()}
 
     def list_student_user_ids(self) -> set[str]:
         """Return active users with a currently effective student role."""
