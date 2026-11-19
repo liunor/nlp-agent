@@ -23,6 +23,32 @@ const item: WhiteboardLibraryItem = {
 };
 
 describe("WhiteboardLibraryManager", () => {
+  it("opens the compact drawer and restores focus when Escape closes it", () => {
+    render(<WhiteboardLibraryManager items={[item]} onItemsChange={vi.fn()} initialExpanded={false} compactDrawer />);
+    const toggle = screen.getByRole("button", { name: "展开白板素材库" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("注意力计算过程")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText("注意力计算过程")).toBeVisible();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(screen.getByRole("region", { name: "白板素材库管理" }), { key: "Escape" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+  });
+
+  it("mounts the rename dialog outside the drawer and Escape keeps the drawer open", async () => {
+    render(<WhiteboardLibraryManager items={[item]} onItemsChange={vi.fn()} initialExpanded={false} compactDrawer />);
+    fireEvent.click(screen.getByRole("button", { name: "展开白板素材库" }));
+    fireEvent.click(screen.getByRole("button", { name: "重命名 注意力计算过程" }));
+    const dialog = await screen.findByRole("dialog", { name: "重命名白板素材" });
+    expect(screen.getByRole("region", { name: "白板素材库管理" })).not.toContainElement(dialog);
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "素材名称" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "收起白板素材库" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("注意力计算过程")).toBeVisible();
+  });
+
   beforeEach(() => {
     vi.mocked(api.renameWhiteboardLibraryItem).mockResolvedValue({ item: { ...item, name: "新的素材名" } });
     vi.mocked(api.deleteWhiteboardLibraryItem).mockResolvedValue(undefined);
