@@ -5,12 +5,50 @@ import { StudentSocket } from "@/platform/realtime/client";
 import { saveRejectedDraft } from "./rejected-drafts";
 import type {
   ActivityItem,
+  ActivityKind,
   ChatMessage,
   LearningPreferences,
   RealtimeRequestError,
   ServerEvent,
   SessionLearningMeta,
 } from "@/shared/types";
+
+const INTERNAL_ORCHESTRATION_TOOLS = new Set([
+  "spawn_worker",
+  "send_message",
+  "TaskStop",
+  "SnipTool",
+]);
+
+const READABLE_TOOL_LABELS: Record<string, { running: string; completed: string }> = {
+  academic_search: { running: "正在检索学术文献", completed: "已完成学术文献检索" },
+  get_knowledge_book_context: { running: "正在查阅课程知识库", completed: "已查阅课程知识库" },
+  read_local_file: { running: "正在读取课程资料", completed: "已读取课程资料" },
+  web_search: { running: "正在联网检索公开资料", completed: "已完成联网检索" },
+  web_fetch: { running: "正在阅读网页内容", completed: "已读取网页内容" },
+};
+
+const VALID_ACTIVITY_KINDS = new Set<ActivityKind>([
+  "thinking",
+  "tool",
+  "worker",
+  "recovery",
+  "search",
+  "fetch",
+  "commentary",
+  "synthesis",
+]);
+
+function normalizeActivityKind(raw: unknown): ActivityKind {
+  return typeof raw === "string" && VALID_ACTIVITY_KINDS.has(raw as ActivityKind)
+    ? (raw as ActivityKind)
+    : "worker";
+}
+
+function normalizeStepStatus(raw: unknown): ActivityItem["status"] {
+  if (raw === "completed" || raw === "error" || raw === "running") return raw;
+  return "running";
+}
 
 function eventDetail(event: ServerEvent): string | undefined {
   for (const key of ["name", "tool", "node", "detail", "message", "status"]) {
@@ -22,7 +60,9 @@ function eventDetail(event: ServerEvent): string | undefined {
 
 function toolDetail(event: ServerEvent): string | undefined {
   const detail = eventDetail(event);
-  return detail && !["tool", "tools"].includes(detail.toLowerCase()) ? detail : undefined;
+  if (!detail || ["tool", "tools"].includes(detail.toLowerCase())) return undefined;
+  if (INTERNAL_ORCHESTRATION_TOOLS.has(detail)) return undefined;
+  return detail;
 }
 
 function quotaErrorMessage(event: ServerEvent): string | undefined {
@@ -50,13 +90,72 @@ function reconcileCompletedContent(streamed: string, final: string): string {
   return streamed;
 }
 
-function activityLabel(event: ServerEvent): Pick<ActivityItem, "kind" | "label" | "status" | "detail"> | null {
+function activityLabel(event: ServerEvent): (Pick<ActivityItem, "kind" | "label" | "status" | "detail"> & { customId?: string }) | null {
+  const rawToolName = typeof event.payload.name === "string" ? event.payload.name.trim() : "";
+  if (rawToolName && INTERNAL_ORCHESTRATION_TOOLS.has(rawToolName)) return null;
+
+  const stepId = typeof event.payload.step_id === "string" ? event.payload.step_id.trim() : "";
+  const phase = typeof event.payload.phase === "string" ? event.payload.phase.trim() : "";
+  if (event.type.startsWith("worker.") && phase === "heartbeat") {
+    return null;
+  }
+  if (event.type.startsWith("worker.") && stepId) {
+    const label = typeof event.payload.label === "string" ? event.payload.label.trim() : "";
+    if (!label) return null;
+    const detail = typeof event.payload.detail === "string" && event.payload.detail.trim()
+      ? event.payload.detail.trim()
+      : undefined;
+    return {
+      customId: `step:${stepId}`,
+      kind: normalizeActivityKind(event.payload.step_kind),
+      label,
+      status: normalizeStepStatus(event.payload.step_status),
+      detail,
+    };
+  }
+  if (event.type.startsWith("worker.") && phase === "coordinator_resume") {
+    return null;
+  }
+
   const detail = eventDetail(event);
   const readableTool = toolDetail(event);
-  if (event.type === "tool.started") return { kind: "tool", label: "正在使用工具", status: "running", detail: readableTool };
-  if (event.type === "tool.progress") return { kind: "tool", label: "工具正在处理", status: "running", detail: readableTool };
-  if (event.type === "tool.completed") return { kind: "tool", label: "工具调用完成", status: "completed", detail: readableTool };
-  if (event.type === "tool.error") return { kind: "tool", label: "工具执行失败", status: "error", detail: readableTool };
+  const mappedTool = readableTool ? READABLE_TOOL_LABELS[readableTool] : undefined;
+  if (event.type === "tool.started") {
+    return {
+      kind: "tool",
+      label: mappedTool ? mappedTool.running : "正在使用工具",
+      status: "running",
+      detail: mappedTool ? undefined : readableTool,
+      customId: readableTool ? `tool:${readableTool}` : undefined,
+    };
+  }
+  if (event.type === "tool.progress") {
+    return {
+      kind: "tool",
+      label: mappedTool ? mappedTool.running : "工具正在处理",
+      status: "running",
+      detail: mappedTool ? undefined : readableTool,
+      customId: readableTool ? `tool:${readableTool}` : undefined,
+    };
+  }
+  if (event.type === "tool.completed") {
+    return {
+      kind: "tool",
+      label: mappedTool ? mappedTool.completed : "工具调用完成",
+      status: "completed",
+      detail: mappedTool ? undefined : readableTool,
+      customId: readableTool ? `tool:${readableTool}` : undefined,
+    };
+  }
+  if (event.type === "tool.error") {
+    return {
+      kind: "tool",
+      label: "工具执行失败",
+      status: "error",
+      detail: mappedTool ? undefined : readableTool,
+      customId: readableTool ? `tool:${readableTool}` : undefined,
+    };
+  }
   if (event.type === "worker.started") return { kind: "worker", label: "教学助手正在分解问题", status: "running", detail };
   if (event.type === "worker.progress") return { kind: "worker", label: "教学助手正在协作", status: "running", detail };
   if (event.type === "worker.completed") return { kind: "worker", label: "教学助手已完成分析", status: "completed", detail };
@@ -215,7 +314,17 @@ export function createRealtimeEventHandler({
         message.queueObservedAt = event.timestamp;
       }
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
-      if (event.type === "chat.delta") message.content += delta;
+      if (event.type === "chat.delta") {
+        message.content += delta;
+        if (delta.trim()) {
+          message.activitySummary = undefined;
+          message.activities = message.activities.map((item) =>
+            item.status === "running" && (item.kind === "synthesis" || item.kind === "worker")
+              ? { ...item, status: "completed", completedAt: event.timestamp }
+              : item,
+          );
+        }
+      }
       if (event.type === "chat.reasoning.delta") message.reasoning = `${message.reasoning ?? ""}${delta}`;
       if (event.type === "chat.started") { message.status = "running"; message.startedAt ??= event.timestamp; }
       if (event.type === "chat.message.completed" || event.type === "chat.completed") {
@@ -223,17 +332,60 @@ export function createRealtimeEventHandler({
         message.content = reconcileCompletedContent(message.content, final);
         message.status = "completed";
         message.completedAt = event.timestamp;
+        message.activitySummary = undefined;
+        message.activities = message.activities.map((item) =>
+          item.status === "running" ? { ...item, status: "completed", completedAt: event.timestamp } : item,
+        );
       }
-      if (event.type === "chat.cancelled") { message.status = "cancelled"; message.completedAt = event.timestamp; }
-      if (event.type === "chat.error") { message.status = "failed"; message.completedAt = event.timestamp; }
+      if (event.type === "chat.cancelled") {
+        message.status = "cancelled";
+        message.completedAt = event.timestamp;
+        message.activitySummary = undefined;
+        message.activities = message.activities.map((item) =>
+          item.status === "running" ? { ...item, status: "completed", completedAt: event.timestamp } : item,
+        );
+      }
+      if (event.type === "chat.error") {
+        message.status = "failed";
+        message.completedAt = event.timestamp;
+        message.activitySummary = undefined;
+        message.activities = message.activities.map((item) =>
+          item.status === "running" ? { ...item, status: "error", completedAt: event.timestamp } : item,
+        );
+      }
+      if (event.type.startsWith("worker.") && event.payload.phase === "heartbeat") {
+        const summary = typeof event.payload.summary === "string" ? event.payload.summary.trim() : "";
+        if (summary) message.activitySummary = summary;
+        const stepId = typeof event.payload.step_id === "string" ? event.payload.step_id.trim() : "";
+        if (stepId && summary) {
+          const targetKey = `step:${stepId}`;
+          const targetIdx = message.activities.findIndex((item) => item.id === targetKey);
+          if (targetIdx >= 0 && message.activities[targetIdx].status === "running") {
+            message.activities[targetIdx] = { ...message.activities[targetIdx], label: summary };
+          }
+        }
+        message.startedAt ??= event.timestamp;
+      }
       const activity = activityLabel(event);
       if (activity) {
-        const key = activity.kind === "tool" && activity.detail ? `tool:${activity.detail}` : activity.kind;
+        const { customId, ...restActivity } = activity;
+        const key = customId ?? (restActivity.kind === "tool" && restActivity.detail ? `tool:${restActivity.detail}` : restActivity.kind);
         const existing = message.activities.findIndex((item) => item.id === key);
         const previous = existing >= 0 ? message.activities[existing] : undefined;
-        const item: ActivityItem = { id: key, ...activity, startedAt: previous?.startedAt ?? event.timestamp, ...(activity.status === "running" ? {} : { completedAt: event.timestamp }) };
+        const item: ActivityItem = {
+          id: key,
+          ...restActivity,
+          startedAt: previous?.startedAt ?? event.timestamp,
+          ...(restActivity.status === "running" ? {} : { completedAt: event.timestamp }),
+        };
         if (existing >= 0) message.activities[existing] = item;
         else message.activities.push(item);
+        if (restActivity.status === "running" || restActivity.kind === "commentary") {
+          message.activitySummary = restActivity.label;
+        } else if (message.activitySummary === previous?.label) {
+          const stillRunning = [...message.activities].reverse().find((entry) => entry.status === "running");
+          message.activitySummary = stillRunning?.label;
+        }
         message.startedAt ??= event.timestamp;
       }
       next[index] = message;

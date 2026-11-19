@@ -510,9 +510,19 @@ export interface LearningContext {
   mode: "explain" | "socratic" | "practice" | "review";
 }
 
+export type ActivityKind =
+  | "thinking"
+  | "tool"
+  | "worker"
+  | "recovery"
+  | "search"
+  | "fetch"
+  | "commentary"
+  | "synthesis";
+
 export interface ActivityItem {
   id: string;
-  kind: "thinking" | "tool" | "worker" | "recovery";
+  kind: ActivityKind;
   label: string;
   status: "running" | "completed" | "error";
   detail?: string;
@@ -540,6 +550,7 @@ export interface ChatMessage {
   reasoning?: string;
   status?: ChatMessageStatus;
   activities?: ActivityItem[];
+  activitySummary?: string;
   attachments?: ChatAttachment[];
   createdAt: string;
   startedAt?: string;

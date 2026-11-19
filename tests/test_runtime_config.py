@@ -108,6 +108,49 @@ def test_legacy_overrides_cannot_replace_reserved_web_profiles(monkeypatch, tmp_
     assert "remote_reader" not in merged["tools"]["web"]["fetch"]
 
 
+def test_runtime_overrides_preserve_valid_deepseek_web_search_settings(
+    monkeypatch, tmp_path
+):
+    base_path = tmp_path / "agent_config.yaml"
+    override_path = tmp_path / "runtime-overrides.yaml"
+    base = {
+        "tools": {
+            "web": {
+                "enabled": True,
+                "search": {
+                    "enabled": True,
+                    "provider": "deepseek",
+                    "min_rerank_score": 0.8,
+                    "cache_ttl_s": 1800,
+                },
+            }
+        }
+    }
+    override = {
+        "tools": {
+            "web": {
+                "search": {
+                    "min_rerank_score": 1.2,
+                    "cache_ttl_s": 600,
+                }
+            }
+        }
+    }
+    base_path.write_text(yaml.safe_dump(base), encoding="utf-8")
+    override_path.write_text(yaml.safe_dump(override), encoding="utf-8")
+    monkeypatch.setattr(runtime_config, "BASE_CONFIG_PATH", base_path)
+    monkeypatch.setattr(runtime_config, "OVERRIDE_PATH", override_path)
+
+    merged = runtime_config.load_runtime_config()
+
+    assert merged["tools"]["web"]["search"] == {
+        "enabled": True,
+        "provider": "deepseek",
+        "min_rerank_score": 1.2,
+        "cache_ttl_s": 600,
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["upsert", "delete"])
 async def test_developer_ui_cannot_mutate_reserved_web_profiles(operation):

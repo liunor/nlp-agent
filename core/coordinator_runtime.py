@@ -245,17 +245,57 @@ class CoordinatorRuntime:
                     reason=f"barrier_timeout:{parent_turn_id}",
                 )
             global_task_manager.mark_wait_consumed(plan.worker_ids)
-            await self._invoke_coordinator(
-                [self._worker_results_message(events, plan=plan, timed_out=timed_out)],
-                self._session(session_id).context or SessionContext(session_id=session_id),
-                background,
-                parent_turn_id,
-                self._session(session_id).learning_context,
-                self._session(session_id).learning_progress,
-                self._session(session_id).exercise_state,
-                self._session(session_id).teaching_materials,
-                self._session(session_id).knowledge_book_context,
-            )
+            synthesis_step_id = f"{parent_turn_id}:coordinator_synthesis"
+            if not background:
+                await self._event_bus.publish_progress(
+                    session_id=session_id,
+                    parent_turn_id=parent_turn_id,
+                    payload={
+                        "phase": "step",
+                        "step_id": synthesis_step_id,
+                        "step_kind": "synthesis",
+                        "step_status": "running",
+                        "label": "已完成资料检索与核验，正在整理最终回答…",
+                    },
+                )
+            synthesis_heartbeat: asyncio.Task[None] | None = None
+            if not background:
+                async def _synthesis_heartbeat_loop() -> None:
+                    started = asyncio.get_running_loop().time()
+                    beats = 0
+                    while beats < 6:
+                        await asyncio.sleep(4.0)
+                        beats += 1
+                        elapsed = max(4, int(asyncio.get_running_loop().time() - started))
+                        await self._event_bus.publish_progress(
+                            session_id=session_id,
+                            parent_turn_id=parent_turn_id,
+                            payload={
+                                "phase": "heartbeat",
+                                "step_id": synthesis_step_id,
+                                "step_kind": "synthesis",
+                                "step_status": "running",
+                                "summary": f"正在结合检索证据组织详细回答（已用时 {elapsed}s）…",
+                            },
+                        )
+
+                synthesis_heartbeat = asyncio.create_task(_synthesis_heartbeat_loop())
+            try:
+                await self._invoke_coordinator(
+                    [self._worker_results_message(events, plan=plan, timed_out=timed_out)],
+                    self._session(session_id).context or SessionContext(session_id=session_id),
+                    background,
+                    parent_turn_id,
+                    self._session(session_id).learning_context,
+                    self._session(session_id).learning_progress,
+                    self._session(session_id).exercise_state,
+                    self._session(session_id).teaching_materials,
+                    self._session(session_id).knowledge_book_context,
+                )
+            finally:
+                if synthesis_heartbeat is not None:
+                    synthesis_heartbeat.cancel()
+                    await asyncio.gather(synthesis_heartbeat, return_exceptions=True)
 
     async def _collect_barrier_events(
         self, plan: WorkerWaitPlan

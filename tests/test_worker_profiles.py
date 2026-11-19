@@ -63,7 +63,7 @@ def test_coordinator_prompt_teaches_general_dependency_aware_worker_routing():
     assert "不得在最终答复中输出 [INTERNAL_WORKER_RESULTS]" in prompt
 
 
-def test_web_profiles_separate_native_search_from_explicit_url_reads():
+def test_web_profiles_configure_two_stage_search_and_explicit_url_reads():
     import yaml
 
     root = Path(__file__).resolve().parents[1]
@@ -73,12 +73,12 @@ def test_web_profiles_separate_native_search_from_explicit_url_reads():
     researcher = config.worker_profiles["web_researcher"]
     reader = config.worker_profiles["web_reader"]
 
-    assert researcher.model == "worker-qwen-web"
-    assert researcher.execution_mode == "one_shot"
-    assert researcher.requires_native_search is True
+    assert researcher.model is None
+    assert researcher.execution_mode == "react"
+    assert researcher.requires_native_search is False
     assert researcher.inherit_tool_policy is False
-    assert researcher.capabilities == set()
-    assert researcher.allowed_tools == set()
+    assert researcher.capabilities == {"web.search", "web.fetch"}
+    assert researcher.allowed_tools == {"web_search", "web_fetch"}
     assert reader.model is None
     assert reader.execution_mode == "react"
     assert reader.requires_native_search is False
@@ -87,14 +87,19 @@ def test_web_profiles_separate_native_search_from_explicit_url_reads():
     assert reader.allowed_tools == {"web_fetch"}
 
     loader = SkillLoader()
-    assert loader.resolve_profile("web_researcher").model == "worker-qwen-web"
+    assert loader.resolve_profile("web_researcher").model is None
+    assert loader.resolve_profile("web_researcher").allowed_tools == {
+        "web_search",
+        "web_fetch",
+    }
     assert loader.resolve_profile("web_reader").allowed_tools == {"web_fetch"}
     assert raw["model_presets"]["worker-qwen-web"]["native_search"] == {
         "enabled": True,
         "forced": True,
         "strategy": "turbo",
     }
-    assert "search" not in raw["tools"]["web"]
+    assert raw["tools"]["web"]["search"]["provider"] == "deepseek"
+    assert "text/markdown" in raw["tools"]["web"]["fetch"]["allowed_content_types"]
     assert config.tools.policies.worker.allowed_capabilities == set()
 
 
@@ -137,9 +142,9 @@ def test_web_profiles_receive_only_their_declared_tools():
             inherit_policy=reader.inherit_tool_policy,
         )
 
-        assert researcher_tools.names == ()
+        assert set(researcher_tools.names) == {"web_search", "web_fetch"}
         assert reader_tools.names == ("web_fetch",)
-        assert physical_tool_manager.runtime.catalog.get("web_search") is None
+        assert physical_tool_manager.runtime.catalog.get("web_search") is not None
     finally:
         physical_tool_manager.config = original_config
 
@@ -237,6 +242,8 @@ def test_worker_prompt_v1_3_teaches_web_tool_discipline():
     prompt = (root / "core" / "prompt_runtime" / "templates" / "worker.v1.3.md").read_text(encoding="utf-8")
 
     assert "联网与链接阅读纪律" in prompt
+    assert "web_search(query=..., ori_question=...)" in prompt
+    assert "不要机械调用 `web_fetch`" in prompt
     assert "使用当前模型已配置的原生联网结果" in prompt
     assert "直接读取该链接；不得先搜索" in prompt
     assert "一律不得执行" in prompt
@@ -361,7 +368,7 @@ def test_coordinator_prompt_v1_5_teaches_academic_search_routing():
     assert "Google Scholar 链接仅作为二次核验入口" in prompt
     assert "技术报告必须先调用 academic_search" in prompt
     assert "只寻找发布机构自身域名" in prompt
-    assert "再启动 web_reader 读取该完整 URL" in prompt
+    assert "按需用 `web_fetch` 深读该完整官网页面" in prompt
     assert "{{worker_profiles}}" in prompt
 
 

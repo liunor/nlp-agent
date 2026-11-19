@@ -398,7 +398,52 @@ def test_web_fetch_descriptor_is_registered_medium_risk():
     assert descriptor.concurrency_safe is True
     assert "web.fetch" in descriptor.capabilities
 
-    assert global_tool_runtime.catalog.get("web_search") is None
+
+async def test_fetch_negotiates_native_markdown_accept_header_and_preserves_markdown(
+    monkeypatch,
+):
+    seen_accept: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_accept.append(request.headers.get("accept"))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/markdown; charset=utf-8"},
+            text="# Native Markdown\n\nFast path without HTML Soup.",
+        )
+
+    service = _service(monkeypatch, handler)
+    md_result = await service.fetch(
+        WebFetchInput(url="https://example.com/doc", extract_mode="markdown")
+    )
+    text_result = await service.fetch(
+        WebFetchInput(url="https://example.com/doc", extract_mode="text")
+    )
+
+    assert seen_accept[0] is not None
+    assert seen_accept[0].startswith("text/markdown;q=1.0")
+    assert "text/x-markdown;q=0.9" in seen_accept[0]
+    assert seen_accept[1] != seen_accept[0]
+    assert md_result.content_type == "text/markdown"
+    assert md_result.extractor == "text"
+    assert "# Native Markdown" in md_result.text
+    assert text_result.status_code == 200
+
+
+async def test_fetch_identifies_cloudflare_challenge_403(monkeypatch):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            headers={"cf-mitigated": "challenge", "content-type": "text/html"},
+            text="<html>Just a moment...</html>",
+        )
+
+    service = _service(monkeypatch, handler)
+    with pytest.raises(WebAccessError) as excinfo:
+        await service.fetch(WebFetchInput(url="https://protected.example.com/page"))
+
+    assert excinfo.value.code == "cloudflare_challenge"
+    assert "Cloudflare" in excinfo.value.message
 
 
 def test_runtime_classifies_fetch_transient_errors_as_retryable():

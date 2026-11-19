@@ -62,10 +62,14 @@ Side effects:
 from contextvars import ContextVar
 import asyncio
 import hashlib
+import json
+import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any
+from urllib.parse import urlsplit
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from core.task_manager import global_task_manager
@@ -151,6 +155,7 @@ def _build_worker_initial_messages(
     directive: str,
     *,
     current_time: str | None = None,
+    budget: WorkerResourceBudget | None = None,
 ) -> list[SystemMessage | HumanMessage]:
     """Keep the argument-free Worker prefix ahead of every per-run field."""
     resolved_time = current_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S %A")
@@ -159,10 +164,16 @@ def _build_worker_initial_messages(
         f"{sop_prompt}\n"
         "[/专家领域与标准操作流程 (SOP)]"
     )
+    context_lines = [f"当前真实时间：{resolved_time}"]
+    if budget is not None and budget.max_tool_calls > 0:
+        context_lines.append(
+            f"执行预算上限：最多 {budget.max_turns} 轮推理，累计最多 {budget.max_tool_calls} 次工具调用"
+            "（配额用满后将直接进入无工具总结阶段，请精炼查询并合理控制单轮并行调用数量）"
+        )
     runtime_context = (
         "[运行时上下文]\n"
-        f"当前真实时间：{resolved_time}\n"
-        "[/运行时上下文]"
+        + "\n".join(context_lines)
+        + "\n[/运行时上下文]"
     )
     return [
         _build_worker_stable_prefix(),
@@ -273,6 +284,14 @@ def _resolve_profile_worker_model(
     return resolved
 
 
+_DEFAULT_SPAWN_MAX_TURNS = 6
+_DEFAULT_SPAWN_MAX_TOOL_CALLS = 12
+_SEARCH_WORKER_DEFAULT_MAX_TURNS = 5
+_SEARCH_WORKER_DEFAULT_MAX_TOOL_CALLS = 6
+_SEARCH_WORKER_MAX_TURNS_CAP = 8
+_SEARCH_WORKER_MAX_TOOL_CALLS_CAP = 8
+
+
 def _build_profile_execution_policies(
     profile: ResolvedWorkerProfile,
     *,
@@ -284,11 +303,33 @@ def _build_profile_execution_policies(
     max_attempts: int,
 ) -> tuple[WorkerResourceBudget, WorkerRetryPolicy]:
     one_shot = profile.execution_mode == "one_shot"
+    search_worker = not one_shot and (
+        profile.name == "web_researcher"
+        or "web.search" in profile.capabilities
+        or "web_search" in profile.allowed_tools
+    )
+    if one_shot:
+        effective_max_turns = 1
+        effective_max_tool_calls = 0
+    elif search_worker:
+        effective_max_turns = (
+            _SEARCH_WORKER_DEFAULT_MAX_TURNS
+            if max_turns == _DEFAULT_SPAWN_MAX_TURNS
+            else min(max_turns, _SEARCH_WORKER_MAX_TURNS_CAP)
+        )
+        effective_max_tool_calls = (
+            _SEARCH_WORKER_DEFAULT_MAX_TOOL_CALLS
+            if max_tool_calls == _DEFAULT_SPAWN_MAX_TOOL_CALLS
+            else min(max_tool_calls, _SEARCH_WORKER_MAX_TOOL_CALLS_CAP)
+        )
+    else:
+        effective_max_turns = max_turns
+        effective_max_tool_calls = max_tool_calls
     budget = WorkerResourceBudget(
-        max_turns=1 if one_shot else max_turns,
+        max_turns=effective_max_turns,
         max_duration_s=max_duration_s,
         max_tokens=max_tokens,
-        max_tool_calls=0 if one_shot else max_tool_calls,
+        max_tool_calls=effective_max_tool_calls,
         max_injections=(
             0 if one_shot else int(runtime_settings.get("max_injections", 15))
         ),
@@ -344,6 +385,411 @@ _worker_model_role: ContextVar[str | None] = ContextVar("worker_model_role", def
 _worker_model_request: ContextVar[str | None] = ContextVar("worker_model_request", default=None)
 
 
+_BUDGET_SKIPPED_TOOL_MESSAGE = (
+    "工具调用未执行：已达到本轮工具调用或运行预算上限，请直接基于上方已获取的工具结果输出最终结论。"
+)
+_CONVERGENCE_SYSTEM_PROMPT = (
+    "【运行时收敛提示】本轮工具调用配额或推理轮次已达上限。"
+    "请勿再发起任何工具调用，直接基于上方已获取的真实工具结果与核验事实，"
+    "严格按要求格式输出完整结论与真实来源 URL。"
+)
+_PROGRESS_HEARTBEAT_INTERVAL_S = 4.0
+_PROGRESS_HEARTBEAT_TICK_S = 1.0
+_MAX_PROGRESS_HEARTBEATS = 12
+_INTERNAL_COMMENTARY_MARKERS = (
+    "执行范围：",
+    "执行范围:",
+    "[internal",
+    "spawn_worker",
+    "coordinator",
+    "worker",
+    "task_id",
+)
+
+
+def _initial_profile_progress(profile_name: str) -> tuple[str, str]:
+    if profile_name == "web_researcher":
+        return "search", "正在拆解问题并准备联网检索…"
+    if profile_name == "web_reader":
+        return "fetch", "正在准备连接并读取指定网页…"
+    if profile_name == "visual_researcher":
+        return "tool", "正在准备解析上传图片…"
+    return "tool", "正在准备分析与计算环境…"
+
+
+def _extract_commentary_text(raw_content: Any) -> str | None:
+    text = str(raw_content or "").strip()
+    if not text or "```" in text:
+        return None
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    first_line = re.sub(r"^[#*>\-\d.\s]+", "", first_line).strip()
+    if not first_line:
+        return None
+    lowered = first_line.lower()
+    if any(marker in lowered for marker in _INTERNAL_COMMENTARY_MARKERS):
+        return None
+    if len(first_line) > 90:
+        return f"{first_line[:89]}…"
+    return first_line
+
+
+def _clean_host(raw_url: Any) -> str:
+    try:
+        host = (urlsplit(str(raw_url or "").strip()).hostname or "").lower()
+    except ValueError:
+        host = ""
+    return host.removeprefix("www.")
+
+
+def _format_tool_start_progress(
+    tool_name: str, args: Mapping[str, Any] | None
+) -> tuple[str, str, str]:
+    safe_args = args or {}
+    if tool_name == "web_search":
+        query = str(safe_args.get("query") or "").strip()[:56]
+        return (
+            "search",
+            f"正在搜索「{query}」" if query else "正在联网检索公开资料…",
+            query or "相关资料",
+        )
+    if tool_name == "web_fetch":
+        host = _clean_host(safe_args.get("url")) or "目标网页"
+        return ("fetch", f"正在阅读网页 {host}", host)
+    if tool_name == "academic_search":
+        query = str(safe_args.get("query") or safe_args.get("query_en") or "").strip()[:56]
+        return (
+            "search",
+            f"正在检索学术文献「{query}」" if query else "正在检索学术文献…",
+            query or "学术文献",
+        )
+    if tool_name == "image_analyze":
+        return ("tool", "正在识别与解析图片内容…", "图片")
+    return ("tool", "正在执行数据计算与核验…", tool_name)
+
+
+def _format_tool_end_progress(
+    tool_name: str,
+    args: Mapping[str, Any] | None,
+    execution: ToolExecutionResult,
+) -> tuple[str, str, str, str | None]:
+    safe_args = args or {}
+    if tool_name == "web_search":
+        query = str(safe_args.get("query") or "").strip()[:56]
+        label = f"联网搜索：「{query}」" if query else "联网搜索"
+        if not execution.ok:
+            return ("search", "error", label, "检索暂时受限")
+        payload: Mapping[str, Any] = {}
+        if isinstance(execution.output, str):
+            try:
+                parsed = json.loads(execution.output)
+                if isinstance(parsed, Mapping):
+                    payload = parsed
+            except json.JSONDecodeError:
+                payload = {}
+        elif isinstance(execution.output, Mapping):
+            payload = execution.output
+        results = payload.get("results")
+        if isinstance(results, list) and results:
+            hosts: list[str] = []
+            for item in results:
+                if isinstance(item, Mapping):
+                    host = _clean_host(item.get("url"))
+                    if host and host not in hosts:
+                        hosts.append(host)
+            if hosts:
+                preview = ", ".join(hosts[:3]) + (" 等" if len(hosts) > 3 else "")
+                detail = f"命中 {len(results)} 条 · {preview}"
+            else:
+                detail = f"命中 {len(results)} 条结果"
+            return ("search", "completed", label, detail)
+        return ("search", "completed", label, "未命中直接结果，继续调整检索词")
+
+    if tool_name == "web_fetch":
+        host = _clean_host(safe_args.get("url")) or "目标网页"
+        label = f"阅读网页：{host}"
+        if execution.ok:
+            title = ""
+            if isinstance(execution.output, str):
+                try:
+                    parsed = json.loads(execution.output)
+                    if isinstance(parsed, Mapping):
+                        title = str(parsed.get("title") or "").strip()
+                except json.JSONDecodeError:
+                    title = ""
+            if len(title) > 34:
+                title = f"{title[:33]}…"
+            return ("fetch", "completed", label, title or "已提取正文")
+        code = execution.error.code if execution.error else ""
+        hint = (
+            "站点需人机验证，改用检索摘要或其他来源"
+            if code == "cloudflare_challenge"
+            else "页面读取受限，改用其他来源"
+        )
+        return ("fetch", "completed", label, hint)
+
+    if tool_name == "image_analyze":
+        return (
+            "tool",
+            "completed" if execution.ok else "error",
+            "图片内容解析",
+            "已完成识别" if execution.ok else "识别受限",
+        )
+    return (
+        "tool",
+        "completed" if execution.ok else "error",
+        "数据计算与核验",
+        "已完成" if execution.ok else "执行失败",
+    )
+
+
+class _WorkerProgressReporter:
+    """Emit structured Codex-style search steps, commentary, and 4s heartbeats."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        parent_turn_id: str,
+        worker_id: str,
+        profile_name: str,
+        heartbeat_interval_s: float = _PROGRESS_HEARTBEAT_INTERVAL_S,
+    ) -> None:
+        self.session_id = session_id
+        self.parent_turn_id = parent_turn_id
+        self.worker_id = worker_id
+        self.profile_name = profile_name
+        self.heartbeat_interval_s = heartbeat_interval_s
+        self.enabled = bool(session_id and parent_turn_id)
+        now = time.monotonic()
+        self.started_at = now
+        self.last_emit_at = now
+        self.init_step_id = f"{worker_id}:init"
+        self.init_closed = False
+        init_kind, init_label = _initial_profile_progress(profile_name)
+        self.active_step_id: str | None = self.init_step_id
+        self.active_kind: str = init_kind
+        self.active_target: str = ""
+        self.active_started_at: float = now
+        self.completed_searches = 0
+        self.completed_fetches = 0
+        self.heartbeat_count = 0
+        self._init_label = init_label
+        self._heartbeat_task: asyncio.Task[None] | None = None
+
+    async def _send(self, payload: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        self.last_emit_at = time.monotonic()
+        await global_worker_event_bus.publish_progress(
+            session_id=self.session_id,
+            parent_turn_id=self.parent_turn_id,
+            payload=payload,
+        )
+
+    async def close_init_if_needed(self) -> None:
+        if not self.enabled or self.init_closed:
+            return
+        self.init_closed = True
+        done_label = (
+            "已完成检索方向规划"
+            if self.profile_name == "web_researcher"
+            else "已完成任务准备"
+        )
+        await self._send(
+            {
+                "phase": "step",
+                "step_id": self.init_step_id,
+                "step_kind": self.active_kind,
+                "step_status": "completed",
+                "label": done_label,
+            }
+        )
+
+    async def emit_commentary(self, turn_index: int, text: str) -> None:
+        if not self.enabled:
+            return
+        await self.close_init_if_needed()
+        await self._send(
+            {
+                "phase": "step",
+                "step_id": f"{self.worker_id}:commentary:{turn_index}",
+                "step_kind": "commentary",
+                "step_status": "completed",
+                "label": text,
+            }
+        )
+
+    async def emit_tool_start(
+        self, call_id: str, tool_name: str, args: Mapping[str, Any] | None
+    ) -> None:
+        if not self.enabled:
+            return
+        await self.close_init_if_needed()
+        kind, label, target = _format_tool_start_progress(tool_name, args)
+        step_id = f"{self.worker_id}:call:{call_id}"
+        self.active_step_id = step_id
+        self.active_kind = kind
+        self.active_target = target
+        self.active_started_at = time.monotonic()
+        await self._send(
+            {
+                "phase": "step",
+                "step_id": step_id,
+                "step_kind": kind,
+                "step_status": "running",
+                "label": label,
+            }
+        )
+
+    async def emit_tool_end(
+        self,
+        call_id: str,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        execution: ToolExecutionResult,
+    ) -> None:
+        if not self.enabled:
+            return
+        kind, status, label, detail = _format_tool_end_progress(
+            tool_name, args, execution
+        )
+        if tool_name == "web_search" and execution.ok:
+            self.completed_searches += 1
+        elif tool_name == "web_fetch" and execution.ok:
+            self.completed_fetches += 1
+        step_id = f"{self.worker_id}:call:{call_id}"
+        payload: dict[str, Any] = {
+            "phase": "step",
+            "step_id": step_id,
+            "step_kind": kind,
+            "step_status": status,
+            "label": label,
+        }
+        if detail:
+            payload["detail"] = detail
+        await self._send(payload)
+        self.active_step_id = None
+        self.active_kind = "thinking"
+        self.active_target = ""
+        self.active_started_at = time.monotonic()
+
+    async def emit_synthesizing(self) -> None:
+        if not self.enabled:
+            return
+        await self.close_init_if_needed()
+        step_id = f"{self.worker_id}:synthesis"
+        self.active_step_id = step_id
+        self.active_kind = "synthesis"
+        self.active_started_at = time.monotonic()
+        await self._send(
+            {
+                "phase": "step",
+                "step_id": step_id,
+                "step_kind": "synthesis",
+                "step_status": "running",
+                "label": "正在汇总并核验已检索到的来源信息…",
+            }
+        )
+
+    async def finish(self) -> None:
+        if not self.enabled:
+            return
+        await self.close_init_if_needed()
+        if self.active_kind == "synthesis" and self.active_step_id:
+            await self._send(
+                {
+                    "phase": "step",
+                    "step_id": self.active_step_id,
+                    "step_kind": "synthesis",
+                    "step_status": "completed",
+                    "label": "已完成检索来源核验与信息汇总",
+                }
+            )
+            self.active_step_id = None
+
+    def _heartbeat_summary(self, now: float) -> str:
+        total_elapsed = max(1, int(now - self.started_at))
+        step_elapsed = max(1, int(now - self.active_started_at))
+        if self.active_kind == "fetch":
+            host = self.active_target or "目标站点"
+            return f"正在等待 {host} 响应并提取正文（已用时 {step_elapsed}s）…"
+        if self.active_kind == "search" and self.active_step_id != self.init_step_id:
+            target = self.active_target or "公开资料"
+            return f"正在检索「{target}」相关来源（已用时 {step_elapsed}s）…"
+        if self.active_kind == "synthesis":
+            return f"正在交叉核对检索结果并整理引用来源（已用时 {total_elapsed}s）…"
+        if self.completed_searches > 0:
+            return (
+                f"已完成 {self.completed_searches} 次检索，正在比对权威报道与关键事实"
+                f"（已用时 {total_elapsed}s）…"
+            )
+        return f"正在分析问题并构造检索关键词（已用时 {total_elapsed}s）…"
+
+    def start_heartbeat(self) -> None:
+        if not self.enabled or self._heartbeat_task is not None:
+            return
+
+        async def _loop() -> None:
+            tick = min(_PROGRESS_HEARTBEAT_TICK_S, self.heartbeat_interval_s)
+            while self.heartbeat_count < _MAX_PROGRESS_HEARTBEATS:
+                await asyncio.sleep(tick)
+                now = time.monotonic()
+                if now - self.last_emit_at < self.heartbeat_interval_s:
+                    continue
+                self.heartbeat_count += 1
+                summary = self._heartbeat_summary(now)
+                payload: dict[str, Any] = {
+                    "phase": "heartbeat",
+                    "step_kind": self.active_kind,
+                    "step_status": "running",
+                    "summary": summary,
+                }
+                if self.active_step_id:
+                    payload["step_id"] = self.active_step_id
+                await self._send(payload)
+
+        self._heartbeat_task = asyncio.create_task(_loop())
+
+    async def stop_heartbeat(self) -> None:
+        task = self._heartbeat_task
+        self._heartbeat_task = None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+def _repair_dangling_tool_calls(
+    messages: list,
+    *,
+    reason_text: str = _BUDGET_SKIPPED_TOOL_MESSAGE,
+) -> tuple[list, list[ToolMessage]]:
+    """Ensure every AIMessage with tool_calls is paired with ToolMessages in order."""
+    answered_ids = {
+        str(getattr(msg, "tool_call_id", ""))
+        for msg in messages
+        if isinstance(msg, ToolMessage) and getattr(msg, "tool_call_id", None)
+    }
+    repaired: list = []
+    inserted: list[ToolMessage] = []
+    for msg in messages:
+        repaired.append(msg)
+        raw_calls = getattr(msg, "tool_calls", None) or []
+        for call in raw_calls:
+            call_id = str(call.get("id") or "")
+            if not call_id or call_id in answered_ids:
+                continue
+            answered_ids.add(call_id)
+            synthetic = ToolMessage(
+                content=reason_text,
+                tool_call_id=call_id,
+                name=str(call.get("name") or ""),
+                status="error",
+            )
+            repaired.append(synthetic)
+            inserted.append(synthetic)
+    return repaired, inserted
+
+
 def _sandbox_worker_llm(model_name: str):
     role = _worker_model_role.get()
     if role is not None:
@@ -361,6 +807,8 @@ async def _execute_sandbox_loop(
     budget: WorkerResourceBudget | None = None,
     attempt: int = 1,
     context: SessionContext | None = None,
+    parent_turn_id: str = "",
+    heartbeat_interval_s: float = _PROGRESS_HEARTBEAT_INTERVAL_S,
 ) -> WorkerExecutionResultSpec:
     """Execute one isolated Worker attempt under an explicit resource budget."""
     worker_logger = logger.bind(worker_id=worker_id, session_id=session_id)
@@ -387,8 +835,23 @@ async def _execute_sandbox_loop(
     start_time = time.time()
     total_tokens_used = 0
     tool_uses_count = 0
+    successful_tool_uses = 0
     injection_count = 0
     image_results: dict[str, ToolExecutionResult] = {}
+    active_task_info = global_task_manager.get_active_task(worker_id)
+    effective_turn_id = parent_turn_id or (
+        active_task_info.parent_turn_id if active_task_info else ""
+    )
+    profile_name = getattr(toolset.snapshot, "profile", "") or (
+        active_task_info.task_type if active_task_info else ""
+    )
+    progress = _WorkerProgressReporter(
+        session_id=session_id,
+        parent_turn_id=effective_turn_id,
+        worker_id=worker_id,
+        profile_name=profile_name,
+        heartbeat_interval_s=heartbeat_interval_s,
+    )
 
     def image_partial_output() -> str:
         limit = max(512, budget.max_tool_result_chars // max(1, len(image_results)))
@@ -466,12 +929,17 @@ async def _execute_sandbox_loop(
         return execution
 
     async def query_loop() -> WorkerExecutionResultSpec:
-        nonlocal messages, total_tokens_used, tool_uses_count, injection_count
+        nonlocal messages, total_tokens_used, tool_uses_count, successful_tool_uses, injection_count
+        convergence_injected = False
 
         async def finalize(reason: AgentStopReason) -> str:
-            nonlocal total_tokens_used
+            nonlocal messages, total_tokens_used
             if not budget.finalize_on_exhaustion:
                 return exhaustion_fallback(reason)
+            messages, repaired_tools = _repair_dangling_tool_calls(messages)
+            if repaired_tools:
+                record_sidechain_transcript(session_id, worker_id, repaired_tools)
+            await progress.emit_synthesizing()
             global_telemetry.event(
                 "agent.run.finalizing",
                 payload={"role": "worker", "reason": reason.value, "worker_id": worker_id},
@@ -541,6 +1009,21 @@ async def _execute_sandbox_loop(
                         },
                     )
 
+            force_synthesis = bool(
+                toolset.tools
+                and successful_tool_uses > 0
+                and (
+                    tool_uses_count >= budget.max_tool_calls
+                    or _turn == budget.max_turns - 1
+                )
+            )
+            if force_synthesis and not convergence_injected:
+                convergence_injected = True
+                convergence_msg = SystemMessage(content=_CONVERGENCE_SYSTEM_PROMPT)
+                messages.append(convergence_msg)
+                record_sidechain_transcript(session_id, worker_id, [convergence_msg])
+                await progress.emit_synthesizing()
+
             async with _observed_worker_span(
                 SpanKind.COMPRESSION, "worker.context.prepare",
                 worker_id=worker_id, attempt=attempt,
@@ -562,7 +1045,8 @@ async def _execute_sandbox_loop(
             # Keep it as the next iteration's source so a later prepare call
             # does not reprocess the pre-compaction history.
             messages = context_view.messages
-            response = await llm.ainvoke(context_view.messages)
+            active_turn_llm = base_llm if force_synthesis else llm
+            response = await active_turn_llm.ainvoke(context_view.messages)
             messages.append(response)
             if getattr(response, "usage_metadata", None):
                 total_tokens_used += usage_total(response)
@@ -616,9 +1100,20 @@ async def _execute_sandbox_loop(
                     output=content,
                 )
 
-            remaining = budget.max_tool_calls - tool_uses_count
-            if remaining < len(response.tool_calls):
+            remaining = max(0, budget.max_tool_calls - tool_uses_count)
+            if remaining == 0:
                 final_output = await finalize(AgentStopReason.TOOL_BUDGET)
+                if (
+                    successful_tool_uses > 0
+                    and final_output
+                    and final_output != exhaustion_fallback(AgentStopReason.TOOL_BUDGET)
+                ):
+                    return result(
+                        status="completed",
+                        summary="Worker synthesized gathered evidence at tool-call limit.",
+                        termination_reason="completed",
+                        output=final_output,
+                    )
                 return result(
                     status="failed",
                     summary="Worker exceeded its tool-call budget.",
@@ -630,10 +1125,21 @@ async def _execute_sandbox_loop(
                         retryable=False,
                     ),
                 )
-            tool_uses_count += len(response.tool_calls)
-            calls = [(call["name"], call["args"]) for call in response.tool_calls]
-            for name, _arguments in calls:
-                worker_logger.info("发起工具调用", tool_name=name)
+
+            executable_tool_calls = list(response.tool_calls[:remaining])
+            skipped_tool_calls = list(response.tool_calls[remaining:])
+            commentary_text = _extract_commentary_text(response.content)
+            if commentary_text:
+                await progress.emit_commentary(_turn + 1, commentary_text)
+            tool_uses_count += len(executable_tool_calls)
+            calls = [(call["name"], call["args"]) for call in executable_tool_calls]
+            for call in executable_tool_calls:
+                worker_logger.info("发起工具调用", tool_name=call["name"])
+                await progress.emit_tool_start(
+                    str(call.get("id") or call["name"]),
+                    call["name"],
+                    call.get("args"),
+                )
             if calls and all(name == "image_analyze" for name, _ in calls):
                 from server.tools.vision.batch import execute_image_batch
 
@@ -641,11 +1147,19 @@ async def _execute_sandbox_loop(
                 tool_results = await execute_image_batch(
                     toolset, calls, tool_config, timeout_s=max(0, remaining_s - 20),
                 )
-                for call, item in zip(response.tool_calls, tool_results, strict=True):
+                for call, item in zip(executable_tool_calls, tool_results, strict=True):
                     image_results[str(call["args"].get("image", ""))] = item
             else:
                 tool_results = await toolset.execute_many(calls, tool_config)
-            for tool_call, execution in zip(response.tool_calls, tool_results, strict=True):
+            for tool_call, execution in zip(executable_tool_calls, tool_results, strict=True):
+                if execution.ok:
+                    successful_tool_uses += 1
+                await progress.emit_tool_end(
+                    str(tool_call.get("id") or tool_call["name"]),
+                    tool_call["name"],
+                    tool_call.get("args"),
+                    execution,
+                )
                 descriptor = toolset.descriptor(tool_call["name"])
                 persist_result = descriptor.persist_result if descriptor else True
                 status = "success" if execution.ok else "error"
@@ -679,6 +1193,15 @@ async def _execute_sandbox_loop(
                 record_sidechain_transcript(
                     session_id, worker_id, [persisted_tool_msg]
                 )
+            for skipped_call in skipped_tool_calls:
+                skipped_msg = ToolMessage(
+                    content=_BUDGET_SKIPPED_TOOL_MESSAGE,
+                    tool_call_id=skipped_call["id"],
+                    name=skipped_call["name"],
+                    status="error",
+                )
+                messages.append(skipped_msg)
+                record_sidechain_transcript(session_id, worker_id, [skipped_msg])
 
             if image_results and any(
                 item.error and item.error.code in {
@@ -693,6 +1216,17 @@ async def _execute_sandbox_loop(
                 )
 
         final_output = await finalize(AgentStopReason.MAX_ITERATIONS)
+        if (
+            successful_tool_uses > 0
+            and final_output
+            and final_output != exhaustion_fallback(AgentStopReason.MAX_ITERATIONS)
+        ):
+            return result(
+                status="completed",
+                summary="Worker synthesized gathered evidence at turn limit.",
+                termination_reason="completed",
+                output=final_output,
+            )
         return result(
             status="failed",
             summary="Worker exhausted its ReAct turn budget.",
@@ -705,8 +1239,10 @@ async def _execute_sandbox_loop(
             ),
         )
 
+    progress.start_heartbeat()
     try:
         execution = await asyncio.wait_for(query_loop(), timeout=budget.max_duration_s)
+        await progress.finish()
         worker_logger.info(
             "Worker attempt finished",
             status=execution.status,
@@ -739,6 +1275,8 @@ async def _execute_sandbox_loop(
                 retryable=retryable and not bool(image_results),
             ),
         )
+    finally:
+        await progress.stop_heartbeat()
 
 
 async def _execute_with_retries(
@@ -1039,7 +1577,9 @@ async def spawn_worker(
         ).model_dump_json(exclude_none=True)
     sop_prompt = profile.system_prompt
 
-    initial_messages = _build_worker_initial_messages(sop_prompt, directive)
+    initial_messages = _build_worker_initial_messages(
+        sop_prompt, directive, budget=worker_budget
+    )
 
     write_agent_metadata(session_id, worker_id, {
         "agentType": agent_name,
@@ -1114,6 +1654,20 @@ async def spawn_worker(
         budget=worker_budget,
         retry_policy=worker_retry,
     )
+
+    if join and parent_turn_id:
+        init_kind, init_label = _initial_profile_progress(profile.name)
+        await global_worker_event_bus.publish_progress(
+            session_id=session_id,
+            parent_turn_id=parent_turn_id,
+            payload={
+                "phase": "step",
+                "step_id": f"{worker_id}:init",
+                "step_kind": init_kind,
+                "step_status": "running",
+                "label": init_label,
+            },
+        )
 
     return WorkerNotificationSpec(
         task_id=worker_id,

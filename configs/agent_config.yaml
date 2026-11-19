@@ -444,13 +444,12 @@ tools:
     #     capabilities: [nlp.analyze]
     #     risk: low
   mcp_servers: {}
-  # Web Access 仅保留受控链接读取 web_fetch。查最新资料由专用 Qwen
-  # preset 的原生联网搜索完成，不配置 Tavily、博查或 SearXNG。
+  # Web Access 由 DeepSeek Search API（web_search）与受控页面读取（web_fetch）组成两阶段闭环。
   web:
     enabled: true
     proxy_url: ""                          # 只允许运维配置
     proxy_url_env: "HTTPS_PROXY"           # 显式信任运维注入的出站代理
-    user_agent: "Nova/1.0 (+web-fetch)"
+    user_agent: "Nova/1.0 (+web-access)"
     network:
       connect_timeout_s: 5
       read_timeout_s: 20
@@ -467,10 +466,23 @@ tools:
         - "::1/128"
         - "fc00::/7"
         - "fe80::/10"
+    search:
+      enabled: true
+      provider: deepseek
+      base_url: "https://api.deepseek.com/v1/tools/search"
+      api_key_env: "DEEPSEEK_API_KEY"
+      timeout_s: 15
+      default_count: 5
+      raw_fetch_count: 8
+      min_rerank_score: 0.8
+      top_summary_count: 3
+      cache_ttl_s: 1800
+      circuit_failure_threshold: 3
+      circuit_cooldown_s: 60
     fetch:
       max_chars: 20000
       cache_ttl_s: 300
-      allowed_content_types: [text/html, text/plain, application/json]
+      allowed_content_types: [text/html, text/plain, text/markdown, text/x-markdown, application/json]
   vision:
     enabled: true
     max_file_bytes: 10000000
@@ -552,13 +564,14 @@ tools:
 # Profile 只组合 Skill、能力与工具授权；Skill 本身负责 SOP 指令。
 worker_profiles:
   web_researcher:
-    description: "仅用于最新、实时、新闻、价格、政策、版本，或用户明确要求联网检索的公开信息；使用 Qwen 原生联网搜索，不用于读取指定 URL。"
-    model: worker-qwen-web
-    execution_mode: one_shot
-    requires_native_search: true
+    description: "用于最新、实时、新闻、价格、政策、版本、技术文档或用户明确要求联网检索的公开信息；先用 web_search 获取高密度摘要与质量分，必要时挑选高分链接用 web_fetch 深读正文。"
+    execution_mode: react
+    requires_native_search: false
     inherit_tool_policy: false
-    capabilities: []
-    allowed_tools: []
+    capabilities: [web.search, web.fetch]
+    allowed_tools:
+      - web_search
+      - web_fetch
   web_reader:
     description: "仅在用户给出明确的公开 http(s) URL 并要求阅读、提取或总结时使用；直接读取链接，不额外搜索。"
     inherit_tool_policy: false

@@ -465,3 +465,231 @@ async def test_send_message_rejects_completed_worker_without_restarting():
 
     assert json.loads(result)["status"] == "failed"
     assert global_task_manager.get_active_task("completed-worker") is None
+
+
+def _assert_valid_tool_call_pairing(messages: list) -> None:
+    """Enforce OpenAI/DeepSeek wire rule: every tool_calls AIMessage has matching ToolMessages."""
+    index = 0
+    while index < len(messages):
+        msg = messages[index]
+        raw_calls = getattr(msg, "tool_calls", None) or []
+        if not raw_calls:
+            index += 1
+            continue
+        expected_ids = {call["id"] for call in raw_calls}
+        seen_ids: set[str] = set()
+        cursor = index + 1
+        while cursor < len(messages) and getattr(messages[cursor], "tool_call_id", None):
+            seen_ids.add(messages[cursor].tool_call_id)
+            cursor += 1
+        if expected_ids != seen_ids:
+            raise ValueError(
+                f"400 invalid_request_error: expected ToolMessages for {expected_ids}, got {seen_ids}"
+            )
+        index = cursor
+
+
+@pytest.mark.asyncio
+async def test_sandbox_repairs_dangling_tool_calls_before_finalizing_on_tool_and_token_budget(
+    monkeypatch,
+):
+    class StrictProtocolLLM:
+        def __init__(self, *, trigger_token_budget: bool = False):
+            self.trigger_token_budget = trigger_token_budget
+
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, messages):
+            _assert_valid_tool_call_pairing(messages)
+            if any("RUNTIME_FINALIZATION" in str(item.content) for item in messages):
+                return AIMessage(content="cleanly finalized without HTTP 400")
+            usage = (
+                {"input_tokens": 500, "output_tokens": 100, "total_tokens": 600}
+                if self.trigger_token_budget
+                else {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20}
+            )
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "get_current_time", "args": {}, "id": "call-a"},
+                    {"name": "get_current_time", "args": {}, "id": "call-b"},
+                ],
+                usage_metadata=usage,
+            )
+
+    monkeypatch.setattr(worker_tool, "record_sidechain_transcript", lambda *_args: None)
+
+    # 1. Tool-budget hit with unexecuted tool_calls
+    monkeypatch.setattr(worker_tool, "get_tool_llm", lambda: StrictProtocolLLM())
+    tool_budget_res = await _execute_sandbox_loop(
+        "strict-tool-budget-worker",
+        "s1",
+        [],
+        [],
+        budget=WorkerResourceBudget(max_turns=3, max_tool_calls=0),
+    )
+    assert tool_budget_res.output == "cleanly finalized without HTTP 400"
+
+    # 2. Token-budget hit immediately after AIMessage(tool_calls=...)
+    monkeypatch.setattr(
+        worker_tool,
+        "get_tool_llm",
+        lambda: StrictProtocolLLM(trigger_token_budget=True),
+    )
+    token_budget_res = await _execute_sandbox_loop(
+        "strict-token-budget-worker",
+        "s1",
+        [],
+        [],
+        budget=WorkerResourceBudget(max_turns=3, max_tokens=100, max_tool_calls=4),
+    )
+    assert token_budget_res.termination_reason == "token_budget"
+    assert token_budget_res.output == "cleanly finalized without HTTP 400"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_soft_lands_to_completed_when_parallel_tool_quota_is_reached(
+    monkeypatch,
+):
+    from server.tools.api.time_tool import get_current_time
+
+    class ParallelSearchWorkerLLM:
+        def __init__(self, *, bound_tools: bool = False):
+            self.bound_tools = bound_tools
+
+        def bind_tools(self, _tools):
+            return ParallelSearchWorkerLLM(bound_tools=True)
+
+        async def ainvoke(self, messages):
+            _assert_valid_tool_call_pairing(messages)
+            if not self.bound_tools:
+                # Soft-landing synthesis turn has no tools bound
+                return AIMessage(
+                    content="执行范围：APEC 近期动态\n结果：已基于 2 次有效检索完成核验汇总。"
+                )
+            # Turn 1 submits 1 tool call; Turn 2 submits 2 parallel calls when only 1 slot remains
+            prior_tools = [
+                m for m in messages if getattr(m, "tool_call_id", None) is not None
+            ]
+            if not prior_tools:
+                return AIMessage(
+                    content="",
+                    tool_calls=[{"name": "get_current_time", "args": {}, "id": "t1-c1"}],
+                )
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "get_current_time", "args": {}, "id": "t2-c1"},
+                    {"name": "get_current_time", "args": {}, "id": "t2-c2"},
+                ],
+            )
+
+    monkeypatch.setattr(worker_tool, "get_tool_llm", lambda: ParallelSearchWorkerLLM())
+    monkeypatch.setattr(worker_tool, "record_sidechain_transcript", lambda *_args: None)
+
+    result = await _execute_sandbox_loop(
+        "soft-land-worker",
+        "s1",
+        [],
+        [get_current_time],
+        budget=WorkerResourceBudget(max_turns=4, max_tool_calls=2),
+    )
+
+    assert result.status == "completed"
+    assert result.termination_reason == "completed"
+    assert result.usage.tool_uses == 2
+    assert "已完成核验汇总" in (result.output or "") or "完成核验汇总" in (result.output or "")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_emits_codex_style_search_steps_commentary_and_periodic_heartbeat(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from core.worker_events import global_worker_event_bus
+    import server.tools.api.web_search_tool as web_search_wrapper
+    from server.tools.api.web_search_tool import web_search
+
+    class FakeSlowSearchService:
+        async def search(self, request, *, before_request=None):
+            await asyncio.sleep(0.12)
+            payload = {
+                "query": request.query,
+                "results": [
+                    {"title": "APEC 深圳峰会", "url": "https://www.sz.gov.cn/apec"},
+                    {"title": "央视报道", "url": "https://news.cctv.com/2026/apec"},
+                ],
+            }
+            return SimpleNamespace(
+                cache_hit=True,
+                results=payload["results"],
+                model_dump_json=lambda: json.dumps(payload, ensure_ascii=False),
+            )
+
+    monkeypatch.setattr(
+        web_search_wrapper, "build_search_service", lambda: FakeSlowSearchService()
+    )
+
+    class CommentarySearchLLM:
+        def bind_tools(self, _tools):
+            return self
+
+        async def ainvoke(self, messages):
+            has_tool_result = any(
+                getattr(m, "tool_call_id", None) is not None for m in messages
+            )
+            if not has_tool_result:
+                return AIMessage(
+                    content="正在从官方报道切入检索 2026 深圳 APEC 最新进展",
+                    tool_calls=[
+                        {
+                            "name": "web_search",
+                            "args": {"query": "APEC 2026 深圳"},
+                            "id": "ws-call-1",
+                        }
+                    ],
+                )
+            return AIMessage(content="执行范围：APEC 动态\n结果：已整理完毕。")
+
+    progress_events: list[tuple[str, str, dict]] = []
+    sub_id = global_worker_event_bus.subscribe_progress(
+        lambda sid, tid, payload: progress_events.append((sid, tid, payload))
+    )
+    monkeypatch.setattr(worker_tool, "get_tool_llm", lambda: CommentarySearchLLM())
+    monkeypatch.setattr(worker_tool, "record_sidechain_transcript", lambda *_args: None)
+
+    try:
+        res = await _execute_sandbox_loop(
+            "progress-worker",
+            "sess-progress",
+            [],
+            [web_search],
+            parent_turn_id="turn-progress-1",
+            heartbeat_interval_s=0.04,
+        )
+    finally:
+        global_worker_event_bus.unsubscribe_progress(sub_id)
+
+    assert res.status == "completed"
+    payloads = [item[2] for item in progress_events if item[1] == "turn-progress-1"]
+    assert any(
+        p.get("step_kind") == "commentary"
+        and "检索 2026 深圳 APEC" in p.get("label", "")
+        for p in payloads
+    )
+    assert any(
+        p.get("step_id") == "progress-worker:call:ws-call-1"
+        and p.get("step_status") == "running"
+        and "APEC 2026 深圳" in p.get("label", "")
+        for p in payloads
+    )
+    assert any(p.get("phase") == "heartbeat" for p in payloads)
+    assert any(
+        p.get("step_id") == "progress-worker:call:ws-call-1"
+        and p.get("step_status") == "completed"
+        and "命中 2 条" in p.get("detail", "")
+        and "sz.gov.cn" in p.get("detail", "")
+        for p in payloads
+    )

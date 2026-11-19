@@ -139,11 +139,45 @@ class WebNetworkConfig(StrictConfigModel):
         return values
 
 
+class WebSearchConfig(StrictConfigModel):
+    enabled: bool = True
+    provider: Literal["deepseek"] = "deepseek"
+    base_url: str = "https://api.deepseek.com/v1/tools/search"
+    api_key_env: str = Field(
+        default="DEEPSEEK_API_KEY", pattern=r"^[A-Z][A-Z0-9_]{1,79}$"
+    )
+    timeout_s: float = Field(default=15.0, gt=0, le=60)
+    default_count: int = Field(default=5, ge=1, le=10)
+    raw_fetch_count: int = Field(default=8, ge=1, le=20)
+    min_rerank_score: float = Field(default=0.8, ge=0.0, le=3.0)
+    top_summary_count: int = Field(default=3, ge=1, le=10)
+    cache_ttl_s: int = Field(default=1800, ge=0, le=86400)
+    circuit_failure_threshold: int = Field(default=3, ge=1, le=20)
+    circuit_cooldown_s: float = Field(default=60.0, gt=0, le=3600)
+    redis_enabled: bool = True
+    redis_url_env: str = Field(
+        default="NLP_AGENT_REDIS_URL", pattern=r"^[A-Z][A-Z0-9_]{1,79}$"
+    )
+    redis_key_prefix: str = Field(
+        default="nova:web_search",
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9:_-]+$",
+    )
+    redis_operation_timeout_s: float = Field(default=1.0, gt=0, le=10)
+
+
 class WebFetchConfig(StrictConfigModel):
     max_chars: int = Field(default=20_000, ge=500, le=50_000)
     cache_ttl_s: int = Field(default=300, ge=0, le=3600)
     allowed_content_types: list[str] = Field(
-        default_factory=lambda: ["text/html", "text/plain", "application/json"]
+        default_factory=lambda: [
+            "text/html",
+            "text/plain",
+            "text/markdown",
+            "text/x-markdown",
+            "application/json",
+        ]
     )
 
 
@@ -153,8 +187,9 @@ class WebToolsConfig(StrictConfigModel):
     proxy_url_env: str = Field(
         default="", pattern=r"^$|^[A-Z][A-Z0-9_]{1,79}$"
     )
-    user_agent: str = "Nova/1.0 (+web-fetch)"
+    user_agent: str = "Nova/1.0 (+web-access)"
     network: WebNetworkConfig = Field(default_factory=WebNetworkConfig)
+    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
 
 

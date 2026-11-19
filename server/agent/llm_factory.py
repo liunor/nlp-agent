@@ -24,15 +24,34 @@ def get_planner_llm(model_profile: str | None = None) -> ResilientChatModel:
     return factory.build_route("coordinator", **_thinking_kwargs())
 
 
+_SYSTEM_WORKER_AGENTS = frozenset(
+    {"web_researcher", "web_reader", "visual_researcher"}
+)
+
+
+def _pinned_native_search_preset(agent_name: str | None) -> str | None:
+    if not agent_name:
+        return None
+    try:
+        from core.skill_loader import skill_loader
+
+        profile = skill_loader.profiles.get(agent_name)
+    except Exception:
+        profile = None
+    if profile is not None and profile.requires_native_search and profile.model:
+        return profile.model
+    return None
+
+
 def resolve_worker_model_name(
     agent_name: str | None = None,
     requested_model: str | None = None,
     model_profile: str | None = None,
 ) -> str:
     if snapshot := current_model_snapshot():
-        if agent_name == "web_researcher":
-            return "worker-qwen-web"
-        if agent_name in {"web_reader", "visual_researcher"}:
+        if pinned := _pinned_native_search_preset(agent_name):
+            return pinned
+        if agent_name in _SYSTEM_WORKER_AGENTS:
             return snapshot.system_worker[0].preset_name
         if snapshot.worker_override:
             return snapshot.worker[0].preset_name
@@ -44,6 +63,8 @@ def resolve_worker_model_name(
         return settings.NLP_AGENT_WORKER_MODEL
     if requested_model not in (None, "", "inherit"):
         return str(requested_model)
+    if pinned := _pinned_native_search_preset(agent_name):
+        return pinned
     factory = get_global_model_factory()
     if selected := _selected_profile(model_profile):
         return factory.profile_preset(selected, "worker")
@@ -83,9 +104,9 @@ def get_worker_llm(
 ) -> ResilientChatModel:
     factory = get_global_model_factory()
     if snapshot := current_model_snapshot():
-        if agent_name == "web_researcher":
-            return factory.build_snapshot_system_preset(snapshot, "worker-qwen-web")
-        if agent_name in {"web_reader", "visual_researcher"}:
+        if pinned := _pinned_native_search_preset(agent_name):
+            return factory.build_snapshot_system_preset(snapshot, pinned)
+        if agent_name in _SYSTEM_WORKER_AGENTS:
             return factory.build_snapshot_role(snapshot, "system_worker")
         requested = resolve_worker_model_name(agent_name, tool_specified_model, model_profile)
         if (not snapshot.worker_override and tool_specified_model not in (None, "", "inherit")
@@ -93,9 +114,10 @@ def get_worker_llm(
             return factory.build_snapshot_role(snapshot, "worker", preset_name=requested)
         return factory.build_snapshot_role(snapshot, "worker")
     selected = _selected_profile(model_profile)
+    pinned = _pinned_native_search_preset(agent_name)
     has_explicit_override = bool(settings.NLP_AGENT_WORKER_MODEL) or (
         tool_specified_model not in (None, "", "inherit")
-    )
+    ) or bool(pinned)
     if selected and not has_explicit_override:
         return factory.build_profile_role(selected, "worker", **_thinking_kwargs())
     requested = resolve_worker_model_name(

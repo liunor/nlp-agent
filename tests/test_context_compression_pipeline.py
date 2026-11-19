@@ -533,7 +533,7 @@ def test_hard_trim_never_returns_an_oversized_system_prompt():
 @pytest.mark.asyncio
 async def test_worker_reuses_the_compacted_view_on_the_next_react_iteration(monkeypatch):
     import server.tools.worker_tool as worker_tool_module
-    from core.tool_runtime import ToolSet
+    from core.tool_runtime import ToolExecutor, ToolGrantSnapshot, ToolScope, ToolSet
     from core.worker_lifecycle import WorkerResourceBudget
     from server.agent.compression.context_manager import ContextTransform
 
@@ -572,14 +572,17 @@ async def test_worker_reuses_the_compacted_view_on_the_next_react_iteration(monk
 
     class FakeToolSet(ToolSet):
         def __init__(self):
-            pass
-
-        @property
-        def tools(self):
-            return []
-
-        def descriptor(self, _name):
-            return None
+            super().__init__(
+                snapshot=ToolGrantSnapshot(
+                    role=ToolScope.WORKER,
+                    session_id="session-1",
+                    granted_tools=(),
+                    granted_capabilities=(),
+                    catalog_revision=0,
+                ),
+                descriptors=(),
+                executor=ToolExecutor(),
+            )
 
         async def execute_many(self, _calls, _config):
             class Execution:

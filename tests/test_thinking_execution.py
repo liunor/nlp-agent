@@ -239,8 +239,8 @@ def test_facade_applies_level_to_ordinary_worker_only(factory, monkeypatch):
             == "high"
         )
         web = llm_factory.get_worker_llm(agent_name="web_researcher")
-        assert web.candidates[0].preset.thinking.enabled is False
-        assert web.candidates[0].preset.native_search.enabled is True
+        assert web.candidates[0].preset.thinking.effort.value == "high"
+        assert web.candidates[0].preset.native_search.enabled is False
         with pytest.raises(ValueError, match="outside"):
             llm_factory.get_worker_llm(tool_specified_model="worker-qwen-web")
 
