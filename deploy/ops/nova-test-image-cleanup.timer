@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for Nova test image cleanup after verified deployments
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=1min
+Persistent=false
+Unit=nova-test-image-cleanup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=Safely clean superseded Nova test deployment images
+After=docker.service network-online.target
+ConditionPathIsSocket=/var/run/docker.sock
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I -B /usr/local/lib/nova-image-cleanup/test-deploy-cleanup.py --apply
+TimeoutStartSec=300
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=256M
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=nova-image-cleanup
+StateDirectoryMode=0700
