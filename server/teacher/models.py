@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from gateway.question_activity import MAX_QUERY_DATE, MIN_QUERY_DATE
+
 
 class StrictTeacherModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -69,12 +71,16 @@ class UpdateTeacherAnalysisAnnotations(StrictTeacherModel):
 
 
 class TeacherAIAnalysisRequest(StrictTeacherModel):
+    classroom_id: str | None = Field(default=None, min_length=1, max_length=128)
     workspace_id: str = Field(default="default", min_length=1, max_length=128)
     course_id: str = Field(default="all", min_length=1, max_length=128)
     content_scope: str = Field(default="all", min_length=1, max_length=160)
     start_date: date | None = None
     end_date: date | None = None
     period_days: int | None = Field(default=None, ge=1, le=365)
+    question_start_date: date | None = None
+    question_end_date: date | None = None
+    question_search: str = Field(default="", max_length=200)
     force_refresh: bool = False
 
     @model_validator(mode="after")
@@ -83,6 +89,14 @@ class TeacherAIAnalysisRequest(StrictTeacherModel):
             raise ValueError("start_date 和 end_date 必须同时提供")
         if self.start_date is not None and self.end_date is not None and self.start_date > self.end_date:
             raise ValueError("start_date 不能晚于 end_date")
+        if (self.question_start_date is None) != (self.question_end_date is None):
+            raise ValueError("提问起止日期必须同时提供")
+        for value in (self.start_date, self.end_date, self.question_start_date, self.question_end_date):
+            if value is not None and not MIN_QUERY_DATE <= value <= MAX_QUERY_DATE:
+                raise ValueError("请选择 1900-01-01 至 2100-12-31 之间的有效时间段")
+        for start, end in [(self.start_date, self.end_date), (self.question_start_date, self.question_end_date)]:
+            if start and end and (start > end or (end-start).days >= 365):
+                raise ValueError("请选择不超过365天的有效时间段")
         return self
 
 

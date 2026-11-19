@@ -20,7 +20,7 @@ from server.rbac.catalog import permission_id, permission_row, role_id
 def test_migration_graph_has_one_deployable_head_after_t07_additions() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20261118_add_file_distributions"]
+    assert scripts.get_heads() == ["20261119_classroom_workspace"]
     assert scripts.get_revision("20261118_add_file_distributions").down_revision == "20261117_release_note_reads"
     assert scripts.get_revision("20261117_release_note_reads").down_revision == "20261102_add_workspace_id"
     assert scripts.get_revision("20261102_add_workspace_id").down_revision == "20261017_55_t07_sms_history"
@@ -602,3 +602,10 @@ def test_guest_agent_permission_migration_emits_offline_seed_sql() -> None:
     assert "INSERT INTO nlp_role_permissions" not in sql
     assert "INSERT INTO nlp_role_permission_scopes" not in sql
     assert "INSERT INTO nlp_rbac_guest_agent_perm_backups" in sql
+
+
+def test_multiple_classrooms_keep_workspace_foreign_key_index():
+    output = StringIO()
+    command.upgrade(Config("alembic.ini", output_buffer=output), "20261118_add_file_distributions:head", sql=True)
+    sql = output.getvalue()
+    assert sql.index("CREATE INDEX ix_nlp_classrooms_workspace_id") < sql.index("DROP INDEX uq_nlp_classrooms_workspace_id")

@@ -1,5 +1,6 @@
+import { ClassroomScopeSelect } from "./ClassroomScopeSelect";
 import { AlertCircle, BarChart3, BookOpen, ChevronLeft, FileQuestion, GraduationCap, LayoutDashboard, Menu, MessageCircleQuestion, RefreshCw, School, Sparkles, Target, Users } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { BlueprintCatalogEditor, GuidedBlueprintCatalogEditor, TopicCatalogEditor } from "@/modules/teacher/workspace/TeacherCatalogEditor";
 import { TeacherBookEditor } from "@/modules/teacher/workspace/TeacherBookEditor";
@@ -9,7 +10,7 @@ import { ClassroomManagementPage } from "@/modules/admin/ClassroomManagementPage
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
 import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
 import { api, ensureAuth } from "@/platform/http/api";
-import type { TeacherCatalog, TeacherOverview, WeakTopic } from "@/shared/types";
+import type { ClassroomSummary, TeacherCatalog, TeacherOverview, WeakTopic } from "@/shared/types";
 import { resolveWorkspaceId } from "@/shared/utils/workspace";
 
 export type TeacherPage = "overview" | "topics" | "book" | "exercises" | "reviews" | "guided" | "questions" | "reports" | "classrooms";
@@ -31,13 +32,14 @@ type PendingTeacherAction = { kind: "navigate"; page: TeacherPage } | { kind: "r
 
 const RISK_LABEL: Record<WeakTopic["risk"], string> = { low: "低风险", medium: "中风险", high: "高风险" };
 
-function Overview({ data }: { data: TeacherOverview }) {
+function Overview({ data, headerControls }: { data: TeacherOverview; headerControls?: ReactNode }) {
   const { summary } = data;
+  const personLabel = data.data_scope?.mode === "all_users" ? "用户" : "学生";
   const weakTopics = (data.weak_topics ?? []).slice(0, 5);
   return <div className="teacher-stack">
-    <section className="teacher-welcome"><div><h1>NLP 教师空间</h1><p>近 {data.period_days} 天学生的提问、会话与练习概览；下方列出当前最需要关注的弱知识点。</p></div><GraduationCap size={64} /></section>
+    <section className="teacher-welcome"><div><h1>NLP 教师空间</h1><p>近 {data.period_days} 天{personLabel}的提问、会话与练习概览；下方列出当前最需要关注的弱知识点。</p></div>{headerControls ?? <GraduationCap size={64} />}</section>
     <div className="teacher-kpis">
-      <article><Users /><span>学生</span><strong>{summary.students}</strong></article>
+      <article><Users /><span>{personLabel}</span><strong>{summary.students}</strong></article>
       <article><MessageCircleQuestion /><span>会话</span><strong>{summary.sessions}</strong></article>
       <article><FileQuestion /><span>提问</span><strong>{summary.questions}</strong></article>
       <article><Target /><span>练习通过率</span><strong>{summary.exercises ? `${summary.exercise_pass_rate}%` : "—"}</strong></article>
@@ -50,6 +52,7 @@ function Overview({ data }: { data: TeacherOverview }) {
 }
 
 export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: TeacherPage; onNavigate?: (page: TeacherPage) => void }) {
+  const loadGeneration = useRef(0);
   const [localPage, setPage] = useState<TeacherPage>(routedPage ?? pageFromPath);
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [data, setData] = useState<TeacherOverview | null>(null);
@@ -59,6 +62,10 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
   const [bookEditorGeneration, setBookEditorGeneration] = useState(0);
   const [pendingAction, setPendingAction] = useState<PendingTeacherAction | null>(null);
   const [workspaceId, setWorkspaceId] = useState("default");
+  const [classroomScope, setClassroomScope] = useState("");
+  const [classroomOptions, setClassroomOptions] = useState<ClassroomSummary[]>([]);
+  const [developerScope, setDeveloperScope] = useState(false);
+  const [scopeError, setScopeError] = useState("");
   const [analyticsDays, setAnalyticsDays] = useState(30);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -72,14 +79,26 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
   const dirty = catalogDirty || bookDirty;
 
   const load = useCallback(async (requestedDays = 30) => {
+    const generation = ++loadGeneration.current;
     setLoading(true);
     setError("");
     try {
       const auth = await ensureAuth();
       if (!auth.roles.some((role) => role === "developer" || role === "teacher")) throw new Error("当前账户没有教师权限");
+      setDeveloperScope(auth.roles.some((role) => role === "developer" || role === "admin"));
+      if (needsOverview && typeof api.listClassrooms === "function") {
+        void api.listClassrooms().then((result) => {
+          if (generation !== loadGeneration.current) return;
+          setClassroomOptions(result.items);
+          setScopeError("");
+        }).catch(() => {
+          if (generation === loadGeneration.current) setScopeError("班级列表读取失败，可刷新重试。");
+        });
+      }
       const settings = await api.getSettings();
       const selectedWorkspaceId = resolveWorkspaceId(auth, settings.preferences.settings ?? {});
-      const [overview, catalogResult] = await Promise.all([needsOverview ? api.getTeacherOverview(selectedWorkspaceId, requestedDays) : Promise.resolve(null), needsCatalog ? api.getTeacherCatalog(selectedWorkspaceId) : Promise.resolve(null)]);
+      const [overview, catalogResult] = await Promise.all([needsOverview ? (classroomScope ? api.getTeacherOverview(selectedWorkspaceId, requestedDays, classroomScope) : api.getTeacherOverview(selectedWorkspaceId, requestedDays)) : Promise.resolve(null), needsCatalog ? api.getTeacherCatalog(selectedWorkspaceId) : Promise.resolve(null)]);
+      if (generation !== loadGeneration.current) return;
       const nextCatalog = catalogResult ? { ...catalogResult.catalog, guided_blueprints: catalogResult.catalog.guided_blueprints ?? [] } : null;
       setWorkspaceId(selectedWorkspaceId);
       setData(overview);
@@ -88,13 +107,13 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
       setBookDirty(false);
       setSaveMessage("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (generation === loadGeneration.current) setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [needsCatalog, needsOverview]);
+  }, [needsCatalog, needsOverview, classroomScope]);
 
-  useEffect(() => { queueMicrotask(() => void load()); }, [load]);
+  useEffect(() => { queueMicrotask(() => void load(analyticsDays)); }, [load, analyticsDays]);
   useEffect(() => {
     if (!dirty) return;
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -134,7 +153,7 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
     else performNavigation(next);
   };
   const requestReload = () => { if (dirty) setPendingAction({ kind: "reload" }); else void load(analyticsDays); };
-  const changeAnalyticsPeriod = (days: number) => { setAnalyticsDays(days); void load(days); };
+  const changeAnalyticsPeriod = (days: number) => { setAnalyticsDays(days); };
   const discardDraft = () => {
     if (savedCatalogSnapshot) {
       try { setCatalog(JSON.parse(savedCatalogSnapshot) as TeacherCatalog); } catch { /* A server snapshot is always valid JSON. */ }
@@ -156,6 +175,13 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
   };
   const saveProps = { saving, saveMessage, onSave: () => void save() };
   const updateDraft = (nextCatalog: TeacherCatalog) => { setCatalog(nextCatalog); setSaveMessage(""); };
+  const scopeControls = <div className="teacher-classroom-filter">
+    <ClassroomScopeSelect value={classroomScope} onChange={setClassroomScope} error={scopeError} options={[
+      { value: "", label: developerScope ? "所有班级" : "我的所有班级" },
+      ...classroomOptions.map((item) => ({ value: item.id, label: item.name })),
+      ...(developerScope ? [{ value: "everyone", label: "所有人" }] : []),
+    ]} />
+  </div>;
   const pageContent = page === "classrooms"
     ? <ClassroomManagementPage workspaceId={workspaceId} />
     : page === "book"
@@ -165,18 +191,9 @@ export function TeacherWorkspace({ page: routedPage, onNavigate }: { page?: Teac
         : page === "exercises" ? <BlueprintCatalogEditor kind="exercise" topics={catalog.topics} blueprints={catalog.exercise_blueprints} onChange={(exercise_blueprints) => updateDraft({ ...catalog, exercise_blueprints: exercise_blueprints as TeacherCatalog["exercise_blueprints"] })} saveProps={saveProps} />
           : page === "reviews" ? <BlueprintCatalogEditor kind="review" topics={catalog.topics} blueprints={catalog.review_blueprints} onChange={(review_blueprints) => updateDraft({ ...catalog, review_blueprints: review_blueprints as TeacherCatalog["review_blueprints"] })} saveProps={saveProps} />
             : page === "guided" ? <GuidedBlueprintCatalogEditor topics={catalog.topics} blueprints={catalog.guided_blueprints} onChange={(guided_blueprints) => updateDraft({ ...catalog, guided_blueprints })} saveProps={saveProps} />
-              : page === "questions" ? <StudentQuestionsPage data={data!} />
-              : page === "reports" ? <LearningAnalysisPage data={data!} workspaceId={workspaceId} onPeriodChange={changeAnalyticsPeriod} />
-              : <Overview data={data!} />;
-  const content = <>
-    {needsOverview && data?.data_scope && <section className="teacher-data-scope" aria-label="学生统计范围">
-      <strong>统计范围：{data.data_scope.label}</strong>
-      <span>{data.data_scope.student_count} 名有效学生 · 打开或刷新页面时更新</span>
-      {data.data_scope.message && <p>{data.data_scope.message}</p>}
-      {data.data_scope.mode === "classroom_students" && data.data_scope.classroom_count === 0 && <button type="button" onClick={() => navigate("classrooms")}>前往班级管理</button>}
-      {page === "reports" && data.summary.exercises === 0 && <p>尚无已评分练习，知识点掌握程度暂不能判断；提问数量仍会正常统计。</p>}
-    </section>}
-    {pageContent}
-  </>;
-  return <div className={`teacher-shell ${navCollapsed ? "teacher-shell-nav-collapsed" : ""}`}><aside className={`teacher-nav ${navCollapsed ? "collapsed" : ""}`}><div className="teacher-brand"><button className="teacher-brand-mark" type="button" aria-label={navCollapsed ? "展开教师侧栏" : "NLP 教师空间"} onClick={navCollapsed ? () => setNavCollapsed(false) : undefined}><GraduationCap /></button>{!navCollapsed && <span><strong>NLP 教师空间</strong></span>}<button className="teacher-nav-refresh" type="button" aria-label="刷新" title={navCollapsed ? "刷新" : undefined} onClick={requestReload} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />{!navCollapsed && "刷新"}</button>{!navCollapsed && <button className="teacher-nav-collapse" type="button" aria-label="折叠教师侧栏" title="折叠教师侧栏" onClick={() => setNavCollapsed(true)}><Menu size={16} /></button>}</div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} aria-label={label} title={navCollapsed ? label : undefined} onClick={() => navigate(itemPage)}><Icon size={17} />{!navCollapsed && <span>{label}</span>}</button>)}</nav><a href="/" onClick={(event) => { if (!dirty) return; event.preventDefault(); setPendingAction({ kind: "exit" }); }}><ChevronLeft size={16} />{!navCollapsed && <span>返回学生模式</span>}</a></aside><main className={['teacher-main', page === "book" && "teacher-book-main", isCatalogEditor && "teacher-catalog-main", page === "questions" && "teacher-questions-main", page === "reports" && "teacher-analysis-main", page === "overview" && "teacher-overview-main"].filter(Boolean).join(" ")}><header className="teacher-topbar"><div><h1>{PAGE_LABELS[page]}</h1><span>{workspaceId} workspace · 目录修改需保存后生效</span></div><div className="teacher-topbar-actions"><SchoolLogo /></div></header><div className={`teacher-content ${page === "book" ? "teacher-content-book" : isCatalogEditor ? "teacher-content-catalog" : ""} ${page === "questions" ? "teacher-content-questions" : ""} ${page === "reports" ? "teacher-content-analysis" : ""} ${page === "overview" ? "teacher-content-overview" : ""}`}>{loading ? <div className="teacher-state"><RefreshCw className="spin" />正在加载教学目录…</div> : error ? <div className="teacher-state error"><AlertCircle /><strong>无法进入教师模式</strong><p>{error}</p></div> : content}</div></main>{pendingAction && <ConfirmDialog open title="有未保存的修改" description="当前页面存在未保存的内容，继续操作会丢弃这些修改。" confirmLabel="继续离开" cancelLabel="留在当前页面" onClose={() => setPendingAction(null)} onConfirm={confirmPendingAction} />}</div>;
+              : page === "questions" ? <StudentQuestionsPage data={data!} headerControls={scopeControls} />
+              : page === "reports" ? <LearningAnalysisPage headerControls={scopeControls} key={classroomScope} classroomId={classroomScope} data={data!} workspaceId={workspaceId} onPeriodChange={changeAnalyticsPeriod} />
+              : <Overview data={data!} headerControls={scopeControls} />;
+  const content = <>{pageContent}</>;
+  return <div className={`teacher-shell ${navCollapsed ? "teacher-shell-nav-collapsed" : ""}`}><aside className={`teacher-nav ${navCollapsed ? "collapsed" : ""}`}><div className="teacher-brand"><button className="teacher-brand-mark" type="button" aria-label={navCollapsed ? "展开教师侧栏" : "NLP 教师空间"} onClick={navCollapsed ? () => setNavCollapsed(false) : undefined}><GraduationCap /></button>{!navCollapsed && <span><strong>NLP 教师空间</strong></span>}<button className="teacher-nav-refresh" type="button" aria-label="刷新" title={navCollapsed ? "刷新" : undefined} onClick={requestReload} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={15} />{!navCollapsed && "刷新"}</button>{!navCollapsed && <button className="teacher-nav-collapse" type="button" aria-label="折叠教师侧栏" title="折叠教师侧栏" onClick={() => setNavCollapsed(true)}><Menu size={16} /></button>}</div><nav>{NAV.map(({ page: itemPage, label, icon: Icon }) => <button className={page === itemPage ? "active" : ""} type="button" key={itemPage} aria-label={label} title={navCollapsed ? label : undefined} onClick={() => navigate(itemPage)}><Icon size={17} />{!navCollapsed && <span>{label}</span>}</button>)}</nav><a href="/" onClick={(event) => { if (!dirty) return; event.preventDefault(); setPendingAction({ kind: "exit" }); }}><ChevronLeft size={16} />{!navCollapsed && <span>返回学生模式</span>}</a></aside><main className={['teacher-main', page === "book" && "teacher-book-main", isCatalogEditor && "teacher-catalog-main", page === "questions" && "teacher-questions-main", page === "reports" && "teacher-analysis-main", page === "overview" && "teacher-overview-main"].filter(Boolean).join(" ")}><header className="teacher-topbar"><div><h1>{PAGE_LABELS[page]}</h1><span>{page === "classrooms" ? "班级与学生管理" : `${workspaceId} workspace · 目录修改需保存后生效`}</span></div><div className="teacher-topbar-actions"><SchoolLogo /></div></header><div className={`teacher-content ${page === "book" ? "teacher-content-book" : isCatalogEditor ? "teacher-content-catalog" : ""} ${page === "questions" ? "teacher-content-questions" : ""} ${page === "reports" ? "teacher-content-analysis" : ""} ${page === "overview" ? "teacher-content-overview" : ""}`}>{loading ? <div className="teacher-state"><RefreshCw className="spin" />正在加载教学目录…</div> : error ? <div className="teacher-state error"><AlertCircle /><strong>无法进入教师模式</strong><p>{error}</p>{needsOverview && classroomScope && <button type="button" onClick={() => setClassroomScope("")}>返回合并统计</button>}</div> : content}</div></main>{pendingAction && <ConfirmDialog open title="有未保存的修改" description="当前页面存在未保存的内容，继续操作会丢弃这些修改。" confirmLabel="继续离开" cancelLabel="留在当前页面" onClose={() => setPendingAction(null)} onConfirm={confirmPendingAction} />}</div>;
 }

@@ -11,8 +11,8 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.identity import AuthenticatedPrincipal
-from core.rbac import Permission
+from core.identity import AccessDeniedError, AuthenticatedPrincipal
+from core.rbac import Permission, authorization_service
 from server.infrastructure.mysql.models import (
     RoleModel,
     PermissionModel,
@@ -315,8 +315,37 @@ class RbacService:
             raise ClassroomNotFoundError(classroom_id)
         return row
 
-    async def classrooms_for_user(self, session: AsyncSession, user_id: str) -> list[ClassroomModel]:
-        return list((await session.scalars(select(ClassroomModel).join(ClassroomMemberModel, ClassroomMemberModel.classroom_id == ClassroomModel.id).where(ClassroomMemberModel.user_id == user_id, ClassroomMemberModel.status == "active", ClassroomModel.status == "active").order_by(ClassroomModel.name))).all())
+    async def require_classroom_manager(
+        self, session: AsyncSession, principal: AuthenticatedPrincipal, classroom_id: str
+    ) -> ClassroomModel:
+        """Require a granted capability plus an active teaching assignment.
+
+        Developers manage every classroom, but must still hold the capability.
+        A teacher's student membership never grants classroom administration.
+        """
+        classroom = await self.classroom(session, classroom_id)
+        authorization_service.require(principal, Permission.CLASSROOM_MEMBER_MANAGE)
+        if principal.is_admin:
+            return classroom
+        teaching_assignment = await session.scalar(
+            select(ClassroomMemberModel.user_id).where(
+                ClassroomMemberModel.classroom_id == classroom_id,
+                ClassroomMemberModel.user_id == principal.user_id,
+                ClassroomMemberModel.member_role == "teacher",
+                ClassroomMemberModel.status == "active",
+            )
+        )
+        if "teacher" not in principal.roles or teaching_assignment is None:
+            raise AccessDeniedError("只有该班任课教师或开发者可以管理班级")
+        return classroom
+
+    async def classrooms_for_user(self, session: AsyncSession, user_id: str, *, member_role: str | None = None) -> list[ClassroomModel]:
+        query = select(ClassroomModel).join(ClassroomMemberModel, ClassroomMemberModel.classroom_id == ClassroomModel.id).where(
+            ClassroomMemberModel.user_id == user_id, ClassroomMemberModel.status == "active", ClassroomModel.status == "active"
+        )
+        if member_role is not None:
+            query = query.where(ClassroomMemberModel.member_role == member_role)
+        return list((await session.scalars(query.order_by(ClassroomModel.name))).all())
 
     async def replace_classroom_member(
         self,
@@ -369,13 +398,22 @@ class RbacService:
             if guest_role_id is None or student_role_id is None:
                 raise UnknownRoleError("guest and student roles must be active")
             if "student" not in role_ids:
-                session.add(
-                    UserRoleModel(
+                student_assignment = await session.scalar(
+                    select(UserRoleModel).where(
+                        UserRoleModel.user_id == user_id,
+                        UserRoleModel.role_id == student_role_id,
+                    ).with_for_update()
+                )
+                if student_assignment is None:
+                    session.add(UserRoleModel(
                         user_id=user_id,
                         role_id=student_role_id,
                         assigned_by_user_id=actor_user_id,
-                    )
-                )
+                    ))
+                else:
+                    # Expired assignments still occupy the composite primary key.
+                    student_assignment.expires_at = None
+                    student_assignment.assigned_by_user_id = actor_user_id
                 role_transition = True
             if "guest" in role_ids:
                 await session.execute(

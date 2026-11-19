@@ -1,4 +1,8 @@
+import { School, Users, UserPlus, Copy, Plus } from "lucide-react";
+import { PaginatedStudentTable } from "@/shared/ui/PaginatedStudentTable";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmDialog } from "@/shared/ui/ConfirmDialog";
+import { ClassroomWorkspaceSelect } from "./ClassroomWorkspaceSelect";
 import { api } from "@/platform/http/api";
 import type { ClassroomSummary, JoinRequest } from "@/shared/types";
 
@@ -15,7 +19,7 @@ type StudentMember = {
   status: string;
   joined_at?: string;
 };
-type WorkspaceOption = { id: string; name: string };
+const studentMembers = (items: StudentMember[]) => items.filter((item) => item.member_role === "student" && item.status === "active");
 
 export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPageProps = {}) {
   const [classrooms, setClassrooms] = useState<ClassroomSummary[]>([]);
@@ -31,7 +35,14 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
   const [copyMessage, setCopyMessage] = useState("");
   const [creating, setCreating] = useState(false);
   const [className, setClassName] = useState("");
-  const [workspaceOptions, setWorkspaceOptions] = useState<WorkspaceOption[]>([]);
+  const [reviewing, setReviewing] = useState<string | null>(null);
+  const reviewInFlight = useRef(false);
+  const [removing, setRemoving] = useState(false);
+  const removeInFlight = useRef(false);
+  const [pendingRemoval, setPendingRemoval] = useState<StudentMember | null>(null);
+  const [detailErrors, setDetailErrors] = useState({ requests: "", code: "", members: "" });
+  const [failedDetails, setFailedDetails] = useState({ requests: false, members: false });
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(workspaceId ?? "");
   const selectionVersion = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
@@ -45,11 +56,6 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
     try {
       const res = await api.listClassrooms();
       setClassrooms(res.items);
-      setWorkspaceOptions((current) => {
-        const next = new Map(current.map((item) => [item.id, item]));
-        for (const item of res.items) next.set(item.workspace_id, { id: item.workspace_id, name: item.workspace_id });
-        return [...next.values()];
-      });
       return res.items;
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载班级失败");
@@ -63,27 +69,17 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
     queueMicrotask(() => void loadClassrooms());
   }, [loadClassrooms]);
 
-  useEffect(() => {
-    if (workspaceId || typeof api.listWorkspaces !== "function") return;
-    void api.listWorkspaces().then((res) => {
-      const options = res.workspaces.map((item) => ({ id: item.id, name: item.name }));
-      setWorkspaceOptions((current) => {
-        const next = new Map(current.map((item) => [item.id, item]));
-        for (const item of options) next.set(item.id, item);
-        return [...next.values()];
-      });
-      if (!selectedWorkspaceId && options[0]) setSelectedWorkspaceId(options[0].id);
-    }).catch(() => undefined);
-  }, [selectedWorkspaceId, workspaceId]);
-
   const loadRequests = useCallback(async (classroomId: string, version = selectionVersion.current) => {
     try {
       const res = await api.listJoinRequests(classroomId);
       if (version !== selectionVersion.current || selectedIdRef.current !== classroomId) return;
       setRequests(res.items);
+      setFailedDetails((current) => ({ ...current, requests: false }));
+      setDetailErrors((current) => ({ ...current, requests: "" }));
     } catch (err) {
       if (version !== selectionVersion.current || selectedIdRef.current !== classroomId) return;
-      setError(err instanceof Error ? err.message : "加载申请失败");
+      setFailedDetails((current) => ({ ...current, requests: true }));
+      setDetailErrors((current) => ({ ...current, requests: err instanceof Error ? err.message : "加载申请失败" }));
     }
   }, []);
 
@@ -95,15 +91,23 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
     setStudents([]);
     setJoinCode("");
     setCopyMessage("");
+    setSearchKeyword("");
+    setActionError("");
+    setActionMessage("");
+    setPendingRemoval(null);
     setError("");
-    void Promise.all([api.listJoinRequests(id), api.getClassroomJoinCode(id), api.listClassroomMembers(id)]).then(([requestResult, codeResult, studentResult]) => {
+    setFailedDetails({ requests: false, members: false });
+    setDetailErrors({ requests: "", code: "", members: "" });
+    setDetailsLoading(true);
+    void Promise.allSettled([api.listJoinRequests(id), api.getClassroomJoinCode(id), api.listClassroomMembers(id)]).then(([requestResult, codeResult, studentResult]) => {
       if (version !== selectionVersion.current || selectedIdRef.current !== id) return;
-      setRequests(requestResult.items);
-      setJoinCode(codeResult.join_code);
-      setStudents(studentResult.items || []);
-    }).catch((err) => {
-      if (version !== selectionVersion.current || selectedIdRef.current !== id) return;
-      setError(err instanceof Error ? err.message : "加载班级详情失败");
+      if (requestResult.status === "fulfilled") setRequests(requestResult.value.items);
+      if (codeResult.status === "fulfilled") setJoinCode(codeResult.value.join_code);
+      if (studentResult.status === "fulfilled") setStudents(studentMembers(studentResult.value.items));
+      const failureMessage = (result: PromiseSettledResult<unknown>) => result.status === "rejected" ? result.reason instanceof Error ? result.reason.message : "加载班级详情失败" : "";
+      setFailedDetails({ requests: requestResult.status === "rejected", members: studentResult.status === "rejected" });
+      setDetailErrors({ requests: failureMessage(requestResult), code: failureMessage(codeResult), members: failureMessage(studentResult) });
+      setDetailsLoading(false);
     });
   };
 
@@ -117,9 +121,9 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
     try {
       const created = await api.createClassroom({ workspace_id: activeWorkspaceId, name });
       setClassName("");
-      setActionMessage(`班级已创建，班级码：${created.join_code}`);
       await loadClassrooms();
       handleSelect(created.id);
+      setActionMessage(`班级已创建，班级码：${created.join_code}`);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "创建班级失败");
     } finally {
@@ -139,7 +143,9 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
 
   const handleReview = async (requestId: string, approve: boolean) => {
     const classroomId = selectedIdRef.current;
-    if (!classroomId) return;
+    if (!classroomId || reviewInFlight.current || removeInFlight.current) return;
+    reviewInFlight.current = true;
+    setReviewing(requestId);
     const version = selectionVersion.current;
     setActionError("");
     setActionMessage("");
@@ -151,15 +157,47 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
       }
       await loadRequests(classroomId, version);
       if (approve) {
-        void api.listClassroomMembers(classroomId).then(res => {
+        await api.listClassroomMembers(classroomId).then(res => {
           if (version === selectionVersion.current && selectedIdRef.current === classroomId) {
-            setStudents(res.items || []);
+            setStudents(studentMembers(res.items || []));
+            setFailedDetails((current) => ({ ...current, members: false }));
+            setDetailErrors((current) => ({ ...current, members: "" }));
           }
-        }).catch(() => undefined);
+        }).catch((err) => {
+          if (version === selectionVersion.current) {
+            setFailedDetails((current) => ({ ...current, members: true }));
+            setDetailErrors((current) => ({ ...current, members: err instanceof Error ? err.message : "刷新学生名单失败" }));
+          }
+        });
       }
       if (version === selectionVersion.current && selectedIdRef.current === classroomId) setActionMessage(approve ? "申请已通过" : "申请已拒绝");
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "操作失败");
+      if (version === selectionVersion.current) setActionError(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      reviewInFlight.current = false;
+      setReviewing(null);
+    }
+  };
+  const removeStudent = async () => {
+    const classroomId = selectedIdRef.current;
+    if (!classroomId || !pendingRemoval || removeInFlight.current || reviewInFlight.current) return;
+    const student = pendingRemoval;
+    const version = selectionVersion.current;
+    removeInFlight.current = true;
+    setRemoving(true);
+    setPendingRemoval(null);
+    setActionError("");
+    setActionMessage("");
+    try {
+      await api.removeClassroomMember(classroomId, student.user_id);
+      if (version !== selectionVersion.current) return;
+      setStudents((current) => current.filter((item) => item.user_id !== student.user_id));
+      setActionMessage("学生已移出班级");
+    } catch (err) {
+      if (version === selectionVersion.current) setActionError(err instanceof Error ? err.message : "移除学生失败");
+    } finally {
+      removeInFlight.current = false;
+      setRemoving(false);
     }
   };
   const filteredStudents = students.filter(
@@ -168,198 +206,43 @@ export function ClassroomManagementPage({ workspaceId }: ClassroomManagementPage
       s.username?.toLowerCase().includes(searchKeyword.toLowerCase())
   );
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">班级管理</h1>
-        <p className="text-sm text-gray-500">创建班级、查看班级码并处理学生加入申请</p>
-      </div>
-
-      {error && <div className="rounded bg-red-50 p-4 text-sm text-red-700">{error}</div>}
-      {actionError && <div className="rounded bg-red-50 p-3 text-sm text-red-700">{actionError}</div>}
-      {actionMessage && <div className="rounded bg-green-50 p-3 text-sm text-green-700" role="status">{actionMessage}</div>}
-
-      <form onSubmit={(event) => void createClassroom(event)} className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-        <h2 className="mb-3 text-sm font-semibold text-gray-700">创建班级</h2>
-        <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-          <label className="text-sm text-gray-600">
-            班级名称
-            <input aria-label="班级名称" value={className} onChange={(event) => setClassName(event.target.value)} placeholder="例如：高一语文一班" className="mt-1 block w-full rounded border border-gray-300 px-3 py-2" />
-          </label>
-          <label className="text-sm text-gray-600">
-            工作区
-            <select aria-label="工作区" value={activeWorkspaceId} onChange={(event) => setSelectedWorkspaceId(event.target.value)} disabled={Boolean(workspaceId)} className="mt-1 block w-full rounded border border-gray-300 px-3 py-2 disabled:bg-gray-100">
-              {!activeWorkspaceId && <option value="">选择工作区</option>}
-              {workspaceOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
-              {activeWorkspaceId && !workspaceOptions.some((option) => option.id === activeWorkspaceId) && <option value={activeWorkspaceId}>{activeWorkspaceId}</option>}
-            </select>
-          </label>
-          <button type="submit" disabled={creating || !className.trim() || !activeWorkspaceId} className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">{creating ? "创建中…" : "创建班级"}</button>
-        </div>
+  return <div className="teacher-stack classroom-management">
+    <section className="teacher-page-summary classroom-hero"><div><h2>班级管理</h2><p>管理任教班级、审核入班申请与维护学生名单。</p></div><span className="classroom-total"><School size={16} />{classrooms.length} 个班级</span></section>
+    {error && <p className="classroom-notice error" role="alert">{error}</p>}
+    {Object.values(detailErrors).some(Boolean) && <p className="classroom-notice error" role="alert">{Object.values(detailErrors).filter(Boolean).join("；")}</p>}
+    {actionError && <p className="classroom-notice error" role="alert">{actionError}</p>}
+    {actionMessage && <p className="classroom-notice success" role="status">{actionMessage}</p>}
+    <section className="teacher-panel classroom-create">
+      <form onSubmit={(event) => void createClassroom(event)}>
+        <label>班级名称<input aria-label="班级名称" value={className} maxLength={128} onChange={(event) => setClassName(event.target.value)} placeholder="输入新班级名称" /></label>
+        <ClassroomWorkspaceSelect workspaceId={workspaceId} value={activeWorkspaceId} onChange={setSelectedWorkspaceId} />
+        <button className="classroom-primary" type="submit" disabled={creating || !className.trim() || !activeWorkspaceId}><Plus size={15} />{creating ? "创建中…" : "创建班级"}</button>
       </form>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div>
-          {loading && classrooms.length === 0 ? (
-            <div className="py-12 text-center text-gray-500">加载中...</div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              {classrooms.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => handleSelect(c.id)}
-                  className={`cursor-pointer rounded-lg border p-5 text-left shadow-sm transition hover:border-blue-300 hover:shadow-md ${
-                    selectedId === c.id ? "border-blue-300 bg-blue-50" : "border-gray-200 bg-white"
-                  }`}
-                >
-                  <h3 className="font-semibold text-gray-900">{c.name}</h3>
-                  <p className="mt-1 text-xs text-gray-500">状态：{c.status}</p>
-                </button>
-              ))}
-              {classrooms.length === 0 && !loading && (
-                <div className="col-span-full py-12 text-center text-gray-500">暂无班级</div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold text-gray-700">加入申请</h2>
-          {selectedId && <div className="mb-4 rounded-md bg-blue-50 p-3 text-sm text-blue-900">
-            <div className="flex items-center justify-between gap-3">
-              <span>班级码：<strong className="tracking-widest">{joinCode || "加载中…"}</strong></span>
-              <div className="flex items-center gap-2">
-                <button type="button" disabled={!joinCode} onClick={() => void copyJoinCode()} className="rounded border border-blue-200 bg-white px-2 py-1 text-xs font-medium hover:bg-blue-100">复制班级码</button>
-              </div>
-            </div>
-            {copyMessage && <p className="mt-1 text-xs text-blue-700" role="status">{copyMessage}</p>}
-          </div>}
-          {!selectedId ? (
-            <p className="py-8 text-center text-sm text-gray-500">选择一个班级查看申请</p>
-          ) : requests.length === 0 ? (
-            <p className="py-8 text-center text-sm text-gray-500">暂无待处理申请</p>
-          ) : (
-            <div className="max-h-96 space-y-3 overflow-y-auto">
-              {requests.map((r) => (
-                <div key={r.id} className="rounded-md border border-gray-200 p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-900">{r.display_name || r.user_name || r.user_id}</span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                        r.status === "pending"
-                          ? "bg-yellow-100 text-yellow-800"
-                          : r.status === "approved"
-                            ? "bg-green-100 text-green-800"
-                            : "bg-gray-100 text-gray-600"
-                      }`}
-                    >
-                      {r.status}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-gray-500">学号：{r.student_number ?? "-"}</p>
-                  {r.status === "pending" && (
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleReview(r.id, true)}
-                        className="rounded bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-700"
-                      >
-                        通过
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleReview(r.id, false)}
-                        className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
-                      >
-                        拒绝
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm w-full">
-        <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-gray-700">班级学生名单</h2>
-            <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-800">
-              共 {filteredStudents.length} 人
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              placeholder="搜索姓名或账号..."
-              value={searchKeyword}
-              onChange={(e) => setSearchKeyword(e.target.value)}
-              className="w-64 rounded border border-gray-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500"
-            />
-            <button
-              type="button"
-              onClick={() => setSearchKeyword("")}
-              className="rounded bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 transition-colors"
-            >
-              移除筛选
-            </button>
-          </div>
-        </div>
-
-        {!selectedId ? (
-          <p className="py-8 text-center text-sm text-gray-500">选择一个班级查看学生</p>
-        ) : filteredStudents.length === 0 ? (
-          <p className="py-8 text-center text-sm text-gray-500">{searchKeyword ? "没有找到匹配的学生" : "该班级暂无学生"}</p>
-        ) : (
-          <div className="max-h-[500px] overflow-y-auto rounded-md border border-gray-100">
-            <table className="w-full text-left text-sm text-gray-600 whitespace-nowrap">
-              <thead className="sticky top-0 bg-gray-50 text-xs text-gray-500">
-                <tr>
-                  <th className="px-4 py-3 font-medium">账号</th>
-                  <th className="px-4 py-3 font-medium">姓名</th>
-                  <th className="px-4 py-3 font-medium">加入时间</th>
-                  <th className="px-4 py-3 font-medium">状态</th>
-                  <th className="px-4 py-3 font-medium text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredStudents.map((student) => (
-                  <tr key={student.user_id} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
-                    <td className="px-4 py-3 font-medium text-gray-900">@{student.username}</td>
-                    <td className="px-4 py-3">{student.display_name || "未设置"}</td>
-                    <td className="px-4 py-3 text-gray-500">
-                      {student.joined_at ? new Date(student.joined_at).toLocaleDateString() : "-"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="rounded bg-green-50 px-2 py-1 text-xs font-medium text-green-700">活跃</span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!window.confirm(`确定要将 ${student.username} 移出班级吗？`)) return;
-                          try {
-                            await api.removeClassroomMember(selectedId, student.user_id);
-                            setStudents((prev) => prev.filter((s) => s.user_id !== student.user_id));
-                          } catch (err) {
-                            alert("移除失败：" + (err instanceof Error ? err.message : "未知错误"));
-                          }
-                        }}
-                        className="rounded bg-red-50 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-100 transition-colors"
-                      >
-                        移除
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    
+    </section>
+    <div className="classroom-main-grid">
+      <section className="teacher-panel classroom-list">
+        <header><div><h2>我的班级</h2><p>选择班级查看申请和学生</p></div><School size={17} /></header>
+        <nav aria-label="班级列表">{classrooms.map((item) => <button type="button" key={item.id} aria-pressed={selectedId === item.id} onClick={() => handleSelect(item.id)} className={selectedId === item.id ? "active" : ""}><School size={16} /><span>{item.name}</span></button>)}</nav>
+        {!classrooms.length && <p className="teacher-empty-state">{loading ? "正在加载班级…" : "暂无班级，请先创建班级"}</p>}
+      </section>
+      <section className="teacher-panel classroom-requests">
+        <header><div><h2>加入申请{selectedId && !detailsLoading && !failedDetails.requests && <span className="classroom-count">{requests.length}</span>}</h2><p>{classrooms.find((item) => item.id === selectedId)?.name ?? "选择左侧班级后处理申请"}</p></div><UserPlus size={17} /></header>
+        {selectedId && <div className="classroom-code"><span>班级码 <strong>{joinCode || (detailsLoading ? "加载中…" : "暂不可用")}</strong></span><button type="button" disabled={!joinCode} onClick={() => void copyJoinCode()}><Copy size={14} />复制班级码</button>{copyMessage && <small role="status">{copyMessage}</small>}</div>}
+        {!selectedId ? <p className="teacher-empty-state">选择一个班级查看申请</p> : detailsLoading ? <p className="teacher-empty-state">正在加载班级详情…</p> : failedDetails.requests ? <p className="teacher-empty-state" role="alert">申请读取失败，请重新选择班级重试。</p> : !requests.length ? <p className="teacher-empty-state">暂无待处理申请</p> : <div className="classroom-management-requests-list" role="region" aria-label="待审核申请列表" tabIndex={0}>{requests.map((request) => <article key={request.id}>
+          <div><strong>{request.display_name || request.user_name || request.user_id}</strong><small>学号：{request.student_number || "未填写"}</small></div>
+          {request.status === "pending" ? <div className="classroom-actions"><button type="button" className="classroom-primary" disabled={reviewing !== null || removing} onClick={() => void handleReview(request.id, true)}>通过</button><button type="button" disabled={reviewing !== null || removing} onClick={() => void handleReview(request.id, false)}>拒绝</button></div> : <span>{request.status === "approved" ? "已通过" : "已拒绝"}</span>}
+        </article>)}</div>}
+      </section>
     </div>
-  );
+    <section className="teacher-panel teacher-question-panel teacher-question-activity-panel classroom-roster">
+      <header><div><h2>班级学生名单 <span className="classroom-count">共 {students.length} 人</span></h2><p>{classrooms.find((item) => item.id === selectedId)?.name ?? "选择班级查看学生名单"}</p></div><div className="classroom-search"><input aria-label="搜索学生" placeholder="搜索姓名或账号..." value={searchKeyword} onChange={(event) => setSearchKeyword(event.target.value)} /><button type="button" aria-label="移除筛选" onClick={() => setSearchKeyword("")}>清除</button><Users size={17} /></div></header>
+      {!selectedId ? <p className="teacher-empty-state">选择一个班级查看学生</p> : detailsLoading ? <p className="teacher-empty-state">正在加载学生名单…</p> : failedDetails.members ? <p className="teacher-empty-state" role="alert">学生名单读取失败，请重新选择班级重试。</p> : !filteredStudents.length ? <p className="teacher-empty-state">{searchKeyword ? "没有找到匹配的学生" : "该班级暂无学生"}</p> : <PaginatedStudentTable key={`${selectedId}:${searchKeyword}`} headers={["学生", "加入时间", "状态", "操作"]} rows={filteredStudents.map((student) => ({ id: student.user_id, cells: [
+        <><strong>{student.display_name || "未设置"}</strong><small>@{student.username}</small></>,
+        student.joined_at ? new Date(student.joined_at).toLocaleDateString("zh-CN") : "—",
+        <span className="classroom-member-status">活跃</span>,
+        <button className="classroom-remove" type="button" disabled={removing || reviewing !== null} onClick={() => setPendingRemoval(student)}>移除</button>,
+      ] }))} />}
+    </section>
+    {pendingRemoval && <ConfirmDialog open title="移除学生" description={`确定要将 ${pendingRemoval.display_name || pendingRemoval.username} 移出班级吗？`} confirmLabel="确认移除" onClose={() => setPendingRemoval(null)} onConfirm={() => void removeStudent()} />}
+  </div>;
 }

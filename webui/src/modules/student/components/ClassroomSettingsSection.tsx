@@ -1,15 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { School, Plus, RefreshCw, ClipboardList } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError } from "@/platform/http/api";
-import type { JoinRequest } from "@/shared/types";
+import type { ClassroomSummary, JoinRequest } from "@/shared/types";
 
 const statusLabel: Record<string, string> = {
   pending: "待审核",
-  approved: "已加入",
+  approved: "审核通过",
   rejected: "未通过",
 };
 
 export function ClassroomSettingsSection({ canSubmit }: { canSubmit: boolean }) {
+  const refreshVersion = useRef(0);
+  const [requestLoadError, setRequestLoadError] = useState("");
+  const [memberships, setMemberships] = useState<ClassroomSummary[]>([]);
+  const [membershipError, setMembershipError] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [studentNumber, setStudentNumber] = useState("");
   const [requests, setRequests] = useState<JoinRequest[]>([]);
@@ -20,16 +25,26 @@ export function ClassroomSettingsSection({ canSubmit }: { canSubmit: boolean }) 
 
   const loadRequests = useCallback(async () => {
     if (!canSubmit) return;
+    const version = ++refreshVersion.current;
     setLoading(true);
-    try {
-      const response = await api.listMyJoinRequests();
-      setRequests(response.items);
-      setError("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "暂时无法读取入班申请");
-    } finally {
-      setLoading(false);
+    const [history, membership] = await Promise.allSettled([
+      api.listMyJoinRequests(),
+      typeof api.listMyClassrooms === "function" ? api.listMyClassrooms() : Promise.resolve({ items: [] }),
+    ]);
+    if (version !== refreshVersion.current) return;
+    if (history.status === "fulfilled") {
+      setRequests(history.value.items);
+      setRequestLoadError("");
+    } else {
+      setRequestLoadError("申请记录读取失败，请刷新重试。");
     }
+    if (membership.status === "fulfilled") {
+      setMemberships(membership.value.items);
+      setMembershipError("");
+    } else {
+      setMembershipError("当前班级读取失败，请刷新重试");
+    }
+    setLoading(false);
   }, [canSubmit]);
 
   useEffect(() => {
@@ -77,7 +92,12 @@ export function ClassroomSettingsSection({ canSubmit }: { canSubmit: boolean }) 
 
   return (
     <div className="classroom-settings-section">
-      <div className="classroom-join-form">
+      <section className="student-classroom-memberships" aria-label="当前已加入的班级">
+        <header className="student-classroom-heading"><div><School size={17} /><h3>已加入的班级</h3><span className="student-classroom-count">{memberships.length}</span></div></header>
+        {membershipError ? <p className="settings-note" role="alert">{membershipError}</p> : memberships.length ? <div className="student-classroom-member-list" tabIndex={0} aria-label="已加入班级列表">{memberships.map((item) => <article key={item.id}><span className="student-classroom-icon"><School size={18} /></span><strong>{item.name}</strong><small>已加入</small></article>)}</div> : <p className="student-classroom-empty">{loading ? "正在加载…" : "当前尚未加入班级"}</p>}
+      </section>
+      <section className="classroom-join-form" aria-label="申请加入班级">
+        <header className="student-classroom-heading"><div><Plus size={17} /><h3>申请加入班级</h3></div></header>
         <div className="classroom-fields-grid">
           <label className="settings-field">
             <span>班级码</span>
@@ -100,26 +120,26 @@ export function ClassroomSettingsSection({ canSubmit }: { canSubmit: boolean }) 
           </label>
         </div>
         <div className="classroom-form-footer">
-          <span className="classroom-form-hint">输入教师提供的班级码即可申请，不需要填写班级 UUID。</span>
+          <span className="classroom-form-hint">填写教师提供的班级码，审核通过后即可加入。</span>
           <button className="settings-primary-button" type="button" disabled={!joinCode.trim() || submitting} onClick={() => void submit()}>
             {submitting ? "提交中…" : "申请入班"}
           </button>
         </div>
         {success && <p className="feedback-success" role="status">{success}</p>}
         {error && <p className="error-card" role="alert">{error}</p>}
-      </div>
+      </section>
 
-      <div className="classroom-request-list">
-        <div className="classroom-request-header">
-          <strong>我的申请</strong>
-          <span>查看已提交的入班申请与教师审核结果。</span>
-        </div>
+      <section className="classroom-request-list" aria-label="我的申请">
+        <header className="student-classroom-heading">
+          <div><ClipboardList size={17} /><h3>我的申请</h3></div>
+          <button type="button" className="student-classroom-refresh" aria-label="刷新申请" disabled={loading} onClick={() => void loadRequests()}><RefreshCw size={14} className={loading ? "spin" : undefined} />刷新</button>
+        </header>
         {loading ? (
           <p className="settings-note classroom-request-empty">正在加载…</p>
-        ) : requests.length === 0 ? (
+        ) : requestLoadError ? <p className="settings-note" role="alert">{requestLoadError}</p> : requests.length === 0 ? (
           <p className="settings-note classroom-request-empty">暂无入班申请。</p>
         ) : (
-          <div className="classroom-request-items">
+          <div className="classroom-request-items" role="region" aria-label="入班申请记录" tabIndex={0}>
             {requests.map((request) => (
               <article key={request.id} className="classroom-request-item">
                 <div>
@@ -133,7 +153,7 @@ export function ClassroomSettingsSection({ canSubmit }: { canSubmit: boolean }) 
             ))}
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import type { TeacherQuestionActivity } from "@/shared/types";
 import type { AuthSession, AuthorizationAuditListResponse, AuthorizationAuditSummary, ClassroomCreatedResponse, ClassroomJoinCodeResponse, ClassroomSummary, DeveloperRuntimeHealth, DeveloperSnapshot, FeedbackCategory, FeedbackDailyState, FeedbackPriority, FeedbackStatus, FeedbackThread, FeedbackThreadList, JoinRequest, JoinRequestListResponse, LearningBookNavigationItem, LearningBookPage, QuotaAdjustment, QuotaAlert, QuotaArchiveBatch, QuotaBillingRecord, QuotaBillingStatementInput, QuotaBinding, QuotaBucketCandidate, QuotaBucketReplay, QuotaCreditOperation, QuotaCreditOperationInput, QuotaDailyRollup, QuotaGrant, QuotaPolicy, QuotaPolicyExplanation, QuotaPolicyUpdateInput, QuotaPricingRule, QuotaRoleCreditOperationInput, QuotaRoleCreditOperationResult, QuotaSnapshot, QuotaUsageSnapshot, RbacPermission, RbacRole, ReleaseNoteEntry, SessionListResponse, SettingsRuntime, SystemMenu, TeacherAIAnalysisResult, TeacherBookArchiveImportPreview, TeacherBookAssetInput, TeacherBookFile, TeacherBookImportPreview, TeacherBookNavigationItem, TeacherBookPage, TeacherCatalog, TeacherOverview, TeacherAnalysisAnnotations, TeachingGoals, SessionSummary, TurnRecord, UserSettings, UserListResponse, UserProfile, WhiteboardLibraryItem, Workspace, WorkspaceMember } from "@/shared/types";
 import { AUTH_EXPIRED_EVENT, AUTH_REQUIRED_EVENT } from "@/platform/auth/auth-events";
 
@@ -606,9 +607,11 @@ export const api = {
   listPublishedReleaseNotes: () => request<{ items: ReleaseNoteEntry[] }>("/learning/release-notes"),
   getUnreadReleaseNote: () => request<{ item: ReleaseNoteEntry | null }>("/learning/release-notes/unread"),
   markReleaseNoteRead: (noteId: string) => request<{ ok: boolean }>(`/learning/release-notes/${encodeURIComponent(noteId)}/read`, { method: "POST" }),
-  getTeacherOverview: (workspaceId = "default", days = 30) =>
-    request<TeacherOverview>(`/teacher/overview?workspace_id=${encodeURIComponent(workspaceId)}&days=${days}`),
-  generateTeacherAIAnalysis: (workspaceId: string, body: { course_id: string; content_scope: string; start_date?: string; end_date?: string; period_days?: number; force_refresh?: boolean }) =>
+  getTeacherQuestionActivity: (params: URLSearchParams, signal?: AbortSignal) =>
+    request<TeacherQuestionActivity>(`/teacher/questions?${params}`, { signal }),
+  getTeacherOverview: (workspaceId = "default", days = 30, classroomId = "") =>
+    request<TeacherOverview>(`/teacher/overview?workspace_id=${encodeURIComponent(workspaceId)}&days=${days}${classroomId ? `&classroom_id=${encodeURIComponent(classroomId)}` : ""}`),
+  generateTeacherAIAnalysis: (workspaceId: string, body: { question_start_date?: string; question_end_date?: string; question_search?: string; classroom_id?: string; course_id: string; content_scope: string; start_date?: string; end_date?: string; period_days?: number; force_refresh?: boolean }) =>
     request<TeacherAIAnalysisResult>("/teacher/reports/ai-analysis", { method: "POST", body: JSON.stringify({ workspace_id: workspaceId, ...body }) }),
   updateTeachingGoals: (workspaceId: string, goals: Omit<TeachingGoals, "workspace_id">) =>
     request<{ goals: TeachingGoals; revision: number; updated_at: string }>(`/teacher/goals/${encodeURIComponent(workspaceId)}`, {
@@ -725,7 +728,7 @@ export const api = {
   removeClassroomMember: (classroomId: string, userId: string) =>
     request<void>(`/classrooms/${encodeURIComponent(classroomId)}/members/${encodeURIComponent(userId)}`, {
       method: "PUT",
-      body: JSON.stringify({ member_role: "student", status: "inactive" }), 
+      body: JSON.stringify({ member_role: "student", status: "disabled" }),
     }),
   approveJoinRequest: (classroomId: string, requestId: string) =>
     request<JoinRequest>(
@@ -739,6 +742,7 @@ export const api = {
     ),
   submitClassroomJoinRequest: (input: { join_code: string; student_number?: string }) =>
     request<JoinRequest>("/classrooms/join-requests", { method: "POST", body: JSON.stringify(input) }),
+  listMyClassrooms: () => request<{ items: ClassroomSummary[] }>("/classrooms/my-memberships"),
   listMyJoinRequests: () =>
     request<JoinRequestListResponse>("/classrooms/my-join-requests"),
   // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from server.infrastructure.mysql.models import ClassJoinRequestModel, ClassroomMemberModel, ClassroomModel
+from server.infrastructure.mysql.models import ClassJoinRequestModel, ClassroomMemberModel, ClassroomModel, RoleModel, UserModel, UserRoleModel
 
 
 class ClassJoinError(Exception):
@@ -211,11 +211,28 @@ async def get_user_join_requests(db: AsyncSession, user_id: str) -> list[ClassJo
 async def list_active_classroom_members(
     db: AsyncSession, class_id: str
 ) -> list[ClassroomMemberModel]:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    effective_student = (
+        select(UserRoleModel.user_id)
+        .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
+        .where(
+            UserRoleModel.user_id == ClassroomMemberModel.user_id,
+            RoleModel.code == "student",
+            RoleModel.status == "active",
+            (UserRoleModel.expires_at.is_(None)) | (UserRoleModel.expires_at > now),
+        )
+        .exists()
+    )
     result = await db.execute(
         select(ClassroomMemberModel)
+        .join(UserModel, UserModel.id == ClassroomMemberModel.user_id)
         .where(
             ClassroomMemberModel.classroom_id == class_id,
             ClassroomMemberModel.status == "active",
+            ClassroomMemberModel.member_role == "student",
+            UserModel.status == "active",
+            UserModel.deleted_at.is_(None),
+            effective_student,
         )
         .options(selectinload(ClassroomMemberModel.user))
         .order_by(ClassroomMemberModel.created_at)
