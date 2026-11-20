@@ -360,6 +360,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
   const [directDelivery, setDirectDelivery] = useState(true);
   const [distributionTargets, setDistributionTargets] = useState<DistributionTargetsResponse | null>(null);
   const [distributionDone, setDistributionDone] = useState(false);
+  const [distributionHasFailures, setDistributionHasFailures] = useState(false);
   const [messagesOpen, setMessagesOpen] = useState(false);
   const [messageBox, setMessageBox] = useState<"incoming" | "outgoing">("incoming");
   const [transfers, setTransfers] = useState<FileTransfer[]>([]);
@@ -495,6 +496,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     setSendIdempotencyKey("");
     setSendBusy(false);
     setDistributionDone(false);
+    setDistributionHasFailures(false);
   };
 
   const beginSend = (item: StorageFile) => {
@@ -505,6 +507,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     setSendIdempotencyKey(createUuid());
     setSendMessage("");
     setDistributionDone(false);
+    setDistributionHasFailures(false);
     if (isTeacher && typeof api.getDistributionTargets === "function") {
       void api.getDistributionTargets().then((res) => {
         setDistributionTargets(res);
@@ -519,6 +522,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     if (!sendFile || sendBusy) return;
     setSendBusy(true);
     setSendMessage("");
+    setDistributionHasFailures(false);
     try {
       let targetType: FileDistributionRequest["target_type"];
       let targetValue: string | null = null;
@@ -542,12 +546,22 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
         direct_delivery: directDelivery,
         workspace_id: workspaceId,
       });
+      if (res.total_targets === 0) {
+        setSendMessage("没有符合条件的接收人，请检查已选的班级或用户类型。");
+        return;
+      }
+      const reasons = [...new Set(res.failures.map(({ reason }) => reason).filter(Boolean))];
+      const failureDetails = reasons.length ? `原因：${reasons.slice(0, 3).join("；")}。` : "";
+      if (res.success_count === 0) {
+        setSendMessage(`发送失败，${res.failed_count} 人未收到。${failureDetails}`);
+        return;
+      }
+      const delivery = res.direct_delivery ? "已送达" : "已发出接收请求";
       setDistributionDone(true);
-      setSendMessage(`发送完成！已向 ${res.target_label} 发送文件，成功 ${res.success_count} 人${res.failed_count > 0 ? `，失败 ${res.failed_count} 人` : ""}。`);
+      setDistributionHasFailures(res.failed_count > 0);
+      setSendMessage(res.failed_count ? `${res.success_count} 人${delivery}，${res.failed_count} 人发送失败。${failureDetails}`
+        : `已向 ${res.target_label} 发送，${res.success_count} 人${delivery}。`);
       window.dispatchEvent(new Event("file-transfers:changed"));
-      window.setTimeout(() => {
-        closeSend();
-      }, 1800);
     } catch (reason: unknown) {
       setSendMessage(reason instanceof Error ? reason.message : "文件发送失败");
     } finally {
@@ -946,10 +960,10 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
 
           {sendMessage && (
             <div
-              className={distributionDone ? "files-panel-notice" : "files-panel-error"}
+              className={distributionDone && !distributionHasFailures ? "files-panel-notice" : "files-panel-error"}
               role="alert"
               style={
-                distributionDone
+                distributionDone && !distributionHasFailures
                   ? { background: "rgba(16, 185, 129, 0.1)", color: "#059669", padding: "8px 12px", borderRadius: 6 }
                   : undefined
               }

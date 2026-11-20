@@ -61,6 +61,13 @@ async def _safe_nested(session: AsyncSession):
 TRANSFER_TTL_DAYS = 7
 
 
+def _distribution_transfer_key(distribution_id: str, recipient_id: str) -> str:
+    # Keep the full batch ID for history grouping; two full UUIDs would
+    # exceed the transfer table's VARCHAR(64).
+    recipient_fingerprint = hashlib.blake2b(recipient_id.encode(), digest_size=11).hexdigest()
+    return f"dist_{distribution_id}_{recipient_fingerprint}"
+
+
 class DistributionError(StorageError):
     pass
 
@@ -574,6 +581,7 @@ class FileDistributionService:
                         continue
 
                     transfer_id = str(uuid.uuid4())
+                    transfer_key = _distribution_transfer_key(distribution_id, recipient.id)
                     reservation = await quota.reserve(
                         StorageBucket.FILES,
                         int(source.size_bytes),
@@ -657,7 +665,7 @@ class FileDistributionService:
                             accepted_file_id=target_file_id,
                             responded_at=func.utc_timestamp(6),
                             expires_at=now,
-                            idempotency_key=f"dist_{distribution_id}_{recipient.id}",
+                            idempotency_key=transfer_key,
                         )
                     else:
                         # Consent request mode
@@ -676,7 +684,7 @@ class FileDistributionService:
                             quota_reservation_id=reservation.id,
                             status="pending",
                             expires_at=now + datetime.resolution * (TRANSFER_TTL_DAYS * 86400 * 1_000_000),
-                            idempotency_key=f"dist_{distribution_id}_{recipient.id}",
+                            idempotency_key=transfer_key,
                         )
 
                     self.db.add(transfer)
@@ -693,7 +701,7 @@ class FileDistributionService:
                         "user_id": recipient.id,
                         "display_name": recipient.display_name,
                         "identity_id": recipient.identity_id,
-                        "reason": str(err),
+                        "reason": str(err) if isinstance(err, StorageError) else "服务器未能完成发送，请稍后重试",
                     }
                 )
 
