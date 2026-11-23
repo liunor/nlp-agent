@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.identity import AuthenticatedPrincipal
 from server.storage.distribution_service import (
@@ -149,9 +150,22 @@ async def test_resolve_recipients_classroom() -> None:
 
 
 @pytest.mark.asyncio
-async def test_distribute_file_direct_delivery_success(tmp_path: Path) -> None:
+@pytest.mark.parametrize("direct_delivery", [True, False])
+async def test_distribute_file_respects_transfer_key_column(tmp_path: Path, direct_delivery: bool) -> None:
+    from server.infrastructure.mysql.models import FileTransferModel
+
     principal = _teacher_principal()
-    db = AsyncMock()
+    db = AsyncMock(spec=AsyncSession)
+    key_limit = FileTransferModel.__table__.c.idempotency_key.type.length
+
+    async def reject_overlong_transfer_key():
+        # The mock session would otherwise accept values rejected by MySQL VARCHAR.
+        for call in db.add.call_args_list:
+            row = call.args[0]
+            if isinstance(row, FileTransferModel):
+                assert len(row.idempotency_key) <= key_limit
+
+    db.flush.side_effect = reject_overlong_transfer_key
 
     source_file_row = SimpleNamespace(
         id="file-1",
@@ -164,7 +178,7 @@ async def test_distribute_file_direct_delivery_success(tmp_path: Path) -> None:
     service._source = AsyncMock(return_value=source_file_row)  # type: ignore[method-assign]
 
     mock_student = SimpleNamespace(
-        id="student-1",
+        id=str(uuid4()),
         username="student_a",
         display_name="学生甲",
         identity_id="NV2STUDENT001",
@@ -193,21 +207,25 @@ async def test_distribute_file_direct_delivery_success(tmp_path: Path) -> None:
             result = await service.distribute_file(
                 source_file_id="file-1",
                 target_type="all_students",
-                direct_delivery=True,
+                direct_delivery=direct_delivery,
             )
 
     assert result["total_targets"] == 1
     assert result["success_count"] == 1
     assert result["failed_count"] == 0
     assert result["file_name"] == "lesson.md"
-    assert result["direct_delivery"] is True
+    assert result["direct_delivery"] is direct_delivery
+    transfers = [call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], FileTransferModel)]
+    assert len(transfers) == 1
+    assert transfers[0].status == ("accepted" if direct_delivery else "pending")
+    assert transfers[0].idempotency_key.split("_")[1] == result["distribution_id"]
     assert service._bump_notification_version.called
 
 
 @pytest.mark.asyncio
 async def test_distribute_file_defensive_record_persistence(tmp_path: Path) -> None:
     principal = _teacher_principal()
-    db = AsyncMock()
+    db = AsyncMock(spec=AsyncSession)
 
     source_file_row = SimpleNamespace(
         id="file-1",

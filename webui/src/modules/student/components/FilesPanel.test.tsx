@@ -440,7 +440,12 @@ function upload(files: File[]) {
     }));
   });
 
-  it("allows teacher to group send file to all students or class", async () => {
+  it.each([
+    { targets: 30, sent: 30, failed: 0, notice: /30 人已送达/, mayRetry: false },
+    { targets: 30, sent: 29, failed: 1, notice: /29 人已送达，1 人发送失败.*接收方存储空间不足/, mayRetry: false },
+    { targets: 30, sent: 0, failed: 30, notice: /发送失败，30 人未收到.*接收方存储空间不足/, mayRetry: true },
+    { targets: 0, sent: 0, failed: 0, notice: /没有符合条件的接收人/, mayRetry: true },
+  ])("reports class broadcast results for $sent of $targets deliveries", async ({ targets, sent, failed, notice, mayRetry }) => {
     vi.mocked(api.getCurrentUser).mockResolvedValue(mockUser(["teacher"]));
     vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [{
       id: "file-1",
@@ -459,10 +464,10 @@ function upload(files: File[]) {
       target_type: "classroom",
       target_label: "班级：NLP自然语言处理1班",
       direct_delivery: true,
-      total_targets: 30,
-      success_count: 30,
-      failed_count: 0,
-      failures: [],
+      total_targets: targets,
+      success_count: sent,
+      failed_count: failed,
+      failures: failed ? [{ user_id: "student-1", display_name: "小明", identity_id: "NVTEST1234", reason: "接收方存储空间不足" }] : [],
       created_at: "2026-03-24T00:00:00Z",
     });
 
@@ -487,5 +492,9 @@ function upload(files: File[]) {
       direct_delivery: true,
       workspace_id: "workspace-1",
     }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(notice);
+    const confirm = screen.getByRole("button", { name: "确认群发" });
+    if (mayRetry) expect(confirm).toBeEnabled();
+    else expect(confirm).toBeDisabled();
   });
 });
