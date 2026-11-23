@@ -1818,7 +1818,9 @@ button { color: inherit; }
 .file-transfer-item-main span { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
 .file-transfer-list article small { line-height: 1.45; }
 .file-transfer-list footer { padding-top: 2px; }
-.file-transfer-list footer button { min-height: 30px; border-radius: 8px; font-size: 11px; }
+.file-transfer-list footer button,
+.file-transfer-list footer a { min-height: 30px; border-radius: 8px; font-size: 11px; }
+.file-transfer-list footer a { display: inline-flex; align-items: center; padding: 0 10px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); text-decoration: none; }
 .file-transfer-messages .storage-empty { min-height: 180px; }
 
 @media (max-width: 520px) {

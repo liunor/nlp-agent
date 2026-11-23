@@ -31,7 +31,7 @@ vi.mock("@/platform/http/api", () => ({
     getDistributionTargets: vi.fn(),
     distributeFile: vi.fn(),
   },
-  storageFileDownloadUrl: (fileId: string) => `/api/v1/storage/files/${fileId}/download`,
+  storageFileDownloadUrl: (fileId: string, workspaceId?: string) => `/api/v1/storage/files/${fileId}/download${workspaceId ? `?workspace_id=${workspaceId}` : ""}`,
 }));
 
 vi.mock("./DocumentCodeView", () => ({
@@ -148,6 +148,36 @@ describe("FilesPanel", () => {
 
   it("treats legacy storage timestamps without an offset as UTC", () => {
     expect(parseUtcTimestamp("2026-10-10T06:15:00").toISOString()).toBe("2026-10-10T06:15:00.000Z");
+  });
+
+  it.each([
+    { content: "这是群发验证文档。", bytes: 27, expected: "这是群发验证文档。" },
+    { content: "", bytes: 0, expected: "此文件为空（0 B）。" },
+  ])("opens an accepted file in its actual recipient workspace ($bytes B)", async ({ content, bytes, expected }) => {
+    const transfer = {
+      id: "transfer-1", status: "accepted" as const, file_name: "测试验证文档.txt", size_bytes: 0,
+      accepted_file_id: "received-copy", recipient_workspace_id: "personal-space",
+    };
+    vi.mocked(api.listFileTransfers).mockImplementation(async (box) => ({ items: [
+      box === "outgoing" ? { ...transfer, recipient_workspace_id: null } : transfer,
+    ] }));
+    vi.mocked(api.readStorageFile).mockResolvedValue({ content, bytes_read: bytes, truncated: false, mime_type: "text/plain" });
+
+    render(<FilesPanel workspaceId="classroom-space" />);
+    fireEvent.click(screen.getByRole("button", { name: "消息" }));
+    const download = await screen.findByRole("link", { name: "下载 测试验证文档.txt" });
+    expect(download).toHaveAttribute("href", "/api/v1/storage/files/received-copy/download?workspace_id=personal-space");
+    expect(download).toHaveAttribute("download");
+
+    fireEvent.click(screen.getByRole("button", { name: "已发送" }));
+    await screen.findByText("测试验证文档.txt");
+    expect(screen.queryByRole("link", { name: "下载 测试验证文档.txt" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "收到的" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看 测试验证文档.txt" }));
+
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    expect(api.readStorageFile).toHaveBeenCalledWith("received-copy", "personal-space");
+    expect(screen.queryByText("来自知识教材")).not.toBeInTheDocument();
   });
 
 function markdownFile(name = "notes.md", content = "# 学习笔记") {

@@ -430,6 +430,12 @@ class FileTransferService:
             "sender": {"identity_id": sender.identity_id, "display_name": sender.display_name} if sender else None,
             "recipient": {"identity_id": recipient.identity_id, "display_name": recipient.display_name} if recipient else None,
             "accepted_file_id": transfer.accepted_file_id,
+            "recipient_workspace_id": (
+                transfer.recipient_workspace_id
+                if transfer.accepted_file_id and transfer.status == "accepted"
+                and transfer.recipient_user_id == self.principal.user_id
+                else None
+            ),
             "created_at": utc_isoformat(transfer.created_at),
             "expires_at": utc_isoformat(transfer.expires_at),
         }

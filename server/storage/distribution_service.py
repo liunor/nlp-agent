@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
-import shutil
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -499,6 +498,7 @@ class FileDistributionService:
         if not source_path.is_file():
             raise DistributionError("源物理文件已丢失，无法发送")
         file_bytes = source_path.read_bytes()
+        file_size = len(file_bytes)
         file_digest = hashlib.sha256(file_bytes).hexdigest()
 
         for recipient in recipients:
@@ -537,7 +537,7 @@ class FileDistributionService:
                         or 0
                     )
 
-                    if source.size_bytes > quota.policy.max_file_bytes:
+                    if file_size > quota.policy.max_file_bytes:
                         failures.append(
                             {
                                 "user_id": recipient.id,
@@ -551,7 +551,7 @@ class FileDistributionService:
                     if not fits_quota(
                         account.files_used_bytes,
                         account.files_reserved_bytes,
-                        source.size_bytes,
+                        file_size,
                         quota.policy.files_quota_bytes,
                     ):
                         failures.append(
@@ -584,7 +584,7 @@ class FileDistributionService:
                     transfer_key = _distribution_transfer_key(distribution_id, recipient.id)
                     reservation = await quota.reserve(
                         StorageBucket.FILES,
-                        int(source.size_bytes),
+                        file_size,
                         resource_type="file_transfer",
                         resource_key=transfer_id,
                         amount_items=1,
@@ -603,7 +603,7 @@ class FileDistributionService:
                     staging_key = f".transfers/{transfer_id}"
                     staging_path = storage_root() / staging_key
                     staging_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_path, staging_path)
+                    staging_path.write_bytes(file_bytes)
 
                     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -626,7 +626,7 @@ class FileDistributionService:
                         target_storage_key = f"{recipient_workspace_id}/{recipient.id}/{target_file_id}"
                         target_path = storage_root() / target_storage_key
                         target_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(source_path, target_path)
+                        target_path.write_bytes(file_bytes)
 
                         target_file_row = UserFileModel(
                             id=target_file_id,
@@ -637,14 +637,14 @@ class FileDistributionService:
                             display_name=dest_file_name,
                             storage_key=target_storage_key,
                             mime_type=source.mime_type,
-                            size_bytes=source.size_bytes,
+                            size_bytes=file_size,
                             sha256=file_digest,
                         )
                         self.db.add(target_file_row)
                         await self.db.flush()
 
                         await quota.finalize(
-                            self._reservation_object(reservation.id, recipient.id, source.size_bytes),
+                            self._reservation_object(reservation.id, recipient.id, file_size),
                             reconcile=True,
                         )
 
@@ -657,7 +657,7 @@ class FileDistributionService:
                             source_file_id=source.id,
                             original_name=source.display_name,
                             mime_type=source.mime_type,
-                            size_bytes=source.size_bytes,
+                            size_bytes=file_size,
                             sha256=file_digest,
                             staging_key=staging_key,
                             quota_reservation_id=reservation.id,
@@ -678,7 +678,7 @@ class FileDistributionService:
                             source_file_id=source.id,
                             original_name=source.display_name,
                             mime_type=source.mime_type,
-                            size_bytes=source.size_bytes,
+                            size_bytes=file_size,
                             sha256=file_digest,
                             staging_key=staging_key,
                             quota_reservation_id=reservation.id,
@@ -709,7 +709,7 @@ class FileDistributionService:
             "distribution_id": distribution_id,
             "source_file_id": source.id,
             "file_name": source.display_name,
-            "size_bytes": int(source.size_bytes),
+            "size_bytes": file_size,
             "target_type": target_type,
             "target_value": target_value,
             "target_label": target_label,

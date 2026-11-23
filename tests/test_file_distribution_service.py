@@ -171,7 +171,7 @@ async def test_distribute_file_respects_transfer_key_column(tmp_path: Path, dire
         id="file-1",
         display_name="lesson.md",
         mime_type="text/markdown",
-        size_bytes=100,
+        size_bytes=0,  # Legacy catalog metadata can lag the source file.
         storage_key="workspace-1/teacher-1/file-1",
     )
     service = FileDistributionService(db, principal)
@@ -215,10 +215,17 @@ async def test_distribute_file_respects_transfer_key_column(tmp_path: Path, dire
     assert result["failed_count"] == 0
     assert result["file_name"] == "lesson.md"
     assert result["direct_delivery"] is direct_delivery
+    assert result["size_bytes"] == len(b"# Hello World")
     transfers = [call.args[0] for call in db.add.call_args_list if isinstance(call.args[0], FileTransferModel)]
     assert len(transfers) == 1
     assert transfers[0].status == ("accepted" if direct_delivery else "pending")
     assert transfers[0].idempotency_key.split("_")[1] == result["distribution_id"]
+    assert transfers[0].size_bytes == len(b"# Hello World")
+    assert (tmp_path / transfers[0].staging_key).read_bytes() == b"# Hello World"
+    assert mock_quota.reserve.await_args.args[1] == len(b"# Hello World")
+    if direct_delivery:
+        received = tmp_path / "workspace-student" / mock_student.id / transfers[0].accepted_file_id
+        assert received.read_bytes() == b"# Hello World"
     assert service._bump_notification_version.called
 
 

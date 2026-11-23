@@ -130,6 +130,25 @@ async def test_transfer_serializer_marks_database_timestamps_as_utc() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("viewer", "expected_workspace"), [
+    ("recipient-1", "workspace-personal"),
+    ("sender-1", None),
+])
+async def test_accepted_transfer_exposes_opening_workspace_only_to_recipient(viewer, expected_workspace) -> None:
+    db = SimpleNamespace(scalar=AsyncMock(return_value=None))
+    principal = AuthenticatedPrincipal(user_id=viewer, workspace_ids=frozenset({"workspace-1"}), roles=frozenset({"student"}))
+    transfer = SimpleNamespace(
+        id="transfer-1", status="accepted", original_name="lesson.txt", size_bytes=6,
+        sender_user_id="sender-1", recipient_user_id="recipient-1", recipient_workspace_id="workspace-personal",
+        accepted_file_id="received-copy", created_at=None, expires_at=None,
+    )
+
+    result = await FileTransferService(db, principal).serialize(transfer)
+    assert result["accepted_file_id"] == "received-copy"
+    assert result["recipient_workspace_id"] == expected_workspace
+
+
+@pytest.mark.asyncio
 async def test_expiry_maintenance_claims_a_bounded_batch_with_skip_locked() -> None:
     transfer = SimpleNamespace(
         status="pending",
