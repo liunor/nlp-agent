@@ -113,7 +113,7 @@ const mockOverview: TeacherOverview = {
   knowledge_point_stats: [],
 };
 
-describe("StudentQuestionsPage P0 and P1 Enhancements", () => {
+describe("StudentQuestionsPage Real Student Activity Enhancements", () => {
   it("renders P0 student activity table with search, filter tabs, and sorting", () => {
     render(<StudentQuestionsPage data={mockOverview} />);
 
@@ -163,29 +163,28 @@ describe("StudentQuestionsPage P0 and P1 Enhancements", () => {
     expect(screen.getByText("张三")).toBeVisible();
   });
 
-  it("renders P1 high-frequency question clusters (FAQ) and keyword tag filtering", () => {
-    render(<StudentQuestionsPage data={mockOverview} />);
+  it("adapts to personLabel in all_users mode and supports empty search state", () => {
+    const userOverview: TeacherOverview = {
+      ...mockOverview,
+      data_scope: {
+        mode: "all_users",
+        label: "所有人",
+        classroom_count: null,
+        student_count: 3,
+        update_policy: "on_refresh",
+        message: "",
+      },
+    };
+    render(<StudentQuestionsPage data={userOverview} />);
 
-    // Check FAQ Header
-    expect(screen.getByText("高频提问焦点与典型问题聚类 (FAQ)")).toBeVisible();
-    expect(screen.getByText(/从学生提问中提炼核心高频疑问与知识盲区聚类/)).toBeVisible();
+    // personLabel adapts to "用户"
+    expect(screen.getByText("用户参与度")).toBeVisible();
+    expect(screen.getByText(/全部用户 \(3\)/)).toBeVisible();
+    expect(screen.getByPlaceholderText("搜索用户姓名或学号...")).toBeVisible();
 
-    // Check that default clusters are rendered
-    expect(screen.getByText("自注意力权重计算与缩放因子原理")).toBeVisible();
-    expect(screen.getByText(/为什么计算注意力分数时点积结果要除以根号 d_k/)).toBeVisible();
-    expect(screen.getByText(/建议在习题课上重点推导 Softmax 梯度/)).toBeVisible();
-
-    // Keyword filtering
-    const bpeTag = screen.getByRole("button", { name: /BPE分词/ });
-    expect(bpeTag).toBeVisible();
-    fireEvent.click(bpeTag);
-
-    // After clicking BPE, only BPE cluster is shown
-    expect(screen.getByText("BPE 分词算法与未登录词（OOV）处理机制")).toBeVisible();
-    expect(screen.queryByText("自注意力权重计算与缩放因子原理")).not.toBeInTheDocument();
-
-    // Click "全部焦点" to restore
-    fireEvent.click(screen.getByRole("button", { name: "全部焦点" }));
-    expect(screen.getByText("自注意力权重计算与缩放因子原理")).toBeVisible();
+    // Test empty search state
+    const searchInput = screen.getByLabelText("搜索用户姓名或学号");
+    fireEvent.change(searchInput, { target: { value: "不存在的人" } });
+    expect(screen.getByText("未搜索到与“不存在的人”匹配的用户。")).toBeVisible();
   });
 });

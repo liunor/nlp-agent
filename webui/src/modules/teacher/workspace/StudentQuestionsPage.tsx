@@ -15,13 +15,9 @@ import {
   Clock3,
   FileQuestion,
   Gauge,
-  HelpCircle,
   Layers3,
-  Lightbulb,
   MessageCircleQuestion,
   Search,
-  Sparkles,
-  Tag,
   TrendingUp,
   Users,
   X,
@@ -31,8 +27,6 @@ import type {
   TeacherDistribution,
   TeacherMonthlyQuestionStatistics,
   TeacherOverview,
-  TeacherQuestionCluster,
-  TeacherQuestionKeyword,
   TeacherStudentActivity,
 } from "@/shared/types";
 
@@ -71,106 +65,6 @@ const demoHourlyCounts = [4, 2, 1, 0, 0, 1, 3, 6, 11, 18, 21, 16, 13, 17, 21, 24
 const demoWeekdayCounts = [42, 48, 51, 46, 55, 38, 27];
 const demoStudentQuestions = [24, 28, 26, 24, 22, 21, 20, 19, 18, 17, 16, 15, 13, 12, 11, 10, 0, 0];
 const demoTopics = ["Transformer 与注意力机制", "词向量与表示学习", "文本分类", "序列标注", "机器翻译", "预训练模型", "未选择主题"];
-
-const DEFAULT_CLUSTERS: TeacherQuestionCluster[] = [
-  {
-    id: "cluster-attention-scale",
-    name: "自注意力权重计算与缩放因子原理",
-    topic: "Transformer 与注意力机制",
-    count: 42,
-    percentage: 56.8,
-    level: "high",
-    typical_questions: [
-      "为什么计算注意力分数时点积结果要除以根号 d_k？若不除会有什么梯度后果？",
-      "自注意力计算中 Q、K、V 的维度变换是如何保持一致的？多头注意力又是如何拼接的？",
-    ],
-    teaching_advice: "建议在习题课上重点推导 Softmax 梯度在点积绝对值过大时的饱和现象与方差归一化原理。",
-    keywords: ["自注意力", "缩放因子", "QKV维度", "Softmax饱和", "多头拼接"],
-  },
-  {
-    id: "cluster-word2vec-neg",
-    name: "Word2Vec 负采样与损失函数推导",
-    topic: "词向量与表示学习",
-    count: 31,
-    percentage: 54.4,
-    level: "high",
-    typical_questions: [
-      "Skip-gram 引入负采样后，为什么能把多分类 softmax 转化为二分类 sigmoid？",
-      "负采样公式中的词频 3/4 次方有什么数学直觉与工程考量？",
-    ],
-    teaching_advice: "建议对比负采样与层次 Softmax 的计算复杂度差异，并现场画图演示正负样本的优化目标。",
-    keywords: ["Word2Vec", "负采样", "Sigmoid", "计算复杂度", "词频分布"],
-  },
-  {
-    id: "cluster-pos-enc",
-    name: "位置编码（Positional Encoding）周期性与相对位置表达",
-    topic: "Transformer 与注意力机制",
-    count: 26,
-    percentage: 35.1,
-    level: "medium",
-    typical_questions: [
-      "正余弦位置编码为什么能表达相对位置信息？通过三角函数和差化积公式怎么证明？",
-      "可学习的位置编码（Learnable PE）与正弦位置编码相比各有什么优缺点？",
-    ],
-    teaching_advice: "建议利用白板或交互工具，直观展示不同位置向量之间内积随距离衰减的几何热力图。",
-    keywords: ["位置编码", "相对位置", "三角函数", "和差化积", "绝对位置"],
-  },
-  {
-    id: "cluster-imbalance-loss",
-    name: "文本分类中类别不平衡与损失函数选择",
-    topic: "文本分类",
-    count: 22,
-    percentage: 47.8,
-    level: "medium",
-    typical_questions: [
-      "极度不平衡样本集下，准确率 Accuracy 很高但 Macro-F1 很低该如何调优？",
-      "Focal Loss 的 alpha 和 gamma 超参数分别控制什么？和加权交叉熵有什么区别？",
-    ],
-    teaching_advice: "建议提供一个类别不平衡的实训 Notebook，演示重采样策略与 Focal Loss 的代码调优对比。",
-    keywords: ["文本分类", "类别不平衡", "Focal Loss", "Macro-F1", "加权交叉熵"],
-  },
-  {
-    id: "cluster-bpe-subword",
-    name: "BPE 分词算法与未登录词（OOV）处理机制",
-    topic: "预训练模型",
-    count: 19,
-    percentage: 65.5,
-    level: "low",
-    typical_questions: [
-      "BPE 算法在构建词表时的合并策略是怎样的？如何平衡词表大小与序列长度？",
-      "WordPiece 与 BPE 在打分选择合并字符对时的概率准则有什么区别？",
-    ],
-    teaching_advice: "建议结合一段具体的中英文混合语料，手工演示前 3 轮字节对合并迭代过程。",
-    keywords: ["BPE分词", "子词切分", "OOV处理", "WordPiece", "词表构建"],
-  },
-  {
-    id: "cluster-crf-viterbi",
-    name: "BiLSTM-CRF 转移矩阵与 Viterbi 解码算法",
-    topic: "序列标注",
-    count: 18,
-    percentage: 45.0,
-    level: "low",
-    typical_questions: [
-      "CRF 转移矩阵在训练时是如何学习标签之间的约束关系的？（如 I 不能在 B 之前）",
-      "Viterbi 动态规划解码的时间复杂度是多少？状态转移公式如何写？",
-    ],
-    teaching_advice: "建议在讲解 NER 任务时，通过非法转移惩罚矩阵解释 CRF 相比独立 Softmax 的核心优势。",
-    keywords: ["CRF", "序列标注", "Viterbi解码", "转移矩阵", "动态规划"],
-  },
-];
-
-const DEFAULT_KEYWORDS: TeacherQuestionKeyword[] = [
-  { word: "自注意力计算", count: 42, category: "核心算法", heat: "high" },
-  { word: "QKV维度对齐", count: 35, category: "维度推导", heat: "high" },
-  { word: "负采样损失", count: 31, category: "核心算法", heat: "high" },
-  { word: "位置编码公式", count: 26, category: "数学推导", heat: "medium" },
-  { word: "Focal Loss", count: 22, category: "模型优化", heat: "medium" },
-  { word: "残差连接", count: 20, category: "结构设计", heat: "medium" },
-  { word: "BPE分词", count: 19, category: "数据处理", heat: "low" },
-  { word: "Viterbi解码", count: 18, category: "核心算法", heat: "low" },
-  { word: "Softmax溢出", count: 16, category: "数值稳定", heat: "low" },
-  { word: "过拟合调优", count: 15, category: "模型优化", heat: "low" },
-];
 
 function createDemoMonthlyStatistics(): TeacherMonthlyQuestionStatistics[] {
   return Array.from({ length: 5 }, (_, index) => {
@@ -257,8 +151,6 @@ function createLocalDemoData(base: TeacherOverview): TeacherOverview {
     peak_hour: peakHour,
     monthly_statistics: createDemoMonthlyStatistics(),
     student_activity,
-    question_clusters: DEFAULT_CLUSTERS,
-    frequent_keywords: DEFAULT_KEYWORDS,
   };
 }
 
@@ -413,125 +305,6 @@ function WeekdayQuestions({ data }: { data: TeacherOverview }) {
     <header><div><h2>星期分布</h2><p>当前统计周期内一周各天的提问占比，不切换月份</p></div><CalendarDays size={17} /></header>
     <div className="teacher-question-pie-layout"><WeekdayPie items={data.weekday_questions} /></div>
   </section>;
-}
-
-/* --- P1: 高频提问焦点与典型问题聚类 (FAQ) --- */
-function QuestionClustersPanel({ data }: { data: TeacherOverview }) {
-  const clusters = data.question_clusters?.length ? data.question_clusters : DEFAULT_CLUSTERS;
-  const keywords = data.frequent_keywords?.length ? data.frequent_keywords : DEFAULT_KEYWORDS;
-  const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
-  const [selectedTopic, setSelectedTopic] = useState<string>("all");
-
-  const topics = useMemo(() => Array.from(new Set(clusters.map((c) => c.topic))), [clusters]);
-
-  const filteredClusters = useMemo(() => {
-    return clusters.filter((item) => {
-      const matchKeyword = !selectedKeyword
-        || item.keywords.some((k) => k.toLowerCase().includes(selectedKeyword.toLowerCase()))
-        || item.name.toLowerCase().includes(selectedKeyword.toLowerCase());
-      const matchTopic = selectedTopic === "all" || item.topic === selectedTopic;
-      return matchKeyword && matchTopic;
-    });
-  }, [clusters, selectedKeyword, selectedTopic]);
-
-  const priorityBadge = (level: "high" | "medium" | "low") => {
-    if (level === "high") return <span className="teacher-question-cluster-level high">高关注</span>;
-    if (level === "medium") return <span className="teacher-question-cluster-level medium">建议关注</span>;
-    return <span className="teacher-question-cluster-level low">持续观察</span>;
-  };
-
-  return (
-    <section className="teacher-panel teacher-question-panel teacher-question-clusters-panel" aria-label="高频提问与典型问题聚类">
-      <header>
-        <div>
-          <h2>高频提问焦点与典型问题聚类 (FAQ)</h2>
-          <p>从学生提问中提炼核心高频疑问与知识盲区聚类，直观呈现学生最常问什么、为什么困惑及教学建议</p>
-        </div>
-        <Sparkles size={18} className="teacher-question-clusters-icon" />
-      </header>
-
-      <div className="teacher-question-keywords-bar">
-        <span className="teacher-question-keywords-label"><Tag size={13} />高频焦点词：</span>
-        <button
-          type="button"
-          className={`teacher-question-keyword-tag all ${selectedKeyword === null ? "active" : ""}`}
-          onClick={() => setSelectedKeyword(null)}
-        >
-          全部焦点
-        </button>
-        {keywords.map((kw) => (
-          <button
-            key={kw.word}
-            type="button"
-            className={`teacher-question-keyword-tag ${selectedKeyword === kw.word ? "active" : ""}`}
-            onClick={() => setSelectedKeyword((curr) => (curr === kw.word ? null : kw.word))}
-          >
-            {kw.word} <small>{kw.count}</small>
-          </button>
-        ))}
-        {topics.length > 1 && (
-          <div className="teacher-question-topic-filter">
-            <select
-              aria-label="按主题过滤聚类"
-              value={selectedTopic}
-              onChange={(e) => setSelectedTopic(e.target.value)}
-            >
-              <option value="all">全部主题</option>
-              {topics.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-        )}
-      </div>
-
-      {filteredClusters.length ? (
-        <div className="teacher-question-clusters-grid">
-          {filteredClusters.map((cluster) => (
-            <article key={cluster.id} className="teacher-question-cluster-card">
-              <div className="teacher-question-cluster-header">
-                <strong>{cluster.name}</strong>
-                {priorityBadge(cluster.level)}
-              </div>
-              <div className="teacher-question-cluster-meta">
-                <span className="teacher-question-cluster-meta-topic">{cluster.topic}</span>
-                <span>{cluster.count} 次提问 · 占该主题 {formatPercent(cluster.percentage)}</span>
-              </div>
-              <div className="teacher-question-cluster-progress">
-                <div
-                  className="teacher-question-cluster-progress-bar"
-                  style={{ width: `${Math.min(100, cluster.percentage)}%` }}
-                />
-              </div>
-              <div className="teacher-question-cluster-questions">
-                <span className="teacher-question-cluster-subheading"><HelpCircle size={13} />学生典型提问示例：</span>
-                {cluster.typical_questions.map((q, idx) => (
-                  <p key={idx} className="teacher-question-cluster-question-item">
-                    <span className="quote-mark">“</span>{q}<span className="quote-mark">”</span>
-                  </p>
-                ))}
-              </div>
-              <div className="teacher-question-cluster-advice">
-                <Lightbulb size={14} className="advice-icon" />
-                <p><strong>教学建议：</strong>{cluster.teaching_advice}</p>
-              </div>
-              <div className="teacher-question-cluster-tags">
-                {cluster.keywords.map((kw) => (
-                  <span
-                    key={kw}
-                    onClick={() => setSelectedKeyword(kw)}
-                    title={`点击按 ${kw} 筛选`}
-                  >
-                    #{kw}
-                  </span>
-                ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <p className="teacher-empty-inline" style={{ padding: "24px" }}>当前筛选条件下暂无典型疑问聚类。</p>
-      )}
-    </section>
-  );
 }
 
 /* --- P0: 学生参与度表格增加【搜索 + 字段排序】与【沉默学生预警】 --- */
@@ -828,7 +601,6 @@ export function StudentQuestionsPage({ data, headerControls }: { data: TeacherOv
 
     <MonthTabs months={monthlyStatistics} activeMonth={activeMonth} onChange={setSelectedMonth} />
     <div className="teacher-question-grid teacher-question-grid-three"><DistributionPanel title="主题分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.topic_distribution ?? []} /><DistributionPanel title="难度分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.difficulty_distribution ?? []} tone="blue" /><DistributionPanel title="模式分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.mode_distribution ?? []} tone="green" /></div>
-    <QuestionClustersPanel data={displayData} />
     <div className="teacher-question-grid teacher-question-grid-trend"><MonthlyDailyQuestions months={monthlyStatistics} /><MonthlyHourlyQuestions months={monthlyStatistics} /></div>
     <div className="teacher-question-grid teacher-question-grid-weekday"><WeekdayQuestions data={displayData} /></div>
     <StudentActivity personLabel={data.data_scope?.mode === "all_users" ? "用户" : "学生"} items={displayData.student_activity} />
