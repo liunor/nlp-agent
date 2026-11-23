@@ -48,19 +48,10 @@ export function useTurnSender({
     if (!canSend()) return;
     setRequestError(null);
     const requestId = createUuid();
-    inFlightTurnIds.current.add(requestId);
-    pendingRequests.current.set(requestId, "");
-    let sessionId = activeSessionRef.current;
-    if (!sessionId) sessionId = await createBackendSession();
-    if (!sessionId || !pendingRequests.current.has(requestId) || !canSend()) {
-      // The session creation was abandoned by a newer chat (createBackendSession
-      // returned null) or the request was cancelled while awaiting; drop it.
-      pendingRequests.current.delete(requestId);
-      inFlightTurnIds.current.delete(requestId);
-      return;
-    }
     const optimisticId = `${requestId}:user`;
+    inFlightTurnIds.current.add(requestId);
     pendingRequests.current.set(requestId, optimisticId);
+
     const optimisticMessage: ChatMessage = {
       id: optimisticId,
       turnId: requestId,
@@ -77,8 +68,20 @@ export function useTurnSender({
       })) } : {}),
       createdAt: new Date().toISOString(),
     };
-    pendingDrafts.current.set(requestId, { sessionId, owner: draftOwner, message: optimisticMessage });
     setMessages((current) => [...current, optimisticMessage]);
+
+    let sessionId = activeSessionRef.current;
+    if (!sessionId) sessionId = await createBackendSession();
+    if (!sessionId || !pendingRequests.current.has(requestId) || !canSend()) {
+      // The session creation was abandoned by a newer chat (createBackendSession
+      // returned null) or the request was cancelled while awaiting; drop it and rollback optimistic message.
+      pendingRequests.current.delete(requestId);
+      inFlightTurnIds.current.delete(requestId);
+      setMessages((current) => current.filter((m) => m.turnId !== requestId));
+      return;
+    }
+
+    pendingDrafts.current.set(requestId, { sessionId, owner: draftOwner, message: optimisticMessage });
     const currentMeta = preferences.sessions[sessionId];
     if (!currentMeta?.topic) {
       updateSessionMeta(sessionId, { topic: preferences.context.topic_name });
