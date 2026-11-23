@@ -294,6 +294,25 @@ export interface TeacherStudentActivity {
   top_topic: string;
 }
 
+export interface TeacherQuestionCluster {
+  id: string;
+  name: string;
+  topic: string;
+  count: number;
+  percentage: number;
+  level: "high" | "medium" | "low";
+  typical_questions: string[];
+  teaching_advice: string;
+  keywords: string[];
+}
+
+export interface TeacherQuestionKeyword {
+  word: string;
+  count: number;
+  category: string;
+  heat: "high" | "medium" | "low";
+}
+
 export interface WeakTopic {
   topic_id: string;
   topic: string;
@@ -446,6 +465,8 @@ export interface TeacherOverview {
   student_activity: TeacherStudentActivity[];
   weak_topics: WeakTopic[];
   knowledge_point_stats: KnowledgePointStat[];
+  question_clusters?: TeacherQuestionCluster[];
+  frequent_keywords?: TeacherQuestionKeyword[];
   learning_analysis?: TeacherLearningAnalysis;
   truncated?: boolean;
   data_completeness?: TeacherDataCompleteness;

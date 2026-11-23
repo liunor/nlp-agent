@@ -162,7 +162,7 @@ class DatabaseSessionService:
                     channel=channel,
                 )
             )
-            await quota.finalize(reservation, reconcile=True)
+            await quota.finalize(reservation, reconcile=False)
         return context
 
     async def resolve(

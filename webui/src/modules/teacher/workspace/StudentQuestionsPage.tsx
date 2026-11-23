@@ -1,25 +1,38 @@
-import { PaginatedStudentTable } from "@/shared/ui/PaginatedStudentTable";
 import { useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   BarChart3,
   BookOpen,
   CalendarDays,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   FileQuestion,
   Gauge,
+  HelpCircle,
   Layers3,
+  Lightbulb,
   MessageCircleQuestion,
+  Search,
+  Sparkles,
+  Tag,
   TrendingUp,
   Users,
+  X,
 } from "lucide-react";
 
 import type {
   TeacherDistribution,
   TeacherMonthlyQuestionStatistics,
   TeacherOverview,
+  TeacherQuestionCluster,
+  TeacherQuestionKeyword,
   TeacherStudentActivity,
 } from "@/shared/types";
 
@@ -56,8 +69,108 @@ const distribution = (entries: Array<[string, number]>): TeacherDistribution[] =
 const demoDailyCounts = [3, 5, 4, 7, 9, 6, 11, 10, 8, 14, 11, 10, 8, 15, 13, 12, 9, 7, 11, 14, 16, 13, 12, 10, 8, 12, 11, 10, 15, 13];
 const demoHourlyCounts = [4, 2, 1, 0, 0, 1, 3, 6, 11, 18, 21, 16, 13, 17, 21, 24, 28, 30, 26, 20, 16, 12, 9, 8];
 const demoWeekdayCounts = [42, 48, 51, 46, 55, 38, 27];
-const demoStudentQuestions = [24, 28, 26, 24, 22, 21, 20, 19, 18, 17, 16, 15, 13, 12, 11, 10, 8, 3];
+const demoStudentQuestions = [24, 28, 26, 24, 22, 21, 20, 19, 18, 17, 16, 15, 13, 12, 11, 10, 0, 0];
 const demoTopics = ["Transformer 与注意力机制", "词向量与表示学习", "文本分类", "序列标注", "机器翻译", "预训练模型", "未选择主题"];
+
+const DEFAULT_CLUSTERS: TeacherQuestionCluster[] = [
+  {
+    id: "cluster-attention-scale",
+    name: "自注意力权重计算与缩放因子原理",
+    topic: "Transformer 与注意力机制",
+    count: 42,
+    percentage: 56.8,
+    level: "high",
+    typical_questions: [
+      "为什么计算注意力分数时点积结果要除以根号 d_k？若不除会有什么梯度后果？",
+      "自注意力计算中 Q、K、V 的维度变换是如何保持一致的？多头注意力又是如何拼接的？",
+    ],
+    teaching_advice: "建议在习题课上重点推导 Softmax 梯度在点积绝对值过大时的饱和现象与方差归一化原理。",
+    keywords: ["自注意力", "缩放因子", "QKV维度", "Softmax饱和", "多头拼接"],
+  },
+  {
+    id: "cluster-word2vec-neg",
+    name: "Word2Vec 负采样与损失函数推导",
+    topic: "词向量与表示学习",
+    count: 31,
+    percentage: 54.4,
+    level: "high",
+    typical_questions: [
+      "Skip-gram 引入负采样后，为什么能把多分类 softmax 转化为二分类 sigmoid？",
+      "负采样公式中的词频 3/4 次方有什么数学直觉与工程考量？",
+    ],
+    teaching_advice: "建议对比负采样与层次 Softmax 的计算复杂度差异，并现场画图演示正负样本的优化目标。",
+    keywords: ["Word2Vec", "负采样", "Sigmoid", "计算复杂度", "词频分布"],
+  },
+  {
+    id: "cluster-pos-enc",
+    name: "位置编码（Positional Encoding）周期性与相对位置表达",
+    topic: "Transformer 与注意力机制",
+    count: 26,
+    percentage: 35.1,
+    level: "medium",
+    typical_questions: [
+      "正余弦位置编码为什么能表达相对位置信息？通过三角函数和差化积公式怎么证明？",
+      "可学习的位置编码（Learnable PE）与正弦位置编码相比各有什么优缺点？",
+    ],
+    teaching_advice: "建议利用白板或交互工具，直观展示不同位置向量之间内积随距离衰减的几何热力图。",
+    keywords: ["位置编码", "相对位置", "三角函数", "和差化积", "绝对位置"],
+  },
+  {
+    id: "cluster-imbalance-loss",
+    name: "文本分类中类别不平衡与损失函数选择",
+    topic: "文本分类",
+    count: 22,
+    percentage: 47.8,
+    level: "medium",
+    typical_questions: [
+      "极度不平衡样本集下，准确率 Accuracy 很高但 Macro-F1 很低该如何调优？",
+      "Focal Loss 的 alpha 和 gamma 超参数分别控制什么？和加权交叉熵有什么区别？",
+    ],
+    teaching_advice: "建议提供一个类别不平衡的实训 Notebook，演示重采样策略与 Focal Loss 的代码调优对比。",
+    keywords: ["文本分类", "类别不平衡", "Focal Loss", "Macro-F1", "加权交叉熵"],
+  },
+  {
+    id: "cluster-bpe-subword",
+    name: "BPE 分词算法与未登录词（OOV）处理机制",
+    topic: "预训练模型",
+    count: 19,
+    percentage: 65.5,
+    level: "low",
+    typical_questions: [
+      "BPE 算法在构建词表时的合并策略是怎样的？如何平衡词表大小与序列长度？",
+      "WordPiece 与 BPE 在打分选择合并字符对时的概率准则有什么区别？",
+    ],
+    teaching_advice: "建议结合一段具体的中英文混合语料，手工演示前 3 轮字节对合并迭代过程。",
+    keywords: ["BPE分词", "子词切分", "OOV处理", "WordPiece", "词表构建"],
+  },
+  {
+    id: "cluster-crf-viterbi",
+    name: "BiLSTM-CRF 转移矩阵与 Viterbi 解码算法",
+    topic: "序列标注",
+    count: 18,
+    percentage: 45.0,
+    level: "low",
+    typical_questions: [
+      "CRF 转移矩阵在训练时是如何学习标签之间的约束关系的？（如 I 不能在 B 之前）",
+      "Viterbi 动态规划解码的时间复杂度是多少？状态转移公式如何写？",
+    ],
+    teaching_advice: "建议在讲解 NER 任务时，通过非法转移惩罚矩阵解释 CRF 相比独立 Softmax 的核心优势。",
+    keywords: ["CRF", "序列标注", "Viterbi解码", "转移矩阵", "动态规划"],
+  },
+];
+
+const DEFAULT_KEYWORDS: TeacherQuestionKeyword[] = [
+  { word: "自注意力计算", count: 42, category: "核心算法", heat: "high" },
+  { word: "QKV维度对齐", count: 35, category: "维度推导", heat: "high" },
+  { word: "负采样损失", count: 31, category: "核心算法", heat: "high" },
+  { word: "位置编码公式", count: 26, category: "数学推导", heat: "medium" },
+  { word: "Focal Loss", count: 22, category: "模型优化", heat: "medium" },
+  { word: "残差连接", count: 20, category: "结构设计", heat: "medium" },
+  { word: "BPE分词", count: 19, category: "数据处理", heat: "low" },
+  { word: "Viterbi解码", count: 18, category: "核心算法", heat: "low" },
+  { word: "Softmax溢出", count: 16, category: "数值稳定", heat: "low" },
+  { word: "过拟合调优", count: 15, category: "模型优化", heat: "low" },
+];
 
 function createDemoMonthlyStatistics(): TeacherMonthlyQuestionStatistics[] {
   return Array.from({ length: 5 }, (_, index) => {
@@ -96,20 +209,20 @@ function createLocalDemoData(base: TeacherOverview): TeacherOverview {
   const hourly_questions = demoHourlyCounts.map((count, hour) => ({ hour, label: `${String(hour).padStart(2, "0")}:00`, count, percentage: Number((count / questions * 100).toFixed(2)) }));
   const weekday_questions = demoWeekdayCounts.map((count, weekday) => ({ weekday, label: ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][weekday], count, percentage: Number((count / questions * 100).toFixed(2)) }));
   const student_activity: TeacherStudentActivity[] = demoStudentQuestions.map((count, index) => {
-    const sessions = Math.max(1, Math.round(count / (2.5 + index % 3 * 0.4)));
-    const error_questions = index % 5 === 0 ? 2 : index % 4 === 0 ? 1 : 0;
+    const sessions = count === 0 ? 0 : Math.max(1, Math.round(count / (2.5 + (index % 3) * 0.4)));
+    const error_questions = count === 0 ? 0 : (index % 5 === 0 ? 2 : index % 4 === 0 ? 1 : 0);
     return {
       user_id: `demo-student-${index + 1}`,
       display_name: ["张三", "李四", "王五", "赵六", "陈晨", "杨帆", "周宁", "吴越", "郑好", "孙悦", "何苗", "林溪", "黄河", "徐安", "胡可", "高远", "罗琳", "谢意"][index],
       username: `student${String(index + 1).padStart(2, "0")}`,
       questions: count,
       sessions,
-      active_days: 4 + (index * 3) % 18,
+      active_days: count === 0 ? 0 : 4 + ((index * 3) % 18),
       error_questions,
-      error_rate: Number((error_questions / count * 100).toFixed(2)),
-      questions_per_session: Number((count / sessions).toFixed(2)),
-      last_active: dateBefore(index % 6),
-      top_topic: demoTopics[index % demoTopics.length],
+      error_rate: count === 0 ? 0 : Number(((error_questions / count) * 100).toFixed(2)),
+      questions_per_session: sessions === 0 ? 0 : Number((count / sessions).toFixed(2)),
+      last_active: count === 0 ? null : dateBefore(index % 6),
+      top_topic: count === 0 ? "暂无提问" : demoTopics[index % demoTopics.length],
     };
   });
   const peakDay = daily_questions.reduce((peak, item) => item.count > peak.count ? item : peak, daily_questions[0]);
@@ -122,11 +235,11 @@ function createLocalDemoData(base: TeacherOverview): TeacherOverview {
       ...base.summary,
       questions,
       sessions: 86,
-      students: student_activity.length,
+      students: student_activity.filter((s) => s.questions > 0).length,
       active_days: 24,
       error_questions: 12,
       error_rate: 3.91,
-      questions_per_student: Number((questions / student_activity.length).toFixed(2)),
+      questions_per_student: Number((questions / student_activity.filter((s) => s.questions > 0).length).toFixed(2)),
       questions_per_session: Number((questions / 86).toFixed(2)),
       contextualized_questions: 286,
       context_coverage_rate: 93.16,
@@ -144,6 +257,8 @@ function createLocalDemoData(base: TeacherOverview): TeacherOverview {
     peak_hour: peakHour,
     monthly_statistics: createDemoMonthlyStatistics(),
     student_activity,
+    question_clusters: DEFAULT_CLUSTERS,
+    frequent_keywords: DEFAULT_KEYWORDS,
   };
 }
 
@@ -200,10 +315,10 @@ function LineChart({ title, description, ariaLabel, labels, series, tooltipLabel
   const padding = { top: 22, right: 24, bottom: 38, left: 50 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = chartHeight - padding.top - padding.bottom;
-  const x = (index: number) => labels.length <= 1 ? padding.left + plotWidth / 2 : padding.left + index / (labels.length - 1) * plotWidth;
-  const y = (value: number) => padding.top + plotHeight - value / axisMax * plotHeight;
+  const x = (index: number) => labels.length <= 1 ? padding.left + plotWidth / 2 : padding.left + (index / (labels.length - 1)) * plotWidth;
+  const y = (value: number) => padding.top + plotHeight - (value / axisMax) * plotHeight;
   const labelStep = xLabelStep ?? (labels.length > 20 ? 5 : labels.length > 10 ? 2 : 1);
-  const yTicks = Array.from({ length: 5 }, (_, index) => axisMax * index / 4);
+  const yTicks = Array.from({ length: 5 }, (_, index) => (axisMax * index) / 4);
   const hoverWidth = labels.length > 1 ? plotWidth / (labels.length - 1) : plotWidth;
   const tooltipWidth = 220;
   const tooltipHeight = 50 + series.length * 17;
@@ -255,7 +370,7 @@ function MonthlyHourlyQuestions({ months }: { months: TeacherMonthlyQuestionStat
 }
 
 function polarPoint(cx: number, cy: number, radius: number, angle: number) {
-  const radians = (angle - 90) * Math.PI / 180;
+  const radians = ((angle - 90) * Math.PI) / 180;
   return { x: cx + radius * Math.cos(radians), y: cy + radius * Math.sin(radians) };
 }
 
@@ -272,12 +387,12 @@ function WeekdayPie({ items }: { items: TeacherOverview["weekday_questions"] }) 
   const cy = 155;
   const radius = 100;
   const segments = items.map((item, index) => {
-    const startAngle = items.slice(0, index).reduce((sum, previous) => sum + (total ? previous.count / total * 360 : 0), 0);
-    const endAngle = startAngle + (total ? item.count / total * 360 : 0);
+    const startAngle = items.slice(0, index).reduce((sum, previous) => sum + (total ? (previous.count / total) * 360 : 0), 0);
+    const endAngle = startAngle + (total ? (item.count / total) * 360 : 0);
     const middleAngle = startAngle + (endAngle - startAngle) / 2;
     const lineStart = polarPoint(cx, cy, radius + 4, middleAngle);
     const lineEnd = polarPoint(cx, cy, radius + 22, middleAngle);
-    const right = Math.cos((middleAngle - 90) * Math.PI / 180) >= 0;
+    const right = Math.cos(((middleAngle - 90) * Math.PI) / 180) >= 0;
     const elbowX = right ? 310 : 20;
     const textX = right ? 320 : 10;
     return { item, index, startAngle, endAngle, lineStart, lineEnd, elbowX, textX, right };
@@ -300,22 +415,384 @@ function WeekdayQuestions({ data }: { data: TeacherOverview }) {
   </section>;
 }
 
+/* --- P1: 高频提问焦点与典型问题聚类 (FAQ) --- */
+function QuestionClustersPanel({ data }: { data: TeacherOverview }) {
+  const clusters = data.question_clusters?.length ? data.question_clusters : DEFAULT_CLUSTERS;
+  const keywords = data.frequent_keywords?.length ? data.frequent_keywords : DEFAULT_KEYWORDS;
+  const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
+  const [selectedTopic, setSelectedTopic] = useState<string>("all");
+
+  const topics = useMemo(() => Array.from(new Set(clusters.map((c) => c.topic))), [clusters]);
+
+  const filteredClusters = useMemo(() => {
+    return clusters.filter((item) => {
+      const matchKeyword = !selectedKeyword
+        || item.keywords.some((k) => k.toLowerCase().includes(selectedKeyword.toLowerCase()))
+        || item.name.toLowerCase().includes(selectedKeyword.toLowerCase());
+      const matchTopic = selectedTopic === "all" || item.topic === selectedTopic;
+      return matchKeyword && matchTopic;
+    });
+  }, [clusters, selectedKeyword, selectedTopic]);
+
+  const priorityBadge = (level: "high" | "medium" | "low") => {
+    if (level === "high") return <span className="teacher-question-cluster-level high">高关注</span>;
+    if (level === "medium") return <span className="teacher-question-cluster-level medium">建议关注</span>;
+    return <span className="teacher-question-cluster-level low">持续观察</span>;
+  };
+
+  return (
+    <section className="teacher-panel teacher-question-panel teacher-question-clusters-panel" aria-label="高频提问与典型问题聚类">
+      <header>
+        <div>
+          <h2>高频提问焦点与典型问题聚类 (FAQ)</h2>
+          <p>从学生提问中提炼核心高频疑问与知识盲区聚类，直观呈现学生最常问什么、为什么困惑及教学建议</p>
+        </div>
+        <Sparkles size={18} className="teacher-question-clusters-icon" />
+      </header>
+
+      <div className="teacher-question-keywords-bar">
+        <span className="teacher-question-keywords-label"><Tag size={13} />高频焦点词：</span>
+        <button
+          type="button"
+          className={`teacher-question-keyword-tag all ${selectedKeyword === null ? "active" : ""}`}
+          onClick={() => setSelectedKeyword(null)}
+        >
+          全部焦点
+        </button>
+        {keywords.map((kw) => (
+          <button
+            key={kw.word}
+            type="button"
+            className={`teacher-question-keyword-tag ${selectedKeyword === kw.word ? "active" : ""}`}
+            onClick={() => setSelectedKeyword((curr) => (curr === kw.word ? null : kw.word))}
+          >
+            {kw.word} <small>{kw.count}</small>
+          </button>
+        ))}
+        {topics.length > 1 && (
+          <div className="teacher-question-topic-filter">
+            <select
+              aria-label="按主题过滤聚类"
+              value={selectedTopic}
+              onChange={(e) => setSelectedTopic(e.target.value)}
+            >
+              <option value="all">全部主题</option>
+              {topics.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+        )}
+      </div>
+
+      {filteredClusters.length ? (
+        <div className="teacher-question-clusters-grid">
+          {filteredClusters.map((cluster) => (
+            <article key={cluster.id} className="teacher-question-cluster-card">
+              <div className="teacher-question-cluster-header">
+                <strong>{cluster.name}</strong>
+                {priorityBadge(cluster.level)}
+              </div>
+              <div className="teacher-question-cluster-meta">
+                <span className="teacher-question-cluster-meta-topic">{cluster.topic}</span>
+                <span>{cluster.count} 次提问 · 占该主题 {formatPercent(cluster.percentage)}</span>
+              </div>
+              <div className="teacher-question-cluster-progress">
+                <div
+                  className="teacher-question-cluster-progress-bar"
+                  style={{ width: `${Math.min(100, cluster.percentage)}%` }}
+                />
+              </div>
+              <div className="teacher-question-cluster-questions">
+                <span className="teacher-question-cluster-subheading"><HelpCircle size={13} />学生典型提问示例：</span>
+                {cluster.typical_questions.map((q, idx) => (
+                  <p key={idx} className="teacher-question-cluster-question-item">
+                    <span className="quote-mark">“</span>{q}<span className="quote-mark">”</span>
+                  </p>
+                ))}
+              </div>
+              <div className="teacher-question-cluster-advice">
+                <Lightbulb size={14} className="advice-icon" />
+                <p><strong>教学建议：</strong>{cluster.teaching_advice}</p>
+              </div>
+              <div className="teacher-question-cluster-tags">
+                {cluster.keywords.map((kw) => (
+                  <span
+                    key={kw}
+                    onClick={() => setSelectedKeyword(kw)}
+                    title={`点击按 ${kw} 筛选`}
+                  >
+                    #{kw}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="teacher-empty-inline" style={{ padding: "24px" }}>当前筛选条件下暂无典型疑问聚类。</p>
+      )}
+    </section>
+  );
+}
+
+/* --- P0: 学生参与度表格增加【搜索 + 字段排序】与【沉默学生预警】 --- */
+type SortKey = "display_name" | "questions" | "sessions" | "active_days" | "error_questions" | "last_active";
+type SortOrder = "asc" | "desc";
+type FilterTab = "all" | "active" | "silent";
+
 function StudentActivity({ items, personLabel = "学生" }: { items: TeacherStudentActivity[]; personLabel?: "学生" | "用户" }) {
-  return <section className="teacher-panel teacher-question-panel teacher-question-activity-panel">
-    <header><div><h2>{personLabel}参与度</h2><p>按当前统计范围，分页查看问题量、会话和异常情况</p></div><Users size={17} /></header>
-    {items.length ? <PaginatedStudentTable personLabel={personLabel} headers={[personLabel, "问题量", "会话", "活跃天数", "异常问题", "最近活跃", "主要主题"]} rows={items.map((item) => ({ id: item.user_id, cells: [
-      <><strong>{item.display_name}</strong>{item.username && <small>@{item.username}</small>}</>,
-      <><strong>{item.questions}</strong><small>每会话 {formatNumber(item.questions_per_session)}</small></>,
-      item.sessions, item.active_days,
-      <span className={item.error_questions ? "is-warning" : ""}><strong>{item.error_questions}</strong><small>{formatPercent(item.error_rate)}</small></span>,
-      item.last_active ?? "—", item.top_topic,
-    ] }))} /> : <p className="teacher-empty-state">暂无{personLabel}问题记录。</p>}
-  </section>;
+  const pageSize = 8;
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+  const [filterTab, setFilterTab] = useState<FilterTab>("all");
+
+  const activeCount = useMemo(() => items.filter((item) => item.questions > 0).length, [items]);
+  const silentCount = useMemo(() => items.filter((item) => item.questions === 0).length, [items]);
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortOrder((curr) => (curr === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortOrder(key === "display_name" ? "asc" : "desc");
+    }
+    setPage(0);
+  };
+
+  const filteredAndSorted = useMemo(() => {
+    let result = [...items];
+
+    // 1. Tab filter
+    if (filterTab === "active") {
+      result = result.filter((item) => item.questions > 0);
+    } else if (filterTab === "silent") {
+      result = result.filter((item) => item.questions === 0);
+    }
+
+    // 2. Search filter
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter((item) =>
+        item.display_name.toLowerCase().includes(q)
+        || (item.username && item.username.toLowerCase().includes(q))
+      );
+    }
+
+    // 3. Sorting (applied only when user activates a sort column)
+    if (sortKey) {
+      result.sort((a, b) => {
+        let cmp: number;
+        if (sortKey === "display_name") {
+          cmp = a.display_name.localeCompare(b.display_name, "zh-CN");
+        } else if (sortKey === "last_active") {
+          const da = a.last_active ?? "";
+          const db = b.last_active ?? "";
+          cmp = da.localeCompare(db);
+        } else {
+          cmp = (a[sortKey] ?? 0) - (b[sortKey] ?? 0);
+        }
+        if (cmp === 0) {
+          cmp = a.display_name.localeCompare(b.display_name, "zh-CN");
+        }
+        return sortOrder === "asc" ? cmp : -cmp;
+      });
+    }
+
+    return result;
+  }, [items, filterTab, search, sortKey, sortOrder]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredAndSorted.length / pageSize));
+  const activePage = Math.min(page, pageCount - 1);
+  const pageItems = filteredAndSorted.slice(activePage * pageSize, (activePage + 1) * pageSize);
+  const first = filteredAndSorted.length ? activePage * pageSize + 1 : 0;
+  const last = Math.min((activePage + 1) * pageSize, filteredAndSorted.length);
+
+  const sortIndicator = (key: SortKey) => {
+    if (sortKey !== key) {
+      return <ArrowUpDown size={11} className="sort-icon neutral" />;
+    }
+    return sortOrder === "asc"
+      ? <ArrowUp size={11} className="sort-icon active" />
+      : <ArrowDown size={11} className="sort-icon active" />;
+  };
+
+  return (
+    <section className="teacher-panel teacher-question-panel teacher-question-activity-panel">
+      <header>
+        <div>
+          <h2>{personLabel}参与度</h2>
+          <p>按当前统计范围，分页查看问题量与会话，支持多维字段排序、模糊搜索与沉默{personLabel}预警</p>
+        </div>
+        <Users size={17} />
+      </header>
+
+      <div className="teacher-question-activity-controls">
+        <div className="teacher-question-filter-group">
+          <button
+            type="button"
+            className={`teacher-question-filter-btn ${filterTab === "all" ? "active" : ""}`}
+            onClick={() => { setFilterTab("all"); setPage(0); }}
+          >
+            全部{personLabel} ({items.length})
+          </button>
+          <button
+            type="button"
+            className={`teacher-question-filter-btn ${filterTab === "active" ? "active" : ""}`}
+            onClick={() => { setFilterTab("active"); setPage(0); }}
+          >
+            提问活跃 ({activeCount})
+          </button>
+          <button
+            type="button"
+            className={`teacher-question-filter-btn silent-btn ${filterTab === "silent" ? "active" : ""}`}
+            onClick={() => { setFilterTab("silent"); setPage(0); }}
+          >
+            <AlertTriangle size={12} />
+            沉默待关怀 ({silentCount})
+          </button>
+        </div>
+
+        <div className="teacher-question-search-wrap">
+          <Search size={13} className="teacher-question-search-icon" />
+          <input
+            type="text"
+            className="teacher-question-search-input"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            placeholder={`搜索${personLabel}姓名或学号...`}
+            aria-label={`搜索${personLabel}姓名或学号`}
+          />
+          {search && (
+            <button
+              type="button"
+              className="teacher-question-search-clear"
+              aria-label="清除搜索"
+              onClick={() => { setSearch(""); setPage(0); }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {(filterTab === "silent" || (filterTab === "all" && silentCount > 0 && !search)) && (
+        <div className="teacher-question-silent-alert" role="status">
+          <AlertTriangle size={15} />
+          <span>
+            共发现 <strong>{silentCount}</strong> 名{personLabel}在统计周期内未发起任何提问，建议任课教师在课后答疑或针对性辅导中予以重点关注，排查学习卡点。
+          </span>
+        </div>
+      )}
+
+      {filteredAndSorted.length ? (
+        <>
+          <div className="teacher-question-activity-table">
+            <table>
+              <thead>
+                <tr>
+                  <th className="teacher-question-sortable-th" onClick={() => handleSort("display_name")}>
+                    <span className="teacher-question-th-content">{personLabel} {sortIndicator("display_name")}</span>
+                  </th>
+                  <th className="teacher-question-sortable-th" onClick={() => handleSort("questions")}>
+                    <span className="teacher-question-th-content">问题量 {sortIndicator("questions")}</span>
+                  </th>
+                  <th className="teacher-question-sortable-th" onClick={() => handleSort("sessions")}>
+                    <span className="teacher-question-th-content">会话 {sortIndicator("sessions")}</span>
+                  </th>
+                  <th className="teacher-question-sortable-th" onClick={() => handleSort("active_days")}>
+                    <span className="teacher-question-th-content">活跃天数 {sortIndicator("active_days")}</span>
+                  </th>
+                  <th className="teacher-question-sortable-th" onClick={() => handleSort("error_questions")}>
+                    <span className="teacher-question-th-content">异常问题 {sortIndicator("error_questions")}</span>
+                  </th>
+                  <th className="teacher-question-sortable-th" onClick={() => handleSort("last_active")}>
+                    <span className="teacher-question-th-content">最近活跃 {sortIndicator("last_active")}</span>
+                  </th>
+                  <th>主要主题</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageItems.map((item) => {
+                  const isSilent = item.questions === 0;
+                  return (
+                    <tr key={item.user_id} className={isSilent ? "is-silent-row" : ""}>
+                      <td>
+                        <div className="teacher-question-student-name">
+                          <strong>{item.display_name}</strong>
+                          {item.username && <small>@{item.username}</small>}
+                          {isSilent && <span className="teacher-question-silent-badge">零提问 · 待关怀</span>}
+                        </div>
+                      </td>
+                      <td>
+                        {isSilent ? (
+                          <strong className="is-silent">0</strong>
+                        ) : (
+                          <>
+                            <strong>{item.questions}</strong>
+                            <small>每会话 {formatNumber(item.questions_per_session)}</small>
+                          </>
+                        )}
+                      </td>
+                      <td>{item.sessions}</td>
+                      <td>{item.active_days}</td>
+                      <td className={item.error_questions ? "is-warning" : ""}>
+                        <strong>{item.error_questions}</strong>
+                        <small>{isSilent ? "—" : formatPercent(item.error_rate)}</small>
+                      </td>
+                      <td>{item.last_active ?? "—"}</td>
+                      <td>
+                        {isSilent ? (
+                          <span className="teacher-question-empty-text">暂无提问</span>
+                        ) : (
+                          item.top_topic
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <footer className="teacher-question-pagination">
+            <span>
+              {filteredAndSorted.length === items.length
+                ? `显示 ${first}–${last} / 共 ${items.length} 名${personLabel}`
+                : `显示 ${first}–${last} / 共 ${filteredAndSorted.length} 名${personLabel} (总计 ${items.length} 人)`}
+            </span>
+            <div>
+              <button
+                type="button"
+                aria-label="上一页"
+                disabled={activePage === 0}
+                onClick={() => setPage(Math.max(0, activePage - 1))}
+              >
+                <ChevronLeft size={15} />
+              </button>
+              <strong>{activePage + 1} / {pageCount}</strong>
+              <button
+                type="button"
+                aria-label="下一页"
+                disabled={activePage >= pageCount - 1}
+                onClick={() => setPage(Math.min(pageCount - 1, activePage + 1))}
+              >
+                <ChevronRight size={15} />
+              </button>
+            </div>
+          </footer>
+        </>
+      ) : (
+        <p className="teacher-empty-state">
+          {search ? `未搜索到与“${search}”匹配的${personLabel}。` : `暂无匹配的${personLabel}记录。`}
+        </p>
+      )}
+    </section>
+  );
 }
 
 export function StudentQuestionsPage({ data, headerControls }: { data: TeacherOverview; headerControls?: ReactNode }) {
   const demo = import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "1";
-  const displayData = useMemo(() => demo ? createLocalDemoData(data) : data, [data, demo]);
+  const displayData = useMemo(() => (demo ? createLocalDemoData(data) : data), [data, demo]);
   const monthlyStatistics = useMemo(() => {
     if (displayData.monthly_statistics?.length) return displayData.monthly_statistics;
     return [{
@@ -351,6 +828,7 @@ export function StudentQuestionsPage({ data, headerControls }: { data: TeacherOv
 
     <MonthTabs months={monthlyStatistics} activeMonth={activeMonth} onChange={setSelectedMonth} />
     <div className="teacher-question-grid teacher-question-grid-three"><DistributionPanel title="主题分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.topic_distribution ?? []} /><DistributionPanel title="难度分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.difficulty_distribution ?? []} tone="blue" /><DistributionPanel title="模式分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.mode_distribution ?? []} tone="green" /></div>
+    <QuestionClustersPanel data={displayData} />
     <div className="teacher-question-grid teacher-question-grid-trend"><MonthlyDailyQuestions months={monthlyStatistics} /><MonthlyHourlyQuestions months={monthlyStatistics} /></div>
     <div className="teacher-question-grid teacher-question-grid-weekday"><WeekdayQuestions data={displayData} /></div>
     <StudentActivity personLabel={data.data_scope?.mode === "all_users" ? "用户" : "学生"} items={displayData.student_activity} />
