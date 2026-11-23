@@ -49,6 +49,7 @@ export function useTurnSender({
     setRequestError(null);
     const requestId = createUuid();
     const optimisticId = `${requestId}:user`;
+    const optimisticAssistantId = `${requestId}:assistant`;
     inFlightTurnIds.current.add(requestId);
     pendingRequests.current.set(requestId, optimisticId);
 
@@ -68,7 +69,17 @@ export function useTurnSender({
       })) } : {}),
       createdAt: new Date().toISOString(),
     };
-    setMessages((current) => [...current, optimisticMessage]);
+
+    const optimisticAssistantMessage: ChatMessage = {
+      id: optimisticAssistantId,
+      turnId: requestId,
+      role: "assistant",
+      content: "",
+      status: "accepted",
+      activities: [],
+      createdAt: new Date().toISOString(),
+    };
+    setMessages((current) => [...current, optimisticMessage, optimisticAssistantMessage]);
 
     let sessionId = activeSessionRef.current;
     if (!sessionId) sessionId = await createBackendSession();

@@ -208,9 +208,11 @@ export function createRealtimeEventHandler({
         }
         pendingDrafts?.current.delete(requestId);
         const optimisticId = pendingRequests.current.get(requestId);
-        if (optimisticId) setMessages((current) => current.map((message) => message.id === optimisticId
-          ? { ...message, status: "failed" }
-          : message));
+        if (optimisticId) setMessages((current) => current
+          .filter((message) => message.id !== `${requestId}:assistant`)
+          .map((message) => message.id === optimisticId
+            ? { ...message, status: "failed" }
+            : message));
         pendingRequests.current.delete(requestId);
         inFlightTurnIds.current.delete(requestId);
       }
@@ -238,13 +240,20 @@ export function createRealtimeEventHandler({
       return;
     }
     if (["session.created", "session.deleted", "session.updated"].includes(event.type)) void loadSessions();
-    if (event.type === "command.ack" && event.request_id) {
-      pendingDrafts?.current.delete(event.request_id);
-      const optimisticId = pendingRequests.current.get(event.request_id);
-      if (optimisticId) {
-        if (event.turn_id) { inFlightTurnIds.current.delete(event.request_id); inFlightTurnIds.current.add(event.turn_id); }
-        setMessages((current) => current.map((message) => message.id === optimisticId ? { ...message, turnId: event.turn_id ?? message.turnId } : message));
-        pendingRequests.current.delete(event.request_id);
+    if (event.type === "command.ack") {
+      const requestId = event.request_id ?? (pendingRequests.current.size === 1 ? pendingRequests.current.keys().next().value : undefined);
+      if (requestId) {
+        pendingDrafts?.current.delete(requestId);
+        const optimisticId = pendingRequests.current.get(requestId);
+        if (optimisticId) {
+          if (event.turn_id) { inFlightTurnIds.current.delete(requestId); inFlightTurnIds.current.add(event.turn_id); }
+          setMessages((current) => current.map((message) => {
+            if (message.id === optimisticId) return { ...message, turnId: event.turn_id ?? message.turnId };
+            if (message.id === `${requestId}:assistant`) return { ...message, id: `${event.turn_id}:assistant`, turnId: event.turn_id ?? message.turnId };
+            return message;
+          }));
+          pendingRequests.current.delete(requestId);
+        }
       }
       if (event.payload.command === "chat.send" && event.turn_id) {
         const status = typeof event.payload.status === "string" ? event.payload.status : "accepted";
@@ -299,6 +308,18 @@ export function createRealtimeEventHandler({
       let index = next.findIndex((message) => message.id === assistantId);
       const ensureAssistant = () => {
         if (index >= 0) return;
+        const optimisticIndex = next.findIndex((m) => m.role === "assistant" && (m.id.endsWith(":assistant") && (m.status === "accepted" || pendingRequests.current.has(m.turnId))));
+        if (optimisticIndex >= 0) {
+          next[optimisticIndex] = {
+            ...next[optimisticIndex],
+            id: assistantId,
+            turnId: event.turn_id!,
+            status: "running",
+            startedAt: event.type === "chat.started" ? event.timestamp : next[optimisticIndex].startedAt,
+          };
+          index = optimisticIndex;
+          return;
+        }
         next.push({ id: assistantId, turnId: event.turn_id!, role: "assistant", content: "", status: "running", activities: [], createdAt: event.timestamp, startedAt: event.type === "chat.started" ? event.timestamp : undefined });
         index = next.length - 1;
       };

@@ -197,7 +197,26 @@ export function Composer({ sessionId, disabled, sendDisabled = false, selectionN
       )}
       {pasteNotice && <p className="composer-upload-notice" role="alert">{pasteNotice}</p>}
       {selectionNotice && <p className="composer-upload-notice" role="status">{selectionNotice}</p>}
-      <textarea value={content} onChange={(event) => setContent(event.target.value)} onKeyDown={keyDown} onPaste={handlePaste} disabled={disabled} rows={centered ? 3 : 1} placeholder="问一个 NLP 问题……" aria-label="学习问题" />
+      <textarea
+        value={content}
+        onChange={(event) => {
+          setContent(event.target.value);
+          if (!sessionId && event.target.value.trim() && onEnsureSession) {
+            void onEnsureSession();
+          }
+        }}
+        onFocus={() => {
+          if (!sessionId && onEnsureSession) {
+            void onEnsureSession();
+          }
+        }}
+        onKeyDown={keyDown}
+        onPaste={handlePaste}
+        disabled={disabled}
+        rows={centered ? 3 : 1}
+        placeholder="问一个 NLP 问题……"
+        aria-label="学习问题"
+      />
       <div className="composer-toolbar">
         <input type="file" ref={fileInputRef} hidden accept="image/jpeg,image/png,image/webp" onChange={handleFileSelect} />
         <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={!canUploadAttachments} aria-label="上传附件"><Plus size={18} /></button>
