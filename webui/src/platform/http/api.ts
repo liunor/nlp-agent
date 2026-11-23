@@ -243,6 +243,8 @@ export interface FileTransfer {
   status: "pending" | "accepted" | "rejected" | "cancelled" | "expired" | "failed";
   file_name?: string;
   size_bytes?: number;
+  accepted_file_id?: string | null;
+  recipient_workspace_id?: string | null;
   sender?: FileTransferRecipient;
   recipient?: FileTransferRecipient;
   created_at?: string;

@@ -146,10 +146,12 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
     void (async () => {
       let content: string;
       let truncated = false;
+      let bytes = request.bytes;
       if (request.source === "storage") {
         const result = await api.readStorageFile(request.id, request.workspaceId);
         content = result.content;
         truncated = result.truncated;
+        if (!truncated) bytes = result.bytes_read;
       } else {
         const response = await fetch(request.url, { credentials: "include", signal: controller.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -160,7 +162,7 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
         setRemoteState({
           request,
           status: "ready",
-          file: { ...previewFile(source, content), id: `${request.source ?? "book-file"}:${request.id}`, bytes: request.bytes, truncated: truncated || source.size > MAX_PREVIEW_BYTES || content.length > MAX_PREVIEW_CHARS },
+          file: { ...previewFile(source, content), id: `${request.source ?? "book-file"}:${request.id}`, bytes, truncated: truncated || source.size > MAX_PREVIEW_BYTES || content.length > MAX_PREVIEW_CHARS },
         });
     })().catch((reason: unknown) => {
         const aborted = reason && typeof reason === "object" && "name" in reason && reason.name === "AbortError";
@@ -267,7 +269,10 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
       </header>
 
       {error && <div className="files-panel-error" role="alert">{error}<button type="button" aria-label="关闭提示" onClick={() => setError("")}><X size={14} /></button></div>}
-      {remoteError && <div className="files-panel-error" role="alert">{remoteError}<button type="button" aria-label="关闭教材文件提示" onClick={() => setLocalOverrideRequest(previewRequest ?? null)}><X size={14} /></button></div>}
+      {remoteError && <div className="files-panel-error" role="alert">{remoteError}
+        {previewRequest?.source === "storage" && <a href={storageFileDownloadUrl(previewRequest.id, previewRequest.workspaceId)} download>下载文件</a>}
+        <button type="button" aria-label="关闭文件预览提示" onClick={() => setLocalOverrideRequest(previewRequest ?? null)}><X size={14} /></button>
+      </div>}
 
       {sortedFiles.length === 0 && !hasRemoteState ? (
         <button className="files-panel-dropzone" type="button" onClick={() => inputRef.current?.click()}>
@@ -290,11 +295,13 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
             })}
           </ul>}
 
-          {remoteLoading ? <div className="files-panel-remote-state" role="status">正在打开教材文件……</div> : selected && <div className="files-panel-preview">
-            {remotePreview && <div className="files-panel-external-banner"><BookMarked size={14} />来自知识教材</div>}
+          {remoteLoading ? <div className="files-panel-remote-state" role="status">正在打开{previewRequest?.source === "storage" ? "文件" : "教材文件"}……</div> : selected && <div className="files-panel-preview">
+            {remotePreview && previewRequest?.source !== "storage" && <div className="files-panel-external-banner"><BookMarked size={14} />来自知识教材</div>}
             <div className="files-panel-preview-header"><span>{selected.language === "markdown" ? <BookMarked size={15} /> : selected.language === "code" ? <FileCode2 size={15} /> : <FileText size={15} />}</span><strong>{selected.name}</strong>{selected && <small>{selected.language === "code" && selected.codeLanguage ? selected.codeLanguage : selected.language}</small>}</div>
             <div className="files-panel-preview-body">
-              {selected.language === "markdown" ? <MarkdownContent>{selected.content}</MarkdownContent>
+              {remotePreview && previewRequest?.source === "storage" && selected.bytes === 0 && !selected.content
+                ? <p className="files-panel-plain">此文件为空（0 B）。</p>
+                : selected.language === "markdown" ? <MarkdownContent>{selected.content}</MarkdownContent>
                 : selected.language === "code" ? <DocumentCodeView language={selectedLanguage} code={selected.content} />
                   : <pre className="files-panel-plain">{selected.content}</pre>}
             </div>
@@ -333,7 +340,9 @@ function formatModifiedAt(value: string | null | undefined) {
   }).format(date).replace(/\u200e/g, "");
 }
 
-function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { workspaceId?: string; onRefreshUsage: () => void; onOpenDocument: (item: StorageFile) => void }) {
+type StorageDocument = Pick<StorageFile, "id" | "name" | "size_bytes" | "mime_type">;
+
+function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { workspaceId?: string; onRefreshUsage: () => void; onOpenDocument: (item: StorageDocument, fileWorkspaceId?: string) => void }) {
   const [items, setItems] = useState<StorageFile[]>([]);
   const [folderPath, setFolderPath] = useState<StorageFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -605,7 +614,10 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
   const actOnTransfer = async (transfer: FileTransfer, action: "accept" | "reject" | "cancel") => {
     setMessagesLoading(true);
     try {
-      if (action === "accept") await api.acceptFileTransfer(transfer.id);
+      if (action === "accept") {
+        await api.acceptFileTransfer(transfer.id);
+        refresh();
+      }
       else if (action === "reject") await api.rejectFileTransfer(transfer.id);
       else await api.cancelFileTransfer(transfer.id);
       refreshTransfers(messageBox);
@@ -648,7 +660,51 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
         {trashMode ? <div className="storage-row-actions"><button type="button" aria-label={`恢复 ${item.name}`} onClick={() => restore(item)}><RotateCcw size={14} /></button><button type="button" className="danger" aria-label={`彻底删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div> : renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <><a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a><button type="button" aria-label={`发送 ${item.name}`} onClick={() => beginSend(item)}><Send size={14} /></button></>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
       </div>)}
     </div>}
-    {messagesOpen && <section className="file-transfer-messages" aria-label="文件消息"><header><div><span className="file-transfer-heading-icon"><Mail size={17} /></span><div><strong>文件消息</strong><small>收到与发送的文件请求</small></div></div><button type="button" aria-label="关闭消息" onClick={() => setMessagesOpen(false)}><X size={15} /></button></header><div className="file-transfer-retention"><CalendarClock size={14} />消息记录自动保留 7 天，文件本身不会因此删除。</div><nav aria-label="消息分类"><button type="button" className={messageBox === "incoming" ? "active" : ""} onClick={() => { setMessageBox("incoming"); refreshTransfers("incoming"); }}><span>收到的</span>{messageBox === "incoming" && pendingTransfers > 0 && <em>{pendingTransfers}</em>}</button><button type="button" className={messageBox === "outgoing" ? "active" : ""} onClick={() => { setMessageBox("outgoing"); refreshTransfers("outgoing"); }}>已发送</button></nav>{messagesLoading ? <div className="storage-empty" role="status">正在读取消息…</div> : transfers.length === 0 ? <div className="storage-empty"><Mail size={24} /><strong>暂无文件消息</strong><span>新的文件请求会显示在这里。</span></div> : <div className="file-transfer-list">{transfers.map((transfer) => { const peer = messageBox === "incoming" ? transfer.sender : transfer.recipient; return <article key={transfer.id}><div className="file-transfer-item-main"><span className="file-transfer-file-icon"><FileText size={16} /></span><div><strong>{transfer.file_name ?? "未命名文件"}</strong><span><UserRound size={12} />{messageBox === "incoming" ? "来自" : "发送给"} {peer?.display_name ?? "已注销用户"}</span><small>{formatBytes(transfer.size_bytes ?? 0)} · {transfer.created_at ? `发送于 ${formatModifiedAt(transfer.created_at)}` : "发送时间未知"}{peer?.identity_id ? ` · ${peer.identity_id}` : ""}</small></div></div><span className={`transfer-status ${transfer.status}`}>{({ pending: "待处理", accepted: "已接收", rejected: "已拒绝", cancelled: "已撤回", expired: "已过期", failed: "失败" } as const)[transfer.status]}</span>{transfer.status === "pending" && (messageBox === "incoming" ? <footer><button type="button" aria-label={`拒绝 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "reject")}>拒绝</button><button type="button" className="primary" aria-label={`同意 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "accept")}>同意</button></footer> : <footer><button type="button" aria-label={`撤回 ${transfer.file_name}`} onClick={() => void actOnTransfer(transfer, "cancel")}>撤回</button></footer>)}</article>; })}</div>}</section>}
+    {messagesOpen && <section className="file-transfer-messages" aria-label="文件消息">
+      <header>
+        <div><span className="file-transfer-heading-icon"><Mail size={17} /></span><div><strong>文件消息</strong><small>收到与发送的文件请求</small></div></div>
+        <button type="button" aria-label="关闭消息" onClick={() => setMessagesOpen(false)}><X size={15} /></button>
+      </header>
+      <div className="file-transfer-retention"><CalendarClock size={14} />消息记录自动保留 7 天，文件本身不会因此删除。</div>
+      <nav aria-label="消息分类">
+        <button type="button" className={messageBox === "incoming" ? "active" : ""} onClick={() => { setMessageBox("incoming"); refreshTransfers("incoming"); }}><span>收到的</span>{messageBox === "incoming" && pendingTransfers > 0 && <em>{pendingTransfers}</em>}</button>
+        <button type="button" className={messageBox === "outgoing" ? "active" : ""} onClick={() => { setMessageBox("outgoing"); refreshTransfers("outgoing"); }}>已发送</button>
+      </nav>
+      {messagesLoading ? <div className="storage-empty" role="status">正在读取消息…</div> :
+        transfers.length === 0 ? <div className="storage-empty"><Mail size={24} /><strong>暂无文件消息</strong><span>新的文件请求会显示在这里。</span></div> :
+        <div className="file-transfer-list">{transfers.map((transfer) => {
+          const incoming = messageBox === "incoming";
+          const peer = incoming ? transfer.sender : transfer.recipient;
+          const name = transfer.file_name ?? "未命名文件";
+          const statusLabel = { pending: "待处理", accepted: "已接收", rejected: "已拒绝", cancelled: "已撤回", expired: "已过期", failed: "失败" }[transfer.status];
+          const fileId = transfer.accepted_file_id;
+          const fileWorkspaceId = transfer.recipient_workspace_id;
+          const receivedDocument = incoming && transfer.status === "accepted" && fileId && fileWorkspaceId
+            ? { id: fileId, name, size_bytes: transfer.size_bytes ?? 0, mime_type: null }
+            : null;
+          return <article key={transfer.id}>
+            <div className="file-transfer-item-main">
+              <span className="file-transfer-file-icon"><FileText size={16} /></span>
+              <div>
+                <strong>{name}</strong>
+                <span><UserRound size={12} />{incoming ? "来自" : "发送给"} {peer?.display_name ?? "已注销用户"}</span>
+                <small>{transfer.size_bytes == null ? "大小未知" : formatBytes(transfer.size_bytes)} · {transfer.created_at ? `发送于 ${formatModifiedAt(transfer.created_at)}` : "发送时间未知"}{peer?.identity_id ? ` · ${peer.identity_id}` : ""}</small>
+              </div>
+            </div>
+            <span className={`transfer-status ${transfer.status}`}>{statusLabel}</span>
+            {transfer.status === "pending" && (incoming
+              ? <footer>
+                <button type="button" aria-label={`拒绝 ${name}`} onClick={() => void actOnTransfer(transfer, "reject")}>拒绝</button>
+                <button type="button" className="primary" aria-label={`同意 ${name}`} onClick={() => void actOnTransfer(transfer, "accept")}>同意</button>
+              </footer>
+              : <footer><button type="button" aria-label={`撤回 ${name}`} onClick={() => void actOnTransfer(transfer, "cancel")}>撤回</button></footer>)}
+            {receivedDocument && <footer>
+              <button type="button" aria-label={`查看 ${name}`} onClick={() => onOpenDocument(receivedDocument, fileWorkspaceId ?? undefined)}>查看</button>
+              <a href={storageFileDownloadUrl(receivedDocument.id, fileWorkspaceId ?? undefined)} aria-label={`下载 ${name}`} download>下载</a>
+            </footer>}
+          </article>;
+        })}</div>}
+    </section>}
     {sendFile && createPortal(
       <div className="file-transfer-overlay" role="presentation">
         <section
@@ -1022,7 +1078,7 @@ export function FilesPanel({ userId, workspaceId, previewRequest }: {
     previousPreviewRequestRef.current = previewRequest;
   }, [previewRequest]);
 
-  const openStorageDocument = useCallback((item: StorageFile) => {
+  const openStorageDocument = useCallback((item: StorageDocument, fileWorkspaceId = workspaceId) => {
     setStoragePreviewRequest({
       id: item.id,
       name: item.name,
@@ -1030,7 +1086,7 @@ export function FilesPanel({ userId, workspaceId, previewRequest }: {
       mediaType: item.mime_type ?? "text/plain",
       bytes: item.size_bytes,
       source: "storage",
-      workspaceId,
+      workspaceId: fileWorkspaceId,
     });
     setTab("import");
   }, [workspaceId]);
