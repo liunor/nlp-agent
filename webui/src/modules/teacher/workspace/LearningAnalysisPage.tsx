@@ -1,7 +1,7 @@
 import { initialQuestionPeriod, QuestionActivityPanel } from "./QuestionActivityPanel";
 import type { ReactNode } from "react";
 import { AlertCircle, ArrowDownRight, ArrowUpRight, BarChart3, Check, ChevronDown, CircleHelp, Eye, Flag, MessageSquare, RefreshCw, Sparkles, Undo2 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "@/platform/http/api";
 import type { LearningAnalysisDiagnosis, TeacherAIDiagnosis, TeacherAIAnalysisResult, TeacherLearningAnalysis, TeacherOverview } from "@/shared/types";
@@ -80,7 +80,7 @@ function MasteryTrendChart({ analysis }: { analysis: TeacherLearningAnalysis }) 
         {yTicks.map((tick) => <g key={tick}><line className="teacher-analysis-grid" x1={left} x2={900 - right} y1={y(tick)} y2={y(tick)} /><text className="teacher-analysis-axis-label" x={left - 10} y={y(tick) + 4} textAnchor="end">{Math.round(tick)}%</text></g>)}
         {months.map((month, index) => <text key={month.month} className="teacher-analysis-axis-label" x={x(index)} y={chartHeight - 13} textAnchor="middle">{month.label.slice(5)}</text>)}
         {series.map((item, index) => <path key={item.knowledge_point_id} className={`teacher-analysis-line-series ${index === 0 ? "primary" : ""}`} stroke={PROBLEM_COLORS[index % PROBLEM_COLORS.length]} d={buildPath(item.values, x, y)} />)}
-        {months.map((month, index) => <rect key={month.month} className="teacher-analysis-hover-target" x={x(index) - Math.max(24, plotWidth / Math.max(months.length, 1) / 2)} y={top} width={Math.max(48, plotWidth / Math.max(months.length, 1))} height={plotHeight} tabIndex={0} role="button" aria-label={`查看${month.label}掌握率`} onMouseEnter={() => setHoverIndex(index)} onFocus={() => setHoverIndex(index)} onMouseLeave={() => setHoverIndex(null)} onBlur={() => setHoverIndex(null)} />)}
+        {months.map((month, index) => <rect key={month.month} className="teacher-analysis-hover-target" x={x(index) - Math.max(24, plotWidth / Math.max(months.length, 1) / 2)} y={top} width={Math.max(48, plotWidth / Math.max(months.length, 1))} height={plotHeight} tabIndex={-1} role="button" aria-label={`查看${month.label}掌握率`} onMouseEnter={() => setHoverIndex(index)} onFocus={() => setHoverIndex(index)} onMouseLeave={() => setHoverIndex(null)} onBlur={() => setHoverIndex(null)} />)}
         {hoverIndex != null && <line className="teacher-analysis-hover-line" x1={x(hoverIndex)} x2={x(hoverIndex)} y1={top} y2={top + plotHeight} />}
       </svg>
     </div>
@@ -195,6 +195,13 @@ function AIAnalysisPanel({ state, result, error, onGenerate, analysis, ignored, 
 }
 
 export function LearningAnalysisPage({ data, workspaceId = "default", classroomId, headerControls, onPeriodChange }: { data: TeacherOverview; workspaceId?: string; classroomId?: string; headerControls?: ReactNode; onPeriodChange?: (days: number) => void }) {
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    const container = document.querySelector(".teacher-content");
+    if (container) {
+      container.scrollTop = 0;
+    }
+  }, []);
   const aiGeneration = useRef(0);
   const [questionPeriod, setQuestionPeriod] = useState(initialQuestionPeriod);
   const everyone = data.data_scope?.mode === "all_users";

@@ -1017,7 +1017,17 @@ export interface JoinRequestListResponse {
 
 export interface TeacherQuestionActivity {
   summary: { question_count: number; user_count: number };
-  items: Array<{ id: string; user_id: string; username: string; display_name: string; question: string; created_at: string }>;
+  items: Array<{
+    id: string;
+    user_id: string;
+    username: string;
+    display_name: string;
+    question: string;
+    answer?: string | null;
+    status?: string | null;
+    error_message?: string | null;
+    created_at: string;
+  }>;
   total: number; page: number; page_size: number;
   frequent: Array<{ group_id: string; question: string; question_count: number; user_count: number; last_asked: string }>;
   frequent_total: number; frequent_page: number; start_date: string; end_date: string; timezone: string;
