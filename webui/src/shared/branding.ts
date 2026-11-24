@@ -1,6 +1,6 @@
-// Temporary competition presentation: set to true after the competition to
-// restore the original branding in the student-facing locations, including About team affiliations.
-export const SHOW_STUDENT_SCHOOL_BRANDING = false;
+// School branding is restored after the competition.
+// Set to false only when an anonymous competition presentation is needed.
+export const SHOW_STUDENT_SCHOOL_BRANDING = true;
 
 export const STUDENT_AGENT_LABEL = SHOW_STUDENT_SCHOOL_BRANDING
   ? "LSNU NLP Learning Agent"
