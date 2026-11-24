@@ -6,6 +6,7 @@ from server.tools.api.teacher_distribute_tool import teacher_distribute_file
 from server.tools.api.time_tool import get_current_time
 from server.tools.api.web_fetch_tool import web_fetch
 from server.tools.api.web_search_tool import web_search
+from server.sandbox.contracts import SandboxCapacityError, SandboxScratchTimeoutError
 from server.sandbox.model_tools import MODEL_SANDBOX_TOOLS
 from core.vision_execution import IMAGE_TOOL_CONCURRENCY, IMAGE_TOOL_TIMEOUT_S
 from core.tool_runtime import (
@@ -99,6 +100,11 @@ def register_builtin_tools(catalog: ToolCatalog | None = None) -> list[str]:
             timeout_s=35,
             max_concurrency=2,
             retry=ToolRetryPolicy(max_attempts=2),
+            telemetry_error_codes=frozenset({
+                "invalid_url", "blocked_scheme", "blocked_port", "blocked_address",
+                "dns_resolution_failed", "too_many_redirects", "cloudflare_challenge",
+                "http_error", "unsupported_content_type", "response_too_large", "disabled",
+            }),
             factory=lambda: web_fetch.model_copy(deep=True),
         ),
         ToolDescriptor(
@@ -163,6 +169,11 @@ def register_builtin_tools(catalog: ToolCatalog | None = None) -> list[str]:
             capabilities=frozenset({"sandbox.scratch"}),
             timeout_s=60,
             lock_scope=ToolLockScope.SESSION,
+            telemetry_error_codes=frozenset({
+                *SandboxCapacityError.messages, SandboxScratchTimeoutError.code,
+                "not_authorized", "lease_required", "sandbox_event_failed",
+                "sandbox_unavailable", "scratch_failed", "scratch_code_failed",
+            }),
         ),
         "sandbox_explain_execution": dict(
             risk=ToolRisk.LOW,

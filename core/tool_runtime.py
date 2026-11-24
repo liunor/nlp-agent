@@ -210,6 +210,7 @@ class ToolDescriptor(BaseModel):
     timeout_s: float = Field(default=30.0, gt=0, le=1800)
     max_concurrency: int = Field(default=0, ge=0, le=100)
     retry: ToolRetryPolicy = Field(default_factory=ToolRetryPolicy)
+    telemetry_error_codes: frozenset[str] = Field(default_factory=frozenset)
     persist_result: bool = True
     enabled: bool = True
     factory: Callable[[], BaseTool] = Field(exclude=True, repr=False)
@@ -932,6 +933,12 @@ class ToolSet:
                 )
             if not result.ok:
                 kind = result.error.kind if result.error else "tool_error"
+                if (
+                    descriptor.source == ToolSource.BUILTIN
+                    and result.error is not None
+                    and result.error.code in descriptor.telemetry_error_codes
+                ):
+                    span.annotate(tool_error_code=result.error.code)
                 status = SpanStatus.TIMEOUT if kind == "timeout" else (
                     SpanStatus.DENIED if kind == "permission_denied" else SpanStatus.ERROR
                 )

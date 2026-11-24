@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from core.custom_tools import load_custom_tools
 from core.mcp_runtime import mcp_tool_name, validate_mcp_url
+from core.observability.context import TelemetryContext, bind_telemetry_context
+from core.observability.runtime import global_telemetry
 from core.tool_config import CustomToolsConfig
 from core.tool_runtime import (
     ToolCatalog,
@@ -128,6 +130,41 @@ async def test_executor_uses_pydantic_v2_and_structured_errors():
     assert success.ok and success.output == 3
     assert invalid.error and invalid.error.kind == "validation"
     assert denied.error and denied.error.kind == "permission_denied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "code", "expected"),
+    [
+        (ToolSource.BUILTIN, "http_error", "http_error"),
+        (ToolSource.BUILTIN, "private-secret-looks-like-a-code", None),
+        (ToolSource.CUSTOM, "http_error", None),
+    ],
+)
+async def test_tool_span_records_only_allowlisted_builtin_error_codes(monkeypatch, source, code, expected):
+    async def fail(left: int, right: int) -> str:
+        return json.dumps({"code": code, "error": "private URL or output"})
+
+    runtime = ToolRuntime()
+    runtime.catalog.register(
+        descriptor(name="test_fetch", coroutine=fail).model_copy(
+            update={"source": source, "telemetry_error_codes": frozenset({"http_error"})},
+        ),
+    )
+    tools = runtime.build_toolset(
+        ToolGrantRequest(role=ToolScope.WORKER, allowed_tools={"test_fetch"}),
+    )
+    spans = []
+    monkeypatch.setattr(global_telemetry, "emit_span", spans.append)
+    context = TelemetryContext.create(session_id="session-1", turn_id="turn-1")
+
+    with bind_telemetry_context(context):
+        result = await tools.execute("test_fetch", {"left": 1, "right": 2})
+
+    assert result.error.code == code
+    assert spans[-1].error_kind == "tool_error"
+    assert spans[-1].error_message is None
+    assert spans[-1].attributes.get("tool_error_code") == expected
 
 
 @pytest.mark.asyncio

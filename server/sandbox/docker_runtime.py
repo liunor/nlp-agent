@@ -14,6 +14,7 @@ import re
 import shutil
 from uuid import uuid4
 
+from .contracts import SandboxScratchTimeoutError
 from .runtime_profile import DEFAULT_SANDBOX_RUNTIME_LIMITS
 
 
@@ -391,7 +392,7 @@ class DockerRuntimeAdapter:
                 pass
             if isinstance(error, asyncio.CancelledError):
                 raise
-            raise TimeoutError("sandbox scratch execution timed out") from error
+            raise SandboxScratchTimeoutError() from error
         if process.returncode != 0:
             raise RuntimeError(stderr.decode("utf-8", "replace").strip())
         return json.loads(stdout.decode("utf-8"))

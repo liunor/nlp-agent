@@ -131,7 +131,15 @@ describe("MonitorApp navigation", () => {
         error_kinds: ["TimeoutError"],
       },
       traces: [{ trace_id: "trace-1", request_id: "request-1", session_id: "session-1", turn_id: "turn-1", workspace_id: "workspace-a", user_id: "alice", channel: "web", source: "user", started_at: "2026-09-05T10:00:00Z", status: "error", input_tokens: 100, output_tokens: 100, cached_tokens: 0, cache_miss_tokens: 0, reasoning_tokens: 0, total_tokens: 200, attributes: {} }],
-      spans: [{ trace_id: "trace-1", span_id: "span-1", parent_span_id: undefined, kind: "model", name: "openai.chat", started_at: "2026-09-05T10:00:01Z", status: "error", attempt: 1, total_tokens: 200, input_tokens: 100, output_tokens: 100, cached_tokens: 0, error_kind: "TimeoutError", attributes: { provider: "openai", model: "gpt-5.4" } }],
+      spans: [
+        { trace_id: "trace-1", span_id: "span-1", parent_span_id: undefined, kind: "model", name: "openai.chat", started_at: "2026-09-05T10:00:01Z", status: "error", attempt: 1, total_tokens: 200, input_tokens: 100, output_tokens: 100, cached_tokens: 0, error_kind: "TimeoutError", attributes: { provider: "openai", model: "gpt-5.4" } },
+        {
+          trace_id: "trace-1", span_id: "span-2", kind: "tool", name: "tool.web_fetch",
+          started_at: "2026-09-05T10:00:02Z", status: "error", attempt: 1,
+          total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_tokens: 0,
+          error_kind: "tool_error", attributes: { tool_error_code: "unsupported_content_type" },
+        },
+      ],
       events: [],
     });
 
@@ -144,6 +152,7 @@ describe("MonitorApp navigation", () => {
 
     expect(await screen.findByText("链路详情")).toBeVisible();
     expect(screen.getByText("openai.chat")).toBeVisible();
+    expect(screen.getByText(/tool_error · unsupported_content_type/)).toBeVisible();
     expect(monitorApi.traceGroups).toHaveBeenCalledWith({ days: 30, limit: 24, offset: 0, focus: "all", query: "" });
     expect(monitorApi.traceGroup).toHaveBeenCalledWith("workflow-42");
   });

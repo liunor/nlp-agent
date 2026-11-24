@@ -61,8 +61,8 @@ def test_scratch_protocol_enforces_its_own_deadline() -> None:
 
     result = runtime.scratch(runtime.ExecuteRequest("while True: pass", 1, 1024))
 
-    assert result["status"] == "failed"
-    assert "TimeoutError" in result["stderr"]
+    assert result["status"] == "timed_out"
+    assert "scratch execution timed out" in result["stderr"]
 
 
 def test_output_payload_strips_split_terminal_codes_without_damaging_unicode():

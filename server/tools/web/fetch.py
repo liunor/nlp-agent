@@ -232,14 +232,18 @@ class WebFetchService:
                         )
                     if response.status_code >= 400:
                         raise WebAccessError(
-                            "http_error", f"来源返回 HTTP {response.status_code}"
+                            "http_error",
+                            f"来源返回 HTTP {response.status_code}，未取得正文。"
+                            "检索任务请改用已有摘要或其他可访问来源；指定链接任务请说明读取失败。",
                         )
                     content_type = response.headers.get("content-type", "")
                     main_type = content_type.split(";")[0].strip().lower()
                     if main_type not in self.config.fetch.allowed_content_types:
                         raise WebAccessError(
                             "unsupported_content_type",
-                            f"不支持的内容类型 {main_type or '未知'}",
+                            f"不支持的内容类型 {main_type or '未知'}，未取得正文。"
+                            "检索任务请改用同一来源的可读页面或已有摘要；"
+                            "指定链接任务可请用户提供可读副本。",
                         )
                     body, overflow = await self._read_limited(response)
                     if overflow:

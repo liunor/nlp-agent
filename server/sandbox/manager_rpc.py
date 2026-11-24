@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from configs.settings import settings
 
-from .contracts import SandboxCapacityError, SandboxScope
+from .contracts import SandboxCapacityError, SandboxScope, SandboxScratchTimeoutError
 
 
 REQUEST_STREAM = "nova:sandbox:manager:rpc:requests"
@@ -167,6 +167,11 @@ class RedisSandboxManagerRpcClient:
                                 pass
                             else:
                                 raise capacity_error
+                        if method == "run_scratch" and message in {
+                            f"SandboxScratchTimeoutError: {SandboxScratchTimeoutError.message}",
+                            "TimeoutError: sandbox scratch execution timed out",
+                        }:
+                            raise SandboxScratchTimeoutError()
                         raise RuntimeError(message)
                     try:
                         result = json.loads(parsed.get("payload", "{}"))

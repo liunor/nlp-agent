@@ -48,12 +48,17 @@ def test_manager_rpc_client_round_trips_signed_request() -> None:
     assert asyncio.run(exercise()) == {"status": "completed"}
 
 
-async def test_scratch_capacity_reason_survives_signed_rpc() -> None:
-    from server.sandbox.contracts import SandboxCapacityError
+@pytest.mark.parametrize("failure", ["capacity", "timeout", "legacy_timeout"])
+async def test_scratch_failure_reason_survives_signed_rpc(failure) -> None:
+    from server.sandbox.contracts import SandboxCapacityError, SandboxScratchTimeoutError
     from server.sandbox.manager_rpc import RedisSandboxManagerRpcClient, RedisSandboxManagerRpcServer
 
     class Manager:
         async def run_scratch(self, **_kwargs):
+            if failure == "timeout":
+                raise SandboxScratchTimeoutError()
+            if failure == "legacy_timeout":
+                raise TimeoutError("sandbox scratch execution timed out")
             raise SandboxCapacityError("sandbox_host_memory_reserve", actual=2750, threshold=3072)
 
     class Redis:
@@ -72,6 +77,10 @@ async def test_scratch_capacity_reason_survives_signed_rpc() -> None:
     redis = Redis()
     server = RedisSandboxManagerRpcServer(redis, manager=Manager(), secret="fixture")
     client = RedisSandboxManagerRpcClient(redis, secret="fixture")
+    if failure != "capacity":
+        with pytest.raises(SandboxScratchTimeoutError):
+            await client.run_scratch(source="print(1)")
+        return
     with pytest.raises(SandboxCapacityError) as denied:
         await client.run_scratch(source="print(1)")
     assert (denied.value.code, denied.value.actual, denied.value.threshold) == (

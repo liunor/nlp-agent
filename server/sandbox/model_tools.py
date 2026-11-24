@@ -32,10 +32,10 @@ from server.infrastructure.mysql.models import (
     UserModel,
 )
 
-from .contracts import SandboxCapacityError, SandboxScope
+from .contracts import SandboxCapacityError, SandboxScope, SandboxScratchTimeoutError
 from .confirmation import SandboxConfirmationSigner, create_confirmation_replay_store
 from .events import default_sandbox_event_store
-from .execution_events import append_event_with_retry, execution_failure_payload
+from .execution_events import append_event_with_retry, execution_failure_payload, execution_result_failed
 from .inmemory_runtime import InMemoryRuntime
 from .ticket import SandboxTicketClaims, SandboxTicketSigner
 
@@ -272,7 +272,7 @@ class SandboxModelToolService:
         result: dict[str, object] | None = None,
         emit_events: bool = True,
     ) -> BaseException | None:
-        if isinstance(error, SandboxCapacityError):
+        if isinstance(error, (SandboxCapacityError, SandboxScratchTimeoutError)):
             reason = error.code
         else:
             reason = f"{type(error).__name__}: {error}"[:128] if error else None
@@ -511,7 +511,7 @@ class SandboxModelToolService:
         if execution_id is None:
             return _error("lease_required", "an active Sandbox environment is required")
         try:
-            async with self._tool_span("sandbox.scratch", config=config):
+            async with self._tool_span("sandbox.scratch", config=config) as span:
                 if self.mode == "inmemory":
                     result = await InMemoryRuntime().execute(user_id="scratch", source=source)
                 else:
@@ -533,6 +533,14 @@ class SandboxModelToolService:
                         trace_id=trace_id,
                         span_id=span_id,
                     )
+                if span is not None and execution_result_failed(result):
+                    from core.observability.models import SpanStatus
+
+                    timed_out = result.get("status") == "timed_out"
+                    span.set_status(
+                        SpanStatus.TIMEOUT if timed_out else SpanStatus.ERROR,
+                        error_kind=SandboxScratchTimeoutError.code if timed_out else "scratch_code_failed",
+                    )
         except Exception as error:
             delivery_error = await self._finish_execution(execution_id, user_id=authorized.context.user_id, status="failed", error=error)
             if isinstance(error, SandboxCapacityError):
@@ -545,12 +553,30 @@ class SandboxModelToolService:
             self._trace("sandbox.model.scratch.failed", config=config, error=type(error).__name__)
             if delivery_error is not None:
                 return _error("sandbox_event_failed", str(delivery_error)[:500])
+            if isinstance(error, SandboxScratchTimeoutError):
+                return _error(
+                    error.code,
+                    "沙箱实验超时。请缩小输入或减少计算量后再试。",
+                    execution_id=execution_id,
+                )
             return _error("scratch_failed", str(error)[:500])
         status = str(result.get("status", "completed"))
-        delivery_error = await self._finish_execution(execution_id, user_id=authorized.context.user_id, status=status, result=result)
+        timeout_error = SandboxScratchTimeoutError() if status == "timed_out" else None
+        delivery_error = await self._finish_execution(
+            execution_id, user_id=authorized.context.user_id, status=status,
+            result=result, error=timeout_error,
+        )
         if delivery_error is not None:
             self._trace("sandbox.model.scratch.failed", config=config, error=type(delivery_error).__name__)
             return _error("sandbox_event_failed", str(delivery_error)[:500], execution_id=execution_id)
+        if execution_result_failed(result):
+            code = timeout_error.code if timeout_error else "scratch_code_failed"
+            self._trace("sandbox.model.scratch.failed", config=config, code=code)
+            message = (
+                "沙箱实验超时。请缩小输入或减少计算量后再试。"
+                if timeout_error else str(result.get("stderr") or "沙箱代码执行失败。")[:500]
+            )
+            return {**result, "execution_id": execution_id, **_error(code, message, execution_id=execution_id)}
         self._trace("sandbox.model.scratch.completed", config=config, status=status)
         return {"ok": True, "execution_id": execution_id, **result}
 
