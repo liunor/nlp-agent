@@ -1,3 +1,5 @@
+import { LocalFileReader } from "./LocalFileReader";
+import { FileSpaceReader } from "./FileSpaceReader";
 import { ArrowLeft, BookMarked, CalendarClock, Download, FileCode2, FileText, FileUp, FolderOpen, FolderPlus, Mail, Pencil, RefreshCw, RotateCcw, Send, Trash2, UserRound, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ChangeEvent } from "react";
@@ -46,7 +48,7 @@ const SUPPORTED_EXTENSIONS = new Set([
   "dockerfile",
   "makefile",
 ]);
-const ACCEPT_ATTRIBUTE = Array.from(SUPPORTED_EXTENSIONS, (extension) => "." + extension).join(",");
+const ACCEPT_ATTRIBUTE = Array.from(SUPPORTED_EXTENSIONS, (extension) => "." + extension).join(",") + ",.pdf,.docx";
 
 export interface FilesPanelPreviewRequest {
   id: string;
@@ -126,6 +128,8 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState("");
   const [remoteState, setRemoteState] = useState<RemotePreviewState | null>(null);
+  const [localDocument, setLocalDocument] = useState<File | null>(null);
+  const [contentReaderRequest, setContentReaderRequest] = useState<FilesPanelPreviewRequest | null>(null);
   const [localOverrideRequest, setLocalOverrideRequest] = useState<FilesPanelPreviewRequest | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef<ImportedFile[]>(files);
@@ -139,7 +143,7 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
   const selected = remotePreview ?? files.find((file) => file.id === selectedId) ?? files[0] ?? null;
 
   useEffect(() => {
-    if (!previewRequest) return undefined;
+    if (!previewRequest || (previewRequest.source === "storage" && /\.(pdf|docx|xlsx|png|jpe?g|webp)$/i.test(previewRequest.name))) return undefined;
     const request = previewRequest;
     const controller = new AbortController();
     let active = true;
@@ -197,6 +201,7 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
     const problems: string[] = [];
     for (const file of list) {
       try {
+        if (/\.(pdf|docx)$/i.test(file.name)) { setLocalDocument(file); continue; }
         if (!isSupportedFile(file)) {
           problems.push(file.name + "：不支持的格式");
           continue;
@@ -240,6 +245,7 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
   };
 
   const selectLocalFile = (id: string) => {
+    setLocalDocument(null);
     setLocalOverrideRequest(previewRequest ?? null);
     setSelectedId(id);
   };
@@ -247,7 +253,12 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
   const selectedLanguage = selected?.language === "code" ? selected.codeLanguage : selected?.language ?? "text";
   const sortedFiles = useMemo(() => [...files].sort((a, b) => b.importedAt - a.importedAt), [files]);
 
+  if (localDocument && (!previewRequest || remoteSuppressed)) return <LocalFileReader key={localDocument.name} file={localDocument} onClose={() => setLocalDocument(null)} />;
   const hasRemoteState = remoteLoading || Boolean(remotePreview) || Boolean(remoteError);
+  if (previewRequest?.source === "storage" && !remoteSuppressed && (/\.(pdf|docx|xlsx|png|jpe?g|webp)$/i.test(previewRequest.name) || contentReaderRequest === previewRequest)) {
+    return <FileSpaceReader key={previewRequest.id} fileId={previewRequest.id} name={previewRequest.name} workspaceId={previewRequest.workspaceId} />;
+  }
+
 
   return (
     <section
@@ -270,6 +281,7 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
 
       {error && <div className="files-panel-error" role="alert">{error}<button type="button" aria-label="关闭提示" onClick={() => setError("")}><X size={14} /></button></div>}
       {remoteError && <div className="files-panel-error" role="alert">{remoteError}
+        {previewRequest?.source === "storage" && <button type="button" onClick={() => setContentReaderRequest(previewRequest)}>尝试分段读取</button>}
         {previewRequest?.source === "storage" && <a href={storageFileDownloadUrl(previewRequest.id, previewRequest.workspaceId)} download>下载文件</a>}
         <button type="button" aria-label="关闭文件预览提示" onClick={() => setLocalOverrideRequest(previewRequest ?? null)}><X size={14} /></button>
       </div>}
@@ -299,6 +311,7 @@ function LearningImportPanel({ userId, workspaceId, previewRequest }: {
             {remotePreview && previewRequest?.source !== "storage" && <div className="files-panel-external-banner"><BookMarked size={14} />来自知识教材</div>}
             <div className="files-panel-preview-header"><span>{selected.language === "markdown" ? <BookMarked size={15} /> : selected.language === "code" ? <FileCode2 size={15} /> : <FileText size={15} />}</span><strong>{selected.name}</strong>{selected && <small>{selected.language === "code" && selected.codeLanguage ? selected.codeLanguage : selected.language}</small>}</div>
             <div className="files-panel-preview-body">
+              {remotePreview && previewRequest?.source === "storage" && selected.truncated && <button type="button" onClick={() => setContentReaderRequest(previewRequest)}>分段读取完整文件</button>}
               {remotePreview && previewRequest?.source === "storage" && selected.bytes === 0 && !selected.content
                 ? <p className="files-panel-plain">此文件为空（0 B）。</p>
                 : selected.language === "markdown" ? <MarkdownContent>{selected.content}</MarkdownContent>
@@ -657,7 +670,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
         }}>
           {item.kind === "folder" ? <FolderOpen size={17} /> : <FileText size={17} />}<span><strong>{item.name}</strong><small>{item.kind === "folder" ? "文件夹" : formatBytes(item.size_bytes)} · 修改于 {formatModifiedAt(item.updated_at ?? item.created_at)}</small></span>
         </button>
-        {trashMode ? <div className="storage-row-actions"><button type="button" aria-label={`恢复 ${item.name}`} onClick={() => restore(item)}><RotateCcw size={14} /></button><button type="button" className="danger" aria-label={`彻底删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div> : renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <><a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a><button type="button" aria-label={`发送 ${item.name}`} onClick={() => beginSend(item)}><Send size={14} /></button></>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
+        {trashMode ? <div className="storage-row-actions"><button type="button" aria-label={`恢复 ${item.name}`} onClick={() => restore(item)}><RotateCcw size={14} /></button><button type="button" className="danger" aria-label={`彻底删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div> : renamingId === item.id ? <div className="storage-row-rename"><input autoFocus value={renameValue} aria-label={`重命名 ${item.name}`} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(item); if (event.key === "Escape") setRenamingId(null); }} /><button type="button" onClick={() => saveRename(item)}>保存</button></div> : <div className="storage-row-actions"><button type="button" aria-label={`重命名 ${item.name}`} onClick={() => beginRename(item)}><Pencil size={14} /></button>{item.kind === "file" && <><a href={storageFileDownloadUrl(item.id, workspaceId)} aria-label={`下载 ${item.name}`} download><Download size={14} /></a><button type="button" aria-label={`添加到对话 ${item.name}`} onClick={() => window.dispatchEvent(new CustomEvent("file-space:attach", { detail: { file: item, workspaceId } }))}>提问</button><button type="button" aria-label={`发送 ${item.name}`} onClick={() => beginSend(item)}><Send size={14} /></button></>}<button type="button" className="danger" aria-label={`删除 ${item.name}`} onClick={() => remove(item)}><Trash2 size={14} /></button></div>}
       </div>)}
     </div>}
     {messagesOpen && <section className="file-transfer-messages" aria-label="文件消息">

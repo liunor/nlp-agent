@@ -141,7 +141,7 @@ export class StudentSocket {
     }
   }
 
-  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name: string }>, thinkingChoice?: ThinkingLevel | boolean, knowledgeBookContext?: KnowledgeBookContext): void {
+  sendChat(sessionId: string, content: string, requestId: string, learningContext?: object, modelProfile?: string, attachments?: Array<{ file_name?: string; file_id?: string; expected_hash?: string }>, thinkingChoice?: ThinkingLevel | boolean, knowledgeBookContext?: KnowledgeBookContext): void {
     this.command("chat.send", {
       session_id: sessionId,
       content,

@@ -843,6 +843,7 @@ class WarmPoolManager:
         output_limit_bytes: int = 1_000_000,
         trace_id: str | None = None,
         span_id: str | None = None,
+        _file_scope: SandboxScope | None = None,
     ) -> dict[str, object]:
         """Run an isolated model experiment without claiming a user runtime."""
         self._faults.fail_if_configured("docker.scratch")
@@ -869,10 +870,20 @@ class WarmPoolManager:
                 # until its --rm process (or cancellation cleanup) has ended.
                 # Reconcile uses the same lock and cannot mistake a running
                 # scratch for an orphan. No user's interactive kernel is reset.
+                files_options = {}
+                if _file_scope is not None:
+                    from server.storage.model_tools import authorize_file_context
+                    async with self._session_factory() as db:
+                        await authorize_file_context(db, {"configurable": dict(
+                            thread_id="file-generation", user_id=_file_scope.owner_user_id,
+                            workspace_id=_file_scope.workspace_id, auth_session_id=_file_scope.auth_session_id)})
+                    files_options["files_mount"] = await self._files_mounts.ensure(
+                        _file_scope.owner_user_id, _file_scope.workspace_id)
                 result = await self._docker.run_scratch(
                     source=source,
                     timeout_seconds=timeout_seconds,
                     output_limit_bytes=output_limit_bytes,
+                    **files_options,
                 )
         except Exception as error:
             self._trace(
@@ -889,6 +900,70 @@ class WarmPoolManager:
             status=result.get("status"),
         )
         return result
+
+    async def generate_user_file(self, scope: SandboxScope, *, format: str,
+                                 content: str, filename: str, request_key: str) -> dict:
+        """Fixed generator only. Never expose a mounted arbitrary-code scratch RPC."""
+        import os
+        import hashlib
+        from pathlib import Path
+        from server.documents.generation import generation_source
+        from server.storage.model_tools import authorize_file_context
+        if os.getenv("SANDBOX_ENABLE_FILES_BRIDGE", "false").lower() != "true" or os.getenv("SANDBOX_FILES_BRIDGE_WRITABLE", "false").lower() != "true":
+            raise PermissionError("文件桥接写入未启用")
+        config = {"configurable": dict(thread_id=request_key, user_id=scope.owner_user_id,
+                   workspace_id=scope.workspace_id, auth_session_id=scope.auth_session_id)}
+        # Validate the filename before creating any persistent metadata.
+        generation_source(format, content, filename)
+        from server.storage.generated import purge_expired_staging_files
+        await purge_expired_staging_files(self._session_factory,
+            owner=scope.owner_user_id, workspace=scope.workspace_id)
+        token = hashlib.sha256((request_key + filename + format + content).encode()).hexdigest()[:32]
+        generation_key = 'generation:' + token
+        filename = f"{Path(filename).stem[:100]}-{token}.{format}"
+        from io import BytesIO
+        from uuid import uuid4
+        from starlette.datastructures import UploadFile
+        staging_name = f".生成中-{uuid4().hex}.{format}"
+        async with self._session_factory.begin() as db:
+            storage = await authorize_file_context(db, config)
+            login = await db.get(SessionModel, scope.auth_session_id)
+            if login.authorization_version != scope.generation:
+                raise PermissionError("文件生成权限版本已变化")
+            policy = await storage._effective_policy()
+            await storage.quota._lock_global_pool()
+            await storage.quota._locked_account()
+            from server.storage.generated import completed_generation
+            previous = await completed_generation(storage, generation_key)
+            if previous is not None:
+                receipt = dict(sha256=previous.sha256, size_bytes=previous.size_bytes)
+                import json
+                return dict(result=dict(status='completed', stdout=json.dumps(receipt)), filename=previous.display_name,
+                            staging_id=previous.id, generation_key=generation_key)
+            folder = await storage._sibling_named('智能体生成', None, current=True)
+            if folder is None:
+                folder_data = await storage.create_folder('智能体生成')
+                parent_id = folder_data['id']
+            else:
+                if folder.kind != 'folder':
+                    raise ValueError('生成目录名称已被文件占用')
+                parent_id = folder.id
+            staging_file = await storage.create_file(UploadFile(BytesIO(), filename=staging_name),
+                                        parent_id, origin='generation_pending')
+        source = generation_source(format, content, staging_name, max_bytes=policy.max_file_bytes, staging=True)
+        try:
+            result = await self.run_scratch(source=source, timeout_seconds=30,
+                                            output_limit_bytes=16_000, _file_scope=scope)
+            if result.get('status') != 'completed':
+                raise ValueError('文件生成失败；未发布结果')
+            async with self._session_factory() as db:
+                await authorize_file_context(db, config)
+            return dict(result=result, filename=filename, staging_id=staging_file['id'], generation_key=generation_key)
+        except BaseException:
+            from server.storage.generated import cleanup_staging_file
+            await cleanup_staging_file(self._session_factory, scope.owner_user_id,
+                                       scope.workspace_id, staging_file['id'])
+            raise
 
     async def interrupt_runtime(
         self,
@@ -995,6 +1070,10 @@ class WarmPoolManager:
         return actions
 
     async def _reap_files_mounts(self) -> None:
+        import os
+        if os.getenv("SANDBOX_FILES_BRIDGE_WRITABLE", "false").lower() == "true":
+            from server.storage.generated import purge_expired_staging_files
+            await purge_expired_staging_files(self._session_factory)
         async with host_budget_lock(settings.NLP_AGENT_SANDBOX_HOST_LOCK_FILE):
             async with self._files_claim_lock:
                 await self._reap_files_mounts_locked()

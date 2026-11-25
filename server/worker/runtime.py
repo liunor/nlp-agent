@@ -38,6 +38,8 @@ def configure_worker_sandbox_service(session_factory):
         session_factory=session_factory,
         manager=manager,
     )
+    from server.storage.model_tools import configure_file_tools
+    configure_file_tools(session_factory, manager)
     return service, manager
 
 

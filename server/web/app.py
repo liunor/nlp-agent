@@ -480,6 +480,8 @@ def create_app(
             session_factory=gateway.authorization_session_factory,
             manager=sandbox_manager,
         )
+        from server.storage.model_tools import configure_file_tools
+        configure_file_tools(gateway.authorization_session_factory, sandbox_manager)
         await gateway.start()
         from server.quota.bootstrap import (
             configure_usage_reporter,
@@ -638,6 +640,8 @@ def create_app(
                     store_root = settings.NLP_AGENT_SANDBOX_ARTIFACT_STORE_ROOT.strip()
                     if store_root:
                         await purge_expired_artifacts(factory, store_root=Path(store_root))
+                    from server.storage.uploads import purge_expired_uploads
+                    await purge_expired_uploads(factory)
                     await record_sandbox_capacity_sample(factory)
                 except asyncio.CancelledError:
                     raise

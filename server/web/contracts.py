@@ -163,7 +163,17 @@ class ReplaceClassroomMemberBody(StrictModel):
 
 
 class ChatAttachment(StrictModel):
-    file_name: str = Field(min_length=1, max_length=256)
+    file_name: str | None = Field(default=None, min_length=1, max_length=256)
+    file_id: str | None = Field(default=None, min_length=1, max_length=128)
+    expected_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def exclusive_reference(self) -> "ChatAttachment":
+        if bool(self.file_name) == bool(self.file_id):
+            raise ValueError("需要且只能提供 file_name 或 file_id")
+        if self.expected_hash and not self.file_id:
+            raise ValueError("文件版本只适用于文件空间引用")
+        return self
 
 
 class SubmitChatBody(StrictModel):

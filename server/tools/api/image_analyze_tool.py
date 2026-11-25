@@ -30,6 +30,18 @@ async def image_analyze(
 ) -> str:
     """识别或理解受控上传目录中的图片，返回不可信标记的结构化 JSON。"""
 
+    request = ImageAnalyzeInput(
+        image=image,
+        task=task,
+        question=question,
+        output_format=output_format,
+        language=language,
+        max_chars=max_chars,
+    )
+    return await analyze_image_request(request, config)
+
+
+async def analyze_image_request(request: ImageAnalyzeInput, config: RunnableConfig, *, resolved_asset=None) -> str:
     # Keep quota/model-runtime initialization outside the tool registration
     # import path. Sandbox contract discovery imports this module without a DB.
     from core.model_runtime.usage import BillableFeatureUsage
@@ -39,14 +51,6 @@ async def image_analyze(
         complete_billable_tool_usage,
     )
 
-    request = ImageAnalyzeInput(
-        image=image,
-        task=task,
-        question=question,
-        output_format=output_format,
-        language=language,
-        max_chars=max_chars,
-    )
     billing_invocation = None
 
     async def reserve_ocr_usage(asset, route: str, task_executed: str) -> None:
@@ -73,10 +77,10 @@ async def image_analyze(
                 "图片分析需要有效的会话上下文",
             ) from None
         service = build_image_analyze_service(context=context)
-        response = await service.analyze(
-            request,
-            before_provider=reserve_ocr_usage,
-        )
+        options = {"before_provider": reserve_ocr_usage}
+        if resolved_asset is not None:
+            options["resolved_asset"] = resolved_asset
+        response = await service.analyze(request, **options)
     except VisionError as error:
         await cancel_billable_tool_usage(billing_invocation)
         return error.to_response().model_dump_json()

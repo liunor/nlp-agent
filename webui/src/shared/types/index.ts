@@ -492,6 +492,7 @@ export interface SessionListResponse {
 }
 
 export interface TurnRecord {
+  file_refs?: Array<{ id: string; name: string; sha256?: string; workspace_id?: string; mime_type?: string | null }>;
   turn_id: string;
   session_id: string;
   status: TurnStatus;
@@ -554,6 +555,9 @@ export interface ActivityItem {
 }
 
 export interface ChatAttachment {
+  fileId?: string;
+  expectedHash?: string;
+  workspaceId?: string;
   fileName: string;
   displayName?: string;
   url: string;

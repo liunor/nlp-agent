@@ -5,6 +5,7 @@ description = "A generic Coordinator/Worker NLP agent derived from Agentic-Trave
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "pypdf>=6,<8",
     "aiosqlite>=0.20",
     "aiomysql>=0.2",
     "alembic>=1.13",

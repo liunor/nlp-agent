@@ -323,6 +323,13 @@ class RedisSandboxManagerRpcClient:
             },
         )
 
+    async def generate_user_file(self, scope: SandboxScope, *, format: str, content: str,
+                                 filename: str, request_key: str) -> dict[str, object]:
+        return await self._request("generate_user_file", {
+            "scope": _scope_payload(scope), "format": format, "content": content,
+            "filename": filename, "request_key": request_key,
+        })
+
     async def close(self) -> None:
         close = getattr(self._client, "aclose", None)
         if close is not None:
@@ -666,6 +673,12 @@ class RedisSandboxManagerRpcServer:
             return {"ok": True}
         if method == "capacity_snapshot":
             return dict(await self._manager.capacity_snapshot())
+        if method == "generate_user_file":
+            return await self._manager.generate_user_file(
+                _scope_from_payload(payload["scope"]),
+                format=str(payload["format"]), content=str(payload["content"]),
+                filename=str(payload["filename"]), request_key=str(payload["request_key"]),
+            )
         if method == "run_scratch":
             timeout_seconds = payload.get("timeout_seconds", 15)
             if (

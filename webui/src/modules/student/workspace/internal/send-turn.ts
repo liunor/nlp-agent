@@ -60,6 +60,9 @@ export function useTurnSender({
       content: content.trim(),
       ...(attachments?.length ? { attachments: attachments.map((attachment) => ({
         fileName: attachment.fileName,
+        fileId: attachment.fileId,
+        expectedHash: attachment.expectedHash,
+        workspaceId: attachment.workspaceId,
         displayName: attachment.displayName,
         url: attachment.url,
         mediaType: attachment.mediaType,
@@ -104,7 +107,7 @@ export function useTurnSender({
       requestId,
       preferences.context,
       settings.model_profile,
-      attachments?.map((attachment) => ({ file_name: attachment.fileName })),
+      attachments?.map((attachment) => attachment.fileId ? { file_id: attachment.fileId, ...(attachment.expectedHash ? { expected_hash: attachment.expectedHash } : {}) } : { file_name: attachment.fileName }),
       thinkingSupported ? settings.thinking_level : undefined,
       knowledgeBookContext,
     );

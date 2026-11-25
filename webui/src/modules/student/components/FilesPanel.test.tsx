@@ -335,10 +335,10 @@ function upload(files: File[]) {
 
   it("rejects unsupported file types through the import path shared by drag-and-drop", async () => {
     render(<FilesPanel userId="alice" workspaceId="workspace-1" />);
-    const pdf = new File(["%PDF"], "manual.pdf", { type: "application/pdf" });
-    upload([pdf]);
+    const binary = new File(["binary"], "program.exe", { type: "application/octet-stream" });
+    upload([binary]);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("manual.pdf：不支持的格式");
+    expect(await screen.findByRole("alert")).toHaveTextContent("program.exe：不支持的格式");
     expect(screen.getByText("导入学习文档")).toBeInTheDocument();
     expect(localStorage.getItem("nlp-agent.imported-files.v1:alice:workspace-1")).toBeNull();
   });

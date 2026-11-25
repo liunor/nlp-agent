@@ -639,6 +639,16 @@ export function MarkdownContent({ children, streaming = false, streamRenderInter
               return <MarkdownBookFileCard file={resolvedBookFile} onPreview={onPreviewBookFile} />;
             }
             if (isSafeMarkdownLink(href)) {
+                const fileLink = href.match(/^\/api\/v1\/storage\/files\/([A-Za-z0-9_.:-]+)\/(view|download)(\?[^#]*)?(#.*)?$/);
+                if (fileLink) {
+                  const base = `/api/v1/storage/files/${fileLink[1]}`;
+                  const query = fileLink[3] ?? "";
+                  return <span className="knowledge-book-file markdown-book-file-card" role="group" aria-label="文件空间文件">
+                    <FileText size={18} aria-hidden="true" />
+                    <a href={`${base}/view${query}${fileLink[4] ?? ""}`} target="_blank" rel="noopener noreferrer">{value}</a>
+                    <a href={`${base}/download${query}`} download aria-label="下载文件"><Download size={16} /></a>
+                  </span>;
+                }
               if (isExternalMarkdownLink(href)) {
                 const academicHref = normalizeTrustedAcademicLink(href) ?? href;
                 return <a {...props} href={academicHref} target="_blank" rel="noopener noreferrer">{value}</a>;

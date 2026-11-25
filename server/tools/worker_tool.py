@@ -880,6 +880,7 @@ async def _execute_sandbox_loop(
             "user_id": session_context.user_id,
             "workspace_id": session_context.workspace_id,
             "channel": session_context.channel,
+            "auth_session_id": session_context.auth_session_id,
         }
     }
 
