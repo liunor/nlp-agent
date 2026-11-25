@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import Principal, WriteClaims, get_db_session
@@ -280,10 +280,13 @@ async def upload_storage_file(
     _write: WriteClaims,
     file: UploadFile = File(...),
     parent_id: str | None = Form(default=None),
+    idempotency_key: str | None = Form(default=None, max_length=128),
     workspace_id: str | None = Form(default=None),
 ) -> dict:
     service = _service(db, principal, workspace_id)
     try:
+        if idempotency_key:
+            return await service.create_file(file, parent_id, upload_key=idempotency_key, origin="chat")
         return await service.create_file(file, parent_id)
     except StorageError as error:
         raise _write_error(error) from error
@@ -356,10 +359,13 @@ async def download_storage_file(
     db: DbSession,
     principal: Principal,
     workspace_id: str | None = Query(default=None),
+    expected_hash: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
 ) -> FileResponse:
     service = _service(db, principal, workspace_id)
     try:
         item, path = await service.download_path(file_id)
+        if expected_hash and item.sha256 != expected_hash:
+            raise HTTPException(status_code=409, detail="文件版本已变化，请先查看当前版本")
     except StorageError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     return FileResponse(
@@ -379,5 +385,85 @@ async def preview_storage_file(
 ) -> dict:
     try:
         return await _service(db, principal, workspace_id).preview(file_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.get("/files/{file_id}/content")
+async def read_storage_content(
+    file_id: str, db: DbSession, principal: Principal,
+    workspace_id: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=20, ge=1, le=100),
+    expected_hash: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
+    char_offset: int = Query(default=0, ge=0, le=25 * 1024 * 1024),
+) -> dict:
+    from server.documents.content import DocumentError
+    try:
+        return await _service(db, principal, workspace_id).read_content(
+            file_id, offset=offset, limit=limit, expected_hash=expected_hash, char_offset=char_offset)
+    except DocumentError as error:
+        raise HTTPException(status_code=409 if error.code == "version_changed" else 415,
+                            detail=str(error)) from error
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.get("/files/{file_id}/view", response_model=None)
+async def view_storage_file(
+    file_id: str, db: DbSession, principal: Principal,
+    workspace_id: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0, le=100_000),
+    char_offset: int = Query(default=0, ge=0, le=25 * 1024 * 1024),
+    expected_hash: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
+) -> FileResponse | HTMLResponse:
+    """Inline only validated raster images/PDF; never serve HTML/SVG as app pages."""
+    service = _service(db, principal, workspace_id)
+    try:
+        item, path = await service.download_path(file_id)
+        if expected_hash and item.sha256 != expected_hash:
+            from html import escape
+            from urllib.parse import quote, urlencode
+            current_url = '/api/v1/storage/files/' + quote(file_id, safe='') + '/view?' + urlencode({'workspace_id': service.scope.workspace_id})
+            return HTMLResponse('<!doctype html><meta charset="utf-8"><p>文件内容已变化，此附件引用的旧版本不再可用。</p>'
+                + '<a href="' + escape(current_url) + '">查看当前版本</a>', status_code=409,
+                headers={'Cache-Control': 'private, no-store', 'Content-Security-Policy': "default-src 'none'; base-uri 'none'; form-action 'none'"})
+        from pathlib import Path
+        suffix = Path(item.display_name).suffix.lower()
+        if suffix not in {'.pdf', '.png', '.jpg', '.jpeg', '.webp'}:
+            from html import escape
+            from urllib.parse import urlencode
+            from server.documents.content import DocumentError
+            try:
+                result = await service.read_content(file_id, offset=offset, char_offset=char_offset, expected_hash=expected_hash)
+            except DocumentError as error:
+                raise StoragePreviewUnsupported(str(error)) from error
+            body = ''.join(f'<section><small>段/表 {b["number"]}</small><pre>{escape(b["text"])}</pre></section>' for b in result['blocks'])
+            if result['next_offset'] is not None:
+                query = urlencode(dict(offset=result['next_offset'], char_offset=result['next_char_offset'], workspace_id=service.scope.workspace_id, expected_hash=result['sha256']))
+                body += f'<a href="?{escape(query)}">继续读取</a>'
+            return HTMLResponse('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                + '<meta name="viewport" content="width=device-width"><title>' + escape(item.display_name)
+                + '</title><style>body{max-width:900px;margin:24px auto;padding:16px;font:16px system-ui}pre{white-space:pre-wrap;overflow-wrap:anywhere}small{color:#666}</style>'
+                + '<h1>' + escape(item.display_name) + '</h1><p>阅读视图，排版可能与 Word 不同；图片和图表未提取。</p>' + body + '</html>',
+                headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+                         'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"})
+        if suffix == '.pdf':
+            with path.open('rb') as stream:
+                if not stream.read(5).startswith(b'%PDF-'):
+                    raise StoragePreviewUnsupported('文件不是有效的 PDF')
+            media_type = 'application/pdf'
+        else:
+            from server.tools.vision.safety import load_validated_image, ImageSafetyLimits
+            from server.tools.vision.contracts import VisionError
+            try:
+                image = load_validated_image(path, ImageSafetyLimits())
+            except VisionError as error:
+                raise StoragePreviewUnsupported('该文件不支持原件预览') from error
+            media_type = image.reference.media_type
+        return FileResponse(path, media_type=media_type, filename=item.display_name,
+            content_disposition_type='inline', headers={
+                'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store',
+                'Content-Security-Policy': "sandbox; default-src 'none'"})
     except StorageError as error:
         raise _write_error(error) from error

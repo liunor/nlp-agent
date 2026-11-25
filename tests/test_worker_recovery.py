@@ -310,6 +310,7 @@ async def test_worker_passes_safe_identity_and_redacts_non_persistent_results(
         user_id="alice",
         workspace_id="nlp",
         channel="web",
+        auth_session_id="login-s1",
         observability_attributes={"unsafe_label": "must-not-propagate"},
     )
 
@@ -331,6 +332,7 @@ async def test_worker_passes_safe_identity_and_redacts_non_persistent_results(
                 "user_id": "alice",
                 "workspace_id": "nlp",
                 "channel": "worker",
+                "auth_session_id": "login-s1",
             }
         }
     ]

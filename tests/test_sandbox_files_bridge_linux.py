@@ -119,6 +119,23 @@ async def test_real_personal_file_is_readable_and_readonly_in_runsc(monkeypatch,
                 UserFileModel.workspace_id == scope.workspace_id,
                 UserFileModel.display_name == "runtime-save.txt"))
             assert saved is not None and saved.size_bytes == len(b"saved by manager")
+        # Fixed generators use a fresh scratch container with the same scoped
+        # FUSE tree, then publish only after verifying the staging bytes.
+        import json
+        from server.storage.model_tools import authorize_file_context
+        from server.storage.generated import publish_generated_file
+        generated = await manager.generate_user_file(scope, format="docx", content="中文报告\n结果42",
+            filename="报告.docx", request_key="integration-generation")
+        receipt = json.loads(generated["result"]["stdout"].strip().splitlines()[-1])
+        config = {"configurable": dict(thread_id="integration-generation", user_id=user.id,
+            workspace_id=scope.workspace_id, auth_session_id=claims.session_id)}
+        async with factory.begin() as session:
+            service = await authorize_file_context(session, config)
+            result_id = await publish_generated_file(service, generated["staging_id"], generated["filename"], receipt)
+        async with factory() as session:
+            service = await authorize_file_context(session, config)
+            read = await service.read_content(result_id)
+            assert "中文报告" in read["content"] and "结果42" in read["content"]
         await manager.destroy_runtime(claim.runtime.id, reason="test.write.complete", refill=False)
         monkeypatch.setenv("SANDBOX_BRIDGE_BASE_DIR", str(tmp_path / "restart-probe-ci"))
         restart_probe = runpy.run_path(str(Path(__file__).parents[1] / "scripts/probe_sandbox_files_bridge_restart.py"))

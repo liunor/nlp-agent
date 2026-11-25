@@ -480,6 +480,8 @@ def create_app(
             session_factory=gateway.authorization_session_factory,
             manager=sandbox_manager,
         )
+        from server.storage.model_tools import configure_file_tools
+        configure_file_tools(gateway.authorization_session_factory, sandbox_manager)
         await gateway.start()
         from server.quota.bootstrap import (
             configure_usage_reporter,

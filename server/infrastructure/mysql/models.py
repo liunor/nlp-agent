@@ -1080,10 +1080,13 @@ class UserFileModel(TimestampedModel, Base):
 
     __tablename__ = "nlp_user_files"
     __table_args__ = (
+        UniqueConstraint("owner_user_id", "workspace_id", "upload_key", name="uq_nlp_user_files_upload_key"),
         Index("ix_nlp_user_files_owner_workspace_parent", "owner_user_id", "workspace_id", "parent_id"),
         Index("ix_nlp_user_files_owner_workspace_status", "owner_user_id", "workspace_id", "status"),
     )
 
+    upload_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False, server_default="user")
     id: Mapped[str] = mapped_column(UUID, primary_key=True)
     owner_user_id: Mapped[str] = mapped_column(
         UUID, ForeignKey("nlp_users.id", ondelete="CASCADE"), nullable=False

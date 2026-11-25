@@ -1988,6 +1988,7 @@ class GatewayRepository:
 
     @staticmethod
     def _turn(row: sqlite3.Row) -> TurnRecord:
+        from gateway.file_references import task_file_refs
         return TurnRecord(
             turn_id=row["turn_id"],
             session_id=row["session_id"],
@@ -1995,6 +1996,7 @@ class GatewayRepository:
             user_id=row["user_id"],
             status=row["status"],
             input_text=row["input_text"],
+            file_refs=task_file_refs(row["dispatch_task_json"]),
             learning_context=(LearningContext.model_validate_json(row["learning_context_json"])
                               if row["learning_context_json"] else None),
             learning_progress=(LearningProgress.model_validate_json(row["learning_progress_json"])

@@ -134,7 +134,9 @@ class MySQLGatewayRepository:
 
     def _record(self, row: dict[str, Any]) -> TurnRecord:
         state = self._json(row.get("learning_state_json") or {})
-        return TurnRecord(turn_id=row["id"], session_id=row["conversation_id"], workspace_id=row["workspace_id"], user_id=row["user_id"], status=TurnStatus(row["status"]), input_text=row["input_text"], learning_context=LearningContext.model_validate(state["context"]) if state.get("context") else None, learning_progress=LearningProgress.model_validate(state["progress"]) if state.get("progress") else None, exercise_state=ExerciseState.model_validate(state["exercise"]) if state.get("exercise") else None, final_text=row.get("result_text"), error_kind=row.get("error_kind"), error_message=row.get("error_message"), created_at=row["created_at"], started_at=row.get("started_at"), completed_at=row.get("completed_at"))
+        from gateway.file_references import task_file_refs
+        file_refs = task_file_refs(state.get("dispatch_task"))
+        return TurnRecord(turn_id=row["id"], session_id=row["conversation_id"], workspace_id=row["workspace_id"], user_id=row["user_id"], status=TurnStatus(row["status"]), input_text=row["input_text"], file_refs=file_refs, learning_context=LearningContext.model_validate(state["context"]) if state.get("context") else None, learning_progress=LearningProgress.model_validate(state["progress"]) if state.get("progress") else None, exercise_state=ExerciseState.model_validate(state["exercise"]) if state.get("exercise") else None, final_text=row.get("result_text"), error_kind=row.get("error_kind"), error_message=row.get("error_message"), created_at=row["created_at"], started_at=row.get("started_at"), completed_at=row.get("completed_at"))
 
     @staticmethod
     def _ensure_conversation(

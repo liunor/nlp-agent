@@ -20,7 +20,8 @@ from server.rbac.catalog import permission_id, permission_row, role_id
 def test_migration_graph_has_one_deployable_head_after_t07_additions() -> None:
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
 
-    assert scripts.get_heads() == ["20261119_classroom_workspace"]
+    assert scripts.get_heads() == ["20261125_file_workflow"]
+    assert scripts.get_revision("20261125_file_workflow").down_revision == "20261119_classroom_workspace"
     assert scripts.get_revision("20261118_add_file_distributions").down_revision == "20261117_release_note_reads"
     assert scripts.get_revision("20261117_release_note_reads").down_revision == "20261102_add_workspace_id"
     assert scripts.get_revision("20261102_add_workspace_id").down_revision == "20261017_55_t07_sms_history"

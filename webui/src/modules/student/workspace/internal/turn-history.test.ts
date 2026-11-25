@@ -2,6 +2,17 @@ import { turnMessages } from "./turn-history";
 import type { TurnRecord } from "@/shared/types";
 
 describe("turnMessages attachment restoration", () => {
+  it("prefers structured file references and pins preview links to the sent version", () => {
+    const turn: TurnRecord = {
+      turn_id: "t", session_id: "s", status: "completed", input_text: "summarize",
+      file_refs: [{ id: "file-1", name: "报告.docx", sha256: "a".repeat(64), workspace_id: "w", mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }],
+      final_text: "done", error_kind: null, error_message: null,
+      created_at: "2026-11-25T00:00:00Z", started_at: null, completed_at: null,
+    };
+    const file = turnMessages(turn)[0].attachments?.[0];
+    expect(file).toMatchObject({ fileId: "file-1", expectedHash: "a".repeat(64), displayName: "报告.docx" });
+    expect(file?.url).toContain("expected_hash=" + "a".repeat(64));
+  });
   it("reconstructs authenticated upload URLs from persisted attachment markers", () => {
     const turn: TurnRecord = {
       turn_id: "turn-1",

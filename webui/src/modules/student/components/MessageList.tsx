@@ -135,6 +135,7 @@ const UserMessage = memo(function UserMessage({
         <div className={`message-attachments${content ? " has-content" : ""}`}>
           {attachments.map((att, i) => {
             const displayName = att.displayName ?? att.fileName;
+            if (att.fileId && !att.mediaType.startsWith("image/")) return <a key={i} href={att.url} target="_blank" rel="noreferrer" className="message-attachment-trigger">{displayName}</a>;
             return att.url ? (
               <button
                 key={i}

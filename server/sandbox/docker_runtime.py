@@ -339,6 +339,7 @@ class DockerRuntimeAdapter:
         self, *, source: str,
         timeout_seconds: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.timeout_seconds,
         output_limit_bytes: int = DEFAULT_SANDBOX_RUNTIME_LIMITS.output_limit_bytes,
+        files_mount: str | None = None,
     ) -> dict[str, object]:
         """Run a model experiment in a fresh hardened process, never a user kernel."""
         if not 1 <= timeout_seconds <= 60:
@@ -361,6 +362,8 @@ class DockerRuntimeAdapter:
             "--tmpfs", f"/tmp:rw,nosuid,nodev,size={self.config.tmp_size}",
             "--tmpfs", "/run/nova:rw,nosuid,nodev,uid=10001,gid=10001,mode=700,size=16m",
         ]
+        if files_mount:
+            command.extend(["--mount", f"type=bind,source={files_mount},target=/files"])
         command.extend(["--user", "10001:10001", self.config.image])
         command.extend(("python", "/opt/nova-runtime/nova_runtime.py", "scratch", "--timeout-seconds", str(timeout_seconds), "--output-limit-bytes", str(output_limit_bytes)))
         process = await asyncio.create_subprocess_exec(

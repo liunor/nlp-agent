@@ -1,3 +1,4 @@
+from server.storage.model_tools import FILE_TOOLS, generate_user_file, analyze_user_image
 from server.tools.api.academic_search_tool import academic_search
 from server.tools.api.file_read_tool import read_local_file
 from server.tools.api.image_analyze_tool import image_analyze
@@ -32,7 +33,28 @@ ALL_AVAILABLE_TOOLS = [
 
 def register_builtin_tools(catalog: ToolCatalog | None = None) -> list[str]:
     catalog = catalog or global_tool_runtime.catalog
-    definitions = [
+    definitions = [ToolDescriptor(
+        name=file_tool.name, description=file_tool.description,
+        source=ToolSource.BUILTIN, provider="file-space",
+        scopes=frozenset({ToolScope.COORDINATOR, ToolScope.WORKER}),
+        capabilities=frozenset({"file_space.read"}), read_only=True,
+        concurrency_safe=True, timeout_s=40, max_concurrency=1,
+        retry=ToolRetryPolicy(max_attempts=1), persist_result=False,
+        factory=lambda file_tool=file_tool: file_tool.model_copy(deep=True),
+    ) for file_tool in FILE_TOOLS] + [
+        ToolDescriptor(name=analyze_user_image.name, description=analyze_user_image.description,
+            source=ToolSource.BUILTIN, provider="file-space",
+            scopes=frozenset({ToolScope.COORDINATOR, ToolScope.WORKER}),
+            capabilities=frozenset({"file_space.image"}), risk=ToolRisk.MEDIUM,
+            read_only=True, concurrency_safe=True, timeout_s=IMAGE_TOOL_TIMEOUT_S,
+            max_concurrency=IMAGE_TOOL_CONCURRENCY, retry=ToolRetryPolicy(max_attempts=1),
+            persist_result=False, factory=lambda: analyze_user_image.model_copy(deep=True)),
+        ToolDescriptor(name=generate_user_file.name, description=generate_user_file.description,
+            source=ToolSource.BUILTIN, provider="file-space",
+            scopes=frozenset({ToolScope.COORDINATOR}), capabilities=frozenset({"file_space.create"}),
+            risk=ToolRisk.MEDIUM, read_only=False, concurrency_safe=False,
+            timeout_s=60, max_concurrency=1, retry=ToolRetryPolicy(max_attempts=1),
+            persist_result=False, factory=lambda: generate_user_file.model_copy(deep=True)),
         ToolDescriptor(
             name=read_local_file.name,
             description=read_local_file.description,

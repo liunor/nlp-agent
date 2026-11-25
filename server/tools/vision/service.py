@@ -108,9 +108,10 @@ class ImageAnalyzeService:
         request: ImageAnalyzeInput,
         *,
         before_provider: Callable[[ImageAsset, str, str], Awaitable[None]] | None = None,
+        resolved_asset: ImageAsset | None = None,
     ) -> ImageAnalyzeResponse:
         deadline = time.monotonic() + _SERVICE_TIMEOUT_S
-        asset = await asyncio.to_thread(self.resolver.resolve, request.image)
+        asset = resolved_asset or await asyncio.to_thread(self.resolver.resolve, request.image)
         signals = await self._detect_signals(asset) if request.task == "auto" else None
         decision = self.router.route(
             request.task,

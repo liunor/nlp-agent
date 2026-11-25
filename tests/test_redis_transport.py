@@ -108,6 +108,7 @@ def test_turn_task_codec_preserves_worker_payload():
         context=SessionContext(session_id="session-1", user_id="alice", workspace_id="w1"),
         turn_id="turn-1",
         content="Explain attention",
+        file_refs=({'id': 'file-1', 'name': 'report.docx', 'sha256': 'a' * 64},),
         learning_context=None,
         learning_progress=None,
         exercise_state=None,
@@ -126,6 +127,7 @@ def test_turn_task_codec_preserves_worker_payload():
     assert restored == task
     assert restored.model_profile == "qwen"
     assert restored.thinking_enabled is False
+    assert restored.file_refs == task.file_refs
 
 
 @pytest.mark.asyncio

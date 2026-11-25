@@ -223,6 +223,7 @@ export interface StorageUsage {
 }
 
 export interface StorageFile {
+  sha256?: string;
   id: string;
   kind: "file" | "folder";
   name: string;
@@ -375,7 +376,26 @@ export function readStorageFile(fileId: string, workspaceId?: string): Promise<S
   return request<StorageFilePreview>(`/storage/files/${encodeURIComponent(fileId)}/preview${storageQuery(workspaceId)}`);
 }
 
+export interface FileContent {
+  content: string;
+  blocks: Array<{ kind: string; number: number; text: string; truncated: boolean; needs_ocr: boolean }>;
+  sha256: string;
+  unit: string;
+  offset: number;
+  next_offset: number | null;
+  next_char_offset?: number;
+  char_offset?: number;
+  truncated: boolean;
+  warnings: string[];
+}
+
 export const api = {
+  readFileContent: (fileId: string, workspaceId?: string, offset = 0, expectedHash?: string, charOffset = 0) => {
+    const query = new URLSearchParams({ offset: String(offset), char_offset: String(charOffset) });
+    if (workspaceId) query.set("workspace_id", workspaceId);
+    if (expectedHash) query.set("expected_hash", expectedHash);
+    return request<FileContent>(`/storage/files/${encodeURIComponent(fileId)}/content?${query}`);
+  },
   login: async (username: string, password: string) => {
     const generation = beginAuthChange();
     return runAuthMutation(async () => {
@@ -413,12 +433,13 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ name, parent_id: parentId ?? null }),
   }),
-  uploadStorageFile: (file: File, workspaceId?: string, parentId?: string) => {
+  uploadStorageFile: (file: File, workspaceId?: string, parentId?: string, idempotencyKey?: string, signal?: AbortSignal) => {
     const form = new FormData();
     form.append("file", file);
+    if (idempotencyKey) form.append("idempotency_key", idempotencyKey);
     if (parentId) form.append("parent_id", parentId);
     if (workspaceId) form.append("workspace_id", workspaceId);
-    return request<StorageFile>("/storage/files", { method: "POST", body: form });
+    return request<StorageFile>("/storage/files", { method: "POST", body: form, signal });
   },
   renameStorageFile: (fileId: string, name: string, workspaceId?: string) => request<StorageFile>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, {
     method: "PATCH",

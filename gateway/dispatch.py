@@ -41,6 +41,7 @@ class TurnTask:
     model_snapshot: ModelExecutionSnapshot | None = None
     reservation_id: str | None = None
     quota_reservation_id: str | None = None
+    file_refs: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
         if self.model_snapshot is not None:

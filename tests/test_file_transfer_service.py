@@ -82,6 +82,7 @@ def test_storage_serializer_marks_database_timestamps_as_utc() -> None:
         kind="file",
         display_name="lesson.md",
         mime_type="text/markdown",
+        sha256="a" * 64,
         size_bytes=18,
         created_at=timestamp,
         updated_at=timestamp,

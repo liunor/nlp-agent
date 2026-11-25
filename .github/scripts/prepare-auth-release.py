@@ -161,6 +161,9 @@ def _classroom_rate_policy(source, project):
     """Test-only NAT burst allowance, still bounded per IP and per server."""
     if project != "nova-test":
         return source
+    upload_routes = source.count("location = /api/v1/storage/files {")
+    require(upload_routes in {0, 1}, "UNRECOGNIZED_CLASSROOM_EDGE_BASELINE")
+    expected_limits = 2 + upload_routes
     marker = "# nova-test classroom edge policy v1"
     old_zone = "    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/s;"
     old_limit = "limit_req zone=api_limit burst=60 nodelay;"
@@ -171,14 +174,14 @@ def _classroom_rate_policy(source, project):
     header = '        add_header Retry-After $nova_edge_retry_after always;'
     if marker in source:
         require(source.count(marker) == 1 and source.count(new_zone) == 1
-                and source.count(global_zone) == 1 and source.count(new_limit) == 2
-                and source.count(global_limit) == 2 and source.count(header) == 1
+                and source.count(global_zone) == 1 and source.count(new_limit) == expected_limits
+                and source.count(global_limit) == expected_limits and source.count(header) == 1
                 and source.count("limit_req_status 429;") == 1
                 and old_limit not in source and old_zone not in source,
                 "PARTIAL_CLASSROOM_EDGE_POLICY_REQUIRES_REVIEW")
         return source
     anchor = '        add_header Referrer-Policy "strict-origin-when-cross-origin" always;'
-    require(source.count(old_zone) == 1 and source.count(old_limit) == 2
+    require(source.count(old_zone) == 1 and source.count(old_limit) == expected_limits
             and source.count(anchor) == 1 and "classroom_server_limit" not in source
             and "nova_edge_retry_after" not in source and "limit_req_status" not in source,
             "UNRECOGNIZED_CLASSROOM_EDGE_BASELINE")

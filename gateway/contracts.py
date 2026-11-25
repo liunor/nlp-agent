@@ -125,6 +125,7 @@ class TurnRecord(BaseModel):
     user_id: str
     status: TurnStatus
     input_text: str
+    file_refs: list[dict] = Field(default_factory=list)
     learning_context: LearningContext | None = None
     learning_progress: LearningProgress | None = None
     guided_session: GuidedSessionRef | None = None

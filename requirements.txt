@@ -1,4 +1,5 @@
 aiosqlite>=0.20
+pypdf>=6,<8
 aiomysql>=0.2
 alembic>=1.13
 argon2-cffi>=23.1

@@ -1,3 +1,4 @@
+import { fileSpaceViewUrl } from "@/shared/utils/file-reference";
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { api } from "@/platform/http/api";
@@ -10,7 +11,22 @@ import type { ChatMessage, LearningPreferences, SessionLearningMeta, TurnRecord 
 import { readRejectedDrafts } from "./rejected-drafts";
 
 function restoredAttachments(turn: TurnRecord): ChatMessage["attachments"] {
-  const attachments = [];
+  const attachments: NonNullable<ChatMessage["attachments"]> = [];
+  for (const file of turn.file_refs ?? []) {
+    attachments.push({ fileId: file.id, expectedHash: file.sha256, fileName: file.name,
+      displayName: file.name, mediaType: file.mime_type ?? "application/octet-stream", workspaceId: file.workspace_id,
+      url: fileSpaceViewUrl(file.id, file.workspace_id, file.sha256), width: 0, height: 0, status: "ready" });
+  }
+  for (const match of turn.file_refs?.length ? [] : turn.input_text.matchAll(/^\[文件\] (.+)$/gm)) {
+    try {
+      const file = JSON.parse(match[1]);
+      if (typeof file.id !== "string" || typeof file.name !== "string") continue;
+      attachments.push({ fileId: file.id, expectedHash: file.sha256, fileName: file.name,
+        displayName: file.name, mediaType: file.mime_type ?? "application/octet-stream",
+        workspaceId: file.workspace_id,
+        url: fileSpaceViewUrl(file.id, file.workspace_id, file.sha256), width: 0, height: 0, status: "ready" });
+    } catch { /* An incomplete legacy record does not invalidate the conversation. */ }
+  }
   for (const match of turn.input_text.matchAll(/^\[图片\]\s+([^\r\n]+)$/gm)) {
     const fileName = match[1].trim();
     if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) continue;

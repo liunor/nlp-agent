@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
+from core.session_context import SessionContext
 from pydantic import BaseModel, Field
 
 
@@ -20,15 +22,21 @@ class ReadLocalFileInput(BaseModel):
 
 
 @tool("read_local_file", args_schema=ReadLocalFileInput)
-def read_local_file(file_path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
+def read_local_file(file_path: str, config: RunnableConfig, offset: int = 0, limit: int = DEFAULT_READ_LIMIT) -> str:
     """按行读取本地文件。用于查看已持久化到磁盘的大型工具执行结果。
     只能读取 .data/ 目录下的文件。首次调用从 offset=0 开始，
     若输出被截断可增大 offset 继续读取后续内容。
     """
+    try:
+        context = SessionContext.from_config(config, require=True)
+    except ValueError:
+        return "安全限制：读取工具结果需要有效会话，请使用文件空间工具读取个人文件。"
+    # Persisted tool results are scoped by the trusted conversation ID.
+    allowed_results = Path(ALLOWED_BASE) / "chat_history" / context.session_id / "tool-results"
     # 安全检查：禁止路径穿越
     try:
         resolved = Path(file_path).resolve()
-        allowed_base = Path(ALLOWED_BASE).resolve()
+        allowed_base = allowed_results.resolve()
     except (OSError, RuntimeError):
         return f"错误：无法解析文件路径 '{file_path}'。"
 

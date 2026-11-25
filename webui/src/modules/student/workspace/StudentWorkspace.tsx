@@ -440,6 +440,7 @@ export function StudentWorkspace({
     <Composer
       key={workspace.composerRevision}
       sessionId={workspace.activeSessionId}
+      workspaceId={workspace.workspaceId}
       centered={centered}
       disabled={!statusOnline}
       sendDisabled={workspace.selectionPending || !thinkingSelectionAvailable}

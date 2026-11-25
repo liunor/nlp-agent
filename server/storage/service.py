@@ -532,7 +532,7 @@ class StorageService:
             "max_items": policy.max_items,
         }
 
-    async def _sibling_named(self, name: str, parent_id: str | None, *, exclude_id: str | None = None):
+    async def _sibling_named(self, name: str, parent_id: str | None, *, exclude_id: str | None = None, current: bool = False):
         query = select(UserFileModel).where(
             UserFileModel.owner_user_id == self.scope.owner_user_id,
             UserFileModel.workspace_id == self.scope.workspace_id,
@@ -542,6 +542,8 @@ class StorageService:
         )
         if exclude_id:
             query = query.where(UserFileModel.id != exclude_id)
+        if current:
+            query = query.with_for_update().execution_options(populate_existing=True)
         return await self.db.scalar(query.limit(1))
 
     async def _parent(self, parent_id: str | None) -> UserFileModel | None:
@@ -567,6 +569,7 @@ class StorageService:
             "kind": item.kind,
             "name": item.display_name,
             "mime_type": item.mime_type,
+            "sha256": item.sha256,
             "size_bytes": int(item.size_bytes or 0),
             "created_at": utc_isoformat(item.created_at),
             "updated_at": utc_isoformat(item.updated_at),
@@ -620,11 +623,39 @@ class StorageService:
             raise
         return self.serialize(item)
 
-    async def create_file(self, upload, parent_id: str | None = None) -> dict:
+    async def create_file(self, upload, parent_id: str | None = None, *,
+                          upload_key: str | None = None, origin: str = "user") -> dict:
         name = _safe_name(upload.filename or "未命名文件")
         policy = await self._effective_policy()
         await self._parent(parent_id)
-        if await self._sibling_named(name, parent_id):
+        data = None
+        if upload_key:
+            if len(upload_key) > 128:
+                raise StorageValidationError("上传标识过长")
+            # Serialize only idempotent uploads on the existing quota account lock.
+            await self.quota._lock_global_pool()
+            await self.quota._locked_account()
+            data = await upload.read(policy.max_file_bytes + 1)
+            existing = await self.db.scalar(select(UserFileModel).where(
+                UserFileModel.owner_user_id == self.scope.owner_user_id,
+                UserFileModel.workspace_id == self.scope.workspace_id,
+                UserFileModel.upload_key == upload_key).with_for_update())
+            if existing:
+                if existing.status != "active" or existing.sha256 != hashlib.sha256(data).hexdigest():
+                    raise StorageValidationError("上传标识已使用或文件内容不同")
+                return self.serialize(existing)
+            if origin == "chat" and parent_id is None:
+                folder = await self._sibling_named("聊天附件", None, current=True)
+                if folder is None:
+                    parent_id = (await self.create_folder("聊天附件"))["id"]
+                elif folder.kind == "folder":
+                    parent_id = folder.id
+                else:
+                    raise StorageNameConflict("聊天附件目录名称已被文件占用")
+            original = Path(name)
+            while await self._sibling_named(name, parent_id, current=True):
+                name = original.stem[:180] + "-" + uuid.uuid4().hex[:8] + original.suffix
+        elif await self._sibling_named(name, parent_id):
             raise StorageNameConflict("同一文件夹中已经存在同名项目")
         count = int(
             await self.db.scalar(
@@ -638,7 +669,8 @@ class StorageService:
         )
         if count >= policy.max_items:
             raise StorageQuotaExceeded("文件数量已达到配额", reason=StorageQuotaReason.FILE_COUNT)
-        data = await upload.read(policy.max_file_bytes + 1)
+        if data is None:
+            data = await upload.read(policy.max_file_bytes + 1)
         if len(data) > policy.max_file_bytes:
             raise StorageQuotaExceeded("文件大小已达到当前角色的单文件配额", reason=StorageQuotaReason.FILE_SIZE)
         current = await self._file_used()
@@ -671,6 +703,7 @@ class StorageService:
             mime_type=getattr(upload, "content_type", None),
             size_bytes=len(data),
             sha256=hashlib.sha256(data).hexdigest(),
+            upload_key=upload_key, origin=origin,
         )
         self.db.add(item)
         try:
@@ -697,6 +730,42 @@ class StorageService:
         if item is None:
             raise StorageValidationError("文件或文件夹不存在")
         return item
+
+    async def sandbox_path(self, file_id: str) -> str:
+        """Resolve a file ID through authorized active parents, never storage keys."""
+        parts, seen = [], set()
+        current = file_id
+        while current:
+            if current in seen or len(parts) >= 128:
+                raise StorageValidationError("文件目录循环或层级过深")
+            seen.add(current)
+            item = await self.get_file(current)
+            if parts and item.kind != "folder":
+                raise StorageValidationError("父目录不是文件夹")
+            parts.append(_safe_name(item.display_name))
+            current = item.parent_id
+        return "/files/" + "/".join(reversed(parts))
+
+    async def read_content(self, file_id: str, *, expected_hash: str | None = None,
+                           offset: int = 0, limit: int = 20, char_offset: int = 0) -> dict:
+        from server.documents.content import read_document, DocumentError
+        item, path = await self.download_path(file_id)
+        if expected_hash and expected_hash != item.sha256:
+            raise DocumentError("version_changed", "文件内容已变化，请选择当前版本")
+        result = await read_document(path, name=item.display_name,
+                                     expected_hash=expected_hash or item.sha256,
+                                     offset=offset, limit=limit, char_offset=char_offset)
+        # FUSE can replace content while parsing; no stale success after deletion.
+        latest = await self.db.scalar(select(UserFileModel).where(
+            UserFileModel.id == file_id, UserFileModel.owner_user_id == self.scope.owner_user_id,
+            UserFileModel.workspace_id == self.scope.workspace_id, UserFileModel.status == "active",
+        ).with_for_update().execution_options(populate_existing=True))
+        if latest is None:
+            raise StorageValidationError("文件或文件夹不存在")
+        if latest.sha256 != result["sha256"]:
+            raise DocumentError("version_changed", "读取期间文件内容已变化，请重试")
+        return result | {"file_id": file_id, "name": latest.display_name,
+                         "mime_type": latest.mime_type, "untrusted": True}
 
     async def rename(self, file_id: str, name: str) -> dict:
         item = await self.get_file(file_id)

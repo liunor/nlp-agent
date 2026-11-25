@@ -123,6 +123,26 @@ def _session_uploads_root(context: SessionContext) -> Path:
     return _DEFAULT_UPLOADS_ROOT / context.workspace_id / context.user_id / context.session_id
 
 
+def _matches_file_retry(persisted: str, content: str, attachments: list[dict[str, str]]) -> bool:
+    """Compare stable references, not names/paths/timestamps that can change later."""
+    if not any(item.get("file_id") for item in attachments):
+        return False
+    body, marker, block = persisted.rpartition("---附件---")
+    if not marker or body.rstrip() != content.rstrip():
+        return False
+    try:
+        stored = [json.loads(line[len("[文件] "):]) for line in block.splitlines() if line.startswith("[文件] ")]
+        requested = [item for item in attachments if item.get("file_id")]
+        legacy = [line[len("[图片] "):] for line in block.splitlines() if line.startswith("[图片] ")]
+        return (legacy == [item.get("file_name") for item in attachments if not item.get("file_id")]
+            and len(stored) == len(requested)
+            and all(old["id"] == new["file_id"] and
+                    (not new.get("expected_hash") or new["expected_hash"] == old["sha256"])
+                    for old, new in zip(stored, requested, strict=True)))
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def _enrich_content_with_attachments(
     context: SessionContext,
     content: str,
@@ -488,9 +508,47 @@ class BackendGateway:
                 update={"observability_attributes": request.evaluation.trace_attributes()}
             )
         await self.sessions.touch(principal, request.session_id)
+        retry_snapshot = None
+        if request.idempotency_key and any(item.get("file_id") for item in request.attachments):
+            candidate = await asyncio.to_thread(self.repository.turn_for_idempotency,
+                user_id=context.user_id, session_id=context.session_id, idempotency_key=request.idempotency_key)
+            if candidate is not None and _matches_file_retry(candidate.input_text, request.content, request.attachments):
+                retry_snapshot = candidate.input_text
+        storage_refs = []
+        legacy_refs = []
+        for attachment in ([] if retry_snapshot is not None else request.attachments):
+            if attachment.get("file_id"):
+                factory = self.authorization_session_factory
+                if factory is None:
+                    raise ValueError("文件空间服务不可用")
+                from server.storage.service import StorageService
+                from server.storage.model_tools import describe_file
+                async with factory() as db:
+                    storage = StorageService(db, principal, context.workspace_id)
+                    from server.storage.errors import StorageError
+                    try:
+                        item = await describe_file(storage, attachment["file_id"])
+                    except StorageError as error:
+                        raise ValueError("附件已删除或无权访问，请重新选择") from error
+                    if item["kind"] != "file":
+                        raise ValueError("不能将文件夹作为附件")
+                    if attachment.get("expected_hash") and attachment["expected_hash"] != item["sha256"]:
+                        raise ValueError("文件内容已变化，请重新选择附件")
+                    storage_refs.append(item)
+            else:
+                legacy_refs.append(attachment)
         enriched_content = _enrich_content_with_attachments(
-            context, request.content, request.attachments
+            context, request.content, legacy_refs
         )
+        if storage_refs:
+            # Versioned JSON records, validated here; no raw user paths or document text.
+            file_lines = "\n".join("[文件] " + json.dumps(item, ensure_ascii=False) for item in storage_refs)
+            if "---附件结束---" in enriched_content:
+                enriched_content = enriched_content.replace("---附件结束---", file_lines + "\n---附件结束---")
+            else:
+                enriched_content += "\n\n---附件---\n" + file_lines + "\n---附件结束---"
+        if retry_snapshot is not None:
+            enriched_content = retry_snapshot
         existing = None
         resubmission_reservation_id: str | None = None
         if request.idempotency_key:
@@ -684,6 +742,7 @@ class BackendGateway:
             context=context,
             turn_id=turn_id,
             content=enriched_content,
+            file_refs=tuple(storage_refs) if storage_refs else (original_task.file_refs if original_task else ()),
             learning_context=learning_context,
             knowledge_book_context=knowledge_book_context,
             learning_progress=progress,
