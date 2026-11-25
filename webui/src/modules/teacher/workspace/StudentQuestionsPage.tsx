@@ -29,6 +29,7 @@ import type {
   TeacherOverview,
   TeacherStudentActivity,
 } from "@/shared/types";
+import { StudentQuestionHistoryModal } from "./StudentQuestionHistoryModal";
 
 const MONTH_COLORS = ["#7868d6", "#4d8fda", "#41a67a", "#e39a4f", "#d46891"];
 const WEEKDAY_COLORS = ["#7868d6", "#4d8fda", "#41a67a", "#e39a4f", "#d46891", "#8b72b7", "#8b96a8"];
@@ -235,7 +236,7 @@ function LineChart({ title, description, ariaLabel, labels, series, tooltipLabel
       {labels.map((label, index) => {
         const start = index === 0 ? padding.left : x(index) - hoverWidth / 2;
         const end = index === labels.length - 1 ? width - padding.right : x(index) + hoverWidth / 2;
-        return <rect key={`hover-target-${label}`} className="teacher-question-line-hover-target" x={start} y={padding.top} width={end - start} height={plotHeight} tabIndex={0} aria-label={`查看 ${label} 数据`} onMouseEnter={() => setHoverIndex(index)} onMouseLeave={() => setHoverIndex(null)} onFocus={() => setHoverIndex(index)} onBlur={() => setHoverIndex(null)} />;
+        return <rect key={`hover-target-${label}`} className="teacher-question-line-hover-target" x={start} y={padding.top} width={end - start} height={plotHeight} tabIndex={-1} aria-label={`查看 ${label} 数据`} onMouseEnter={() => setHoverIndex(index)} onMouseLeave={() => setHoverIndex(null)} onFocus={() => setHoverIndex(index)} onBlur={() => setHoverIndex(null)} />;
       })}
     </svg></div>
   </section>;
@@ -312,8 +313,19 @@ type SortKey = "display_name" | "questions" | "sessions" | "active_days" | "erro
 type SortOrder = "asc" | "desc";
 type FilterTab = "all" | "active" | "silent";
 
-function StudentActivity({ items, personLabel = "学生" }: { items: TeacherStudentActivity[]; personLabel?: "学生" | "用户" }) {
+function StudentActivity({
+  items,
+  personLabel = "学生",
+  workspaceId = "default",
+  classroomId,
+}: {
+  items: TeacherStudentActivity[];
+  personLabel?: "学生" | "用户";
+  workspaceId?: string;
+  classroomId?: string;
+}) {
   const pageSize = 8;
+  const [selectedStudent, setSelectedStudent] = useState<TeacherStudentActivity | null>(null);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -483,6 +495,7 @@ function StudentActivity({ items, personLabel = "学生" }: { items: TeacherStud
                     <span className="teacher-question-th-content">最近活跃 {sortIndicator("last_active")}</span>
                   </th>
                   <th>主要主题</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -491,11 +504,18 @@ function StudentActivity({ items, personLabel = "学生" }: { items: TeacherStud
                   return (
                     <tr key={item.user_id} className={isSilent ? "is-silent-row" : ""}>
                       <td>
-                        <div className="teacher-question-student-name">
-                          <strong>{item.display_name}</strong>
-                          {item.username && <small>@{item.username}</small>}
-                          {isSilent && <span className="teacher-question-silent-badge">零提问 · 待关怀</span>}
-                        </div>
+                        <button
+                          type="button"
+                          className="teacher-question-student-name-btn"
+                          title={`查看 ${item.display_name} 的问答记录与模型答复`}
+                          onClick={() => setSelectedStudent(item)}
+                        >
+                          <div className="teacher-question-student-name">
+                            <strong>{item.display_name}</strong>
+                            {item.username && <small>@{item.username}</small>}
+                            {isSilent && <span className="teacher-question-silent-badge">零提问 · 待关怀</span>}
+                          </div>
+                        </button>
                       </td>
                       <td>
                         {isSilent ? (
@@ -520,6 +540,16 @@ function StudentActivity({ items, personLabel = "学生" }: { items: TeacherStud
                         ) : (
                           item.top_topic
                         )}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="teacher-question-view-btn"
+                          title={`查看 ${item.display_name} 的问答明细与模型答复`}
+                          onClick={() => setSelectedStudent(item)}
+                        >
+                          查看问答
+                        </button>
                       </td>
                     </tr>
                   );
@@ -559,11 +589,30 @@ function StudentActivity({ items, personLabel = "学生" }: { items: TeacherStud
           {search ? `未搜索到与“${search}”匹配的${personLabel}。` : `暂无匹配的${personLabel}记录。`}
         </p>
       )}
+
+      {selectedStudent && (
+        <StudentQuestionHistoryModal
+          student={selectedStudent}
+          workspaceId={workspaceId}
+          classroomId={classroomId}
+          onClose={() => setSelectedStudent(null)}
+        />
+      )}
     </section>
   );
 }
 
-export function StudentQuestionsPage({ data, headerControls }: { data: TeacherOverview; headerControls?: ReactNode }) {
+export function StudentQuestionsPage({
+  data,
+  workspaceId = "default",
+  classroomId,
+  headerControls,
+}: {
+  data: TeacherOverview;
+  workspaceId?: string;
+  classroomId?: string;
+  headerControls?: ReactNode;
+}) {
   const demo = import.meta.env.DEV && new URLSearchParams(window.location.search).get("demo") === "1";
   const displayData = useMemo(() => (demo ? createLocalDemoData(data) : data), [data, demo]);
   const monthlyStatistics = useMemo(() => {
@@ -603,6 +652,11 @@ export function StudentQuestionsPage({ data, headerControls }: { data: TeacherOv
     <div className="teacher-question-grid teacher-question-grid-three"><DistributionPanel title="主题分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.topic_distribution ?? []} /><DistributionPanel title="难度分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.difficulty_distribution ?? []} tone="blue" /><DistributionPanel title="模式分布" description={`${selectedMonthData?.label ?? "当前月份"} · 固定显示前 5 类`} items={selectedMonthData?.mode_distribution ?? []} tone="green" /></div>
     <div className="teacher-question-grid teacher-question-grid-trend"><MonthlyDailyQuestions months={monthlyStatistics} /><MonthlyHourlyQuestions months={monthlyStatistics} /></div>
     <div className="teacher-question-grid teacher-question-grid-weekday"><WeekdayQuestions data={displayData} /></div>
-    <StudentActivity personLabel={data.data_scope?.mode === "all_users" ? "用户" : "学生"} items={displayData.student_activity} />
+    <StudentActivity
+      personLabel={data.data_scope?.mode === "all_users" ? "用户" : "学生"}
+      items={displayData.student_activity}
+      workspaceId={workspaceId}
+      classroomId={classroomId}
+    />
   </div>;
 }

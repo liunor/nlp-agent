@@ -48,3 +48,45 @@ it("returns to a valid page when the result set shrinks", async () => {
   expect(await within(details).findByText("1 / 1")).toBeVisible();
   expect(read.mock.lastCall?.[0].get("page")).toBe("1");
 });
+
+it("displays student total count and expands model answer", async () => {
+  read.mockResolvedValue({
+    summary: { question_count: 5, user_count: 1 },
+    start_date: "2026-11-01",
+    end_date: "2026-11-19",
+    timezone: "Asia/Shanghai",
+    total: 5,
+    items: [
+      {
+        id: "q1",
+        user_id: "u1",
+        username: "student",
+        display_name: "张三",
+        question: "这是一篇非常长的学术论文提问内容，包含了大量BLEU评估指标的详细数学推导和实验分析。".repeat(4),
+        answer: "BLEU算法通过计算生成文本与参考译文之间的n-gram精确度来评估机器翻译质量。",
+        status: "completed",
+        created_at: "2026-11-19T12:00:00+08:00",
+      },
+    ],
+    frequent_total: 0,
+    frequent: [],
+  });
+
+  render(<QuestionActivityPanel workspaceId="w1" />);
+  const details = screen.getByRole("region", { name: "提问明细" });
+  expect(await within(details).findByText("查看模型答复")).toBeVisible();
+
+  // Test collapsible question
+  expect(within(details).getByRole("button", { name: /展开全文/ })).toBeVisible();
+
+  // Test expanding answer
+  fireEvent.click(within(details).getByRole("button", { name: "查看模型答复" }));
+  expect(await within(details).findByText("AI 模型答复")).toBeVisible();
+  expect(within(details).getByText(/BLEU算法通过计算生成文本/)).toBeVisible();
+
+  // Filter by clicking student name
+  fireEvent.click(within(details).getByRole("button", { name: "张三" }));
+  await waitFor(() => expect(read.mock.lastCall?.[0].get("student_id")).toBe("u1"));
+  expect(within(details).getByText("用户：张三（共提问 5 个问题）")).toBeVisible();
+});
+

@@ -34,7 +34,7 @@ def read_question_activity(engine, *, student_user_ids, start_date, end_date, ti
         with connection.begin():
             summary = dict(connection.execute(statement("SELECT COUNT(*) AS question_count, COUNT(DISTINCT t.user_id) AS user_count" + base), params).mappings().one())
             total = connection.execute(statement("SELECT COUNT(*)" + detail), params).scalar_one()
-            items = [dict(row) for row in connection.execute(statement("SELECT t.id,t.user_id,u.username,u.display_name,t.input_text AS question,t.created_at" + detail + " ORDER BY t.created_at DESC,t.id DESC LIMIT :size OFFSET :skip"),params).mappings()]
+            items = [dict(row) for row in connection.execute(statement("SELECT t.id,t.user_id,u.username,u.display_name,t.input_text AS question,t.result_text AS answer,t.status,t.error_message,t.created_at" + detail + " ORDER BY t.created_at DESC,t.id DESC LIMIT :size OFFSET :skip"),params).mappings()]
             groups = f"SELECT {fingerprint} AS group_id, MIN(t.input_text) AS question, COUNT(*) AS question_count,COUNT(DISTINCT t.user_id) AS user_count,MAX(t.created_at) AS last_asked" + base + f" AND {normalized}<>'' GROUP BY {fingerprint} HAVING COUNT(DISTINCT t.user_id)>=2"
             frequent_total = connection.execute(statement("SELECT COUNT(*) FROM (" + groups + ") g"), params).scalar_one()
             frequent = [dict(row) for row in connection.execute(statement(groups + " ORDER BY user_count DESC,question_count DESC,last_asked DESC,group_id LIMIT :size OFFSET :fskip"),params).mappings()]
@@ -43,4 +43,6 @@ def read_question_activity(engine, *, student_user_ids, start_date, end_date, ti
         if isinstance(value, str):
             value = datetime.fromisoformat(value)
         row["created_at"] = value.replace(tzinfo=timezone.utc).astimezone(timezone(offset)).isoformat()
+        if not row.get("answer") and row.get("error_message"):
+            row["answer"] = f"（异常：{row['error_message']}）"
     return {"summary": summary, "items":items,"total":total,"page":page,"page_size":page_size,"frequent":frequent,"frequent_total":frequent_total,"frequent_page":frequent_page,"start_date":start_date,"end_date":end_date,"timezone":timezone_name}

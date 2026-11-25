@@ -1,8 +1,39 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StudentQuestionsPage } from "./StudentQuestionsPage";
 import type { TeacherOverview } from "@/shared/types";
+
+const { readQuestionActivity } = vi.hoisted(() => ({ readQuestionActivity: vi.fn() }));
+vi.mock("@/platform/http/api", () => ({
+  api: {
+    getTeacherQuestionActivity: readQuestionActivity,
+  },
+}));
+
+beforeEach(() => {
+  readQuestionActivity.mockReset().mockResolvedValue({
+    summary: { question_count: 50, user_count: 1 },
+    start_date: "2026-08-01",
+    end_date: "2026-11-24",
+    timezone: "Asia/Shanghai",
+    total: 50,
+    items: [
+      {
+        id: "turn-1",
+        user_id: "s1",
+        username: "zhangsan",
+        display_name: "张三",
+        question: "自注意力机制中 Q、K、V 的维度变换是如何保持一致的？",
+        answer: "在自注意力机制中，Q、K 通过矩阵相乘计算相关性得分，经 Softmax 归一化后与 V 矩阵加权求和。",
+        status: "completed",
+        created_at: "2026-11-24T10:30:00+08:00",
+      },
+    ],
+    frequent_total: 0,
+    frequent: [],
+  });
+});
 
 const mockOverview: TeacherOverview = {
   workspace_id: "default",
@@ -186,5 +217,24 @@ describe("StudentQuestionsPage Real Student Activity Enhancements", () => {
     const searchInput = screen.getByLabelText("搜索用户姓名或学号");
     fireEvent.change(searchInput, { target: { value: "不存在的人" } });
     expect(screen.getByText("未搜索到与“不存在的人”匹配的用户。")).toBeVisible();
+  });
+
+  it("opens StudentQuestionHistoryModal on clicking student name or 查看问答", async () => {
+    render(<StudentQuestionsPage data={mockOverview} workspaceId="ws-test" classroomId="c1" />);
+
+    // Click on 查看问答 button for 张三
+    const viewButtons = screen.getAllByRole("button", { name: "查看问答" });
+    fireEvent.click(viewButtons[0]);
+
+    // Check modal opens
+    expect(screen.getByRole("dialog", { name: /张三 问答历史/ })).toBeVisible();
+    expect(screen.getByText("50 个问题")).toBeVisible();
+    expect(await screen.findByText("自注意力机制中 Q、K、V 的维度变换是如何保持一致的？")).toBeVisible();
+    expect(screen.getByText(/在自注意力机制中，Q、K 通过矩阵相乘/)).toBeVisible();
+
+    // Close modal
+    const closeBtn = screen.getByRole("button", { name: "关闭弹窗" });
+    fireEvent.click(closeBtn);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
