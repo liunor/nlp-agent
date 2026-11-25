@@ -37,8 +37,12 @@ def test_test_publish_queues_fallbacks_without_cancelling_live_deployments() -> 
     publish = workflow["jobs"]["publish"]
     steps = publish["steps"]
     source = next(i for i, step in enumerate(steps) if step.get("id") == "source")
+    current_source = "steps.source.outputs.current == 'true'"
     for step in steps[source+1:]:
-        assert step["if"] == "steps.source.outputs.current == 'true'"
+        if step.get("id") == "build_runtime":
+            assert step["if"] == f"{current_source} && steps.runtime_cache.outputs.digest == ''"
+        else:
+            assert step["if"] == current_source
     assert "current-release-source.py" in steps[source]["run"]
     assert "--attach-source-branch" in steps[source]["run"]
     assert "publish.outputs.current_source == 'true'" in workflow["jobs"]["deploy"]["if"]
@@ -47,6 +51,17 @@ def test_test_publish_queues_fallbacks_without_cancelling_live_deployments() -> 
     assert "--attach-source-branch" not in deploy["run"]
     assert "NLP_AGENT_DEPLOYMENT_ENV=\\\"test\\\"" in deploy["run"]
     assert "NLP_AGENT_DEPLOYMENT_ENV" not in (ROOT / ".github/workflows/release-prod.yml").read_text(encoding="utf-8")
+
+
+def test_test_publish_resolves_the_runtime_digest_after_cache_lookup_and_fallback_build() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/publish-test-image.yml").read_text(encoding="utf-8"))
+    publish = workflow["jobs"]["publish"]
+    steps_by_id = {step["id"]: step for step in publish["steps"] if "id" in step}
+    step_ids = list(steps_by_id)
+    assert step_ids.index("runtime_cache") < step_ids.index("build_runtime") < step_ids.index("runtime")
+    assert steps_by_id["runtime"]["env"]["REUSED_DIGEST"] == "${{ steps.runtime_cache.outputs.digest }}"
+    assert steps_by_id["runtime"]["env"]["BUILT_DIGEST"] == "${{ steps.build_runtime.outputs.digest }}"
+    assert publish["outputs"]["runtime_digest"] == "${{ steps.runtime.outputs.digest }}"
 
 
 def test_test_worker_proxy_preflight_uses_all_running_ids_not_container_number_one() -> None:
