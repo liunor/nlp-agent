@@ -433,13 +433,15 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ name, parent_id: parentId ?? null }),
   }),
-  uploadStorageFile: (file: File, workspaceId?: string, parentId?: string, idempotencyKey?: string, signal?: AbortSignal) => {
+  uploadStorageFile: async (file: File, workspaceId?: string, parentId?: string, idempotencyKey?: string, signal?: AbortSignal) => {
     const form = new FormData();
     form.append("file", file);
     if (idempotencyKey) form.append("idempotency_key", idempotencyKey);
     if (parentId) form.append("parent_id", parentId);
     if (workspaceId) form.append("workspace_id", workspaceId);
-    return request<StorageFile>("/storage/files", { method: "POST", body: form, signal });
+    const uploaded = await request<StorageFile>("/storage/files", { method: "POST", body: form, signal });
+    if (!idempotencyKey) return uploaded;
+    return request<StorageFile>(`/storage/files/${encodeURIComponent(uploaded.id)}/confirm${storageQuery(workspaceId)}`, { method: "POST", signal });
   },
   renameStorageFile: (fileId: string, name: string, workspaceId?: string) => request<StorageFile>(`/storage/files/${encodeURIComponent(fileId)}${storageQuery(workspaceId)}`, {
     method: "PATCH",

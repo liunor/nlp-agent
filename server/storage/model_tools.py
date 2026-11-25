@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from core.session_context import SessionContext
 from server.documents.content import DocumentError
+from server.documents.search import search_blocks
 from server.infrastructure.mysql.models import SessionModel, UserModel, UserFileModel
 from server.rbac.service import rbac_service
 from server.storage.service import StorageService, StorageError
@@ -214,14 +215,10 @@ async def search_user_file(file_id: str, query: str, config: RunnableConfig,
         for _ in range(5):
             async with _storage(config) as service:
                 result = await service.read_content(file_id, offset=offset, limit=100,
-                                                   char_offset=char_offset, expected_hash=version)
+                                                   # Re-read the preceding tail so a split keyword is searchable.
+                                                   char_offset=max(0, char_offset - len(query) + 1), expected_hash=version)
             version = result['sha256']
-            for block in result['blocks']:
-                text = block['text']
-                index = text.casefold().find(query.casefold())
-                if index >= 0 and len(hits) < 10:
-                    hits.append(dict(unit=result['unit'], number=block['number'],
-                                     text=text[max(0, index-100):index+len(query)+300]))
+            hits.extend(search_blocks(result['blocks'], query, unit=result['unit'])[:10-len(hits)])
             scanned.append(dict(unit=result['unit'], first=offset+1,
                                 last=result['blocks'][-1]['number'] if result['blocks'] else offset))
             offset, char_offset = result['next_offset'], result['next_char_offset']

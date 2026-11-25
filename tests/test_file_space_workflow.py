@@ -111,3 +111,74 @@ async def test_completed_generation_lookup_reuses_saved_file_without_new_reserva
         assert (await completed_generation(service, key)).id == identifier
         service.quota.reserve.assert_not_awaited()
         assert await completed_generation(user_storage(db, 'bob'), key) is None
+
+
+@pytest.mark.asyncio
+async def test_upload_confirmation_is_scoped_and_idempotent(file_db):
+    from server.storage.uploads import confirm_upload
+    async with file_db.begin() as db:
+        owner = user_storage(db)
+        item = await owner.create_file(UploadFile(BytesIO(b'data'), filename='a.txt'), upload_key='pending', origin='chat_pending')
+        with pytest.raises(StorageValidationError):
+            await confirm_upload(user_storage(db, 'bob'), item['id'])
+        await confirm_upload(owner, item['id'])
+        await confirm_upload(owner, item['id'])
+        assert (await db.get(UserFileModel, item['id'])).origin == 'chat'
+
+
+@pytest.mark.asyncio
+async def test_search_finds_keyword_across_real_parser_pages(file_db, monkeypatch):
+    from contextlib import asynccontextmanager
+    from server.storage import model_tools
+    async with file_db.begin() as db:
+        service = user_storage(db)
+        item = await service.create_file(UploadFile(BytesIO(b'a'*11999+b'TARGETbbb'), filename='long.txt'))
+        @asynccontextmanager
+        async def storage(_):
+            yield service
+        monkeypatch.setattr(model_tools, '_storage', storage)
+        import json
+        result = json.loads(await model_tools.search_user_file.ainvoke({'file_id': item['id'], 'query': 'TARGET'}, config={}))
+        assert result['ok'] and len(result['hits']) == 1
+        assert result['next_offset'] is None
+
+
+@pytest.mark.asyncio
+async def test_upload_reaper_preserves_confirmed_and_edited_files(file_db, monkeypatch):
+    from datetime import datetime, timedelta
+    from server.storage import uploads
+    monkeypatch.setattr(uploads, 'StorageService', lambda db, principal, workspace: user_storage(db, principal.user_id, workspace))
+    old = datetime.now() - timedelta(days=2)
+    async with file_db.begin() as db:
+        service = user_storage(db)
+        identifiers = []
+        for index, origin in enumerate(['chat_pending', 'chat', 'chat_pending']):
+            result = await service.create_file(UploadFile(BytesIO(b'data'), filename=f'{index}.txt'), origin=origin)
+            item = await db.get(UserFileModel, result['id'])
+            item.created_at = old
+            item.updated_at = old if index < 2 else old + timedelta(hours=1)
+            identifiers.append(item.id)
+    await uploads.purge_expired_uploads(file_db)
+    async with file_db() as db:
+        assert await db.get(UserFileModel, identifiers[0]) is None
+        assert (await db.get(UserFileModel, identifiers[1])).origin == 'chat'
+        assert (await db.get(UserFileModel, identifiers[2])).origin == 'chat'
+
+
+@pytest.mark.asyncio
+async def test_recovered_pending_attachment_survives_expiry(file_db, monkeypatch):
+    from datetime import datetime, timedelta
+    from server.storage import uploads
+    monkeypatch.setattr(uploads, 'StorageService', lambda db, principal, workspace: user_storage(db, principal.user_id, workspace))
+    async with file_db.begin() as db:
+        service = user_storage(db)
+        pending = await service.create_file(UploadFile(BytesIO(b'data'), filename='recovered.txt'), origin='chat_pending')
+        item = await db.get(UserFileModel, pending['id'])
+        item.created_at = item.updated_at = datetime.now() - timedelta(days=2)
+        await uploads.confirm_upload(service, item.id, existing_file=True)
+        normal = await service.create_file(UploadFile(BytesIO(b'original'), filename='normal.txt'))
+        await uploads.confirm_upload(service, normal['id'], existing_file=True)
+        assert (await db.get(UserFileModel, normal['id'])).origin == 'user'
+    await uploads.purge_expired_uploads(file_db)
+    async with file_db() as db:
+        assert (await db.get(UserFileModel, pending['id'])).origin == 'chat'

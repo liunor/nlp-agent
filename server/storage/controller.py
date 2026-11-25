@@ -286,8 +286,18 @@ async def upload_storage_file(
     service = _service(db, principal, workspace_id)
     try:
         if idempotency_key:
-            return await service.create_file(file, parent_id, upload_key=idempotency_key, origin="chat")
+            return await service.create_file(file, parent_id, upload_key=idempotency_key, origin="chat_pending")
         return await service.create_file(file, parent_id)
+    except StorageError as error:
+        raise _write_error(error) from error
+
+
+@router.post("/files/{file_id}/confirm")
+async def confirm_storage_upload(file_id: str, db: DbSession, principal: Principal,
+                                 _write: WriteClaims, workspace_id: str | None = Query(default=None)) -> dict:
+    from server.storage.uploads import confirm_upload
+    try:
+        return await confirm_upload(_service(db, principal, workspace_id), file_id)
     except StorageError as error:
         raise _write_error(error) from error
 

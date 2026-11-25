@@ -640,6 +640,8 @@ def create_app(
                     store_root = settings.NLP_AGENT_SANDBOX_ARTIFACT_STORE_ROOT.strip()
                     if store_root:
                         await purge_expired_artifacts(factory, store_root=Path(store_root))
+                    from server.storage.uploads import purge_expired_uploads
+                    await purge_expired_uploads(factory)
                     await record_sandbox_capacity_sample(factory)
                 except asyncio.CancelledError:
                     raise

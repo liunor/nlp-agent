@@ -523,10 +523,12 @@ class BackendGateway:
                     raise ValueError("文件空间服务不可用")
                 from server.storage.service import StorageService
                 from server.storage.model_tools import describe_file
-                async with factory() as db:
+                async with factory.begin() as db:
                     storage = StorageService(db, principal, context.workspace_id)
                     from server.storage.errors import StorageError
                     try:
+                        from server.storage.uploads import confirm_upload
+                        await confirm_upload(storage, attachment["file_id"], existing_file=True)
                         item = await describe_file(storage, attachment["file_id"])
                     except StorageError as error:
                         raise ValueError("附件已删除或无权访问，请重新选择") from error

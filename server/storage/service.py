@@ -644,7 +644,7 @@ class StorageService:
                 if existing.status != "active" or existing.sha256 != hashlib.sha256(data).hexdigest():
                     raise StorageValidationError("上传标识已使用或文件内容不同")
                 return self.serialize(existing)
-            if origin == "chat" and parent_id is None:
+            if origin in ("chat", "chat_pending") and parent_id is None:
                 folder = await self._sibling_named("聊天附件", None, current=True)
                 if folder is None:
                     parent_id = (await self.create_folder("聊天附件"))["id"]

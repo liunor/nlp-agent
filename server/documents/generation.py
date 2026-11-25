@@ -8,6 +8,20 @@ TEXT_FORMATS = frozenset('txt md py js ts tsx jsx mjs cjs css scss html xml yaml
 FORMATS = TEXT_FORMATS | frozenset({'json', 'csv', 'tsv', 'xlsx', 'docx', 'pdf', 'png', 'jpg', 'jpeg'})
 
 
+def wrap_pdf_lines(content, measure, max_width):
+    """Wrap by rendered point width; retain explicit paragraph breaks."""
+    lines = []
+    for paragraph in content.splitlines():
+        current = ""
+        for character in paragraph:
+            if current and measure(current + character) > max_width:
+                lines.append(current)
+                current = ""
+            current += character
+        lines.append(current)
+    return lines
+
+
 def render_file(format: str, content: str) -> bytes:
     import csv
     import io
@@ -84,10 +98,13 @@ def render_file(format: str, content: str) -> bytes:
             fig.savefig(output, format='jpeg' if format in ('jpg', 'jpeg') else 'png')
             plt.close(fig)
         else:
-            import textwrap
+            from matplotlib.font_manager import FontProperties
+            from matplotlib.textpath import TextToPath
             from datetime import datetime, timezone
             from matplotlib.backends.backend_pdf import PdfPages
-            lines = [wrapped for line in content.splitlines() for wrapped in (textwrap.wrap(line, 70) or [''])]
+            font = FontProperties(size=11)
+            text_metrics = TextToPath()
+            lines = wrap_pdf_lines(content, lambda text: text_metrics.get_text_width_height_descent(text, font, False)[0], 8.27 * 72 * .84)
             if len(lines) > 2000:
                 raise ValueError('报告超过生成范围')
             with PdfPages(output, metadata={'CreationDate': datetime(2000, 1, 1, tzinfo=timezone.utc)}) as pdf:
@@ -111,7 +128,7 @@ def generation_source(format: str, content: str, filename: str,
         raise ValueError('文件扩展名与生成格式不匹配')
     data = json.dumps(dict(format=format, content=content, filename=filename,
                            directory=directory, max_bytes=max_bytes, staging=staging), ensure_ascii=False)
-    return 'TEXT_FORMATS = ' + repr(tuple(sorted(TEXT_FORMATS))) + '\n' + inspect.getsource(render_file) + '\n' + '''
+    return 'TEXT_FORMATS = ' + repr(tuple(sorted(TEXT_FORMATS))) + '\n' + inspect.getsource(wrap_pdf_lines) + '\n' + inspect.getsource(render_file) + '\n' + '''
 import hashlib, json
 from pathlib import Path
 request = json.loads(''' + repr(data) + ''')

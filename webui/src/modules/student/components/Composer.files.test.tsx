@@ -17,3 +17,13 @@ it("uploads multiple documents to file space and sends stable references", async
   expect(send.mock.calls[0][1][0]).toMatchObject({ fileId: "f", displayName: "note.txt", status: "ready" });
   expect(api.uploadStorageFile).toHaveBeenCalledWith(expect.any(File), "w", undefined, expect.any(String), expect.any(AbortSignal));
 });
+
+
+it("uploads a pasted PDF through the document pipeline", async () => {
+  vi.mocked(api.uploadStorageFile).mockClear();
+  vi.mocked(api.uploadStorageFile).mockResolvedValue({ id: "pdf", kind: "file", name: "paper.pdf", size_bytes: 3, mime_type: "application/pdf", created_at: null, updated_at: null });
+  render(<Composer sessionId="s" workspaceId="w" disabled={false} running={false} onSend={vi.fn()} onCancel={vi.fn()} />);
+  const file = new File(["pdf"], "paper.pdf", { type: "application/pdf" });
+  fireEvent.paste(screen.getByRole("textbox"), { clipboardData: { items: [{ kind: "file", type: file.type, getAsFile: () => file }], files: [file] } });
+  await waitFor(() => expect(api.uploadStorageFile).toHaveBeenCalledWith(file, "w", undefined, expect.any(String), expect.any(AbortSignal)));
+});

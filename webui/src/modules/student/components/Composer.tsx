@@ -233,7 +233,8 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
     const images = itemImages.length > 0
       ? itemImages
       : Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
-    if (images.length === 0) return;
+    const files = images.length > 0 ? images : Array.from(event.clipboardData.files);
+    if (files.length === 0) return;
 
     // An image clipboard can also expose text/html or text/plain fallbacks.
     // Treat the image as the user's intent and avoid inserting those fallbacks.
@@ -246,7 +247,7 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
           : "请先登录后再上传图片");
       return;
     }
-    images.forEach((file, index) => addAndUploadFile(file, pastedImageName(file, index)));
+    files.forEach((file, index) => addAndUploadFile(file, file.type.startsWith("image/") ? pastedImageName(file, index) : file.name));
   };
 
   return <div className={`composer-wrap ${centered ? "centered" : ""}`}
