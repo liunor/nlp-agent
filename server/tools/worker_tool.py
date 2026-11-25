@@ -1052,24 +1052,39 @@ async def _execute_sandbox_loop(
                 total_tokens_used += usage_total(response)
             record_sidechain_transcript(session_id, worker_id, [response])
 
-            if total_tokens_used > budget.max_tokens:
-                final_output = await finalize(AgentStopReason.TOKEN_BUDGET)
+            content = str(response.content or "").strip()
+            finish_reason = str(
+                getattr(response, "response_metadata", {}).get("finish_reason", "")
+            ).lower()
+            if not response.tool_calls and content and finish_reason not in {"length", "max_tokens"}:
+                return result(
+                    status="completed",
+                    summary="Worker completed the assigned task.",
+                    termination_reason="completed",
+                    output=content,
+                )
+
+            if total_tokens_used >= budget.max_tokens:
+                # Provider usage arrives with the response. A tools-free
+                # finalization would make another call after exhaustion.
+                messages, repaired_tools = _repair_dangling_tool_calls(messages)
+                if repaired_tools:
+                    record_sidechain_transcript(session_id, worker_id, repaired_tools)
                 return result(
                     status="failed",
-                    summary="Worker exceeded its token budget.",
+                    summary="Worker reached its token budget.",
                     termination_reason="token_budget",
-                    output=final_output,
+                    output=(
+                        image_partial_output() if image_results
+                        else exhaustion_fallback(AgentStopReason.TOKEN_BUDGET)
+                    ),
                     error=WorkerErrorSpec(
                         category="budget",
-                        message=f"Token budget exceeded: {total_tokens_used}/{budget.max_tokens}",
+                        message=f"Token budget reached: {total_tokens_used}/{budget.max_tokens}",
                         retryable=False,
                     ),
                 )
             if not response.tool_calls:
-                content = str(response.content or "").strip()
-                finish_reason = str(
-                    getattr(response, "response_metadata", {}).get("finish_reason", "")
-                ).lower()
                 if not content:
                     messages.append(
                         SystemMessage(content=global_prompt_runtime.render("retry.empty_response"))
@@ -1080,25 +1095,16 @@ async def _execute_sandbox_loop(
                         payload={"role": "worker", "reason": "empty_response"},
                     )
                     continue
-                if finish_reason in {"length", "max_tokens"}:
-                    messages.append(
-                        SystemMessage(
-                            content=global_prompt_runtime.render(
-                                "retry.continue_after_truncation"
-                            )
-                        )
+                messages.append(
+                    SystemMessage(
+                        content=global_prompt_runtime.render("retry.continue_after_truncation")
                     )
-                    global_telemetry.event(
-                        "agent.response.recovering",
-                        payload={"role": "worker", "reason": "length"},
-                    )
-                    continue
-                return result(
-                    status="completed",
-                    summary="Worker completed the assigned task.",
-                    termination_reason="completed",
-                    output=content,
                 )
+                global_telemetry.event(
+                    "agent.response.recovering",
+                    payload={"role": "worker", "reason": "length"},
+                )
+                continue
 
             remaining = max(0, budget.max_tool_calls - tool_uses_count)
             if remaining == 0:

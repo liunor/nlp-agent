@@ -164,12 +164,17 @@ def health() -> None:
         client.stop_channels()
 
 
+class ScratchDeadlineExceeded(TimeoutError):
+    """Raised when the runtime's scratch timer expires."""
+
+
 def scratch(request: ExecuteRequest) -> dict[str, object]:
     """Execute in a fresh process: intentionally no access to Interactive Kernel state."""
     output = OutputCollector(limit_bytes=request.output_limit_bytes)
     namespace = {"__builtins__": __builtins__}
+
     def deadline_exceeded(_signum: int, _frame: object) -> None:
-        raise TimeoutError("scratch execution timed out")
+        raise ScratchDeadlineExceeded("scratch execution timed out")
 
     alarm_enabled = hasattr(signal, "setitimer") and hasattr(signal, "SIGALRM")
     previous_handler = None
@@ -189,7 +194,9 @@ def scratch(request: ExecuteRequest) -> dict[str, object]:
         output.append("stderr", stderr.getvalue())
     except Exception as error:
         output.append("stderr", f"{type(error).__name__}: {error}\n")
-        result = output.to_payload(status="failed")
+        result = output.to_payload(
+            status="timed_out" if isinstance(error, ScratchDeadlineExceeded) else "failed",
+        )
         result["artifacts"] = collect_workspace_artifacts()
         return result
     finally:

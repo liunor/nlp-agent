@@ -161,6 +161,18 @@ async def test_fetch_rejects_disallowed_content_type(monkeypatch):
     with pytest.raises(WebAccessError) as excinfo:
         await service.fetch(WebFetchInput(url="https://example.com/file.pdf"))
     assert excinfo.value.code == "unsupported_content_type"
+    assert "未取得正文" in excinfo.value.message
+
+
+async def test_fetch_guides_recovery_when_origin_returns_http_error(monkeypatch):
+    service = _service(monkeypatch, lambda _request: httpx.Response(404))
+
+    with pytest.raises(WebAccessError) as excinfo:
+        await service.fetch(WebFetchInput(url="https://example.com/missing"))
+
+    assert excinfo.value.code == "http_error"
+    assert "HTTP 404，未取得正文" in excinfo.value.message
+    assert "指定链接任务请说明读取失败" in excinfo.value.message
 
 
 async def test_fetch_follows_redirects_with_per_hop_validation(monkeypatch):

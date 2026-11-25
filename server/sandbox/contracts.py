@@ -37,6 +37,16 @@ class SandboxCapacityError(RuntimeError):
         self.threshold = threshold
 
 
+class SandboxScratchTimeoutError(TimeoutError):
+    """The isolated scratch container exceeded its execution deadline."""
+
+    code = "scratch_execution_timeout"
+    message = "Sandbox scratch execution timed out."
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
+
+
 @dataclass(frozen=True)
 class SandboxScope:
     """Server-derived identity used for every Sandbox Manager command.

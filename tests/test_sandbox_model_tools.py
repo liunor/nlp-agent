@@ -216,12 +216,16 @@ async def test_model_explain_execution_is_bound_to_workspace() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_model_result_emits_failed_event() -> None:
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [("failed", "scratch_code_failed"), ("timed_out", "scratch_execution_timeout")],
+)
+async def test_failed_model_result_emits_failed_event(status, code) -> None:
     from server.sandbox.model_tools import SandboxModelToolService
 
     class FailedManager:
         async def run_scratch(self, **_kwargs: object) -> dict[str, object]:
-            return {"status": "failed", "stdout": "partial", "stderr": "NameError: missing"}
+            return {"status": status, "stdout": "partial", "stderr": "example error"}
 
     service = SandboxModelToolService(mode="docker", manager=FailedManager())
     result = await service.run_scratch(source="print(missing)", config=_config())
@@ -229,9 +233,11 @@ async def test_failed_model_result_emits_failed_event() -> None:
         execution_id=str(result["execution_id"]), config=_config()
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "failed"
-    assert explanation["execution"]["status"] == "failed"
+    assert result["ok"] is False
+    assert result["code"] == code
+    assert result["stdout"] == "partial"
+    assert result["status"] == status
+    assert explanation["execution"]["status"] == status
     event_types = [event["type"] for event in explanation["events"]]
     assert "execution.failed" in event_types
     assert "execution.completed" not in event_types

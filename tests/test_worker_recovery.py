@@ -120,15 +120,21 @@ async def test_non_retryable_failure_stops_immediately():
 
 
 @pytest.mark.asyncio
-async def test_sandbox_enforces_token_budget(monkeypatch):
+@pytest.mark.parametrize("complete,total", [(False, 10), (False, 11), (True, 11)])
+async def test_sandbox_enforces_token_budget(monkeypatch, complete, total):
     class FakeLLM:
+        calls = 0
+
         async def ainvoke(self, _messages):
+            self.calls += 1
             return AIMessage(
-                content="oversized",
-                usage_metadata={"input_tokens": 6, "output_tokens": 5, "total_tokens": 11},
+                content="answer from last call",
+                response_metadata={"finish_reason": "stop" if complete else "length"},
+                usage_metadata={"input_tokens": total - 5, "output_tokens": 5, "total_tokens": total},
             )
 
-    monkeypatch.setattr(worker_tool, "get_tool_llm", lambda: FakeLLM())
+    llm = FakeLLM()
+    monkeypatch.setattr(worker_tool, "get_tool_llm", lambda: llm)
     monkeypatch.setattr(worker_tool, "record_sidechain_transcript", lambda *_args: None)
     result = await _execute_sandbox_loop(
         "budget-worker",
@@ -138,9 +144,15 @@ async def test_sandbox_enforces_token_budget(monkeypatch):
         budget=WorkerResourceBudget(max_tokens=10),
     )
 
-    assert result.status == "failed"
-    assert result.termination_reason == "token_budget"
-    assert result.error.category == "budget"
+    assert llm.calls == 1
+    assert result.usage.total_tokens == total
+    if complete:
+        assert result.status == "completed"
+        assert result.output == "answer from last call"
+    else:
+        assert result.status == "failed"
+        assert result.termination_reason == "token_budget"
+        assert result.error.category == "budget"
 
 
 @pytest.mark.asyncio
@@ -490,7 +502,7 @@ def _assert_valid_tool_call_pairing(messages: list) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sandbox_repairs_dangling_tool_calls_before_finalizing_on_tool_and_token_budget(
+async def test_sandbox_repairs_dangling_tool_calls_on_tool_and_token_budget(
     monkeypatch,
 ):
     class StrictProtocolLLM:
@@ -518,7 +530,10 @@ async def test_sandbox_repairs_dangling_tool_calls_before_finalizing_on_tool_and
                 usage_metadata=usage,
             )
 
-    monkeypatch.setattr(worker_tool, "record_sidechain_transcript", lambda *_args: None)
+    transcript = []
+    monkeypatch.setattr(
+        worker_tool, "record_sidechain_transcript", lambda _session, _worker, rows: transcript.extend(rows),
+    )
 
     # 1. Tool-budget hit with unexecuted tool_calls
     monkeypatch.setattr(worker_tool, "get_tool_llm", lambda: StrictProtocolLLM())
@@ -532,6 +547,7 @@ async def test_sandbox_repairs_dangling_tool_calls_before_finalizing_on_tool_and
     assert tool_budget_res.output == "cleanly finalized without HTTP 400"
 
     # 2. Token-budget hit immediately after AIMessage(tool_calls=...)
+    transcript.clear()
     monkeypatch.setattr(
         worker_tool,
         "get_tool_llm",
@@ -545,7 +561,9 @@ async def test_sandbox_repairs_dangling_tool_calls_before_finalizing_on_tool_and
         budget=WorkerResourceBudget(max_turns=3, max_tokens=100, max_tool_calls=4),
     )
     assert token_budget_res.termination_reason == "token_budget"
-    assert token_budget_res.output == "cleanly finalized without HTTP 400"
+    assert token_budget_res.usage.total_tokens == 600
+    _assert_valid_tool_call_pairing(transcript)
+    assert not any("cleanly finalized" in str(item.content) for item in transcript)
 
 
 @pytest.mark.asyncio
