@@ -111,6 +111,23 @@ describe("FilesPanel", () => {
     await waitFor(() => expect(screen.getByText("此文件夹为空")).toBeInTheDocument());
   });
 
+  it("renders a compact attach icon and forwards the selected file", async () => {
+    const file = { id: "attach", kind: "file" as const, name: "报告.docx", size_bytes: 10, mime_type: null, created_at: null, updated_at: null };
+    vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [file] });
+    const attached = vi.fn();
+    window.addEventListener("file-space:attach", attached);
+    try {
+      render(<FilesPanel workspaceId="w" />);
+      const button = await screen.findByRole("button", { name: "添加到对话 报告.docx" });
+      expect(button.textContent).toBe("");
+      expect(button.querySelector("svg")).toBeInTheDocument();
+      expect(button).toHaveAttribute("title", "添加到当前对话");
+      fireEvent.click(button);
+      expect(attached).toHaveBeenCalledTimes(1);
+      expect((attached.mock.calls[0][0] as CustomEvent).detail).toEqual({ file, workspaceId: "w" });
+    } finally { window.removeEventListener("file-space:attach", attached); }
+  });
+
   it("exposes a recoverable recycle-bin view in the file manager", async () => {
     render(<FilesPanel workspaceId="workspace-1" />);
 

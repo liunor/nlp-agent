@@ -310,7 +310,6 @@ describe("Composer", () => {
 
     expect(visibleControls).toEqual([
       screen.getByRole("button", { name: "上传附件" }),
-      screen.getByRole("button", { name: "从文件空间添加附件" }),
       screen.getByText("Nova · LSNU NLP Learning Agent"),
       screen.getByRole("button", { name: "学习设置" }),
       screen.getByRole("button", { name: "发送" }),

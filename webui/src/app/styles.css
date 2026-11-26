@@ -4661,3 +4661,26 @@ button { color: inherit; }
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+
+/* Attachment actions stay behind the composer plus button. */
+.composer-toolbar .attachment-button { display:flex; align-items:center; justify-content:center; flex:0 0 auto; width:28px; height:28px; padding:4px; border:0; border-radius:50%; background:transparent; color:var(--muted); cursor:pointer; }
+.composer-toolbar .attachment-button:hover, .composer-toolbar .attachment-button[data-state="open"] { background:var(--muted-bg); color:var(--fg); }
+.composer-toolbar .attachment-button:disabled { opacity:.45; cursor:default; }
+.attachment-menu { z-index:210; min-width:210px; max-width:calc(100vw - 24px); padding:6px; border:1px solid var(--border); border-radius:12px; background:var(--bg); color:var(--fg); box-shadow:0 8px 30px rgb(0 0 0 / 12%); }
+.attachment-menu-item { display:flex; align-items:center; gap:10px; padding:11px 12px; border-radius:7px; font-size:14px; cursor:pointer; outline:none; user-select:none; }
+.attachment-menu-item[data-highlighted] { background:var(--muted-bg); }
+.file-picker-overlay { position:fixed; inset:0; z-index:220; background:rgb(0 0 0 / 30%); }
+.file-picker-dialog { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:221; width:min(440px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); display:flex; flex-direction:column; padding:20px; border:1px solid var(--border); border-radius:16px; background:var(--bg); color:var(--fg); box-shadow:0 16px 60px rgb(0 0 0 / 16%); }
+.file-picker-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.file-picker-header h2 { margin:0; font-size:17px; }
+.file-picker-close { display:grid; place-items:center; width:30px; height:30px; flex-shrink:0; border:0; border-radius:7px; background:transparent; color:var(--muted); cursor:pointer; }
+.file-picker-close:hover, .file-picker-row:hover, .file-picker-back:hover { background:var(--muted-bg); }
+.file-picker-description { margin:8px 0 16px; color:var(--muted); font-size:13px; }
+.file-picker-list { min-height:100px; overflow-y:auto; }
+.file-picker-list > p { padding:20px 4px; color:var(--muted); font-size:14px; }
+.file-picker-row { display:flex; align-items:center; gap:10px; width:100%; min-height:46px; padding:10px; border:0; border-radius:8px; background:transparent; color:inherit; text-align:left; cursor:pointer; }
+.file-picker-row > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.file-picker-row > svg { flex-shrink:0; color:var(--muted); }
+.file-picker-back { display:flex; align-items:center; gap:6px; align-self:flex-start; margin-bottom:8px; padding:6px; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer; }
+.storage-row-actions button, .storage-row-actions a { flex-shrink:0; white-space:nowrap; }
