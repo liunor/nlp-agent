@@ -2819,7 +2819,7 @@ def create_app(
     ):
         accepted = await request.app.state.gateway.submit_turn(
             principal,
-            SubmitTurnRequest(**body.model_dump()),
+            SubmitTurnRequest(**body.model_dump(exclude_none=True)),
             auth_session_id=(
                 _claims.session_id if isinstance(_claims, DatabaseSessionClaims) else None
             ),
