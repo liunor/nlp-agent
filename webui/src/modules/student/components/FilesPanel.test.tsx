@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -111,6 +111,114 @@ describe("FilesPanel", () => {
     await waitFor(() => expect(screen.getByText("此文件夹为空")).toBeInTheDocument());
   });
 
+  it("renders a compact attach icon and forwards the selected file", async () => {
+    const file = { id: "attach", kind: "file" as const, name: "报告.docx", size_bytes: 10, mime_type: null, created_at: null, updated_at: null };
+    vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [file] });
+    const attached = vi.fn();
+    window.addEventListener("file-space:attach", attached);
+    try {
+      render(<FilesPanel workspaceId="w" />);
+      const button = await screen.findByRole("button", { name: "添加到对话 报告.docx" });
+      expect(button.textContent).toBe("");
+      expect(button.querySelector("svg")).toBeInTheDocument();
+      expect(button).toHaveAttribute("title", "添加到当前对话");
+      fireEvent.click(button);
+      expect(attached).toHaveBeenCalledTimes(1);
+      expect((attached.mock.calls[0][0] as CustomEvent).detail).toEqual({ file, workspaceId: "w" });
+    } finally { window.removeEventListener("file-space:attach", attached); }
+  });
+
+  it("keeps multiple file previews open, switches without refetching, and closes without deleting", async () => {
+    const documents = ["first.md", "second.md"].map((name, index) => ({ id: `multi-${index}`, kind: "file" as const, name, size_bytes: 10, mime_type: "text/markdown", created_at: null, updated_at: null }));
+    vi.mocked(api.listStorageFiles).mockResolvedValue({ items: documents });
+    vi.mocked(api.readStorageFile).mockImplementation(async id => ({ content: id === "multi-0" ? "first content" : "second content", truncated: false, mime_type: "text/markdown", bytes_read: 10 }));
+    render(<FilesPanel workspaceId="w" />);
+    fireEvent.click(await screen.findByRole("button", { name: "查看 first.md" }));
+    await screen.findByText("first content");
+    fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看 second.md" }));
+    await screen.findByText("second content");
+    const tabs = screen.getByRole("tablist", { name: "已打开的文件" });
+    expect(within(tabs).getAllByRole("tab")).toHaveLength(2);
+    fireEvent.click(within(tabs).getByRole("tab", { name: "first.md" }));
+    expect(screen.getByRole("tabpanel", { name: "first.md" })).toHaveTextContent("first content");
+    expect(api.readStorageFile).toHaveBeenCalledTimes(2);
+    fireEvent.click(within(tabs).getByRole("button", { name: "关闭 first.md" }));
+    expect(within(tabs).queryByRole("tab", { name: "first.md" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "second.md" })).toHaveTextContent("second content");
+    expect(api.deleteStorageFile).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates reopened files and clears tabs when the account changes", async () => {
+    const request = { id: "scope-file", name: "scope.md", url: "", mediaType: "text/markdown", bytes: 5, source: "storage" as const, workspaceId: "w" };
+    vi.mocked(api.readStorageFile).mockResolvedValue({ content: "private document", truncated: false, mime_type: "text/markdown", bytes_read: 5 });
+    const { rerender } = render(<FilesPanel userId="alice" workspaceId="w" previewRequest={request} />);
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    await screen.findByText("private document");
+    rerender(<FilesPanel userId="alice" workspaceId="w" previewRequest={{ ...request }} />);
+    const tabs = screen.getByRole("tablist", { name: "已打开的文件" });
+    expect(within(tabs).getAllByRole("tab")).toHaveLength(1);
+    rerender(<FilesPanel userId="bob" workspaceId="w" />);
+    fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
+    expect(screen.queryByRole("tablist", { name: "已打开的文件" })).not.toBeInTheDocument();
+    expect(screen.queryByText("private document")).not.toBeInTheDocument();
+  });
+
+  it("opens a batch of local documents in separate tabs and closes without removing the import", async () => {
+    render(<FilesPanel userId="alice" workspaceId="w" />);
+    upload([markdownFile("a.md", "first local"), markdownFile("b.md", "second local")]);
+    const tabs = await screen.findByRole("tablist", { name: "已打开的文件" });
+    await waitFor(() => expect(within(tabs).getAllByRole("tab")).toHaveLength(2));
+    fireEvent.click(within(tabs).getByRole("tab", { name: "a.md" }));
+    expect(screen.getByRole("tabpanel", { name: "a.md" })).toHaveTextContent("first local");
+    fireEvent.click(within(tabs).getByRole("button", { name: "关闭 a.md" }));
+    expect(screen.getByRole("button", { name: "预览 a.md" })).toBeInTheDocument();
+    expect(localStorage.getItem("nlp-agent.imported-files.v1:alice:w")).toContain("first local");
+  });
+
+  it("automatically activates a newly requested textbook preview", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => "new textbook" }));
+    const { rerender } = render(<FilesPanel userId="alice" workspaceId="w" />);
+    const request = { id: "new-book", name: "book.md", url: "/book/file", mediaType: "text/markdown", bytes: 12 };
+    rerender(<FilesPanel userId="alice" workspaceId="w" previewRequest={request} />);
+    expect(screen.getByRole("tab", { name: "学习文档导入" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("tabpanel", { name: "book.md" })).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
+    rerender(<FilesPanel userId="alice" workspaceId="w" previewRequest={request} />);
+    expect(screen.getByRole("tab", { name: "我的文件" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("does not restore an asynchronous import after clearing files", async () => {
+    let finish!: (content: string) => void;
+    const pending = new Promise<string>(resolve => { finish = resolve; });
+    const slow = markdownFile("slow.md");
+    const prefix = new Blob();
+    vi.spyOn(prefix, "text").mockReturnValue(pending);
+    vi.spyOn(slow, "slice").mockReturnValue(prefix);
+    render(<FilesPanel userId="alice" workspaceId="w" />);
+    upload([markdownFile("initial.md")]);
+    await screen.findByRole("button", { name: "预览 initial.md" });
+    upload([slow]);
+    fireEvent.click(screen.getByRole("button", { name: "清空" }));
+    await act(async () => { finish("late private data"); await pending; });
+    expect(screen.queryByRole("tab", { name: "slow.md" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("nlp-agent.imported-files.v1:alice:w")).toBe("[]");
+  });
+
+  it("does not persist a pending import after switching accounts", async () => {
+    let finish!: (content: string) => void;
+    const pending = new Promise<string>(resolve => { finish = resolve; });
+    const slow = markdownFile("slow.md"), prefix = new Blob();
+    vi.spyOn(prefix, "text").mockReturnValue(pending);
+    vi.spyOn(slow, "slice").mockReturnValue(prefix);
+    const { rerender } = render(<FilesPanel userId="alice" workspaceId="w" />);
+    upload([slow]);
+    rerender(<FilesPanel userId="bob" workspaceId="w" />);
+    await act(async () => { finish("late private data"); await pending; });
+    expect(localStorage.getItem("nlp-agent.imported-files.v1:alice:w")).toBeNull();
+    expect(localStorage.getItem("nlp-agent.imported-files.v1:bob:w")).toBeNull();
+  });
+
   it("exposes a recoverable recycle-bin view in the file manager", async () => {
     render(<FilesPanel workspaceId="workspace-1" />);
 
@@ -143,7 +251,7 @@ describe("FilesPanel", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
     fireEvent.click(screen.getByRole("tab", { name: "学习文档导入" }));
-    expect(screen.queryByTestId("markdown-preview")).not.toBeInTheDocument();
+    expect(screen.getByTestId("markdown-preview")).toBeVisible();
   });
 
   it("treats legacy storage timestamps without an offset as UTC", () => {
@@ -269,13 +377,14 @@ function upload(files: File[]) {
     };
 
     const view = render(<FilesPanel workspaceId="workspace-1" previewRequest={firstRequest} />);
+    fireEvent.click(screen.getByRole("tab", { name: "我的文件" }));
     fireEvent.click(await screen.findByRole("button", { name: "查看 我的文件.md" }));
     expect(await screen.findByText("# 我的文件预览")).toBeInTheDocument();
 
     view.rerender(<FilesPanel workspaceId="workspace-1" previewRequest={secondRequest} />);
 
     expect(await screen.findByText("# 新教材预览")).toBeInTheDocument();
-    expect(screen.queryByText("# 我的文件预览")).not.toBeInTheDocument();
+    expect(screen.getByText("# 我的文件预览")).not.toBeVisible();
     expect(fetchMock).toHaveBeenCalledWith(secondRequest.url, expect.objectContaining({ credentials: "include" }));
   });
 

@@ -1,4 +1,5 @@
-import { BookOpenCheck, BookOpenText, Code2, Contrast, Copy, Cpu, Download, FileText, MemoryStick, MessageSquareText, Moon, Pencil, Play, Plus, RotateCcw, Sun, Terminal, Timer, Trash2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { WorkspaceTab } from "./WorkspaceTab";
+import { BookOpenCheck, BookOpenText, Code2, Contrast, Copy, Cpu, Download, FileText, MemoryStick, MessageSquareText, Moon, Pencil, Play, Plus, RotateCcw, Sun, Terminal, Timer, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { api, type SandboxRuntimeProfile, type SandboxRuntimeUsage } from "@/platform/http/api";
@@ -713,10 +714,11 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
             const item = tools.find((candidate) => candidate.id === tool)!;
             const Icon = item.icon;
             const selected = tool === activeTool;
-            return <div key={tool} className={["tool-dock-tab", selected && "active", draggingTool === tool && "is-dragging", dragOverTool === tool && "is-drag-over"].filter(Boolean).join(" ")} draggable onDragStart={(event) => beginTabDrag(tool, event)} onDragOver={(event) => dragTabOver(tool, event)} onDrop={dropTab} onDragEnd={clearTabDrag}>
-              <button type="button" role="tab" aria-selected={selected} aria-posinset={index + 1} aria-setsize={openTools.length} onClick={() => onActiveToolChange(tool)}><Icon size={15} /><span>{item.label}</span></button>
-              <button type="button" aria-label={"关闭" + item.label} onClick={() => onCloseTool(tool)}><X size={14} /></button>
-            </div>;
+            return <WorkspaceTab key={tool} label={item.label} closeLabel={"关闭" + item.label} icon={<Icon size={15} />} selected={selected}
+              position={index + 1} count={openTools.length}
+              className={[draggingTool === tool && "is-dragging", dragOverTool === tool && "is-drag-over"].filter(Boolean).join(" ")}
+              onSelect={() => onActiveToolChange(tool)} onClose={() => onCloseTool(tool)}
+              onDragStart={event => beginTabDrag(tool, event)} onDragOver={event => dragTabOver(tool, event)} onDrop={dropTab} onDragEnd={clearTabDrag} />;
           })}
         </div>
         <div className="tool-dock-add-control">

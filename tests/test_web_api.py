@@ -1552,3 +1552,18 @@ def test_session_list_exposes_page_metadata(web_app):
         assert page.json()["offset"] == 1
         assert len(page.json()["items"]) == 1
         assert page.json()["has_more"] is False
+
+
+def test_http_document_attachment_omits_empty_legacy_image_fields(web_app):
+    from types import SimpleNamespace
+    app, _engine = web_app
+    with TestClient(app) as client:
+        csrf = authenticate(client)
+        submit = AsyncMock(return_value=SimpleNamespace(model_dump=lambda **_: {"turn_id": "file-turn"}))
+        app.state.gateway.submit_turn = submit
+        response = client.post('/api/v1/chat/turns', headers=write_headers(csrf), json={
+            'session_id': 'file-session', 'content': 'read',
+            'attachments': [{'file_id': 'file', 'expected_hash': 'a' * 64}],
+        })
+        assert response.status_code == 202
+        assert submit.await_args.args[1].attachments == [{'file_id': 'file', 'expected_hash': 'a' * 64}]

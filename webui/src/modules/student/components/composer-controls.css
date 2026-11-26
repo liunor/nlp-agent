@@ -15,9 +15,10 @@
   width: 0;
   height: 0;
 }
-/* The portaled thinking panel must retain the composer's expanded prompt state,
+/* Portaled menus must retain the composer's expanded prompt state,
    just as the learning menu inside the composer does through :focus-within. */
-.composer-wrap:has(.thinking-level-trigger[aria-expanded="true"]) .quick-prompts {
+.composer-wrap:has(.thinking-level-trigger[aria-expanded="true"]) .quick-prompts,
+.composer-wrap:has(.attachment-button[aria-expanded="true"]) .quick-prompts {
   max-height: 44px;
   padding-block: 6px;
   opacity: 1;

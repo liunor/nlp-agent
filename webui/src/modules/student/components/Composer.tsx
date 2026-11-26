@@ -1,7 +1,10 @@
+import { AttachmentCard } from "./AttachmentCard";
+import { AttachmentMenu } from "./AttachmentMenu";
+import { FileSpacePicker } from "./FileSpacePicker";
 import { fileSpaceViewUrl } from "@/shared/utils/file-reference";
 import { UploadQueue } from "./upload-queue";
 import { STUDENT_AGENT_LABEL } from "@/shared/branding";
-import { ArrowUp, GraduationCap, Plus, RotateCcw, Square, X } from "lucide-react";
+import { ArrowUp, GraduationCap, Square } from "lucide-react";
 import { useEffect, useState, useRef, type ChangeEvent, type ClipboardEvent, type KeyboardEvent, type ReactNode } from "react";
 
 import { api, uploadAttachment, type StorageFile } from "@/platform/http/api";
@@ -13,6 +16,7 @@ const prompts = ["用简单语言解释", "举一个实际例子", "逐步推导
 interface ComposerAttachment extends ChatAttachment {
   clientId: string;
   sourceFile: File;
+  sizeBytes?: number;
   ownerSessionId: string | null;
   abort: AbortController;
 }
@@ -54,6 +58,7 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
   const [spaceFiles, setSpaceFiles] = useState<StorageFile[]>([]);
   const [spaceParents, setSpaceParents] = useState<string[]>([]);
   const [spaceError, setSpaceError] = useState("");
+  const [spaceLoading, setSpaceLoading] = useState(false);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [pasteNotice, setPasteNotice] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -192,8 +197,10 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
     setSpaceParents(parents);
     setSpaceError("");
     setSpaceFiles([]);
+    setSpaceLoading(true);
     try { const value = await api.listStorageFiles(workspaceId, parents.at(-1)); if (generation === pickerGeneration.current) setSpaceFiles(value.items); }
-    catch (reason) { setSpaceError(reason instanceof Error ? reason.message : "无法读取文件空间"); }
+    catch (reason) { if (generation === pickerGeneration.current) setSpaceError(reason instanceof Error ? reason.message : "无法读取文件空间"); }
+    finally { if (generation === pickerGeneration.current) setSpaceLoading(false); }
   };
   const attachSpaceFile = async (file: StorageFile) => {
     if (!canUploadAttachments || attachmentsRef.current.length >= 5) { setSpaceError("每条消息最多添加 5 个附件"); return; }
@@ -204,7 +211,7 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
       fileName: file.name, displayName: file.name, mediaType: file.mime_type ?? "application/octet-stream",
       url: fileSpaceViewUrl(file.id, workspaceId, file.sha256),
       width: 0, height: 0, status: "ready", ownerSessionId: owner,
-      sourceFile: new File([], file.name),
+      sourceFile: new File([], file.name), sizeBytes: file.size_bytes,
     };
     attachmentsRef.current = [...attachmentsRef.current, attachment];
     setAttachments(current => [...current, attachment]);
@@ -256,18 +263,12 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
     <div className="quick-prompts">{prompts.map((prompt) => <button key={prompt} type="button" onClick={() => submitPrompt(prompt)} disabled={disabled || sendDisabled || running || !attachmentsReady}>{prompt}</button>)}</div>
     <div className="composer">
       {attachments.length > 0 && (
-        <div className="composer-attachments" style={{ display: "flex", gap: "8px", padding: "8px", borderBottom: "1px solid var(--border)", overflowX: "auto" }}>
-          {attachments.map((att) => (
-            <div key={att.clientId} className="attachment-thumbnail" style={{ position: "relative", display: "inline-block" }}>
-              {/^image\//.test(att.mediaType) ? <img src={att.url} alt={att.displayName ?? att.fileName} style={{ width: 60, height: 60, objectFit: "cover", opacity: att.status === "uploading" ? 0.5 : 1, borderRadius: "4px" }} /> : <span style={{ display: "block", padding: 12 }}>{att.displayName ?? att.fileName}{att.status === "uploading" ? " · 上传中" : ""}</span>}
-              {att.status === "error" && <span role="status" style={{ color: "red", position: "absolute", bottom: 0, left: 0, fontSize: "10px", background: "rgba(255,255,255,0.8)", padding: "2px" }}>{att.errorMessage}</span>}
-              {att.status === "error" && <button type="button" onClick={() => void upload(att)} aria-label={`重试附件 ${att.displayName ?? att.fileName}`} style={{ position: "absolute", right: 2, bottom: 2, display: "flex", padding: 2 }}><RotateCcw size={12} /></button>}
-              <button type="button" onClick={() => removeAttachment(att.clientId)} aria-label={`移除附件 ${att.displayName ?? att.fileName}`} style={{ position: "absolute", right: 2, top: 2, display: "flex", padding: 2 }}><X size={12} /></button>
-            </div>
-          ))}
+        <div className="composer-attachments" role="list" aria-label="已添加附件">
+          {attachments.map(att => <AttachmentCard key={att.clientId} name={att.displayName ?? att.fileName}
+            mediaType={att.mediaType} url={att.url} size={att.sizeBytes ?? att.sourceFile.size} status={att.status} error={att.errorMessage}
+            onRemove={() => removeAttachment(att.clientId)} onRetry={() => void upload(att)} />)}
         </div>
       )}
-      {attachments.some(file => file.fileId) && <p className="composer-hint">已保存在文件空间；移除附件不会删除原件。</p>}
       {pasteNotice && <p className="composer-upload-notice" role="alert">{pasteNotice}</p>}
       {selectionNotice && <p className="composer-upload-notice" role="status">{selectionNotice}</p>}
       <textarea
@@ -290,16 +291,13 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
         placeholder="问一个 NLP 问题……"
         aria-label="学习问题"
       />
-      {spaceOpen && <section role="dialog" aria-label="从文件空间添加附件" className="files-panel">
-        <header><strong>从文件空间添加</strong><button type="button" onClick={() => setSpaceOpen(false)}>关闭</button></header>
-        {spaceParents.length > 0 && <button type="button" onClick={() => void openSpace(spaceParents.slice(0, -1))}>上一级</button>}
-        {spaceError && <p role="alert">{spaceError}</p>}
-        {spaceFiles.map(file => <button key={file.id} type="button" onClick={() => file.kind === "folder" ? void openSpace([...spaceParents, file.id]) : void attachSpaceFile(file)}>{file.kind === "folder" ? "文件夹：" : ""}{file.name}</button>)}
-      </section>}
+      <FileSpacePicker open={spaceOpen} files={spaceFiles} loading={spaceLoading} error={spaceError} nested={spaceParents.length > 0}
+        onClose={() => { ++pickerGeneration.current; setSpaceOpen(false); }}
+        onBack={() => void openSpace(spaceParents.slice(0, -1))}
+        onChoose={file => file.kind === "folder" ? void openSpace([...spaceParents, file.id]) : void attachSpaceFile(file)} />
       <div className="composer-toolbar">
         <input type="file" ref={fileInputRef} hidden multiple accept="image/jpeg,image/png,image/webp,text/plain,.pdf,.docx,.xlsx,.txt,.text,.md,.markdown,.mdown,.mkd,.csv,.tsv,.json,.jsonl,.py,.js,.mjs,.cjs,.ts,.tsx,.jsx,.yaml,.yml,.xml,.html,.htm,.css,.scss,.sql,.log,.java,.c,.cc,.h,.cpp,.hpp,.cs,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.toml,.ini,.env,.sh,.bash,.zsh" onChange={handleFileSelect} />
-        <button type="button" className="attachment-button" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", display: "flex", alignItems: "center" }} onClick={() => fileInputRef.current?.click()} disabled={!canUploadAttachments} aria-label="上传附件"><Plus size={18} /></button>
-        <button type="button" disabled={!canUploadAttachments} onClick={() => void openSpace()} aria-label="从文件空间添加附件">文件空间</button>
+        <AttachmentMenu disabled={!canUploadAttachments} onUpload={() => fileInputRef.current?.click()} onChooseFile={() => void openSpace()} />
         <span className="composer-brand"><GraduationCap size={15} />Nova · {STUDENT_AGENT_LABEL}</span>
         {thinkingControl}
         {contextControl}
