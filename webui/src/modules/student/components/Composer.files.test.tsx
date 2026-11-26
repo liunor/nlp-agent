@@ -37,6 +37,9 @@ it("keeps file-space actions behind the plus menu and opens a picker dialog", as
   fireEvent.keyDown(screen.getByRole("button", { name: "上传附件" }), { key: "ArrowDown" });
   const choice = await screen.findByRole("menuitem", { name: "从文件空间选择" });
   expect(screen.getByRole("menuitem", { name: "上传文件" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "上传附件" })).toBeVisible();
+  expect(document.body).not.toHaveAttribute("data-scroll-locked");
+  expect(screen.getByRole("menu")).toHaveAttribute("data-side", "bottom");
   fireEvent.click(choice);
   expect(await screen.findByRole("dialog", { name: "从文件空间添加附件" })).toBeInTheDocument();
   expect(api.listStorageFiles).toHaveBeenCalledWith("w", undefined);

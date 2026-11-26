@@ -1,9 +1,10 @@
+import { AttachmentCard } from "./AttachmentCard";
 import { AttachmentMenu } from "./AttachmentMenu";
 import { FileSpacePicker } from "./FileSpacePicker";
 import { fileSpaceViewUrl } from "@/shared/utils/file-reference";
 import { UploadQueue } from "./upload-queue";
 import { STUDENT_AGENT_LABEL } from "@/shared/branding";
-import { ArrowUp, GraduationCap, RotateCcw, Square, X } from "lucide-react";
+import { ArrowUp, GraduationCap, Square } from "lucide-react";
 import { useEffect, useState, useRef, type ChangeEvent, type ClipboardEvent, type KeyboardEvent, type ReactNode } from "react";
 
 import { api, uploadAttachment, type StorageFile } from "@/platform/http/api";
@@ -15,6 +16,7 @@ const prompts = ["用简单语言解释", "举一个实际例子", "逐步推导
 interface ComposerAttachment extends ChatAttachment {
   clientId: string;
   sourceFile: File;
+  sizeBytes?: number;
   ownerSessionId: string | null;
   abort: AbortController;
 }
@@ -209,7 +211,7 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
       fileName: file.name, displayName: file.name, mediaType: file.mime_type ?? "application/octet-stream",
       url: fileSpaceViewUrl(file.id, workspaceId, file.sha256),
       width: 0, height: 0, status: "ready", ownerSessionId: owner,
-      sourceFile: new File([], file.name),
+      sourceFile: new File([], file.name), sizeBytes: file.size_bytes,
     };
     attachmentsRef.current = [...attachmentsRef.current, attachment];
     setAttachments(current => [...current, attachment]);
@@ -261,18 +263,12 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
     <div className="quick-prompts">{prompts.map((prompt) => <button key={prompt} type="button" onClick={() => submitPrompt(prompt)} disabled={disabled || sendDisabled || running || !attachmentsReady}>{prompt}</button>)}</div>
     <div className="composer">
       {attachments.length > 0 && (
-        <div className="composer-attachments" style={{ display: "flex", gap: "8px", padding: "8px", borderBottom: "1px solid var(--border)", overflowX: "auto" }}>
-          {attachments.map((att) => (
-            <div key={att.clientId} className="attachment-thumbnail" style={{ position: "relative", display: "inline-block" }}>
-              {/^image\//.test(att.mediaType) ? <img src={att.url} alt={att.displayName ?? att.fileName} style={{ width: 60, height: 60, objectFit: "cover", opacity: att.status === "uploading" ? 0.5 : 1, borderRadius: "4px" }} /> : <span style={{ display: "block", padding: 12 }}>{att.displayName ?? att.fileName}{att.status === "uploading" ? " · 上传中" : ""}</span>}
-              {att.status === "error" && <span role="status" style={{ color: "red", position: "absolute", bottom: 0, left: 0, fontSize: "10px", background: "rgba(255,255,255,0.8)", padding: "2px" }}>{att.errorMessage}</span>}
-              {att.status === "error" && <button type="button" onClick={() => void upload(att)} aria-label={`重试附件 ${att.displayName ?? att.fileName}`} style={{ position: "absolute", right: 2, bottom: 2, display: "flex", padding: 2 }}><RotateCcw size={12} /></button>}
-              <button type="button" onClick={() => removeAttachment(att.clientId)} aria-label={`移除附件 ${att.displayName ?? att.fileName}`} style={{ position: "absolute", right: 2, top: 2, display: "flex", padding: 2 }}><X size={12} /></button>
-            </div>
-          ))}
+        <div className="composer-attachments" role="list" aria-label="已添加附件">
+          {attachments.map(att => <AttachmentCard key={att.clientId} name={att.displayName ?? att.fileName}
+            mediaType={att.mediaType} url={att.url} size={att.sizeBytes ?? att.sourceFile.size} status={att.status} error={att.errorMessage}
+            onRemove={() => removeAttachment(att.clientId)} onRetry={() => void upload(att)} />)}
         </div>
       )}
-      {attachments.some(file => file.fileId) && <p className="composer-hint">已保存在文件空间；移除附件不会删除原件。</p>}
       {pasteNotice && <p className="composer-upload-notice" role="alert">{pasteNotice}</p>}
       {selectionNotice && <p className="composer-upload-notice" role="status">{selectionNotice}</p>}
       <textarea
