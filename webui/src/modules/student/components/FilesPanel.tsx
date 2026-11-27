@@ -18,6 +18,7 @@ import {
   type StorageUsageBucket,
 } from "@/platform/http/api";
 import { createUuid } from "@/shared/utils/uuid";
+import { readFileTransferUnreadSummary } from "./FileTransferNotifier";
 function StorageMeter({ label, bucket }: { label: string; bucket: StorageUsageBucket }) {
   const percentage = Math.round(Math.min(1, Math.max(0, bucket.used_ratio)) * 100);
   return <div className={["storage-meter", bucket.state].join(" ")}>
@@ -48,7 +49,19 @@ function formatModifiedAt(value: string | null | undefined) {
 
 type StorageDocument = Pick<StorageFile, "id" | "name" | "size_bytes" | "mime_type">;
 
-function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { workspaceId?: string; onRefreshUsage: () => void; onOpenDocument: (item: StorageDocument, fileWorkspaceId?: string) => void }) {
+function StorageManager({
+  workspaceId,
+  onRefreshUsage,
+  onOpenDocument,
+  openMessagesRequest = 0,
+  openFilesRequest = 0,
+}: {
+  workspaceId?: string;
+  onRefreshUsage: () => void;
+  onOpenDocument: (item: StorageDocument, fileWorkspaceId?: string) => void;
+  openMessagesRequest?: number;
+  openFilesRequest?: number;
+}) {
   const [items, setItems] = useState<StorageFile[]>([]);
   const [folderPath, setFolderPath] = useState<StorageFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,9 +93,11 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
   const [messageBox, setMessageBox] = useState<"incoming" | "outgoing">("incoming");
   const [transfers, setTransfers] = useState<FileTransfer[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
-  const [pendingTransfers, setPendingTransfers] = useState(0);
+  const [unreadTransfers, setUnreadTransfers] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const transferRequestRef = useRef(0);
+  const handledMessagesReqRef = useRef(0);
+  const handledFilesReqRef = useRef(0);
   const currentFolder = folderPath[folderPath.length - 1] ?? null;
 
   const refresh = useCallback(() => {
@@ -117,9 +132,17 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
   }, [refresh, onRefreshUsage]);
 
   const refreshTransferSummary = useCallback(() => {
-    void api.getFileTransferSummary().then((value) => setPendingTransfers(value.pending_count)).catch(() => undefined);
+    void readFileTransferUnreadSummary()
+      .then((value) => {
+        if (value) setUnreadTransfers(value.unread_count);
+      })
+      .catch(() => undefined);
   }, []);
   useEffect(() => { refreshTransferSummary(); }, [refreshTransferSummary]);
+  useEffect(() => {
+    window.addEventListener("file-transfers:changed", refreshTransferSummary);
+    return () => window.removeEventListener("file-transfers:changed", refreshTransferSummary);
+  }, [refreshTransferSummary]);
 
   const refreshTransfers = useCallback((box: "incoming" | "outgoing" = messageBox) => {
     const requestId = transferRequestRef.current + 1;
@@ -128,7 +151,18 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     setTransfers([]);
     void api.listFileTransfers(box)
       .then((value) => {
-        if (transferRequestRef.current === requestId) setTransfers(value.items);
+        if (transferRequestRef.current !== requestId) return;
+        setTransfers(value.items);
+        if (box === "incoming" && typeof api.markFileTransfersSeen === "function") {
+          void api.markFileTransfersSeen()
+            .then((res) => {
+              if (res?.updated > 0) {
+                refreshTransferSummary();
+                window.dispatchEvent(new Event("file-transfers:changed"));
+              }
+            })
+            .catch(() => undefined);
+        }
       })
       .catch((reason: unknown) => {
         if (transferRequestRef.current === requestId) setError(reason instanceof Error ? reason.message : "无法读取文件消息");
@@ -136,7 +170,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
       .finally(() => {
         if (transferRequestRef.current === requestId) setMessagesLoading(false);
       });
-  }, [messageBox]);
+  }, [messageBox, refreshTransferSummary]);
 
   const openMessages = useCallback(() => {
     setMessagesOpen(true);
@@ -150,6 +184,25 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
     window.addEventListener("file-transfers:open", listener);
     return () => window.removeEventListener("file-transfers:open", listener);
   }, [openMessages]);
+
+  useEffect(() => {
+    if (openMessagesRequest > handledMessagesReqRef.current) {
+      handledMessagesReqRef.current = openMessagesRequest;
+      queueMicrotask(openMessages);
+    }
+  }, [openMessagesRequest, openMessages]);
+
+  useEffect(() => {
+    if (openFilesRequest > handledFilesReqRef.current) {
+      handledFilesReqRef.current = openFilesRequest;
+      queueMicrotask(() => {
+        setMessagesOpen(false);
+        setTrashMode(false);
+        refresh();
+        onRefreshUsage();
+      });
+    }
+  }, [openFilesRequest, refresh, onRefreshUsage]);
 
   const createFolder = () => {
     const name = newFolderName.trim();
@@ -343,7 +396,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
       </div>
       <div className="files-panel-actions">
         {!trashMode && folderPath.length > 0 && <button type="button" onClick={() => { setFolderPath(folderPath.slice(0, -1)); }}><ArrowLeft size={14} />返回</button>}
-        {!trashMode && <><button type="button" onClick={openMessages}><Mail size={14} />消息{pendingTransfers > 0 ? ` (${pendingTransfers})` : ""}</button><button type="button" onClick={() => setNewFolderName((value) => value ? "" : "新建文件夹")}><FolderPlus size={14} />新建文件夹</button><button type="button" onClick={() => inputRef.current?.click()}><FileUp size={14} />上传</button></>}
+        {!trashMode && <><button type="button" className="storage-messages-button" onClick={openMessages}><Mail size={14} /><span>消息</span>{unreadTransfers > 0 && <span className="unread-red-badge" title={`${unreadTransfers} 条未读`}>{unreadTransfers > 99 ? "99+" : unreadTransfers}</span>}</button><button type="button" onClick={() => setNewFolderName((value) => value ? "" : "新建文件夹")}><FolderPlus size={14} />新建文件夹</button><button type="button" onClick={() => inputRef.current?.click()}><FileUp size={14} />上传</button></>}
         <button type="button" onClick={() => { setTrashMode((value) => !value); setFolderPath([]); setNewFolderName(""); }}><Trash2 size={14} />{trashMode ? "我的文件" : "回收站"}</button>
         <button type="button" aria-label="刷新文件列表" onClick={() => { refresh(); onRefreshUsage(); }}><RefreshCw size={14} /></button>
       </div>
@@ -373,7 +426,7 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
       </header>
       <div className="file-transfer-retention"><CalendarClock size={14} />消息记录自动保留 7 天，文件本身不会因此删除。</div>
       <nav aria-label="消息分类">
-        <button type="button" className={messageBox === "incoming" ? "active" : ""} onClick={() => { setMessageBox("incoming"); refreshTransfers("incoming"); }}><span>收到的</span>{messageBox === "incoming" && pendingTransfers > 0 && <em>{pendingTransfers}</em>}</button>
+        <button type="button" className={messageBox === "incoming" ? "active" : ""} onClick={() => { setMessageBox("incoming"); refreshTransfers("incoming"); }}><span>收到的</span>{unreadTransfers > 0 && <em className="unread-red-badge">{unreadTransfers > 99 ? "99+" : unreadTransfers}</em>}</button>
         <button type="button" className={messageBox === "outgoing" ? "active" : ""} onClick={() => { setMessageBox("outgoing"); refreshTransfers("outgoing"); }}>已发送</button>
       </nav>
       {messagesLoading ? <div className="storage-empty" role="status">正在读取消息…</div> :
@@ -388,9 +441,12 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
           const receivedDocument = incoming && transfer.status === "accepted" && fileId && fileWorkspaceId
             ? { id: fileId, name, size_bytes: transfer.size_bytes ?? 0, mime_type: null }
             : null;
-          return <article key={transfer.id}>
+          return <article key={transfer.id} className={incoming && transfer.is_unread ? "is-unread" : undefined}>
             <div className="file-transfer-item-main">
-              <span className="file-transfer-file-icon"><FileText size={16} /></span>
+              <span className="file-transfer-file-icon">
+                <FileText size={16} />
+                {incoming && transfer.is_unread && <i className="file-transfer-unread-dot" aria-label="未读" />}
+              </span>
               <div>
                 <strong>{name}</strong>
                 <span><UserRound size={12} />{incoming ? "来自" : "发送给"} {peer?.display_name ?? "已注销用户"}</span>
@@ -760,14 +816,24 @@ function StorageManager({ workspaceId, onRefreshUsage, onOpenDocument }: { works
   </div>;
 }
 
-function ScopedFilesPanel({ userId, workspaceId, previewRequest }: {
+function ScopedFilesPanel({
+  userId,
+  workspaceId,
+  previewRequest,
+  openMessagesRequest = 0,
+  openFilesRequest = 0,
+}: {
   userId?: string | null;
   workspaceId?: string;
   previewRequest?: FilesPanelPreviewRequest | null;
-} = {}) {
+  openMessagesRequest?: number;
+  openFilesRequest?: number;
+}) {
   const [tab, setTab] = useState<"manager" | "import">(() => previewRequest ? "import" : "manager");
   const [storagePreviewRequest, setStoragePreviewRequest] = useState<FilesPanelPreviewRequest | null>(null);
   const [previousPreviewRequest, setPreviousPreviewRequest] = useState(previewRequest);
+  const handledMessagesReqRef = useRef(0);
+  const handledFilesReqRef = useRef(0);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [usageError, setUsageError] = useState("");
 
@@ -784,6 +850,26 @@ function ScopedFilesPanel({ userId, workspaceId, previewRequest }: {
     setStoragePreviewRequest(null);
     if (previewRequest) setTab("import");
   }
+
+  useEffect(() => {
+    if (openMessagesRequest > handledMessagesReqRef.current) {
+      handledMessagesReqRef.current = openMessagesRequest;
+      queueMicrotask(() => setTab("manager"));
+    }
+  }, [openMessagesRequest]);
+
+  useEffect(() => {
+    if (openFilesRequest > handledFilesReqRef.current) {
+      handledFilesReqRef.current = openFilesRequest;
+      queueMicrotask(() => setTab("manager"));
+    }
+  }, [openFilesRequest]);
+
+  useEffect(() => {
+    const onOpenTransfers = () => setTab("manager");
+    window.addEventListener("file-transfers:open", onOpenTransfers);
+    return () => window.removeEventListener("file-transfers:open", onOpenTransfers);
+  }, []);
 
   const openStorageDocument = useCallback((item: StorageDocument, fileWorkspaceId = workspaceId) => {
     setStoragePreviewRequest({
@@ -807,13 +893,19 @@ function ScopedFilesPanel({ userId, workspaceId, previewRequest }: {
       <button type="button" role="tab" aria-selected={tab === "manager"} onClick={() => setTab("manager")}>我的文件</button>
       <button type="button" role="tab" aria-selected={tab === "import"} onClick={() => { setStoragePreviewRequest(null); setTab("import"); }}>学习文档导入</button>
     </div>
-    <div className="files-view" hidden={tab !== "manager"}><StorageManager workspaceId={workspaceId} onRefreshUsage={refreshUsage} onOpenDocument={openStorageDocument} /></div>
+    <div className="files-view" hidden={tab !== "manager"}><StorageManager workspaceId={workspaceId} onRefreshUsage={refreshUsage} onOpenDocument={openStorageDocument} openMessagesRequest={openMessagesRequest} openFilesRequest={openFilesRequest} /></div>
     <div className="files-view" hidden={tab !== "import"}><LearningImportPanel userId={userId ?? null} workspaceId={workspaceId ?? "default"} previewRequest={storagePreviewRequest ?? previewRequest ?? null} /></div>
   </section>;
 }
 
 
 /** Open documents and local caches belong to exactly one account/workspace. */
-export function FilesPanel(props: { userId?: string | null; workspaceId?: string; previewRequest?: FilesPanelPreviewRequest | null } = {}) {
+export function FilesPanel(props: {
+  userId?: string | null;
+  workspaceId?: string;
+  previewRequest?: FilesPanelPreviewRequest | null;
+  openMessagesRequest?: number;
+  openFilesRequest?: number;
+} = {}) {
   return <ScopedFilesPanel key={`${props.userId ?? "anonymous"}:${props.workspaceId ?? "default"}`} {...props} />;
 }

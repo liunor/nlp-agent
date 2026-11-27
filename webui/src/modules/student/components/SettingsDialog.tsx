@@ -75,7 +75,14 @@ function releaseDateLabel(value: string): string {
   return date ? `发布日期 · ${date}` : "发布日期待补充";
 }
 
-export function SettingsDialog({ open, settings, learningContext, roles = [], permissions, userId, workspaceIds, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
+export function canSubmitOwnFeedback(roles: string[] = [], permissions?: string[]): boolean {
+  const hasExplicitPermissions = Boolean(permissions?.length);
+  return hasExplicitPermissions
+    ? permissions?.includes("learning:feedback:submit") ?? false
+    : ["student", "teacher", "developer"].some((role) => roles.includes(role));
+}
+
+export function SettingsDialog({ open, settings, learningContext, roles = [], permissions, userId, workspaceIds, feedbackUnreadCount = 0, onFeedbackUnreadChange, onClose, onChange, onReset, onLearningContextChange, onOpenDeveloper, onOpenTeacher }: {
   open: boolean;
   settings: UserSettings;
   learningContext: LearningContext;
@@ -83,6 +90,8 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   permissions?: string[];
   userId?: string;
   workspaceIds?: string[];
+  feedbackUnreadCount?: number;
+  onFeedbackUnreadChange?: (count: number) => void;
   onClose: () => void;
   onChange: (patch: Partial<UserSettings>) => void;
   onReset: () => void;
@@ -120,9 +129,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   );
   // Server-side permissions win when present (custom RBAC roles); legacy guest
   // sessions only carry roles, so fall back to the built-in role packages.
-  const canSubmitFeedback = hasExplicitPermissions
-    ? permissions?.includes("learning:feedback:submit") ?? false
-    : ["student", "teacher", "developer"].some((role) => roles.includes(role));
+  const canSubmitFeedback = canSubmitOwnFeedback(roles, permissions);
   useEffect(() => {
     if (!open || section !== "updates") return;
     let active = true;
@@ -139,10 +146,12 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   useEffect(() => {
     if (!open || !canSubmitFeedback) return;
     void api.getOwnFeedback().then((thread) => {
-      setFeedbackHistory(thread.thread_id ? thread as FeedbackThread : null);
+      const nextThread = thread.thread_id ? thread as FeedbackThread : null;
+      setFeedbackHistory(nextThread);
       setFeedbackHistoryError("");
+      onFeedbackUnreadChange?.(nextThread?.student_unread_count ?? 0);
     }).catch((error) => setFeedbackHistoryError(error instanceof Error ? error.message : String(error)));
-  }, [open, canSubmitFeedback]);
+  }, [open, canSubmitFeedback, onFeedbackUnreadChange]);
   useEffect(() => {
     if (!open) queueMicrotask(() => setFeedbackHistoryOpen(false));
   }, [open]);
@@ -173,6 +182,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
     try {
       await api.markOwnFeedbackRead();
       setFeedbackHistory((current) => current ? { ...current, student_unread_count: 0 } : current);
+      onFeedbackUnreadChange?.(0);
     } catch (error) {
       setFeedbackHistoryError(error instanceof Error ? error.message : String(error));
     }
@@ -182,12 +192,14 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
   const updateLearning = (patch: Partial<LearningContext>) => onLearningContextChange({ ...learningContext, ...patch });
   const currentRelease = releaseNotes ? latestReleaseNote(releaseNotes) : null;
 
+  const displayedFeedbackUnread = feedbackHistory ? (feedbackHistory.student_unread_count ?? 0) : feedbackUnreadCount;
+
   return <>
     <div className="dialog-backdrop settings-backdrop" role="presentation" onMouseDown={onClose}>
       <section className={`settings-dialog${section === "quota" ? " settings-dialog-quota" : ""}`} role="dialog" aria-modal="true" aria-label="偏好设置" onMouseDown={(event) => event.stopPropagation()}>
         <aside className="settings-nav">
           <div className="settings-nav-brand"><Settings2 size={19} /><span><strong>偏好设置</strong><small>学习空间</small></span></div>
-          <nav>{visibleSections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} disabled={id === "feedback" && !canSubmitFeedback} title={id === "feedback" && !canSubmitFeedback ? FEEDBACK_DISABLED_HINT : undefined} onClick={() => setSection(id)}><Icon size={16} /><span className="settings-nav-label">{label}</span>{id === "feedback" && (feedbackHistory?.student_unread_count ?? 0) > 0 && <span className="settings-nav-unread" aria-label="未读消息">未读</span>}</button>)}</nav>
+          <nav>{visibleSections.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={section === id ? "active" : ""} disabled={id === "feedback" && !canSubmitFeedback} title={id === "feedback" && !canSubmitFeedback ? FEEDBACK_DISABLED_HINT : undefined} onClick={() => setSection(id)}><Icon size={16} /><span className="settings-nav-label">{label}</span>{id === "feedback" && displayedFeedbackUnread > 0 && <span className="settings-nav-unread" aria-label="未读消息">{displayedFeedbackUnread > 99 ? "99+" : displayedFeedbackUnread} 条未读</span>}</button>)}</nav>
           <p><CircleHelp size={14} />额度只读展示，分配和策略调整由开发者统一管理。</p>
         </aside>
         <div className="settings-content">
@@ -291,7 +303,7 @@ export function SettingsDialog({ open, settings, learningContext, roles = [], pe
               </SettingGroup>
               <SettingGroup title="我的反馈与回复" description={feedbackHistory && feedbackHistory.messages.length > 0 ? `共 ${feedbackHistory.message_total ?? feedbackHistory.messages.length} 条 · 状态：${feedbackStatusLabel[feedbackHistory.status] ?? feedbackHistory.status} · 分类：${feedbackCategoryLabel[feedbackHistory.category] ?? feedbackHistory.category}` : "提交后，开发者的回复与处理状态会在这里显示。"}>
                 {feedbackHistoryError && <p className="error-card" role="alert">读取失败：{feedbackHistoryError}</p>}
-                {!feedbackHistory || feedbackHistory.messages.length === 0 ? <div className="settings-note">暂无历史反馈，提交后可在此查看时间线。</div> : <div className="feedback-history-collapsible"><button type="button" className="feedback-history-toggle" aria-label={feedbackHistoryOpen ? "收起消息" : "展开消息"} aria-expanded={feedbackHistoryOpen} onClick={() => void toggleFeedbackHistory()}><span><strong>消息记录</strong><small>{feedbackHistory.message_total ?? feedbackHistory.messages.length} 条消息</small></span><span>{(feedbackHistory.student_unread_count ?? 0) > 0 && <b className="feedback-history-unread">未读消息</b>}<em>{feedbackHistoryOpen ? "收起消息" : "展开消息"}</em><ChevronDown size={15} className={feedbackHistoryOpen ? "is-open" : ""} /></span></button>{feedbackHistoryOpen && <div className="feedback-history">{feedbackHistory.message_has_more && <button className="feedback-history-load-more" type="button" disabled={feedbackHistoryLoadingMore} onClick={() => void loadOlderFeedbackHistory()}>{feedbackHistoryLoadingMore ? "正在加载更早消息…" : "加载更早反馈"}</button>}{feedbackHistory.messages.map((message) => <article key={message.id} className={`feedback-history-message ${message.sender_type}`}><div><strong>{message.sender_type === "student" ? "我" : "开发者"}</strong><time><Clock3 size={10} />{new Date(message.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.body}</p></article>)}</div>}</div>}
+                {!feedbackHistory || feedbackHistory.messages.length === 0 ? <div className="settings-note">暂无历史反馈，提交后可在此查看时间线。</div> : <div className="feedback-history-collapsible"><button type="button" className="feedback-history-toggle" aria-label={feedbackHistoryOpen ? "收起消息" : "展开消息"} aria-expanded={feedbackHistoryOpen} onClick={() => void toggleFeedbackHistory()}><span><strong>消息记录</strong><small>{feedbackHistory.message_total ?? feedbackHistory.messages.length} 条消息</small></span><span>{(feedbackHistory.student_unread_count ?? 0) > 0 && <b className="feedback-history-unread">{feedbackHistory.student_unread_count} 条未读消息</b>}<em>{feedbackHistoryOpen ? "收起消息" : "展开消息"}</em><ChevronDown size={15} className={feedbackHistoryOpen ? "is-open" : ""} /></span></button>{feedbackHistoryOpen && <div className="feedback-history">{feedbackHistory.message_has_more && <button className="feedback-history-load-more" type="button" disabled={feedbackHistoryLoadingMore} onClick={() => void loadOlderFeedbackHistory()}>{feedbackHistoryLoadingMore ? "正在加载更早消息…" : "加载更早反馈"}</button>}{feedbackHistory.messages.map((message) => <article key={message.id} className={`feedback-history-message ${message.sender_type}`}><div><strong>{message.sender_type === "student" ? "我" : "开发者"}</strong><time><Clock3 size={10} />{new Date(message.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</time></div><p>{message.body}</p></article>)}</div>}</div>}
               </SettingGroup>
             </> : <SettingGroup title="意见反馈" description="意见会发送到开发者工作台，并按你的账号归档为一条独立会话。"><div className="settings-note">{FEEDBACK_DISABLED_HINT}</div></SettingGroup>)}
             {section === "updates" && <>

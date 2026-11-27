@@ -285,14 +285,20 @@ describe("SettingsDialog", () => {
         message_total: 3,
         message_has_more: false,
     });
-    render(<SettingsDialog {...baseProps} />);
-    expect(await screen.findByLabelText("未读消息")).toBeVisible();
+    const onFeedbackUnreadChange = vi.fn();
+    render(<SettingsDialog {...baseProps} onFeedbackUnreadChange={onFeedbackUnreadChange} />);
+    const unreadBadge = await screen.findByLabelText("未读消息");
+    expect(unreadBadge).toBeVisible();
+    expect(unreadBadge).toHaveTextContent("1 条未读");
+    await waitFor(() => expect(onFeedbackUnreadChange).toHaveBeenCalledWith(1));
     fireEvent.click(screen.getByRole("button", { name: /意见反馈/ }));
 
+    expect(screen.getByText("1 条未读消息")).toBeVisible();
     expect(await screen.findByRole("button", { name: "展开消息" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "展开消息" }));
     expect(await screen.findByText("回复")).toBeVisible();
     await waitFor(() => expect(markOwnFeedbackReadMock).toHaveBeenCalledOnce());
+    await waitFor(() => expect(onFeedbackUnreadChange).toHaveBeenCalledWith(0));
     expect(screen.queryByText("最初意见")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /加载更早反馈/ }));
     expect(await screen.findByText("最初意见")).toBeVisible();

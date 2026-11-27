@@ -237,4 +237,14 @@ describe("Sidebar delete requests", () => {
 
   expect(container.querySelector(".session-rename-input")).not.toBeInTheDocument();
 });
+
+  it("shows settings unread count red badge in both collapsed and expanded sidebar modes", () => {
+    const { rerender } = render(<Sidebar {...props} collapsed={false} settingsUnreadCount={3} />);
+    expect(screen.getByText("3 条未读")).toHaveClass("unread-red-badge");
+    expect(screen.getByRole("button", { name: "settings" })).toHaveAttribute("title", "settings（3 条未读）");
+
+    rerender(<Sidebar {...props} collapsed settingsUnreadCount={3} />);
+    expect(screen.getByText("3")).toHaveClass("unread-red-badge");
+    expect(screen.getByRole("button", { name: "settings" })).toHaveAttribute("title", "settings（3 条未读）");
+  });
 });

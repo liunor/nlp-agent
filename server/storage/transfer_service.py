@@ -7,7 +7,7 @@ import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -263,6 +263,7 @@ class FileTransferService:
             transfer.status = next_status
             transfer.accepted_file_id = file_id
             transfer.responded_at = func.utc_timestamp(6)
+            transfer.recipient_seen_at = func.utc_timestamp(6)
             await self.db.flush()
             return await self.serialize(transfer)
         except Exception:
@@ -280,6 +281,8 @@ class FileTransferService:
             quota = await self._recipient_quota(transfer.recipient_user_id)
             await quota.release(self._reservation(reservation_row))
         transfer.responded_at = func.utc_timestamp(6)
+        if actor == "recipient":
+            transfer.recipient_seen_at = func.utc_timestamp(6)
         await self.db.flush()
         return await self.serialize(transfer)
 
@@ -314,6 +317,57 @@ class FileTransferService:
         )
         notification_version = int(getattr(account, "file_transfer_notification_version", 0) or 0)
         return {"pending_count": count, "notification_version": notification_version}
+
+    async def unread_summary(self) -> dict:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=TRANSFER_MESSAGE_RETENTION_DAYS)
+        pending_count = int(
+            await self.db.scalar(
+                select(func.count())
+                .select_from(FileTransferModel)
+                .where(
+                    FileTransferModel.recipient_user_id == self.principal.user_id,
+                    FileTransferModel.status == "pending",
+                    FileTransferModel.expires_at > func.utc_timestamp(6),
+                )
+            )
+            or 0
+        )
+        unseen_accepted_count = int(
+            await self.db.scalar(
+                select(func.count())
+                .select_from(FileTransferModel)
+                .where(
+                    FileTransferModel.recipient_user_id == self.principal.user_id,
+                    FileTransferModel.status == "accepted",
+                    FileTransferModel.recipient_seen_at.is_(None),
+                    FileTransferModel.created_at >= cutoff,
+                )
+            )
+            or 0
+        )
+        account = await self.db.scalar(
+            select(StorageAccountModel).where(StorageAccountModel.owner_user_id == self.principal.user_id)
+        )
+        notification_version = int(getattr(account, "file_transfer_notification_version", 0) or 0)
+        return {
+            "pending_count": pending_count,
+            "unseen_accepted_count": unseen_accepted_count,
+            "unread_count": pending_count + unseen_accepted_count,
+            "notification_version": notification_version,
+        }
+
+    async def mark_seen(self) -> dict:
+        result = await self.db.execute(
+            update(FileTransferModel)
+            .where(
+                FileTransferModel.recipient_user_id == self.principal.user_id,
+                FileTransferModel.status == "accepted",
+                FileTransferModel.recipient_seen_at.is_(None),
+            )
+            .values(recipient_seen_at=func.utc_timestamp(6))
+        )
+        await self.db.flush()
+        return {"ok": True, "updated": int(getattr(result, "rowcount", 0) or 0)}
 
     async def _bump_notification_version(self, recipient_user_id: str) -> None:
         account = await self.db.scalar(
@@ -422,6 +476,14 @@ class FileTransferService:
     async def serialize(self, transfer: FileTransferModel) -> dict:
         sender = await self.db.scalar(select(UserModel).where(UserModel.id == transfer.sender_user_id))
         recipient = await self.db.scalar(select(UserModel).where(UserModel.id == transfer.recipient_user_id))
+        recipient_seen_at = getattr(transfer, "recipient_seen_at", None)
+        is_unread = (
+            transfer.recipient_user_id == self.principal.user_id
+            and (
+                transfer.status == "pending"
+                or (transfer.status == "accepted" and recipient_seen_at is None)
+            )
+        )
         return {
             "id": transfer.id,
             "status": transfer.status,
@@ -436,6 +498,7 @@ class FileTransferService:
                 and transfer.recipient_user_id == self.principal.user_id
                 else None
             ),
+            "is_unread": is_unread,
             "created_at": utc_isoformat(transfer.created_at),
             "expires_at": utc_isoformat(transfer.expires_at),
         }

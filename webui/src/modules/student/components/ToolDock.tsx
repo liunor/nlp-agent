@@ -521,20 +521,21 @@ function ToolDockDecoration() {
   return <span className="tool-dock-decoration" data-testid="tool-dock-decoration" aria-hidden="true">·</span>;
 }
 
-function ToolPicker({ onOpenTool }: { onOpenTool: (tool: ToolDockTool) => void }) {
+function ToolPicker({ onOpenTool, fileUnreadCount = 0 }: { onOpenTool: (tool: ToolDockTool) => void; fileUnreadCount?: number }) {
   return <nav className="tool-dock-picker" role="menu" aria-label="工具列表">
     {tools.map((item) => {
       const Icon = item.icon;
+      const unread = item.id === "files" ? fileUnreadCount : 0;
       return <button key={item.id} type="button" role="menuitem" aria-label={item.buttonLabel} onClick={() => onOpenTool(item.id)}>
         <span><Icon size={17} /></span>
         <strong>{item.label}</strong>
-        <ToolDockDecoration />
+        {unread > 0 ? <span className="unread-red-badge">{unread > 99 ? "99+" : unread}</span> : <ToolDockDecoration />}
       </button>;
     })}
   </nav>;
 }
 
-export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, onToolMenuOpenChange, onOpenTool, onReorderTools, onCloseTool, onActiveToolChange, onExplainCode, sandboxExecutionDisabled = false, learningPanel, knowledgeBookPanel, whiteboardPanel, sandboxSource, filesUserId, filesWorkspaceId, filesPreview }: {
+export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, onToolMenuOpenChange, onOpenTool, onReorderTools, onCloseTool, onActiveToolChange, onExplainCode, sandboxExecutionDisabled = false, learningPanel, knowledgeBookPanel, whiteboardPanel, sandboxSource, filesUserId, filesWorkspaceId, filesPreview, fileUnreadCount = 0, filesOpenMessagesRequest = 0, filesOpenFilesRequest = 0 }: {
   open: boolean;
   expanded: boolean;
   openTools: ToolDockTool[];
@@ -554,6 +555,9 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
   filesUserId: string | null;
   filesWorkspaceId: string;
   filesPreview?: FilesPanelPreviewRequest | null;
+  fileUnreadCount?: number;
+  filesOpenMessagesRequest?: number;
+  filesOpenFilesRequest?: number;
 }) {
   const [width, setWidth] = useState(() =>
   Math.min(DEFAULT_DOCK_WIDTH, getMaxDockWidth()),
@@ -714,8 +718,11 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
             const item = tools.find((candidate) => candidate.id === tool)!;
             const Icon = item.icon;
             const selected = tool === activeTool;
+            const unread = tool === "files" ? fileUnreadCount : 0;
             return <WorkspaceTab key={tool} label={item.label} closeLabel={"关闭" + item.label} icon={<Icon size={15} />} selected={selected}
               position={index + 1} count={openTools.length}
+              title={unread > 0 ? `${item.label}（${unread} 条未读消息）` : undefined}
+              badge={unread > 0 ? <span className="unread-red-badge">{unread > 99 ? "99+" : unread}</span> : undefined}
               className={[draggingTool === tool && "is-dragging", dragOverTool === tool && "is-drag-over"].filter(Boolean).join(" ")}
               onSelect={() => onActiveToolChange(tool)} onClose={() => onCloseTool(tool)}
               onDragStart={event => beginTabDrag(tool, event)} onDragOver={event => dragTabOver(tool, event)} onDrop={dropTab} onDragEnd={clearTabDrag} />;
@@ -723,16 +730,17 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
         </div>
         <div className="tool-dock-add-control">
           <button className="tool-dock-add-tab" type="button" aria-label="显示工具列表" aria-expanded={toolMenuOpen} aria-haspopup="menu" onClick={() => onToolMenuOpenChange(!toolMenuOpen)}><Plus size={16} /></button>
-          {toolMenuOpen && <ToolPicker onOpenTool={openTool} />}
+          {toolMenuOpen && <ToolPicker onOpenTool={openTool} fileUnreadCount={fileUnreadCount} />}
         </div>
       </header>}
       {showHome ? <nav className="tool-dock-home" aria-label="工具列表">
         {tools.map((item) => {
           const Icon = item.icon;
+          const unread = item.id === "files" ? fileUnreadCount : 0;
           return <button key={item.id} type="button" aria-label={item.buttonLabel} onClick={() => openTool(item.id)}>
             <span><Icon size={18} /></span>
             <strong>{item.label}</strong>
-            <ToolDockDecoration />
+            {unread > 0 ? <span className="unread-red-badge">{unread > 99 ? "99+" : unread}</span> : <ToolDockDecoration />}
           </button>;
         })}
       </nav> : <div ref={panelStripRef} className="tool-dock-panels" style={{ "--tool-dock-panel-count": Math.max(1, openTools.length), gridTemplateColumns: panelGridTemplate } as CSSProperties}>
@@ -741,7 +749,7 @@ export function ToolDock({ open, expanded, openTools, activeTool, toolMenuOpen, 
           const panelShare = currentPanelWidths[index] ?? 0;
           return <Fragment key={tool}>
             <div className="tool-dock-panel" data-active={tool === activeTool ? "true" : "false"}>
-              {tool === "files" ? <FilesPanel key={filesUserId + ":" + filesWorkspaceId} userId={filesUserId} workspaceId={filesWorkspaceId} previewRequest={filesPreview} /> : tool === "learning" ? learningPanel : tool === "book" ? knowledgeBookPanel : tool === "whiteboard" ? whiteboardPanel : <SandboxPhaseZeroPanel onExplainCode={onExplainCode} sourceRequest={sandboxSource} executionDisabled={sandboxExecutionDisabled} />}
+              {tool === "files" ? <FilesPanel key={filesUserId + ":" + filesWorkspaceId} userId={filesUserId} workspaceId={filesWorkspaceId} previewRequest={filesPreview} openMessagesRequest={filesOpenMessagesRequest} openFilesRequest={filesOpenFilesRequest} /> : tool === "learning" ? learningPanel : tool === "book" ? knowledgeBookPanel : tool === "whiteboard" ? whiteboardPanel : <SandboxPhaseZeroPanel onExplainCode={onExplainCode} sourceRequest={sandboxSource} executionDisabled={sandboxExecutionDisabled} />}
             </div>
             {index < openTools.length - 1 && <div className="tool-dock-panel-resizer" role="separator" aria-label={`调整${item.label}与${tools.find((candidate) => candidate.id === openTools[index + 1])?.label ?? "下个页面"}面板宽度`} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(panelShare)} tabIndex={0} onPointerDown={(event) => beginPanelResize(index, event)} onKeyDown={(event) => resizePanelWithKeyboard(index, event)}><i /></div>}
           </Fragment>;

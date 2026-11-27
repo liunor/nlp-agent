@@ -24,6 +24,8 @@ vi.mock("@/platform/http/api", () => ({
     createFileTransfer: vi.fn(),
     listFileTransfers: vi.fn(),
     getFileTransferSummary: vi.fn(),
+    getFileTransferUnreadSummary: vi.fn(),
+    markFileTransfersSeen: vi.fn(),
     acceptFileTransfer: vi.fn(),
     rejectFileTransfer: vi.fn(),
     cancelFileTransfer: vi.fn(),
@@ -68,6 +70,8 @@ describe("FilesPanel", () => {
     vi.mocked(api.listStorageFiles).mockResolvedValue({ items: [] });
     vi.mocked(api.listStorageTrash).mockResolvedValue({ items: [] });
     vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 0, notification_version: 0 });
+    vi.mocked(api.getFileTransferUnreadSummary).mockResolvedValue({ pending_count: 0, unseen_accepted_count: 0, unread_count: 0, notification_version: 0 });
+    vi.mocked(api.markFileTransfersSeen).mockResolvedValue({ ok: true, updated: 0 });
     vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [] });
     vi.mocked(api.getCurrentUser).mockResolvedValue(mockUser(["student"]));
     vi.mocked(api.getDistributionTargets).mockResolvedValue({
@@ -513,6 +517,7 @@ function upload(files: File[]) {
 
   it("lists multiple incoming requests together and lets the recipient accept one", async () => {
     vi.mocked(api.getFileTransferSummary).mockResolvedValue({ pending_count: 2, notification_version: 2 });
+    vi.mocked(api.getFileTransferUnreadSummary).mockResolvedValue({ pending_count: 2, unseen_accepted_count: 0, unread_count: 2, notification_version: 2 });
     vi.mocked(api.listFileTransfers).mockResolvedValue({ items: [
       { id: "transfer-1", status: "pending", file_name: "a.md", size_bytes: 12, sender: { identity_id: "NV2AAAAAAAAAAAAA", display_name: "甲" } },
       { id: "transfer-2", status: "pending", file_name: "b.txt", size_bytes: 20, sender: { identity_id: "NV3BBBBBBBBBBBBB", display_name: "乙" } },
@@ -635,5 +640,37 @@ function upload(files: File[]) {
     const confirm = screen.getByRole("button", { name: "确认群发" });
     if (mayRetry) expect(confirm).toBeEnabled();
     else expect(confirm).toBeDisabled();
+  });
+
+  it("shows red unread badge count for unseen delivered files and marks them seen on opening messages", async () => {
+    vi.mocked(api.markFileTransfersSeen).mockClear();
+    vi.mocked(api.getFileTransferUnreadSummary)
+      .mockResolvedValueOnce({ pending_count: 0, unseen_accepted_count: 3, unread_count: 3, notification_version: 5 })
+      .mockResolvedValue({ pending_count: 0, unseen_accepted_count: 0, unread_count: 0, notification_version: 5 });
+    vi.mocked(api.markFileTransfersSeen).mockResolvedValue({ ok: true, updated: 3 });
+    vi.mocked(api.listFileTransfers).mockResolvedValue({
+      items: [
+        {
+          id: "t-unread",
+          status: "accepted",
+          file_name: "新资料.pdf",
+          size_bytes: 100,
+          accepted_file_id: "f-new",
+          recipient_workspace_id: "workspace-1",
+          is_unread: true,
+        },
+      ],
+    });
+
+    render(<FilesPanel workspaceId="workspace-1" />);
+
+    const msgBtn = await screen.findByRole("button", { name: /消息/ });
+    expect(await within(msgBtn).findByText("3")).toHaveClass("unread-red-badge");
+
+    fireEvent.click(msgBtn);
+
+    expect(await screen.findByLabelText("未读")).toBeVisible();
+    await waitFor(() => expect(api.markFileTransfersSeen).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(msgBtn).queryByText("3")).not.toBeInTheDocument());
   });
 });

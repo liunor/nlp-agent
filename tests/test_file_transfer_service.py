@@ -255,3 +255,74 @@ async def test_lookup_recipient_finds_account_by_updated_custom_identity_id() ->
     found = await service.lookup_recipient("  teacher-01 ")
 
     assert found == {"identity_id": "TEACHER-01", "display_name": "张老师"}
+
+
+@pytest.mark.asyncio
+async def test_unread_summary_counts_pending_and_unseen_accepted_transfers() -> None:
+    db = SimpleNamespace(
+        scalar=AsyncMock(
+            side_effect=[2, 3, SimpleNamespace(file_transfer_notification_version=9)]
+        )
+    )
+    service = _service(db)
+
+    result = await service.unread_summary()
+
+    assert result == {
+        "pending_count": 2,
+        "unseen_accepted_count": 3,
+        "unread_count": 5,
+        "notification_version": 9,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mark_seen_updates_only_unseen_accepted_transfers_for_recipient() -> None:
+    db = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(rowcount=4)),
+        flush=AsyncMock(),
+    )
+    service = _service(db)
+
+    result = await service.mark_seen()
+
+    assert result == {"ok": True, "updated": 4}
+    statement = db.execute.await_args.args[0]
+    sql = str(statement.compile(dialect=mysql.dialect())).upper()
+    assert "RECIPIENT_SEEN_AT IS NULL" in sql
+    assert db.flush.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_serialize_marks_unread_only_for_unseen_recipient_items() -> None:
+    db = SimpleNamespace(scalar=AsyncMock(return_value=None))
+    service = _service(db)
+    unseen_accepted = SimpleNamespace(
+        id="t1",
+        status="accepted",
+        original_name="doc.md",
+        size_bytes=12,
+        sender_user_id="sender-1",
+        recipient_user_id="recipient-1",
+        recipient_workspace_id="ws-1",
+        accepted_file_id="f1",
+        recipient_seen_at=None,
+        created_at=None,
+        expires_at=None,
+    )
+    seen_accepted = SimpleNamespace(
+        id="t2",
+        status="accepted",
+        original_name="doc2.md",
+        size_bytes=12,
+        sender_user_id="sender-1",
+        recipient_user_id="recipient-1",
+        recipient_workspace_id="ws-1",
+        accepted_file_id="f2",
+        recipient_seen_at=datetime(2026, 11, 28, 0, 0, 0),
+        created_at=None,
+        expires_at=None,
+    )
+
+    assert (await service.serialize(unseen_accepted))["is_unread"] is True
+    assert (await service.serialize(seen_accepted))["is_unread"] is False
