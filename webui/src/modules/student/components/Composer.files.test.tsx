@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { vi, expect, it } from "vitest";
 import { api } from "@/platform/http/api";
 import { Composer } from "./Composer";
@@ -45,4 +45,34 @@ it("keeps file-space actions behind the plus menu and opens a picker dialog", as
   expect(api.listStorageFiles).toHaveBeenCalledWith("w", undefined);
   fireEvent.click(screen.getByRole("button", { name: "关闭文件选择" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+it("keeps at most five file-space attachments while a conversation is being created", async () => {
+  let finishCreation!: (sessionId: string) => void;
+  const creation = new Promise<string>(resolve => { finishCreation = resolve; });
+  const send = vi.fn();
+  const props = {
+    workspaceId: "w", disabled: false, running: false, onSend: send,
+    onCancel: vi.fn(), onEnsureSession: () => creation,
+  };
+  const { rerender } = render(<Composer {...props} sessionId={null} />);
+  act(() => {
+    for (let index = 1; index <= 6; index++) {
+      window.dispatchEvent(new CustomEvent("file-space:attach", { detail: {
+        workspaceId: "w",
+        file: { id: `file-${index}`, kind: "file", name: `${index}.txt`, mime_type: "text/plain", size_bytes: 3 },
+      } }));
+    }
+  });
+  await act(async () => { finishCreation("new-session"); await creation; });
+
+  expect(within(screen.getByRole("list", { name: "已添加附件" })).getAllByRole("listitem")).toHaveLength(5);
+  expect(screen.queryByRole("button", { name: "移除附件 6.txt" })).not.toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("每条消息最多添加 5 个附件");
+  rerender(<Composer {...props} sessionId="new-session" />);
+  fireEvent.click(screen.getByRole("button", { name: "发送" }));
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(send.mock.calls[0][1].map((file: { fileId: string }) => file.fileId)).toEqual([
+    "file-1", "file-2", "file-3", "file-4", "file-5",
+  ]);
 });
