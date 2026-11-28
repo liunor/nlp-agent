@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Bot } from "lucide-react";
 import { api } from "@/platform/http/api";
 import type { TeacherQuestionActivity } from "@/shared/types";
@@ -33,6 +33,38 @@ export function QuestionActivityPanel({ workspaceId, classroomId, onPeriodApplie
   const [validationError,setValidationError] = useState("");
   const [error,setError] = useState("");
   const [revision,setRevision] = useState(0);
+  const [highlightDetails, setHighlightDetails] = useState(false);
+  const detailsSectionRef = useRef<HTMLElement>(null);
+  const pendingScrollToDetailsRef = useRef(false);
+  const highlightTimerRef = useRef<number | null>(null);
+
+  const triggerDetailsHighlight = () => {
+    setHighlightDetails(true);
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightDetails(false);
+      highlightTimerRef.current = null;
+    }, 1400);
+  };
+
+  const focusDetailsSection = () => {
+    pendingScrollToDetailsRef.current = true;
+    triggerDetailsHighlight();
+    window.requestAnimationFrame(() => {
+      detailsSectionRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  useEffect(() => () => {
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (!loading && pendingScrollToDetailsRef.current) {
+      pendingScrollToDetailsRef.current = false;
+      detailsSectionRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    }
+  }, [loading, data]);
 
   const toggleAnswer = (id: string) => {
     setExpandedAnswers((prev) => {
@@ -83,7 +115,7 @@ export function QuestionActivityPanel({ workspaceId, classroomId, onPeriodApplie
     </form>
     {validationError && <p className="teacher-question-validation" role="alert">{validationError}</p>}
     <div className="teacher-question-query-summary" aria-live="polite">{loading ? "正在读取提问…" : error ? <><span role="alert">{error}</span><button type="button" onClick={() => setRevision((value) => value+1)}>重试</button></> : data && <span>{data.start_date} 至 {data.end_date} · {data.summary.question_count} 次提问 · {data.summary.user_count} 名提问用户 · {data.timezone}</span>}</div>
-    <section aria-label="提问明细">
+    <section ref={detailsSectionRef} className={highlightDetails ? "teacher-question-details is-highlighted" : "teacher-question-details"} aria-label="提问明细">
       <div className="teacher-question-table-heading"><h3>提问明细</h3><div>{student && <span>用户：{student.name}（共提问 {data?.total ?? 0} 个问题）</span>}{group && <span>问题：{group.name.slice(0,30)}</span>}{(student || group) && <button type="button" onClick={() => {setStudent(null);setGroup(null);setPage(1);}}>清除明细筛选</button>}</div></div>
       <div className="teacher-question-records"><table><thead><tr><th>提问时间</th><th>提问用户</th><th>问题原文</th></tr></thead><tbody>
         {loading || error ? <tr><td colSpan={3}>{loading ? "正在加载…" : "读取失败，请重试"}</td></tr> : data?.items.length ? data.items.map((item) => <tr key={item.id}><td>{formatTime(item.created_at)}</td><td><button type="button" title="查看该用户的提问" onClick={() => {setStudent({id:item.user_id,name:item.display_name || item.username});setPage(1);}}>{item.display_name || item.username}</button><small>@{item.username}</small></td><td className="question-text"><div className="teacher-question-cell-wrap"><CollapsibleText text={item.question} maxLines={3} maxLength={120} />{item.answer ? <div className="teacher-question-answer-area"><button type="button" className="teacher-question-answer-btn" aria-expanded={expandedAnswers.has(item.id)} onClick={() => toggleAnswer(item.id)}><Bot size={12} /><span>{expandedAnswers.has(item.id) ? "收起模型答复" : "查看模型答复"}</span></button>{expandedAnswers.has(item.id) && <div className="teacher-question-answer-card"><div className="teacher-question-answer-header"><span className="teacher-question-model-tag">AI 模型答复</span>{item.status && <span className={`teacher-question-status-tag ${item.status}`}>{item.status === "completed" ? "已完成" : item.status}</span>}</div><CollapsibleText text={item.answer} maxLines={6} maxLength={200} /></div>}</div> : null}</div></td></tr>) : <tr><td colSpan={3}>当前范围暂无提问。</td></tr>}
@@ -93,7 +125,7 @@ export function QuestionActivityPanel({ workspaceId, classroomId, onPeriodApplie
     <section aria-label="共同高频问题">
       <div className="teacher-question-table-heading"><div><h3>共同高频问题</h3><p>至少两人提问才收录；仅合并空白、标点和大小写差异，按涉及人数、提问次数排序。此表不受个人明细筛选影响。</p></div></div>
       <div className="teacher-question-records"><table><thead><tr><th>代表问题</th><th>涉及人数</th><th>提问次数</th><th>操作</th></tr></thead><tbody>
-        {loading || error ? <tr><td colSpan={4}>{loading ? "正在加载…" : "读取失败，请重试"}</td></tr> : data?.frequent.length ? data.frequent.map((item) => <tr key={item.group_id}><td className="question-text"><CollapsibleText text={item.question} maxLines={3} maxLength={120} /></td><td>{item.user_count}</td><td>{item.question_count}</td><td><button type="button" onClick={() => {setGroup({id:item.group_id,name:item.question});setStudent(null);setPage(1);}}>查看原始提问</button></td></tr>) : <tr><td colSpan={4}>当前范围暂无多人重复提问。</td></tr>}
+        {loading || error ? <tr><td colSpan={4}>{loading ? "正在加载…" : "读取失败，请重试"}</td></tr> : data?.frequent.length ? data.frequent.map((item) => <tr key={item.group_id}><td className="question-text"><CollapsibleText text={item.question} maxLines={3} maxLength={120} /></td><td>{item.user_count}</td><td>{item.question_count}</td><td><button type="button" onClick={() => {setGroup({id:item.group_id,name:item.question});setStudent(null);setPage(1);focusDetailsSection();}}>查看原始提问</button></td></tr>) : <tr><td colSpan={4}>当前范围暂无多人重复提问。</td></tr>}
       </tbody></table></div>
       <QuestionPagination page={frequentPage} total={data?.frequent_total ?? 0} disabled={loading || Boolean(error)} onChange={setFrequentPage} />
     </section>

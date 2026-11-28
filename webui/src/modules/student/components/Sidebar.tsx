@@ -20,13 +20,14 @@ function displayTitle(session: SessionSummary, meta?: SessionLearningMeta): stri
   return backendTitle || DEFAULT_SESSION_TITLE;
 }
 
-export function Sidebar({ sessions, preferences, activeId, open, collapsed, connected, onClose, onCollapse, onExpand, onSelect, onCreate, onRename, onMeta, onAddCategory, onRenameCategory, onDeleteCategory, onDelete, onAccount, onSettings }: {
+export function Sidebar({ sessions, preferences, activeId, open, collapsed, connected, settingsUnreadCount = 0, onClose, onCollapse, onExpand, onSelect, onCreate, onRename, onMeta, onAddCategory, onRenameCategory, onDeleteCategory, onDelete, onAccount, onSettings }: {
   sessions: SessionSummary[];
   preferences: LearningPreferences;
   activeId: string | null;
   open: boolean;
   collapsed: boolean;
   connected: boolean;
+  settingsUnreadCount?: number;
   onClose: () => void;
   onCollapse: () => void;
   onExpand: () => void;
@@ -278,14 +279,22 @@ export function Sidebar({ sessions, preferences, activeId, open, collapsed, conn
         </section>)}
         {!collapsed && !visible.length && <p className="sidebar-empty">{showArchived ? "暂无归档对话" : "还没有学习记录"}</p>}
       </div>
-      <div className="sidebar-footer"><SideAction collapsed={collapsed} label={t("settings")} icon={<Settings size={18} />} onClick={onSettings} /><SideAction collapsed={collapsed} label="账户管理" icon={<UserRound size={18} />} onClick={onAccount} /><i className={`connection-dot ${connected ? "online" : ""}`} title={connected ? "已连接" : "连接中"} /></div>
+      <div className="sidebar-footer"><SideAction collapsed={collapsed} label={t("settings")} icon={<Settings size={18} />} badgeCount={settingsUnreadCount} onClick={onSettings} /><SideAction collapsed={collapsed} label="账户管理" icon={<UserRound size={18} />} onClick={onAccount} /><i className={`connection-dot ${connected ? "online" : ""}`} title={connected ? "已连接" : "连接中"} /></div>
     </aside>
     <CategoryDialog open={categoryDialogOpen} onClose={() => setCategoryDialogOpen(false)} onConfirm={onAddCategory} />
   </>;
 }
 
-function SideAction({ collapsed, label, icon, onClick }: { collapsed: boolean; label: string; icon: ReactNode; onClick: () => void }) {
-  return <button type="button" className="side-action" title={collapsed ? label : undefined} aria-label={label} onClick={onClick}><span>{icon}</span>{!collapsed && <b>{label}</b>}</button>;
+function SideAction({ collapsed, label, icon, onClick, badgeCount = 0 }: { collapsed: boolean; label: string; icon: ReactNode; onClick: () => void; badgeCount?: number }) {
+  const badgeText = badgeCount > 99 ? "99+" : String(badgeCount);
+  return <button type="button" className="side-action" title={badgeCount > 0 ? `${label}（${badgeCount} 条未读）` : collapsed ? label : undefined} aria-label={label} onClick={onClick}>
+    <span className="side-action-icon-wrap">
+      {icon}
+      {collapsed && badgeCount > 0 && <span className="unread-red-badge side-action-badge-collapsed" aria-hidden="true">{badgeText}</span>}
+    </span>
+    {!collapsed && <b>{label}</b>}
+    {!collapsed && badgeCount > 0 && <span className="unread-red-badge side-action-badge-expanded">{badgeText} 条未读</span>}
+  </button>;
 }
 
 export function SidebarToggle({ onClick }: { onClick: () => void }) {

@@ -176,6 +176,16 @@ async def get_file_transfer_summary(db: DbSession, principal: Principal) -> dict
     return await _transfer_service(db, principal).summary()
 
 
+@router.get("/transfers/unread-summary")
+async def get_file_transfer_unread_summary(db: DbSession, principal: Principal) -> dict:
+    return await _transfer_service(db, principal).unread_summary()
+
+
+@router.post("/transfers/mark-seen")
+async def mark_file_transfers_seen(db: DbSession, principal: Principal, _write: WriteClaims) -> dict:
+    return await _transfer_service(db, principal).mark_seen()
+
+
 @router.get("/transfers")
 async def list_file_transfers(db: DbSession, principal: Principal, box: str = Query(default="incoming")) -> dict:
     try:

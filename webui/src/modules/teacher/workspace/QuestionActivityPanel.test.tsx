@@ -90,3 +90,17 @@ it("displays student total count and expands model answer", async () => {
   expect(within(details).getByText("用户：张三（共提问 5 个问题）")).toBeVisible();
 });
 
+it("scrolls to question details and highlights when clicking 查看原始提问", async () => {
+  const scrollIntoViewMock = vi.fn();
+  render(<QuestionActivityPanel workspaceId="w1" />);
+  const details = screen.getByRole("region", { name: "提问明细" });
+  details.scrollIntoView = scrollIntoViewMock;
+
+  expect(await within(details).findByText("什么是注意力？")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "查看原始提问" }));
+
+  await waitFor(() => expect(read.mock.lastCall?.[0].get("group_id")).toBe("abc"));
+  await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "start" }));
+  expect(details).toHaveClass("is-highlighted");
+});
+

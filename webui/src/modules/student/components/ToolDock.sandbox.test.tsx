@@ -162,3 +162,23 @@ it("ignores late resource responses that carry a ticket from before execution", 
   await act(async () => {});
   expect(mocks.execute).toHaveBeenLastCalledWith(expect.any(String), "after-execution");
 });
+
+it("displays file unread red badge across dock tab, picker, and tool home list", () => {
+  const { rerender } = render(
+    <ToolDock open expanded={false} openTools={["files"]} activeTool="files" toolMenuOpen
+      onToolMenuOpenChange={vi.fn()} onOpenTool={vi.fn()} onReorderTools={vi.fn()} onCloseTool={vi.fn()}
+      onActiveToolChange={vi.fn()} onExplainCode={vi.fn()} learningPanel={null} knowledgeBookPanel={null}
+      whiteboardPanel={null} filesUserId={null} filesWorkspaceId="default" fileUnreadCount={5} />,
+  );
+
+  expect(screen.getByRole("tab", { name: /文件/ })).toHaveTextContent("5");
+  expect(screen.getByRole("menuitem", { name: "打开文件工具" })).toHaveTextContent("5");
+
+  rerender(
+    <ToolDock open expanded={false} openTools={[]} activeTool={null} toolMenuOpen={false}
+      onToolMenuOpenChange={vi.fn()} onOpenTool={vi.fn()} onReorderTools={vi.fn()} onCloseTool={vi.fn()}
+      onActiveToolChange={vi.fn()} onExplainCode={vi.fn()} learningPanel={null} knowledgeBookPanel={null}
+      whiteboardPanel={null} filesUserId={null} filesWorkspaceId="default" fileUnreadCount={5} />,
+  );
+  expect(screen.getByRole("button", { name: "打开文件工具" })).toHaveTextContent("5");
+});

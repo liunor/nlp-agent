@@ -29,7 +29,7 @@ import { KnowledgeBookPanel } from "@/modules/student/components/KnowledgeBookPa
 import { readKnowledgeBookUrl } from "@/modules/student/components/knowledgeBook";
 import { LoginDialog } from "@/modules/student/components/LoginDialog";
 import { MessageList } from "@/modules/student/components/MessageList";
-import { SettingsDialog } from "@/modules/student/components/SettingsDialog";
+import { canSubmitOwnFeedback, SettingsDialog } from "@/modules/student/components/SettingsDialog";
 import { ReleaseUpdateNotice } from "@/modules/student/components/ReleaseUpdateNotice";
 import { FileTransferNotifier } from "@/modules/student/components/FileTransferNotifier";
 import { SchoolLogo } from "@/shared/ui/SchoolLogo";
@@ -113,6 +113,10 @@ export function StudentWorkspace({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [fileUnreadCount, setFileUnreadCount] = useState(0);
+  const [feedbackUnreadCount, setFeedbackUnreadCount] = useState(0);
+  const [filesOpenMessagesRequest, setFilesOpenMessagesRequest] = useState(0);
+  const [filesOpenFilesRequest, setFilesOpenFilesRequest] = useState(0);
   const [courseTopics, setCourseTopics] = useState<CourseTopic[]>([]);
   const [learningCatalog, setLearningCatalog] = useState<TeacherCatalog | null>(
     null,
@@ -155,6 +159,43 @@ export function StudentWorkspace({
       window.removeEventListener("focus", refreshCourseTopics);
     };
   }, [refreshCourseTopics, workspace.bootStatus]);
+  const canFeedback = canSubmitOwnFeedback(
+    workspace.authSession?.roles,
+    workspace.authSession?.permissions,
+  );
+  const currentUserId = workspace.authSession?.user_id ?? null;
+  useEffect(() => {
+    if (
+      workspace.bootStatus !== "ready" ||
+      !currentUserId ||
+      !canFeedback ||
+      typeof api.getOwnFeedback !== "function"
+    ) {
+      queueMicrotask(() => setFeedbackUnreadCount(0));
+      return undefined;
+    }
+    let active = true;
+    const refreshFeedbackUnread = () => {
+      void api
+        .getOwnFeedback({ limit: 1 })
+        .then((thread) => {
+          if (!active) return;
+          setFeedbackUnreadCount(
+            thread?.thread_id ? (thread.student_unread_count ?? 0) : 0,
+          );
+        })
+        .catch(() => undefined);
+    };
+    const initialTimer = window.setTimeout(refreshFeedbackUnread, 0);
+    const pollTimer = window.setInterval(refreshFeedbackUnread, 30_000);
+    window.addEventListener("focus", refreshFeedbackUnread);
+    return () => {
+      active = false;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(pollTimer);
+      window.removeEventListener("focus", refreshFeedbackUnread);
+    };
+  }, [workspace.bootStatus, currentUserId, canFeedback]);
   const activeSession = workspace.sessions.find(
     (session) => session.session_id === workspace.activeSessionId,
   );
@@ -504,6 +545,7 @@ export function StudentWorkspace({
         open={sidebarOpen}
         collapsed={sidebarCollapsed}
         connected={statusOnline}
+        settingsUnreadCount={feedbackUnreadCount}
         onClose={() => setSidebarOpen(false)}
         onCollapse={() => setCollapsed(true)}
         onExpand={() => setCollapsed(false)}
@@ -566,6 +608,11 @@ export function StudentWorkspace({
               className="icon-button thread-tool-toggle"
               type="button"
               aria-label={toolDockOpen ? "关闭工具侧栏" : "打开工具侧栏"}
+              title={
+                fileUnreadCount > 0
+                  ? `${toolDockOpen ? "关闭工具侧栏" : "打开工具侧栏"}（${fileUnreadCount} 条未读文件消息）`
+                  : undefined
+              }
               aria-pressed={toolDockOpen}
               onClick={toggleToolDock}
             >
@@ -573,6 +620,11 @@ export function StudentWorkspace({
                 <PanelRightClose size={18} />
               ) : (
                 <PanelRightOpen size={18} />
+              )}
+              {fileUnreadCount > 0 && (
+                <span className="unread-red-badge thread-tool-toggle-badge" aria-hidden="true">
+                  {fileUnreadCount > 99 ? "99+" : fileUnreadCount}
+                </span>
               )}
             </button>
             <button
@@ -710,6 +762,9 @@ export function StudentWorkspace({
         sandboxExecutionDisabled={workspace.isRunning}
         filesUserId={workspace.authSession?.user_id ?? null}
         filesWorkspaceId={workspace.workspaceId}
+        fileUnreadCount={fileUnreadCount}
+        filesOpenMessagesRequest={filesOpenMessagesRequest}
+        filesOpenFilesRequest={filesOpenFilesRequest}
         filesPreview={
           filesPreviewWorkspaceId === workspace.workspaceId &&
           filesPreviewUserId === (workspace.authSession?.user_id ?? null)
@@ -725,8 +780,14 @@ export function StudentWorkspace({
       {workspace.authSession?.user_id && (
         <FileTransferNotifier
           userId={workspace.authSession.user_id}
+          onUnreadCountChange={setFileUnreadCount}
+          onOpenFiles={() => {
+            openTool("files");
+            setFilesOpenFilesRequest((value) => value + 1);
+          }}
           onOpenMessages={() => {
             openTool("files");
+            setFilesOpenMessagesRequest((value) => value + 1);
             window.setTimeout(
               () => window.dispatchEvent(new Event("file-transfers:open")),
               0,
@@ -747,6 +808,8 @@ export function StudentWorkspace({
         permissions={workspace.authSession?.permissions}
         userId={workspace.authSession?.user_id}
         workspaceIds={workspace.authSession?.workspace_ids}
+        feedbackUnreadCount={feedbackUnreadCount}
+        onFeedbackUnreadChange={setFeedbackUnreadCount}
         onClose={() => setSettingsOpen(false)}
         onChange={(patch) => void workspace.patchSettings(patch)}
         onReset={workspace.resetSettings}
@@ -769,6 +832,8 @@ export function StudentWorkspace({
           setFilesPreview(null);
           setFilesPreviewUserId(null);
           setFilesPreviewWorkspaceId("");
+          setFileUnreadCount(0);
+          setFeedbackUnreadCount(0);
           setAccountOpen(false);
         }}
       />

@@ -4711,3 +4711,195 @@ button { color: inherit; }
 .files-view { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; }.files-view[hidden],.file-reader-pane[hidden] { display:none; }
 .file-reader-pane { min-width:0; min-height:0; flex:1; overflow:auto; }.file-document-workspace { min-height:0; }.file-document-workspace > .files-panel-list { max-height:130px; flex-shrink:0; }
 @media (max-width:640px) { .composer-attachments { padding:10px 10px 6px; gap:8px; }.attachment-card { flex-basis:152px; }.file-document-tabs .tool-dock-tab { max-width:160px; } }
+/* --- Unread Red Badges & Floating File Toast --- */
+.unread-red-badge {
+  display: inline-grid;
+  min-width: 16px;
+  height: 16px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+.thread-tool-toggle {
+  position: relative;
+}
+.thread-tool-toggle-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 9px;
+  box-shadow: 0 0 0 1.5px var(--bg);
+  pointer-events: none;
+}
+.side-action .side-action-icon-wrap {
+  position: relative;
+  display: grid;
+  flex: 0 0 18px;
+  place-items: center;
+}
+.side-action .unread-red-badge.side-action-badge-collapsed {
+  position: absolute;
+  top: -6px;
+  right: -7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 9px;
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+.side-action .unread-red-badge.side-action-badge-expanded {
+  flex: 0 0 auto;
+  width: auto;
+  height: 18px;
+  margin-left: auto;
+  padding: 0 7px;
+  font-size: 10px;
+}
+.storage-messages-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.file-transfer-messages nav button em.unread-red-badge {
+  background: #ef4444;
+  color: #fff;
+}
+.file-transfer-file-icon {
+  position: relative;
+}
+.file-transfer-unread-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+.file-transfer-list article.is-unread {
+  border-color: color-mix(in srgb, #ef4444 28%, var(--border));
+  background: color-mix(in srgb, #fff1f2 35%, var(--bg));
+}
+.settings-nav-unread,
+.feedback-history-unread {
+  background: #ef4444;
+  color: #fff;
+  font-weight: 700;
+}
+
+@keyframes fileToastSlideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.file-transfer-toast {
+  position: fixed;
+  top: 62px;
+  right: 16px;
+  z-index: 95;
+  display: grid;
+  width: min(calc(100vw - 32px), 372px);
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+  padding: 14px 15px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 14px 36px rgb(15 23 42 / 14%);
+  animation: fileToastSlideIn .2s ease-out;
+}
+.file-transfer-toast-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.file-transfer-toast-body {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+.file-transfer-toast-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.file-transfer-toast-head strong {
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.file-transfer-toast-close {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.file-transfer-toast-close:hover {
+  background: var(--muted-bg);
+  color: var(--fg);
+}
+.file-transfer-toast-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.file-transfer-toast-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.file-transfer-toast-actions button {
+  min-height: 29px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.file-transfer-toast-actions button:hover {
+  background: var(--soft-bg);
+}
+.file-transfer-toast-actions button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* --- Question Details Scroll Highlight --- */
+.teacher-question-details {
+  scroll-margin-top: 16px;
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+.teacher-question-details.is-highlighted {
+  background: color-mix(in srgb, var(--teacher-soft, #f3f0ff) 65%, transparent);
+  box-shadow: inset 3px 0 0 var(--teacher-accent, #6758c9);
+}

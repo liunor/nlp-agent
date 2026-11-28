@@ -248,8 +248,16 @@ export interface FileTransfer {
   recipient_workspace_id?: string | null;
   sender?: FileTransferRecipient;
   recipient?: FileTransferRecipient;
+  is_unread?: boolean;
   created_at?: string;
   expires_at?: string;
+}
+
+export interface FileTransferUnreadSummary {
+  pending_count: number;
+  unseen_accepted_count: number;
+  unread_count: number;
+  notification_version: number;
 }
 
 export interface DistributionTargetRole {
@@ -455,6 +463,8 @@ export const api = {
   createFileTransfer: (input: { source_file_id: string; recipient_identity_id: string; workspace_id?: string; idempotency_key: string }) => request<FileTransfer>("/storage/transfers", { method: "POST", body: JSON.stringify(input) }),
   listFileTransfers: (box: "incoming" | "outgoing") => request<{ items: FileTransfer[] }>(`/storage/transfers?box=${box}`),
   getFileTransferSummary: () => request<{ pending_count: number; notification_version: number }>("/storage/transfers/summary"),
+  getFileTransferUnreadSummary: () => request<FileTransferUnreadSummary>("/storage/transfers/unread-summary"),
+  markFileTransfersSeen: () => request<{ ok: boolean; updated: number }>("/storage/transfers/mark-seen", { method: "POST", body: "{}" }),
   acceptFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/accept`, { method: "POST", body: "{}" }),
   rejectFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/reject`, { method: "POST", body: "{}" }),
   cancelFileTransfer: (transferId: string) => request<FileTransfer>(`/storage/transfers/${encodeURIComponent(transferId)}/cancel`, { method: "POST", body: "{}" }),
