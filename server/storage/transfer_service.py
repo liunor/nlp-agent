@@ -265,6 +265,7 @@ class FileTransferService:
             transfer.responded_at = func.utc_timestamp(6)
             transfer.recipient_seen_at = func.utc_timestamp(6)
             await self.db.flush()
+            await self.db.refresh(transfer)
             return await self.serialize(transfer)
         except Exception:
             target.unlink(missing_ok=True)
@@ -284,6 +285,7 @@ class FileTransferService:
         if actor == "recipient":
             transfer.recipient_seen_at = func.utc_timestamp(6)
         await self.db.flush()
+        await self.db.refresh(transfer)
         return await self.serialize(transfer)
 
     async def reject(self, transfer_id: str) -> dict:
