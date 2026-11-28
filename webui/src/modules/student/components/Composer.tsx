@@ -12,6 +12,8 @@ import type { ChatAttachment } from "@/shared/types";
 import { createUuid } from "@/shared/utils/uuid";
 
 const prompts = ["用简单语言解释", "举一个实际例子", "逐步推导", "对比两个概念", "出一道练习题", "检查我的答案"];
+const MAX_ATTACHMENTS = 5;
+const ATTACHMENT_LIMIT_NOTICE = `每条消息最多添加 ${MAX_ATTACHMENTS} 个附件`;
 
 interface ComposerAttachment extends ChatAttachment {
   clientId: string;
@@ -93,6 +95,7 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
     } else {
       onSend(trimmed);
     }
+    attachmentsRef.current = [];
     setAttachments([]);
   };
   const submit = () => sendValue(content);
@@ -151,19 +154,26 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
     }
   };
   const removeAttachment = (clientId: string) => {
-    setAttachments((current) => {
-      const removed = current.find((item) => item.clientId === clientId);
-      removed?.abort.abort();
-      attachmentsRef.current = attachmentsRef.current.filter(item => item.clientId !== clientId);
-      if (removed?.url.startsWith("blob:") && typeof URL.revokeObjectURL === "function") {
-        URL.revokeObjectURL(removed.url);
-      }
-      return current.filter((item) => item.clientId !== clientId);
-    });
+    const removed = attachmentsRef.current.find(item => item.clientId === clientId);
+    removed?.abort.abort();
+    if (removed?.url.startsWith("blob:") && typeof URL.revokeObjectURL === "function") {
+      URL.revokeObjectURL(removed.url);
+    }
+    attachmentsRef.current = attachmentsRef.current.filter(item => item.clientId !== clientId);
+    setAttachments(current => current.filter(item => item.clientId !== clientId));
+  };
+  const hasAttachmentSpace = (notify: (message: string) => void) => {
+    if (attachmentsRef.current.length < MAX_ATTACHMENTS) return true;
+    notify(ATTACHMENT_LIMIT_NOTICE);
+    return false;
+  };
+  const appendAttachment = (attachment: ComposerAttachment) => {
+    attachmentsRef.current = [...attachmentsRef.current, attachment];
+    setAttachments(current => [...current, attachment]);
+    setPasteNotice("");
   };
   const addAndUploadFile = (file: File, displayName = file.name || "image") => {
-    if (!canUploadAttachments) return;
-    if (attachmentsRef.current.length >= 5) { setPasteNotice("每条消息最多添加 5 个附件"); return; }
+    if (!canUploadAttachments || !hasAttachmentSpace(setPasteNotice)) return;
     if (!file.type.startsWith("image/") && !/^(readme|dockerfile|makefile)$/i.test(file.name) && !/\.(pdf|docx|xlsx|txt|text|md|markdown|mdown|mkd|csv|tsv|json|jsonl|py|js|mjs|cjs|ts|tsx|jsx|yaml|yml|xml|html|htm|css|scss|sql|log|java|c|cc|h|cpp|hpp|cs|go|rs|rb|php|swift|kt|vue|svelte|toml|ini|env|sh|bash|zsh|png|jpe?g|webp)$/i.test(file.name)) {
       setPasteNotice("暂不支持该附件格式"); return;
     }
@@ -181,9 +191,7 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
       status: "uploading",
     };
 
-    attachmentsRef.current = [...attachmentsRef.current, newAttachment];
-    setAttachments((prev) => [...prev, newAttachment]);
-    setPasteNotice("");
+    appendAttachment(newAttachment);
     void upload(newAttachment);
   };
   const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
@@ -203,9 +211,20 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
     finally { if (generation === pickerGeneration.current) setSpaceLoading(false); }
   };
   const attachSpaceFile = async (file: StorageFile) => {
-    if (!canUploadAttachments || attachmentsRef.current.length >= 5) { setSpaceError("每条消息最多添加 5 个附件"); return; }
-    const owner = sessionId ?? await onEnsureSession?.();
-    if (!owner) return;
+    const notify = (message: string) => {
+      setPasteNotice(message);
+      if (spaceOpen) setSpaceError(message);
+    };
+    if (!canUploadAttachments || !hasAttachmentSpace(notify)) return;
+    let owner: string | null | undefined;
+    try {
+      owner = sessionId ?? await onEnsureSession?.();
+    } catch {
+      notify("创建对话失败，请重试添加附件。");
+      return;
+    }
+    // Multiple selections can wait on the same new conversation.
+    if (!owner || !hasAttachmentSpace(notify)) return;
     const attachment: ComposerAttachment = {
       clientId: createUuid(), abort: new AbortController(), fileId: file.id, expectedHash: file.sha256, workspaceId,
       fileName: file.name, displayName: file.name, mediaType: file.mime_type ?? "application/octet-stream",
@@ -213,8 +232,7 @@ export function Composer({ sessionId, workspaceId, disabled, sendDisabled = fals
       width: 0, height: 0, status: "ready", ownerSessionId: owner,
       sourceFile: new File([], file.name), sizeBytes: file.size_bytes,
     };
-    attachmentsRef.current = [...attachmentsRef.current, attachment];
-    setAttachments(current => [...current, attachment]);
+    appendAttachment(attachment);
     setSpaceOpen(false);
   };
   const externalHandlers = useRef({ local: addAndUploadFile, remote: attachSpaceFile });

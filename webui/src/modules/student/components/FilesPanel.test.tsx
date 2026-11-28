@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { strToU8, zipSync } from "fflate";
 
 import { api } from "@/platform/http/api";
 import type { UserProfile } from "@/shared/types";
@@ -192,7 +193,27 @@ describe("FilesPanel", () => {
     expect(screen.getByRole("tab", { name: "我的文件" })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("does not restore an asynchronous import after clearing files", async () => {
+  it.each(["报告.pdf", "报告.docx"])("clears a local %s without closing the textbook tab", async name => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => "textbook content" }));
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("about:blank#local-pdf");
+    const book = { id: "book", name: "教材.md", url: "/book/file", mediaType: "text/markdown", bytes: 16 };
+    render(<FilesPanel userId="alice" workspaceId="w" previewRequest={book} />);
+    await screen.findByRole("tabpanel", { name: "教材.md" });
+    expect(screen.queryByRole("button", { name: "清空" })).not.toBeInTheDocument();
+
+    const wordBody = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>报告</w:t></w:r></w:p></w:body></w:document>';
+    const content = name.endsWith(".pdf") ? "%PDF-" : zipSync({ "word/document.xml": strToU8(wordBody) });
+    upload([new File([content], name)]);
+    await screen.findByRole("tab", { name });
+    fireEvent.click(screen.getByRole("button", { name: "清空" }));
+
+    expect(screen.queryByRole("tab", { name })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "清空" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("tabpanel", { name: "教材.md" })).toHaveTextContent("textbook content");
+    expect(api.deleteStorageFile).not.toHaveBeenCalled();
+  });
+
+  it("can clear the first asynchronous import and ignores its late result", async () => {
     let finish!: (content: string) => void;
     const pending = new Promise<string>(resolve => { finish = resolve; });
     const slow = markdownFile("slow.md");
@@ -200,10 +221,9 @@ describe("FilesPanel", () => {
     vi.spyOn(prefix, "text").mockReturnValue(pending);
     vi.spyOn(slow, "slice").mockReturnValue(prefix);
     render(<FilesPanel userId="alice" workspaceId="w" />);
-    upload([markdownFile("initial.md")]);
-    await screen.findByRole("button", { name: "预览 initial.md" });
     upload([slow]);
     fireEvent.click(screen.getByRole("button", { name: "清空" }));
+    expect(screen.queryByRole("button", { name: "清空" })).not.toBeInTheDocument();
     await act(async () => { finish("late private data"); await pending; });
     expect(screen.queryByRole("tab", { name: "slow.md" })).not.toBeInTheDocument();
     expect(localStorage.getItem("nlp-agent.imported-files.v1:alice:w")).toBe("[]");

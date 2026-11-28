@@ -7,11 +7,14 @@ export function FileSpaceReader({ fileId, name, workspaceId }: { fileId: string;
   const [charOffset, setCharOffset] = useState(0);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
   const extension = name.toLowerCase().split(".").pop();
-  const binary = ["pdf", "png", "jpg", "jpeg", "webp"].includes(extension ?? "");
-  const [showText, setShowText] = useState(!binary);
+  const isPdf = extension === "pdf";
+  const isImage = ["png", "jpg", "jpeg", "webp"].includes(extension ?? "");
+  const [showText, setShowText] = useState(!isPdf && !isImage);
   const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
   const base = `/api/v1/storage/files/${encodeURIComponent(fileId)}`;
+  const previewUrl = `${base}/view${query}`;
   const hash = result?.sha256;
   const loading = showText && !error && (!result || result.offset !== offset || (result.char_offset ?? 0) !== charOffset);
 
@@ -30,10 +33,14 @@ export function FileSpaceReader({ fileId, name, workspaceId }: { fileId: string;
 
   return <section className="files-panel-preview" aria-label={`阅读 ${name}`}>
     <header className="files-panel-preview-header"><strong>{name}</strong><a href={`${base}/download${query}`} download>下载</a></header>
-    {binary && !showText && (extension === "pdf"
-      ? <iframe title={`预览 ${name}`} src={`${base}/view${query}`} style={{ width: "100%", height: "65vh", border: 0 }} />
-      : <img src={`${base}/view${query}`} alt={name} style={{ maxWidth: "100%" }} />)}
-    {extension === "pdf" && <button type="button" onClick={() => setShowText(value => !value)}>{showText ? "查看原始页面" : "读取页面文字"}</button>}
+    {isPdf && !showText && <iframe title={`预览 ${name}`} src={previewUrl} style={{ width: "100%", height: "65vh", border: 0 }} />}
+    {isImage && !showText && (failedImageUrl === previewUrl
+      ? <div className="files-panel-preview-body">
+          <p role="alert">图片预览失败。请重试，或下载原件查看。</p>
+          <button type="button" onClick={() => setFailedImageUrl(null)}>重试预览</button>
+        </div>
+      : <img key={previewUrl} src={previewUrl} alt={name} onError={() => setFailedImageUrl(previewUrl)} style={{ maxWidth: "100%" }} />)}
+    {isPdf && <button type="button" onClick={() => setShowText(value => !value)}>{showText ? "查看原始页面" : "读取页面文字"}</button>}
     {loading && <p role="status">正在读取……</p>}
     {error && <p role="alert">{error}<button type="button" onClick={() => { setError(""); setResult(null); setRetry(value => value + 1); }}>读取当前版本</button></p>}
     {showText && !loading && !error && result && <div className="files-panel-preview-body">
